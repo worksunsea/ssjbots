@@ -1,0 +1,17 @@
+services:
+  wa-service:
+    build: .
+    container_name: ssj-wa-service
+    restart: unless-stopped
+    ports:
+      - "3021:3000"
+    volumes:
+      - ./auth:/app/auth
+    environment:
+      PORT: 3000
+      AUTH_DIR: /app/auth
+      SERVICE_SECRET: ${SERVICE_SECRET}
+      VERCEL_WEBHOOK_URL: ${VERCEL_WEBHOOK_URL}
+      VERCEL_WEBHOOK_SECRET: ${VERCEL_WEBHOOK_SECRET}
+      WA_CLIENT_ID: ${WA_CLIENT_ID:-ssj-test}
+      BAILEYS_LOG: ${BAILEYS_LOG:-warn}

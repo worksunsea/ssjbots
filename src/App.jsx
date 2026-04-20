@@ -7,14 +7,6 @@ const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
 const TENANT_ID = "a1b2c3d4-0000-0000-0000-000000000001";
 
-// ── WBIZTOOL (shared config with fms-tracker) ──
-const WA_CONFIG = {
-  endpoint: "https://wbiztool.com/api/v1/send_msg/",
-  client_id: "13004",
-  api_key: "0be8d83d92aceaef87",
-  country_code: "91",
-};
-
 // ── APPS SCRIPT (rates proxy — Google Sheet "new" tab) ──
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxGazdRhKxkjOLkqxN4kPoInDuBnlWy5Azmzq-FX9mt5OIfZLbhqfFEO0AufrOWE6n49Q/exec";
 
@@ -37,26 +29,17 @@ const loadLocal = (k, def) => { try { const v = localStorage.getItem(k); return 
 const loadUser = () => loadLocal("ssj_bullion_user", null);
 const saveUser = (u) => saveLocal("ssj_bullion_user", u);
 
-const sendWA = async (phone, msg, whatsappClient) => {
-  if (!phone || !whatsappClient) return { status: 0, message: "Missing phone or WhatsApp client id" };
-  const cleanPhone = normalizePhone(phone);
+// Send via our own /api/send (Vercel Function → wa-service on Synology).
+const sendWA = async ({ phone, message, leadId, funnelId }) => {
   try {
-    const res = await fetch(WA_CONFIG.endpoint, {
+    const res = await fetch("/api/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        client_id: WA_CONFIG.client_id,
-        api_key: WA_CONFIG.api_key,
-        whatsapp_client: whatsappClient,
-        msg_type: 0,
-        phone: cleanPhone,
-        country_code: WA_CONFIG.country_code,
-        msg,
-      }),
+      body: JSON.stringify({ phone: normalizePhone(phone), message, leadId, funnelId }),
     });
     return await res.json();
   } catch (e) {
-    return { status: 0, message: e.message };
+    return { ok: false, error: e.message };
   }
 };
 
@@ -252,25 +235,19 @@ function ConversationPane({ lead, funnel, onClose, onChanged }) {
 
   const sendManual = async () => {
     if (!reply.trim()) return;
-    if (!funnel?.wbiztool_client) { alert("This funnel has no WbizTool client id configured."); return; }
     setSending(true);
-    const res = await sendWA(lead.phone, reply.trim(), funnel.wbiztool_client);
-    if (res.status === 1) {
-      await sb.from("bullion_messages").insert({
-        tenant_id: TENANT_ID, lead_id: lead.id, phone: lead.phone, funnel_id: lead.funnel_id,
-        wbiztool_msg_id: String(res.msg_id || ""), direction: "out", body: reply.trim(),
-        stage: lead.stage, claude_action: null, status: "sent",
-      });
-      await sb.from("bullion_leads").update({
-        last_msg: reply.trim(), last_msg_at: new Date().toISOString(),
-        status: lead.status === "active" ? "handoff" : lead.status,
-        bot_paused: true,
-      }).eq("id", lead.id);
+    const res = await sendWA({
+      phone: lead.phone,
+      message: reply.trim(),
+      leadId: lead.id,
+      funnelId: lead.funnel_id,
+    });
+    if (res.ok) {
       setReply("");
       await loadMsgs();
       onChanged && onChanged();
     } else {
-      alert("Send failed: " + (res.message || "unknown"));
+      alert("Send failed: " + (res.error || "unknown"));
     }
     setSending(false);
   };

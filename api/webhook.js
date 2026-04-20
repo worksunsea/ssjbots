@@ -8,7 +8,7 @@
 // We always return 200 so WbizTool doesn't retry on our errors.
 
 import { supa } from "./_lib/supabase.js";
-import { sendWhatsApp } from "./_lib/wbiztool.js";
+import { sendWhatsApp } from "./_lib/wa.js";
 import { askClaude, parseBotJson } from "./_lib/claude.js";
 import { getRates, ratesSnippet } from "./_lib/rates.js";
 import { buildSystemPrompt, buildMessages } from "./_lib/prompt.js";
@@ -16,7 +16,6 @@ import {
   TENANT_ID,
   normalizePhone,
   OWNER_ALERT_PHONE,
-  OWNER_ALERT_WA_CLIENT,
   SUPABASE_SERVICE_KEY,
   ANTHROPIC_API_KEY,
 } from "./_lib/config.js";
@@ -193,12 +192,8 @@ export default async function handler(req, res) {
     // 7. Human-feeling delay (30–45s) before sending
     await sleep(randDelay());
 
-    // 8. Send via WbizTool
-    const wa = await sendWhatsApp({
-      phone,
-      msg: parsed.reply,
-      whatsappClient: funnel.wbiztool_client,
-    });
+    // 8. Send via self-hosted wa-service (Baileys)
+    const wa = await sendWhatsApp({ phone, msg: parsed.reply });
     const sent = wa.status === 1;
 
     // 9. Log outbound + update lead
@@ -235,10 +230,9 @@ export default async function handler(req, res) {
       .eq("id", leadRow.id);
 
     // 10. Alert owner on HANDOFF
-    if (parsed.action === "HANDOFF" && OWNER_ALERT_PHONE && OWNER_ALERT_WA_CLIENT) {
+    if (parsed.action === "HANDOFF" && OWNER_ALERT_PHONE) {
       await sendWhatsApp({
         phone: OWNER_ALERT_PHONE,
-        whatsappClient: OWNER_ALERT_WA_CLIENT,
         msg: `🤖 Handoff needed — ${name || phone} on ${funnel.name}. Last msg: "${msg.slice(0, 120)}"`,
       }).catch(() => {});
     }
