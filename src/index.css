@@ -1,0 +1,11 @@
+:root {
+  --color-background-primary: #fff;
+  --color-background-secondary: #f8f9fa;
+  --color-text-primary: #333;
+  --color-text-secondary: #666;
+  --color-text-tertiary: #999;
+  --color-border-secondary: #ddd;
+  --color-border-tertiary: #eee;
+}
+body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--color-text-primary); background: #fafafa; }
+* { box-sizing: border-box; }
