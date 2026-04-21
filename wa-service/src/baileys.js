@@ -97,8 +97,11 @@ export async function connectWA(opts = {}) {
 
 export async function sendMessage(phone, message) {
   if (!sock || !connected) throw new Error("wa_not_connected");
-  const cleanPhone = String(phone).replace(/\D/g, "");
+  let cleanPhone = String(phone).replace(/\D/g, "");
   if (!cleanPhone) throw new Error("invalid_phone");
+  // Ensure country code is present. Indian numbers are 10 digits; if we get
+  // 10 digits with no country prefix, prepend 91.
+  if (cleanPhone.length === 10) cleanPhone = "91" + cleanPhone;
   const jid = `${cleanPhone}@s.whatsapp.net`;
   return sock.sendMessage(jid, { text: String(message) });
 }
