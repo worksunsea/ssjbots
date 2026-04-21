@@ -2,7 +2,7 @@
 
 import { ANTHROPIC_API_KEY, CLAUDE_MODEL } from "./config.js";
 
-export async function askClaude({ system, messages, maxTokens = 512 }) {
+export async function askClaude({ system, messages, maxTokens = 512, model }) {
   if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY missing");
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -13,7 +13,7 @@ export async function askClaude({ system, messages, maxTokens = 512 }) {
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      model: CLAUDE_MODEL,
+      model: model || CLAUDE_MODEL,
       max_tokens: maxTokens,
       system,
       messages,

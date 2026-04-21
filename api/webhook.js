@@ -18,6 +18,9 @@ import {
   OWNER_ALERT_PHONE,
   SUPABASE_SERVICE_KEY,
   ANTHROPIC_API_KEY,
+  CLAUDE_MODEL,
+  CLAUDE_MODEL_ESCALATION,
+  HARD_EXCHANGE_CAP,
 } from "./_lib/config.js";
 
 export const config = { maxDuration: 120 }; // Fluid Compute default is 300; 120 is plenty.
@@ -124,14 +127,34 @@ export default async function handler(req, res) {
       status: "received",
     });
 
-    // 4. Bail if bot is paused on this lead (owner took over)
+    // 4. Bail if bot is paused on this lead (agent took over in CRM)
     if (leadRow.bot_paused) {
       return res.status(200).json({ ok: true, skipped: "bot_paused" });
     }
 
+    // 4b. Hard cap — prevent runaway costs if a lead loops endlessly.
+    if ((leadRow.exchanges_count || 0) >= HARD_EXCHANGE_CAP) {
+      await sb.from("bullion_leads").update({
+        bot_paused: true,
+        status: "handoff",
+      }).eq("id", leadRow.id);
+      if (OWNER_ALERT_PHONE) {
+        await sendWhatsApp({
+          phone: OWNER_ALERT_PHONE,
+          msg: `🚨 Hard cap reached — ${name || phone} on ${funnel.name} hit ${HARD_EXCHANGE_CAP} exchanges. Bot paused. Pick up now: https://ssjbots.vercel.app`,
+        }).catch(() => {});
+      }
+      return res.status(200).json({ ok: true, reason: "hard_cap_reached" });
+    }
+
     // 5. Build prompt context
     const maxExchanges = funnel.max_exchanges_before_handoff || 3;
-    const forceHandoff = (leadRow.exchanges_count || 0) >= maxExchanges;
+    // Escalation = already handed off previously, OR past max exchanges this turn.
+    // In escalation we upgrade model to Sonnet and soften the prompt. Bot keeps
+    // replying until an agent sends a manual reply (which sets bot_paused=true).
+    const inEscalation =
+      leadRow.status === "handoff" ||
+      (leadRow.exchanges_count || 0) >= maxExchanges;
 
     const [{ data: history }, rates] = await Promise.all([
       sb
@@ -153,42 +176,34 @@ export default async function handler(req, res) {
       funnel,
       ratesText: ratesForPrompt(rates),
       maxExchanges,
+      isEscalation: inEscalation,
     });
     const messages = buildMessages({ history: priorMessages, inboundBody: msg });
+    const model = inEscalation ? CLAUDE_MODEL_ESCALATION : CLAUDE_MODEL;
 
-    // 6. Ask Claude (unless we're already at handoff threshold)
+    // 6. Ask Claude — always (even in escalation, since a human hasn't picked up).
     let parsed;
-    if (forceHandoff) {
+    let claude;
+    try {
+      claude = await askClaude({ system, messages, model });
+    } catch (err) {
+      console.error("Claude call failed", err);
       parsed = {
-        reply: "Thanks! Let me connect you to someone from our team who'll help personally. 🙏",
+        reply: "Thanks for your message! Our team will get back to you shortly. 🙏",
         action: "HANDOFF",
         stage: "handoff",
-        product_interest: leadRow.product_interest || "unknown",
-        qty_grams: leadRow.qty_grams || 0,
+        product_interest: "unknown",
+        qty_grams: 0,
       };
-    } else {
-      let claude;
-      try {
-        claude = await askClaude({ system, messages });
-      } catch (err) {
-        console.error("Claude call failed", err);
-        parsed = {
-          reply: "Thanks for your message! Our team will get back to you shortly. 🙏",
-          action: "HANDOFF",
-          stage: "handoff",
-          product_interest: "unknown",
-          qty_grams: 0,
-        };
-      }
-      if (claude) {
-        parsed = parseBotJson(claude.text) || {
-          reply: claude.text.slice(0, 300) || "Thanks! Will get back shortly.",
-          action: "CONTINUE",
-          stage: leadRow.stage || "qualifying",
-          product_interest: "unknown",
-          qty_grams: 0,
-        };
-      }
+    }
+    if (claude) {
+      parsed = parseBotJson(claude.text) || {
+        reply: claude.text.slice(0, 300) || "Thanks! Will get back shortly.",
+        action: "CONTINUE",
+        stage: leadRow.stage || "qualifying",
+        product_interest: "unknown",
+        qty_grams: 0,
+      };
     }
 
     // 7. Human-feeling delay (30–45s) before sending
@@ -212,9 +227,11 @@ export default async function handler(req, res) {
       status: sent ? "sent" : "failed",
     });
 
+    // In escalation, stay in "handoff" status even if Claude returns CONTINUE
+    // (until an agent actually replies in CRM and flips bot_paused=true).
     const nextStatus =
-      parsed.action === "HANDOFF" ? "handoff" :
       parsed.action === "CONVERTED" ? "converted" :
+      parsed.action === "HANDOFF" || inEscalation ? "handoff" :
       "active";
 
     await sb
@@ -227,12 +244,16 @@ export default async function handler(req, res) {
         last_msg: parsed.reply,
         last_msg_at: new Date().toISOString(),
         exchanges_count: (leadRow.exchanges_count || 0) + 1,
-        bot_paused: parsed.action === "HANDOFF" ? true : leadRow.bot_paused,
+        // IMPORTANT: bot_paused is ONLY set by manual agent replies from the
+        // CRM (via /api/send). We never auto-pause here — the bot keeps the
+        // lead warm in escalation until a human takes over.
+        bot_paused: leadRow.bot_paused,
       })
       .eq("id", leadRow.id);
 
-    // 10. Alert owner on HANDOFF — rich context for immediate follow-up
-    if (parsed.action === "HANDOFF" && OWNER_ALERT_PHONE) {
+    // 10. Alert owner on FIRST transition into handoff (not every subsequent reply)
+    const justEnteredHandoff = !inEscalation && (parsed.action === "HANDOFF" || nextStatus === "handoff");
+    if (justEnteredHandoff && OWNER_ALERT_PHONE) {
       const lastBotReply = priorMessages.slice().reverse().find((m) => m.direction === "out")?.body || "(none)";
       const alert = [
         `🤖 *Handoff* — lead needs you`,

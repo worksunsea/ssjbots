@@ -2,11 +2,26 @@
 // The persona's system_prompt is the voice/tone layer; this file adds the
 // universal business rules + output schema + live rate table.
 
-export function buildSystemPrompt({ persona, funnel, ratesText, maxExchanges }) {
+export function buildSystemPrompt({ persona, funnel, ratesText, maxExchanges, isEscalation }) {
   const personaBlock = persona?.system_prompt || "You are a helpful WhatsApp assistant for Sun Sea Jewellers, Karol Bagh.";
+
+  const escalationNote = isEscalation ? [
+    "",
+    "# ⚠️ ESCALATION MODE",
+    "This lead has passed the normal handoff threshold. A human salesperson has been notified",
+    "but hasn't joined the conversation yet. Until they do, YOU are the fallback — keep the",
+    "lead warm and engaged. Rules in escalation:",
+    "- Be EXTRA warm, patient, and apologetic for any wait.",
+    "- NO hard sell. NO pressure tactics.",
+    "- If the lead is frustrated, acknowledge it and say 'someone from our team will reach out soon'.",
+    "- If they ask a question you already answered, answer again politely.",
+    "- If they want to leave, let them go gracefully — don't chase.",
+    "- Keep messages short and kind.",
+  ].join("\n") : "";
 
   return [
     personaBlock,
+    escalationNote,
     "",
     "# Funnel context",
     `Funnel: ${funnel?.name || "—"}`,
