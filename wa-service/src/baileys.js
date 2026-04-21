@@ -85,6 +85,7 @@ export async function connectWA(opts = {}) {
       const msgId = msg.key.id || "";
 
       try {
+        // Pass BOTH raw jid (survives LIDs) and phone (best-effort for display).
         if (onIncoming) await onIncoming({ phone, body, name, msgId, jid });
       } catch (err) {
         console.error("[baileys] onIncoming error", err);
@@ -95,12 +96,19 @@ export async function connectWA(opts = {}) {
   return sock;
 }
 
-export async function sendMessage(phone, message) {
+export async function sendMessage(target, message) {
   if (!sock || !connected) throw new Error("wa_not_connected");
-  let cleanPhone = String(phone).replace(/\D/g, "");
+  if (!target) throw new Error("invalid_target");
+
+  // If target is already a full JID (e.g. "1234@lid" or "91XXX@s.whatsapp.net"),
+  // send to it as-is. Handles LID senders introduced by WA's 2024 privacy update.
+  if (String(target).includes("@")) {
+    return sock.sendMessage(String(target), { text: String(message) });
+  }
+
+  // Else treat as a bare phone number → build an s.whatsapp.net JID.
+  let cleanPhone = String(target).replace(/\D/g, "");
   if (!cleanPhone) throw new Error("invalid_phone");
-  // Ensure country code is present. Indian numbers are 10 digits; if we get
-  // 10 digits with no country prefix, prepend 91.
   if (cleanPhone.length === 10) cleanPhone = "91" + cleanPhone;
   const jid = `${cleanPhone}@s.whatsapp.net`;
   return sock.sendMessage(jid, { text: String(message) });

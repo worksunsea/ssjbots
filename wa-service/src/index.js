@@ -71,10 +71,11 @@ app.get("/qr", async (req, reply) => {
 app.post("/send", async (req, reply) => {
   const guarded = requireSecret(req, reply);
   if (guarded) return;
-  const { phone, message } = req.body || {};
-  if (!phone || !message) return reply.code(400).send({ ok: false, error: "phone_and_message_required" });
+  const { phone, jid, message } = req.body || {};
+  const target = jid || phone;
+  if (!target || !message) return reply.code(400).send({ ok: false, error: "target_and_message_required" });
   try {
-    const res = await sendMessage(phone, message);
+    const res = await sendMessage(target, message);
     return { ok: true, msgId: res?.key?.id || null, client: WA_CLIENT_ID };
   } catch (err) {
     req.log.error(err, "send_failed");
@@ -91,7 +92,7 @@ app.post("/logout", async (req, reply) => {
 
 // Boot
 await connectWA({
-  onIncoming: async ({ phone, body, name, msgId }) => {
+  onIncoming: async ({ phone, body, name, msgId, jid }) => {
     if (!VERCEL_WEBHOOK_URL) {
       app.log.warn("no VERCEL_WEBHOOK_URL configured — dropping inbound");
       return;
@@ -107,6 +108,7 @@ await connectWA({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           from: phone,
+          jid,                     // raw remoteJid — works for LID senders
           body,
           name,
           msg_id: msgId,

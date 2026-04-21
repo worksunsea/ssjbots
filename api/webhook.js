@@ -28,9 +28,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const randDelay = () => 30_000 + Math.floor(Math.random() * 15_000); // 30–45s
 
 function extractIncoming(body) {
-  // WbizTool's incoming webhook payload shape isn't fully documented.
-  // These are the most likely field names — adjust if real payloads differ.
-  const phone = normalizePhone(body.from || body.phone || body.sender || body.msisdn || "");
+  // Prefer raw JID (works for LID senders post-2024 WA privacy update).
+  // Fall back to a "phone" extracted from common field names for older shapes.
+  const jid = String(body.jid || "");
+  const phoneRaw = body.from || body.phone || body.sender || body.msisdn || "";
+  const phone = jid || normalizePhone(phoneRaw);
   const msg = body.body || body.message || body.msg || body.text || body.content || "";
   const waClient = String(body.whatsapp_client || body.client || body.to || "");
   const name = body.name || body.sender_name || body.pushname || "";
