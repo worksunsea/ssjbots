@@ -10,7 +10,7 @@
 import { supa } from "./_lib/supabase.js";
 import { sendWhatsApp } from "./_lib/wa.js";
 import { askClaude, parseBotJson } from "./_lib/claude.js";
-import { getRates, ratesSnippet } from "./_lib/rates.js";
+import { getRates, ratesForPrompt } from "./_lib/rates.js";
 import { buildSystemPrompt, buildMessages } from "./_lib/prompt.js";
 import {
   TENANT_ID,
@@ -151,7 +151,7 @@ export default async function handler(req, res) {
     const system = buildSystemPrompt({
       persona: funnel.persona,
       funnel,
-      ratesText: ratesSnippet(rates),
+      ratesText: ratesForPrompt(rates),
       maxExchanges,
     });
     const messages = buildMessages({ history: priorMessages, inboundBody: msg });
@@ -231,12 +231,21 @@ export default async function handler(req, res) {
       })
       .eq("id", leadRow.id);
 
-    // 10. Alert owner on HANDOFF
+    // 10. Alert owner on HANDOFF — rich context for immediate follow-up
     if (parsed.action === "HANDOFF" && OWNER_ALERT_PHONE) {
-      await sendWhatsApp({
-        phone: OWNER_ALERT_PHONE,
-        msg: `🤖 Handoff needed — ${name || phone} on ${funnel.name}. Last msg: "${msg.slice(0, 120)}"`,
-      }).catch(() => {});
+      const lastBotReply = priorMessages.slice().reverse().find((m) => m.direction === "out")?.body || "(none)";
+      const alert = [
+        `🤖 *Handoff* — lead needs you`,
+        `👤 ${name || "(no name)"} · ${phone}`,
+        `🎯 Funnel: ${funnel.name}`,
+        `📍 Stage: ${parsed.stage} · Exchanges: ${(leadRow.exchanges_count || 0) + 1}`,
+        ``,
+        `*Last user msg:* ${msg.slice(0, 180)}`,
+        `*Bot's last reply:* ${String(lastBotReply).slice(0, 180)}`,
+        ``,
+        `Open in CRM: https://ssjbots.vercel.app`,
+      ].join("\n");
+      await sendWhatsApp({ phone: OWNER_ALERT_PHONE, msg: alert }).catch(() => {});
     }
 
     return res.status(200).json({ ok: true, action: parsed.action, sent });
