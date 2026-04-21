@@ -534,7 +534,10 @@ function RatesScreen() {
     try {
       const res = await fetch(`${APPS_SCRIPT_URL}?action=rates`);
       const data = await res.json();
-      if (data.ok) setRates(data.rates || []); else setErr(data.error || "Failed to load");
+      // Apps Script returns either {ok, rates:[]} (new) or {rows:[]} (old).
+      const rows = data.rates || data.rows || [];
+      if (rows.length) setRates(rows);
+      else setErr(data.error || "No rates returned");
     } catch (e) { setErr(e.message); }
     setLoading(false);
   };

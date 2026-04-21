@@ -12,8 +12,9 @@ export async function getRates() {
   try {
     const res = await fetch(`${APPS_SCRIPT_URL}?action=rates`, { redirect: "follow" });
     const data = await res.json();
-    if (data?.ok) {
-      cache = { ts: now, data: data.rates || [] };
+    const rows = data?.rates || data?.rows || [];
+    if (rows.length) {
+      cache = { ts: now, data: rows };
       return cache.data;
     }
   } catch {
