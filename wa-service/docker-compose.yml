@@ -6,7 +6,9 @@ services:
     ports:
       - "3021:3000"
     volumes:
-      - ./auth:/app/auth
+      # Auth lives OUTSIDE the repo so re-deploys (which rm -rf the repo)
+      # don't wipe the paired session.
+      - /volume1/docker/wa-auth:/app/auth
     environment:
       PORT: 3000
       AUTH_DIR: /app/auth
