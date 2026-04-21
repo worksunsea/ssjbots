@@ -669,6 +669,34 @@ def read_sunseacombined(path, fname) -> Iterator[Candidate]:
 def read_exhibition(path) -> Iterator[Candidate]:
     for sname, hdrs, ridx, row in _xlsx_iter(path):
         d = dict(zip(hdrs, row))
+        # Sheet name variants: "gemtre data" (lowercase) = gemtre; " data mynn and blank" = mynn.
+        sname_lower = sname.strip().lower()
+        if sname_lower == "gemtre data":
+            phone, mob2 = normalize_phone(d.get("Mobile"))
+            name, salut = clean_name(d.get("Name"))
+            if not phone and not mob2:
+                continue
+            c = Candidate(
+                tenant_id=TENANT_GEMTRE, source_file="Client Sheet Exhibition.xlsx",
+                source_sheet=sname, source_row=ridx, source_tag="exhibition_sheet",
+                phone=phone, mobile2=mob2, name=name, salutation=salut,
+            )
+            c.extra_tags.update({"exhibition", "gemtre"})
+            yield c
+            continue
+        if sname_lower == "data mynn and blank":
+            phone, mob2 = normalize_phone(d.get("Mobile"))
+            name, salut = clean_name(d.get("Name"))
+            if not phone and not mob2:
+                continue
+            c = Candidate(
+                tenant_id=TENANT_SSJ, source_file="Client Sheet Exhibition.xlsx",
+                source_sheet=sname, source_row=ridx, source_tag="exhibition_sheet",
+                phone=phone, mobile2=mob2, name=name, salutation=salut,
+            )
+            c.extra_tags.update({"exhibition", "mynn"})
+            yield c
+            continue
         if sname in ("Form responses 1", "Sheet5"):
             phone, mob2 = normalize_phone(d.get("Mobile"))
             name, salut = clean_name(d.get("Name"))
