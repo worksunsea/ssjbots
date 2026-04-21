@@ -5,7 +5,9 @@ import { createClient } from "@supabase/supabase-js";
 const SUPABASE_URL = "https://uppyxzellmuissdlxsmy.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVwcHl4emVsbG11aXNzZGx4c215Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYyODczNTMsImV4cCI6MjA5MTg2MzM1M30._eFep-C0IYuT-73AQU9oqE2k1bqneWZjsydUZGwt24E";
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
-const TENANT_ID = "a1b2c3d4-0000-0000-0000-000000000001";
+// Default tenant (SSJ). Runtime tenant comes from the logged-in user.
+const DEFAULT_TENANT_ID = "a1b2c3d4-0000-0000-0000-000000000001";
+const getTenantId = () => loadUser()?.tenant_id || DEFAULT_TENANT_ID;
 
 // ── APPS SCRIPT (rates proxy — Google Sheet "new" tab) ──
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxGazdRhKxkjOLkqxN4kPoInDuBnlWy5Azmzq-FX9mt5OIfZLbhqfFEO0AufrOWE6n49Q/exec";
@@ -58,7 +60,7 @@ function LoginScreen({ onLogin }) {
   const submit = async () => {
     if (!u || !p) return;
     setLoading(true); setErr("");
-    const { data, error } = await sb.from("staff").select("*").eq("tenant_id", TENANT_ID).eq("username", u.trim()).eq("password", p).single();
+    const { data, error } = await sb.from("staff").select("*").eq("tenant_id", getTenantId()).eq("username", u.trim()).eq("password", p).single();
     if (error || !data) { setErr("Incorrect username or password."); setLoading(false); return; }
     if (!["superadmin", "admin"].includes(data.role)) { setErr("Access restricted to admins."); setLoading(false); return; }
     setLoading(false);
@@ -145,7 +147,7 @@ function LeadsScreen({ funnels }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    let q = sb.from("bullion_leads").select("*").eq("tenant_id", TENANT_ID).order("updated_at", { ascending: false }).limit(500);
+    let q = sb.from("bullion_leads").select("*").eq("tenant_id", getTenantId()).order("updated_at", { ascending: false }).limit(500);
     if (filterFunnel) q = q.eq("funnel_id", filterFunnel);
     if (filterStatus) q = q.eq("status", filterStatus);
     const { data } = await q;
@@ -232,7 +234,7 @@ function ConversationPane({ lead, funnel, onClose, onChanged }) {
   const [busy, setBusy] = useState(false);
 
   const loadMsgs = useCallback(async () => {
-    const { data } = await sb.from("bullion_messages").select("*").eq("tenant_id", TENANT_ID).eq("lead_id", lead.id).order("created_at", { ascending: true });
+    const { data } = await sb.from("bullion_messages").select("*").eq("tenant_id", getTenantId()).eq("lead_id", lead.id).order("created_at", { ascending: true });
     if (data) setMessages(data);
   }, [lead.id]);
 
@@ -401,7 +403,7 @@ function FunnelStepsEditor({ funnel, onClose }) {
     const { data } = await sb
       .from("bullion_funnel_steps")
       .select("*")
-      .eq("tenant_id", TENANT_ID)
+      .eq("tenant_id", getTenantId())
       .eq("funnel_id", funnel.id)
       .order("step_order", { ascending: true });
     setSteps(data || []);
@@ -415,7 +417,7 @@ function FunnelStepsEditor({ funnel, onClose }) {
     const next = steps.length + 1;
     setSteps((s) => [...s, {
       _new: true,
-      tenant_id: TENANT_ID,
+      tenant_id: getTenantId(),
       funnel_id: funnel.id,
       step_order: next,
       name: `Step ${next}`,
@@ -547,7 +549,7 @@ function FunnelForm({ funnel, personas, onClose, onSaved }) {
     if (!form.description) return setErr("description is required — it's the bot's context for this funnel");
     if (!form.wa_number) return setErr("WhatsApp number is required");
     setSaving(true);
-    const payload = { ...form, tenant_id: TENANT_ID };
+    const payload = { ...form, tenant_id: getTenantId() };
     const { error } = await sb.from("funnels").upsert(payload).select().single();
     setSaving(false);
     if (error) { setErr(error.message); return; }
@@ -604,7 +606,7 @@ function PersonasScreen({ personas, onReload }) {
   const [editing, setEditing] = useState(null);
 
   const setDefault = async (p) => {
-    await sb.from("personas").update({ is_default: false }).eq("tenant_id", TENANT_ID).neq("id", p.id);
+    await sb.from("personas").update({ is_default: false }).eq("tenant_id", getTenantId()).neq("id", p.id);
     await sb.from("personas").update({ is_default: true }).eq("id", p.id);
     onReload();
   };
@@ -659,7 +661,7 @@ function PersonaForm({ persona, onClose, onSaved }) {
     if (!form.name) return setErr("name is required");
     if (!form.system_prompt) return setErr("system_prompt is required — the bot's actual instructions");
     setSaving(true);
-    const payload = { ...form, tenant_id: TENANT_ID };
+    const payload = { ...form, tenant_id: getTenantId() };
     const { error } = await sb.from("personas").upsert(payload).select().single();
     setSaving(false);
     if (error) { setErr(error.message); return; }
@@ -842,7 +844,7 @@ function ManualLeadForm({ funnels, onClose, onSaved }) {
     if (!phone) return setErr("Phone is required.");
     setSaving(true);
     const payload = {
-      tenant_id: TENANT_ID,
+      tenant_id: getTenantId(),
       phone,
       name: form.name || null,
       city: form.city || null,
@@ -906,7 +908,7 @@ function FaqsScreen() {
     const { data } = await sb
       .from("bullion_faqs")
       .select("*")
-      .eq("tenant_id", TENANT_ID)
+      .eq("tenant_id", getTenantId())
       .order("sort_order", { ascending: true });
     setRows(data || []);
     setLoading(false);
@@ -919,7 +921,7 @@ function FaqsScreen() {
     const nextSort = (rows[rows.length - 1]?.sort_order || 0) + 10;
     setRows((r) => [...r, {
       _new: true,
-      tenant_id: TENANT_ID,
+      tenant_id: getTenantId(),
       keywords: "",
       answer: "",
       active: true,
@@ -1085,8 +1087,8 @@ function AnalyticsScreen({ funnels }) {
   const load = useCallback(async () => {
     setLoading(true);
     const [m, leads] = await Promise.all([
-      sb.from("bullion_funnel_metrics").select("*").eq("tenant_id", TENANT_ID),
-      sb.from("bullion_leads").select("funnel_id,stage,status,created_at").eq("tenant_id", TENANT_ID).gte("created_at", fromDate).lte("created_at", toDate + "T23:59:59"),
+      sb.from("bullion_funnel_metrics").select("*").eq("tenant_id", getTenantId()),
+      sb.from("bullion_leads").select("funnel_id,stage,status,created_at").eq("tenant_id", getTenantId()).gte("created_at", fromDate).lte("created_at", toDate + "T23:59:59"),
     ]);
     if (m.data) setMetrics(m.data);
     if (leads.data) {
@@ -1178,11 +1180,11 @@ export default function App() {
   const logout = () => { saveUser(null); setUser(null); };
 
   const loadFunnels = useCallback(async () => {
-    const { data } = await sb.from("funnels").select("*").eq("tenant_id", TENANT_ID).order("active", { ascending: false }).order("id");
+    const { data } = await sb.from("funnels").select("*").eq("tenant_id", getTenantId()).order("active", { ascending: false }).order("id");
     if (data) setFunnels(data);
   }, []);
   const loadPersonas = useCallback(async () => {
-    const { data } = await sb.from("personas").select("*").eq("tenant_id", TENANT_ID).order("is_default", { ascending: false }).order("name");
+    const { data } = await sb.from("personas").select("*").eq("tenant_id", getTenantId()).order("is_default", { ascending: false }).order("name");
     if (data) setPersonas(data);
   }, []);
 
