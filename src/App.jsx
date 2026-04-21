@@ -676,6 +676,129 @@ function PersonaForm({ persona, onClose, onSaved }) {
 }
 
 // ──────────────────────────────────────────────────────────
+// FAQs SCREEN — owner-editable Q&A the bot consults
+// ──────────────────────────────────────────────────────────
+function FaqsScreen() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data } = await sb
+      .from("bullion_faqs")
+      .select("*")
+      .eq("tenant_id", TENANT_ID)
+      .order("sort_order", { ascending: true });
+    setRows(data || []);
+    setLoading(false);
+  }, []);
+
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { load(); }, [load]);
+
+  const add = () => {
+    const nextSort = (rows[rows.length - 1]?.sort_order || 0) + 10;
+    setRows((r) => [...r, {
+      _new: true,
+      tenant_id: TENANT_ID,
+      keywords: "",
+      answer: "",
+      active: true,
+      sort_order: nextSort,
+    }]);
+  };
+
+  const update = (idx, key, value) => {
+    setRows((r) => r.map((row, i) => i === idx ? { ...row, [key]: value, _dirty: true } : row));
+  };
+
+  const remove = async (idx) => {
+    const row = rows[idx];
+    if (row.id) {
+      if (!confirm(`Delete FAQ "${row.keywords.slice(0, 40)}…"?`)) return;
+      await sb.from("bullion_faqs").delete().eq("id", row.id);
+    }
+    setRows((r) => r.filter((_, i) => i !== idx));
+  };
+
+  const saveAll = async () => {
+    setSaving(true);
+    for (const row of rows) {
+      if (!row._new && !row._dirty) continue;
+      if (!row.keywords || !row.answer) continue; // skip empty rows
+      const { _new, _dirty, ...clean } = row;
+      if (row.id) {
+        await sb.from("bullion_faqs").update(clean).eq("id", row.id);
+      } else {
+        await sb.from("bullion_faqs").insert(clean);
+      }
+    }
+    await load();
+    setSaving(false);
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 10 }}>
+        <div style={{ fontSize: 13, color: "#666", flex: 1, lineHeight: 1.5 }}>
+          The bot consults these FAQs when replying. Column 1 = keywords/phrases to match (comma-separated). Column 2 = the exact answer to incorporate. Cached 60s on the server — changes reflect in ~1 min.
+        </div>
+        <Btn color={C.blue} onClick={add}>+ Add FAQ</Btn>
+      </div>
+
+      <Card style={{ padding: 0 }}>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: "#f7f7f7" }}>
+                <th style={{ padding: 10, textAlign: "left", fontSize: 11, color: "#888", borderBottom: "1px solid #eee", width: "30%" }}>KEYWORDS</th>
+                <th style={{ padding: 10, textAlign: "left", fontSize: 11, color: "#888", borderBottom: "1px solid #eee" }}>ANSWER</th>
+                <th style={{ padding: 10, textAlign: "center", fontSize: 11, color: "#888", borderBottom: "1px solid #eee", width: 60 }}>#</th>
+                <th style={{ padding: 10, textAlign: "center", fontSize: 11, color: "#888", borderBottom: "1px solid #eee", width: 80 }}>ACTIVE</th>
+                <th style={{ padding: 10, width: 40 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, idx) => (
+                <tr key={row.id || `new-${idx}`} style={{ borderBottom: "1px solid #f5f5f5", verticalAlign: "top" }}>
+                  <td style={{ padding: 8 }}>
+                    <Textarea rows={3} value={row.keywords || ""} onChange={(e) => update(idx, "keywords", e.target.value)} placeholder="comma, separated, keywords" />
+                  </td>
+                  <td style={{ padding: 8 }}>
+                    <Textarea rows={3} value={row.answer || ""} onChange={(e) => update(idx, "answer", e.target.value)} placeholder="The exact answer the bot should use…" />
+                  </td>
+                  <td style={{ padding: 8, textAlign: "center" }}>
+                    <Input type="number" value={row.sort_order || 0} onChange={(e) => update(idx, "sort_order", Number(e.target.value))} style={{ width: 50, padding: 4 }} />
+                  </td>
+                  <td style={{ padding: 8, textAlign: "center" }}>
+                    <Select value={row.active ? "on" : "off"} onChange={(e) => update(idx, "active", e.target.value === "on")}>
+                      <option value="on">on</option>
+                      <option value="off">off</option>
+                    </Select>
+                  </td>
+                  <td style={{ padding: 8, textAlign: "center" }}>
+                    <Btn small ghost color={C.red} onClick={() => remove(idx)}>×</Btn>
+                  </td>
+                </tr>
+              ))}
+              {!rows.length && !loading && (
+                <tr><td colSpan={5} style={{ padding: 20, color: "#aaa", textAlign: "center" }}>No FAQs yet. Click "+ Add FAQ" to start.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+        <Btn ghost color={C.gray} onClick={load}>↻ Reload</Btn>
+        <Btn color={C.blue} onClick={saveAll} disabled={saving}>{saving ? "Saving…" : "Save all"}</Btn>
+      </div>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
 // RATES SCREEN — pulls from Apps Script
 // ──────────────────────────────────────────────────────────
 function RatesScreen() {
@@ -858,6 +981,7 @@ export default function App() {
     { k: "leads", l: "Leads", icon: "💬" },
     { k: "funnels", l: "Funnels", icon: "🎯" },
     { k: "personas", l: "Personas", icon: "🎭" },
+    { k: "faqs", l: "FAQs", icon: "❓" },
     { k: "rates", l: "Rates", icon: "📈" },
     { k: "analytics", l: "Analytics", icon: "📊" },
   ];
@@ -884,6 +1008,7 @@ export default function App() {
       {screen === "leads" && <LeadsScreen funnels={funnels} />}
       {screen === "funnels" && <FunnelsScreen funnels={funnels} personas={personas} onReload={loadFunnels} />}
       {screen === "personas" && <PersonasScreen personas={personas} onReload={loadPersonas} />}
+      {screen === "faqs" && <FaqsScreen />}
       {screen === "rates" && <RatesScreen />}
       {screen === "analytics" && <AnalyticsScreen funnels={funnels} />}
     </div>

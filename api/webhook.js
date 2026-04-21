@@ -11,6 +11,7 @@ import { supa } from "./_lib/supabase.js";
 import { sendWhatsApp } from "./_lib/wa.js";
 import { askClaude, parseBotJson } from "./_lib/claude.js";
 import { getRates, ratesForPrompt } from "./_lib/rates.js";
+import { getFaqs, faqsForPrompt } from "./_lib/faqs.js";
 import { buildSystemPrompt, buildMessages } from "./_lib/prompt.js";
 import { enrollLeadInDrip, cancelPendingForLead } from "./_lib/drip.js";
 import {
@@ -102,17 +103,28 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: false, reason: "no_active_funnel" });
     }
 
-    // 2. Upsert lead
+    // 2. Upsert lead. We intentionally DO NOT pass the WhatsApp pushName as
+    //    the lead's real name — it's just a display hint and users want to be
+    //    asked properly during onboarding. We store pushName separately in
+    //    wa_display_name.
     const { data: leadRow, error: upsertErr } = await sb.rpc("bullion_upsert_lead", {
       p_tenant_id: TENANT_ID,
       p_phone: phone,
-      p_name: name || "",
+      p_name: "",
       p_funnel_id: funnel.id,
       p_body: msg,
     });
     if (upsertErr) {
       console.error("upsert_lead failed", upsertErr);
       return res.status(200).json({ ok: false, reason: "upsert_failed" });
+    }
+
+    // 2b. Stash the WhatsApp display name so the operator has context even
+    //     though the bot will still ask for the real name.
+    if (name && leadRow.wa_display_name !== name) {
+      await sb.from("bullion_leads")
+        .update({ wa_display_name: name })
+        .eq("id", leadRow.id);
     }
 
     // 3. Log inbound
@@ -161,7 +173,7 @@ export default async function handler(req, res) {
       leadRow.status === "handoff" ||
       (leadRow.exchanges_count || 0) >= maxExchanges;
 
-    const [{ data: history }, rates] = await Promise.all([
+    const [{ data: history }, rates, faqs] = await Promise.all([
       sb
         .from("bullion_messages")
         .select("direction,body,created_at,stage")
@@ -170,6 +182,7 @@ export default async function handler(req, res) {
         .order("created_at", { ascending: false })
         .limit(20),
       getRates(),
+      getFaqs(),
     ]);
 
     const chronological = (history || []).slice().reverse();
@@ -180,6 +193,7 @@ export default async function handler(req, res) {
       persona: funnel.persona,
       funnel,
       ratesText: ratesForPrompt(rates),
+      faqsText: faqsForPrompt(faqs),
       maxExchanges,
       isEscalation: inEscalation,
       lead: leadRow,
