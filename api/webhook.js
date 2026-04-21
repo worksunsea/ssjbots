@@ -14,6 +14,7 @@ import { getRates, ratesForPrompt } from "./_lib/rates.js";
 import { getFaqs, faqsForPrompt } from "./_lib/faqs.js";
 import { buildSystemPrompt, buildMessages } from "./_lib/prompt.js";
 import { enrollLeadInDrip, cancelPendingForLead } from "./_lib/drip.js";
+import { matchFunnelByKeywords } from "./_lib/funnel-match.js";
 import {
   TENANT_ID,
   normalizePhone,
@@ -75,33 +76,42 @@ export default async function handler(req, res) {
   const sb = supa();
 
   try {
-    // 1. Resolve active funnel from wa_client (or fall back to wa_number)
-    let funnel = null;
-    if (waClient) {
-      const { data } = await sb
-        .from("funnels")
-        .select("*, persona:personas(*)")
-        .eq("tenant_id", TENANT_ID)
-        .eq("wbiztool_client", waClient)
-        .eq("active", true)
-        .maybeSingle();
-      funnel = data;
-    }
-    if (!funnel) {
-      // fall back: any active funnel (if only one is running)
-      const { data } = await sb
-        .from("funnels")
-        .select("*, persona:personas(*)")
-        .eq("tenant_id", TENANT_ID)
-        .eq("active", true)
-        .limit(1);
-      funnel = data?.[0] || null;
-    }
+    // 1. Load ALL active funnels for this tenant once — we need them for
+    //    keyword matching anyway.
+    const { data: allFunnels } = await sb
+      .from("funnels")
+      .select("*, persona:personas(*)")
+      .eq("tenant_id", TENANT_ID)
+      .eq("active", true);
 
-    if (!funnel) {
-      console.warn("webhook: no active funnel for wa_client", waClient);
+    if (!allFunnels?.length) {
+      console.warn("webhook: no active funnels for tenant");
       return res.status(200).json({ ok: false, reason: "no_active_funnel" });
     }
+
+    // 1b. Look up any existing lead for this phone (ignore funnel — one row per phone).
+    const { data: existingLead } = await sb
+      .from("bullion_leads")
+      .select("id,funnel_id")
+      .eq("tenant_id", TENANT_ID)
+      .eq("phone", phone)
+      .maybeSingle();
+
+    // 2. Pick the funnel for THIS message:
+    //    - Strong keyword match against any funnel → that funnel (a new campaign entry).
+    //    - Else, if existing lead → stay in their current funnel.
+    //    - Else, fallback: match by wbiztool_client if provided, else first active funnel.
+    const keywordMatch = matchFunnelByKeywords(msg, allFunnels);
+    let funnel = null;
+    if (keywordMatch) {
+      funnel = keywordMatch;
+    } else if (existingLead?.funnel_id) {
+      funnel = allFunnels.find((f) => f.id === existingLead.funnel_id) || null;
+    }
+    if (!funnel && waClient) {
+      funnel = allFunnels.find((f) => String(f.wbiztool_client) === String(waClient)) || null;
+    }
+    if (!funnel) funnel = allFunnels[0];
 
     // 2. Upsert lead. We intentionally DO NOT pass the WhatsApp pushName as
     //    the lead's real name — it's just a display hint and users want to be

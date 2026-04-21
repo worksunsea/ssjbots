@@ -553,6 +553,9 @@ function FunnelForm({ funnel, personas, onClose, onSaved }) {
       <Field label="Description — purpose, audience, tone hints (injected into bot prompt)" required>
         <Textarea rows={4} value={form.description} onChange={(e) => set("description", e.target.value)} placeholder="e.g. Meta ads targeting gold coins / bars for Akshaya Tritiya. Audience: Delhi, 30–55, mid-high income…" />
       </Field>
+      <Field label="Match keywords — comma-separated phrases from your ad's prefilled WhatsApp message">
+        <Textarea rows={2} value={form.match_keywords || ""} onChange={(e) => set("match_keywords", e.target.value)} placeholder="gold, gold coin, AKT-GOLD, sona, ginni — the first inbound is matched case-insensitive; best-match funnel wins" />
+      </Field>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
         <Field label="WhatsApp number" required><Input value={form.wa_number} onChange={(e) => set("wa_number", e.target.value)} placeholder="8860866000" /></Field>
         <Field label="WbizTool whatsapp_client id"><Input value={form.wbiztool_client || ""} onChange={(e) => set("wbiztool_client", e.target.value)} placeholder="7560" /></Field>

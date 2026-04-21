@@ -8,6 +8,9 @@ export function buildSystemPrompt({ persona, funnel, ratesText, faqsText, maxExc
   const haveCity = Boolean(lead?.city);
   const firstTime = !haveName || !haveCity; // ask until both captured
 
+  const history = Array.isArray(lead?.funnel_history) ? lead.funnel_history : [];
+  const isReturning = history.length > 0;
+
   const escalationNote = isEscalation ? [
     "",
     "# ⚠️ ESCALATION MODE",
@@ -55,6 +58,9 @@ export function buildSystemPrompt({ persona, funnel, ratesText, faqsText, maxExc
     `Anniversary: ${lead?.anniversary || "(not captured yet)"}`,
     `Phone: ${lead?.phone || ""}`,
     `WhatsApp display name (unconfirmed hint, DO NOT assume it's their real name): ${lead?.wa_display_name || "(none)"}`,
+    `Returning contact: ${isReturning ? "YES" : "No (first journey)"}`,
+    isReturning ? `Previous funnel entries: ${history.map((h) => `${h.from_funnel_id} (${String(h.entered_at || "").slice(0, 10)})`).join("; ")}` : "",
+    isReturning ? "→ If returning, open with a warm acknowledgement (e.g. 'Welcome back Sir {name} — I see you were earlier interested in {previous product}; happy to help with today's enquiry too.') BEFORE asking the normal qualifying questions." : "",
     "",
     "# Funnel",
     `Funnel: ${funnel?.name || "—"}`,
