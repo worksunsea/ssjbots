@@ -324,6 +324,7 @@ function ConversationPane({ lead, funnel, onClose, onChanged }) {
 // ──────────────────────────────────────────────────────────
 function FunnelsScreen({ funnels, personas, onReload }) {
   const [editing, setEditing] = useState(null); // null | 'new' | funnel object
+  const [stepsFor, setStepsFor] = useState(null); // funnel or null — opens steps editor
 
   const toggleActive = async (f) => {
     await sb.from("funnels").update({ active: !f.active }).eq("id", f.id);
@@ -353,8 +354,9 @@ function FunnelsScreen({ funnels, personas, onReload }) {
               <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>WA: {f.wa_number} (client {f.wbiztool_client || "?"})</div>
               <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>Persona: {p?.name || "—"}</div>
               <div style={{ fontSize: 11, color: "#888", marginBottom: 10 }}>Goal: {f.goal || "—"}</div>
-              <div style={{ display: "flex", gap: 6 }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 <Btn small ghost color={C.blue} onClick={() => setEditing(f)}>Edit</Btn>
+                <Btn small ghost color={C.pink} onClick={() => setStepsFor(f)}>Steps</Btn>
                 <Btn small ghost color={f.active ? C.orange : C.green} onClick={() => toggleActive(f)}>{f.active ? "Disable" : "Enable"}</Btn>
                 <Btn small ghost color={C.purple} onClick={() => setEditing({ ...f, id: "", name: f.name + " (copy)" })}>Clone</Btn>
               </div>
@@ -364,7 +366,128 @@ function FunnelsScreen({ funnels, personas, onReload }) {
       </div>
 
       {editing && <FunnelForm funnel={editing === "new" ? null : editing} personas={personas} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); onReload(); }} />}
+      {stepsFor && <FunnelStepsEditor funnel={stepsFor} onClose={() => setStepsFor(null)} />}
     </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// FUNNEL STEPS EDITOR — drip campaign sequence per funnel
+// ──────────────────────────────────────────────────────────
+function FunnelStepsEditor({ funnel, onClose }) {
+  const [steps, setSteps] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data } = await sb
+      .from("bullion_funnel_steps")
+      .select("*")
+      .eq("tenant_id", TENANT_ID)
+      .eq("funnel_id", funnel.id)
+      .order("step_order", { ascending: true });
+    setSteps(data || []);
+    setLoading(false);
+  }, [funnel.id]);
+
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { load(); }, [load]);
+
+  const addStep = () => {
+    const next = steps.length + 1;
+    setSteps((s) => [...s, {
+      _new: true,
+      tenant_id: TENANT_ID,
+      funnel_id: funnel.id,
+      step_order: next,
+      name: `Step ${next}`,
+      delay_minutes: next === 1 ? 120 : 1440, // 2h, then 1 day
+      condition: "always",
+      message_template: "Hi {{name}}, just checking in — any questions about your enquiry?",
+      active: true,
+    }]);
+  };
+
+  const updateStep = (idx, key, value) => {
+    setSteps((s) => s.map((row, i) => i === idx ? { ...row, [key]: value, _dirty: true } : row));
+  };
+
+  const removeStep = async (idx) => {
+    const row = steps[idx];
+    if (row.id) await sb.from("bullion_funnel_steps").delete().eq("id", row.id);
+    setSteps((s) => s.filter((_, i) => i !== idx));
+  };
+
+  const saveAll = async () => {
+    setSaving(true);
+    for (const row of steps) {
+      if (row._new || row._dirty) {
+        const { _new, _dirty, ...clean } = row;
+        if (row.id) {
+          await sb.from("bullion_funnel_steps").update(clean).eq("id", row.id);
+        } else {
+          await sb.from("bullion_funnel_steps").insert(clean);
+        }
+      }
+    }
+    await load();
+    setSaving(false);
+  };
+
+  const fmtDelay = (mins) => {
+    if (mins < 60) return `${mins}m`;
+    if (mins < 60 * 24) return `${Math.round(mins / 60 * 10) / 10}h`;
+    return `${Math.round(mins / 60 / 24 * 10) / 10}d`;
+  };
+
+  return (
+    <Modal title={`Follow-up sequence · ${funnel.name}`} onClose={onClose} width={780}>
+      <div style={{ fontSize: 12, color: "#666", marginBottom: 12, lineHeight: 1.5 }}>
+        Drip messages fire automatically when a lead in this funnel goes cold after a quote. If the lead replies during the sequence, pending messages cancel and the lead is flagged for agent follow-up. Placeholders: <code>{"{{name}}"}</code>, <code>{"{{phone}}"}</code>, <code>{"{{funnel_name}}"}</code>, <code>{"{{goal}}"}</code>.
+      </div>
+
+      {loading && <div style={{ color: "#888", fontSize: 13 }}>Loading…</div>}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, maxHeight: "55vh", overflowY: "auto" }}>
+        {steps.map((row, idx) => (
+          <Card key={row.id || `new-${idx}`} style={{ padding: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "60px 1fr 120px 100px auto", gap: 8, alignItems: "center", marginBottom: 8 }}>
+              <Input type="number" value={row.step_order} onChange={(e) => updateStep(idx, "step_order", Number(e.target.value))} style={{ padding: 4 }} />
+              <Input value={row.name || ""} onChange={(e) => updateStep(idx, "name", e.target.value)} placeholder="Step name" />
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <Input type="number" value={row.delay_minutes} onChange={(e) => updateStep(idx, "delay_minutes", Number(e.target.value))} style={{ padding: 4 }} />
+                <span style={{ fontSize: 11, color: "#888" }}>min ({fmtDelay(row.delay_minutes || 0)})</span>
+              </div>
+              <Select value={row.active ? "on" : "off"} onChange={(e) => updateStep(idx, "active", e.target.value === "on")}>
+                <option value="on">active</option>
+                <option value="off">off</option>
+              </Select>
+              <Btn small ghost color={C.red} onClick={() => removeStep(idx)}>×</Btn>
+            </div>
+            <Textarea
+              rows={3}
+              value={row.message_template || ""}
+              onChange={(e) => updateStep(idx, "message_template", e.target.value)}
+              placeholder="Message text (Hinglish ok). Use {{name}} etc."
+            />
+          </Card>
+        ))}
+        {!steps.length && !loading && (
+          <div style={{ padding: 20, textAlign: "center", color: "#aaa", fontSize: 13 }}>
+            No steps yet. Add a first follow-up.
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: "flex", gap: 8, justifyContent: "space-between", marginTop: 14 }}>
+        <Btn ghost color={C.blue} small onClick={addStep}>+ Add step</Btn>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Btn ghost color={C.gray} onClick={onClose}>Close</Btn>
+          <Btn color={C.blue} onClick={saveAll} disabled={saving}>{saving ? "Saving…" : "Save all"}</Btn>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

@@ -12,6 +12,7 @@ import { sendWhatsApp } from "./_lib/wa.js";
 import { askClaude, parseBotJson } from "./_lib/claude.js";
 import { getRates, ratesForPrompt } from "./_lib/rates.js";
 import { buildSystemPrompt, buildMessages } from "./_lib/prompt.js";
+import { enrollLeadInDrip, cancelPendingForLead } from "./_lib/drip.js";
 import {
   TENANT_ID,
   normalizePhone,
@@ -126,6 +127,10 @@ export default async function handler(req, res) {
       stage: leadRow.stage,
       status: "received",
     });
+
+    // 3b. Lead replied — cancel any pending drip messages (don't let cold-nurture
+    //     fire when the lead is actively engaged).
+    await cancelPendingForLead(leadRow.id, "lead_replied_inbound").catch(() => {});
 
     // 4. Bail if bot is paused on this lead (agent took over in CRM)
     if (leadRow.bot_paused) {
@@ -250,6 +255,12 @@ export default async function handler(req, res) {
         bot_paused: leadRow.bot_paused,
       })
       .eq("id", leadRow.id);
+
+    // 9b. If Claude marked this as QUOTE_SENT, enroll the lead in the funnel's
+    //     drip sequence so we don't lose them if they go cold.
+    if (parsed.action === "QUOTE_SENT") {
+      await enrollLeadInDrip({ lead: leadRow, funnel }).catch((e) => console.error("enroll failed", e));
+    }
 
     // 10. Alert owner on FIRST transition into handoff (not every subsequent reply)
     const justEnteredHandoff = !inEscalation && (parsed.action === "HANDOFF" || nextStatus === "handoff");
