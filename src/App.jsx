@@ -138,6 +138,7 @@ function LeadsScreen({ funnels }) {
   const [filterFunnel, setFilterFunnel] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
   const [search, setSearch] = useState("");
+  const [adding, setAdding] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -180,7 +181,10 @@ function LeadsScreen({ funnels }) {
             {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
           </Select>
           <Btn ghost small color={C.gray} onClick={load}>↻</Btn>
+          <Btn small color={C.blue} onClick={() => setAdding(true)}>+ Add</Btn>
         </div>
+
+        {adding && <ManualLeadForm funnels={funnels} onClose={() => setAdding(false)} onSaved={() => { setAdding(false); load(); }} />}
 
         <div style={{ fontSize: 11, color: "#888", marginBottom: 8 }}>
           {loading ? "Loading…" : `${filtered.length} lead${filtered.length === 1 ? "" : "s"}`}
@@ -194,9 +198,12 @@ function LeadsScreen({ funnels }) {
               <div key={l.id} onClick={() => setSelectedId(l.id)} style={{ padding: 10, background: sel ? "#eef5ff" : "#fff", border: `1px solid ${sel ? C.blue : "#eee"}`, borderRadius: 10, cursor: "pointer" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
                   <strong style={{ fontSize: 13 }}>{l.name || l.phone}</strong>
-                  <Pill color={STATUS_C[l.status] || C.gray} solid>{l.status}</Pill>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    {l.dnd && <Pill color={C.red} solid>DND</Pill>}
+                    <Pill color={STATUS_C[l.status] || C.gray} solid>{l.status}</Pill>
+                  </div>
                 </div>
-                <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>{l.phone} · {f?.name || l.funnel_id || "—"}</div>
+                <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>{l.phone} · {f?.name || l.funnel_id || "—"}{l.source ? ` · ${l.source}` : ""}</div>
                 {l.last_msg && <div style={{ fontSize: 12, color: "#555", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.last_msg}</div>}
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
                   <StageBar stage={l.stage} />
@@ -673,6 +680,84 @@ function PersonaForm({ persona, onClose, onSaved }) {
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
         <Btn ghost color={C.gray} onClick={onClose}>Cancel</Btn>
         <Btn color={C.blue} onClick={save} disabled={saving}>{saving ? "Saving…" : "Save persona"}</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// MANUAL LEAD ENTRY — for walk-ins, imports, hand-fed leads
+// ──────────────────────────────────────────────────────────
+function ManualLeadForm({ funnels, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    phone: "",
+    name: "",
+    city: "",
+    email: "",
+    bday: "",
+    anniversary: "",
+    source: "Manual entry",
+    funnel_id: funnels.find((f) => f.kind === "acquisition")?.id || funnels[0]?.id || "",
+    enroll: false,
+    notes: "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  const set = (k, v) => setForm((s) => ({ ...s, [k]: v }));
+
+  const save = async () => {
+    setErr("");
+    const phone = String(form.phone || "").replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, "");
+    if (!phone) return setErr("Phone is required.");
+    setSaving(true);
+    const payload = {
+      tenant_id: TENANT_ID,
+      phone,
+      name: form.name || null,
+      city: form.city || null,
+      email: form.email || null,
+      bday: form.bday || null,
+      anniversary: form.anniversary || null,
+      source: form.source || null,
+      funnel_id: form.funnel_id || null,
+      notes: form.notes || null,
+      status: "active",
+      stage: "greeting",
+    };
+    const { error } = await sb.from("bullion_leads").upsert(payload, { onConflict: "tenant_id,phone" });
+    setSaving(false);
+    if (error) { setErr(error.message); return; }
+    onSaved();
+  };
+
+  return (
+    <Modal title="Add lead manually" onClose={onClose} width={560}>
+      <Field label="Phone (10-digit, no country code)" required>
+        <Input value={form.phone} onChange={(e) => set("phone", e.target.value)} placeholder="9876543210" />
+      </Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <Field label="Name"><Input value={form.name} onChange={(e) => set("name", e.target.value)} /></Field>
+        <Field label="City"><Input value={form.city} onChange={(e) => set("city", e.target.value)} /></Field>
+      </div>
+      <Field label="Email"><Input value={form.email} onChange={(e) => set("email", e.target.value)} /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <Field label="Birthday (MM-DD or YYYY-MM-DD)"><Input value={form.bday} onChange={(e) => set("bday", e.target.value)} placeholder="04-21 or 1990-04-21" /></Field>
+        <Field label="Anniversary"><Input value={form.anniversary} onChange={(e) => set("anniversary", e.target.value)} placeholder="06-15" /></Field>
+      </div>
+      <Field label="Source (where did this lead come from?)">
+        <Input value={form.source} onChange={(e) => set("source", e.target.value)} placeholder="Walk-in · Meta ad · Google ad · Referral — Rajesh · CSV import" />
+      </Field>
+      <Field label="Funnel">
+        <Select value={form.funnel_id} onChange={(e) => set("funnel_id", e.target.value)}>
+          {funnels.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+        </Select>
+      </Field>
+      <Field label="Notes"><Textarea rows={2} value={form.notes} onChange={(e) => set("notes", e.target.value)} /></Field>
+      {err && <p style={{ fontSize: 12, color: C.red, margin: "0 0 12px" }}>{err}</p>}
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <Btn ghost color={C.gray} onClick={onClose}>Cancel</Btn>
+        <Btn color={C.blue} onClick={save} disabled={saving}>{saving ? "Saving…" : "Save lead"}</Btn>
       </div>
     </Modal>
   );

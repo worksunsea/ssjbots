@@ -13,7 +13,7 @@ import { askClaude, parseBotJson } from "./_lib/claude.js";
 import { getRates, ratesForPrompt } from "./_lib/rates.js";
 import { getFaqs, faqsForPrompt } from "./_lib/faqs.js";
 import { buildSystemPrompt, buildMessages } from "./_lib/prompt.js";
-import { enrollLeadInDrip, cancelPendingForLead } from "./_lib/drip.js";
+import { enrollLeadInDrip, cancelPendingForLead, transitionLeadToFunnel } from "./_lib/drip.js";
 import { matchFunnelByKeywords } from "./_lib/funnel-match.js";
 import {
   TENANT_ID,
@@ -159,6 +159,11 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, skipped: "bot_paused" });
     }
 
+    // 4a. DND — user opted out / got angry. Stay silent.
+    if (leadRow.dnd) {
+      return res.status(200).json({ ok: true, skipped: "dnd" });
+    }
+
     // 4b. Hard cap — prevent runaway costs if a lead loops endlessly.
     if ((leadRow.exchanges_count || 0) >= HARD_EXCHANGE_CAP) {
       await sb.from("bullion_leads").update({
@@ -260,6 +265,7 @@ export default async function handler(req, res) {
     // In escalation, stay in "handoff" status even if Claude returns CONTINUE
     // (until an agent actually replies in CRM and flips bot_paused=true).
     const nextStatus =
+      parsed.action === "DND" ? "dead" :
       parsed.action === "CONVERTED" ? "converted" :
       parsed.action === "HANDOFF" || inEscalation ? "handoff" :
       "active";
@@ -283,6 +289,7 @@ export default async function handler(req, res) {
       Object.entries(extractedPatch).filter(([, v]) => v != null && v !== "")
     );
 
+    const isDnd = parsed.action === "DND";
     await sb
       .from("bullion_leads")
       .update({
@@ -296,15 +303,34 @@ export default async function handler(req, res) {
         // IMPORTANT: bot_paused is ONLY set by manual agent replies from the
         // CRM (via /api/send). We never auto-pause here — the bot keeps the
         // lead warm in escalation until a human takes over.
-        bot_paused: leadRow.bot_paused,
+        bot_paused: isDnd ? true : leadRow.bot_paused,
+        dnd: isDnd ? true : leadRow.dnd,
+        dnd_reason: isDnd ? (msg || "").slice(0, 200) : leadRow.dnd_reason,
+        dnd_at: isDnd ? new Date().toISOString() : leadRow.dnd_at,
         ...patchToApply,
       })
       .eq("id", leadRow.id);
+
+    // Cancel any pending drip messages immediately on DND
+    if (isDnd) {
+      await cancelPendingForLead(leadRow.id, "dnd").catch(() => {});
+    }
 
     // 9b. If Claude marked this as QUOTE_SENT, enroll the lead in the funnel's
     //     drip sequence so we don't lose them if they go cold.
     if (parsed.action === "QUOTE_SENT") {
       await enrollLeadInDrip({ lead: leadRow, funnel }).catch((e) => console.error("enroll failed", e));
+    }
+
+    // 9c. On CONVERTED, auto-transition to the funnel's next_on_convert target
+    //     (e.g. after_sales). The lead's captured fields (name, city, bday)
+    //     come along automatically.
+    if (parsed.action === "CONVERTED" && funnel.next_on_convert) {
+      await transitionLeadToFunnel({
+        leadId: leadRow.id,
+        newFunnelId: funnel.next_on_convert,
+        reason: "converted",
+      }).catch((e) => console.error("transition on convert failed", e));
     }
 
     // 10. Alert owner on FIRST transition into handoff (not every subsequent reply)

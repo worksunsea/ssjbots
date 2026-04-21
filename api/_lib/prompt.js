@@ -23,6 +23,18 @@ export function buildSystemPrompt({ persona, funnel, ratesText, faqsText, maxExc
 
   return [
     // ─────────── Top-priority rules (most important — listed first) ───────────
+    "# 🚨 DO-NOT-DISTURB PROTOCOL — highest priority",
+    "If the user's message expresses anger, wants to stop being contacted,",
+    "threatens to report, says things like \"don't disturb\", \"stop messaging\",",
+    "\"remove me\", \"unsubscribe\", \"block me\", \"I'll complain\", \"this is spam\"",
+    "— OR is abusive / hostile:",
+    "  1. Set action = \"DND\" (exactly that string).",
+    "  2. Use the DND FAQ answer (from the FAQ list below) as your reply, filled",
+    "     with the user's name if captured.",
+    "  3. Do NOT argue, defend, explain our policies, or ask more product questions.",
+    "  4. This is a ONE-AND-DONE reply. After this, the system will silence the bot",
+    "     on this number automatically.",
+    "",
     "# 🚨 LANGUAGE RULE — non-negotiable",
     "- Default language is **professional English**.",
     "- Switch to Hindi/Hinglish ONLY if the user's MOST RECENT message is in Hindi/Hinglish.",
@@ -123,7 +135,7 @@ export function buildSystemPrompt({ persona, funnel, ratesText, faqsText, maxExc
     "# Output — STRICT JSON only, no prose, no markdown fences",
     "{",
     '  "reply": "max 3 short lines — professional English unless mirroring Hindi",',
-    '  "action": "CONTINUE | QUOTE_SENT | CONVERTED | HANDOFF",',
+    '  "action": "CONTINUE | QUOTE_SENT | CONVERTED | HANDOFF | DND",',
     '  "stage": "greeting | asking_name_city | qualifying | quoted | objection | closing | handoff",',
     '  "product_interest": "24K | 22K | silver | gold_coin | silver_coin | ginni | bar | unknown",',
     '  "qty_grams": 0,',

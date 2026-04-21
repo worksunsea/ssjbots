@@ -125,3 +125,48 @@ export async function cancelPendingForLead(leadId, reason) {
   if (error) return { ok: false, error: error.message };
   return { ok: true };
 }
+
+// Move a lead into a different funnel (after conversion or drip exhaustion).
+// Cancels any pending drip in the old funnel, appends the old funnel to
+// funnel_history, updates funnel_id, then enrolls in the new funnel's drip.
+export async function transitionLeadToFunnel({ leadId, newFunnelId, reason }) {
+  if (!leadId || !newFunnelId) return { ok: false, error: "missing_args" };
+  const sb = supa();
+
+  const { data: lead } = await sb
+    .from("bullion_leads")
+    .select("*")
+    .eq("id", leadId)
+    .single();
+  if (!lead) return { ok: false, error: "lead_not_found" };
+  if (lead.funnel_id === newFunnelId) return { ok: true, skipped: "same_funnel" };
+
+  await cancelPendingForLead(leadId, `transition_${reason}`);
+
+  const history = Array.isArray(lead.funnel_history) ? lead.funnel_history : [];
+  history.push({
+    from_funnel_id: lead.funnel_id,
+    entered_at: lead.updated_at,
+    exited_at: new Date().toISOString(),
+    reason,
+  });
+
+  await sb
+    .from("bullion_leads")
+    .update({ funnel_id: newFunnelId, funnel_history: history })
+    .eq("id", leadId);
+
+  const { data: newFunnel } = await sb
+    .from("funnels")
+    .select("*")
+    .eq("id", newFunnelId)
+    .single();
+  if (newFunnel?.active) {
+    await enrollLeadInDrip({
+      lead: { ...lead, funnel_id: newFunnelId, funnel_history: history },
+      funnel: newFunnel,
+    });
+  }
+
+  return { ok: true, to: newFunnelId };
+}
