@@ -64,8 +64,8 @@ function LoginScreen({ onLogin }) {
 
   return (
     <div style={{ maxWidth: 360, margin: "4rem auto", padding: "2rem", background: "#fff", border: "1px solid #e0e0e0", borderRadius: 16 }}>
-      <h2 style={{ fontSize: 18, fontWeight: 600, margin: "0 0 4px" }}>SSJ Bullion Bot</h2>
-      <p style={{ fontSize: 13, color: "#888", margin: "0 0 24px" }}>Admin · CRM · Funnels · Personas</p>
+      <h2 style={{ fontSize: 18, fontWeight: 600, margin: "0 0 4px" }}>SSJ Jew CRM</h2>
+      <p style={{ fontSize: 13, color: "#888", margin: "0 0 24px" }}>Admin · Leads · Funnels · Personas · FAQs</p>
       <label style={{ fontSize: 11, color: "#888", display: "block", marginBottom: 4 }}>USERNAME</label>
       <input value={u} onChange={(e) => setU(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} style={{ width: "100%", fontSize: 14, marginBottom: 12, padding: 8, borderRadius: 8, border: "1px solid #ddd" }} />
       <label style={{ fontSize: 11, color: "#888", display: "block", marginBottom: 4 }}>PASSWORD</label>
@@ -1079,7 +1079,7 @@ export default function App() {
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
         <div>
-          <h2 style={{ fontSize: 18, fontWeight: 600, margin: "0 0 2px" }}>Sun Sea Jewellers — Bullion Bot</h2>
+          <h2 style={{ fontSize: 18, fontWeight: 600, margin: "0 0 2px" }}>SSJ Jew CRM</h2>
           <p style={{ fontSize: 12, color: "#888", margin: 0 }}>{ROLES[user.role] || user.role} · {user.name}</p>
         </div>
         <button onClick={logout} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 7, border: "1px solid #ddd", background: "transparent", cursor: "pointer" }}>Logout</button>
