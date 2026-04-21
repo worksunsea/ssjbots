@@ -5,7 +5,7 @@
 
 import { sendWhatsApp } from "./_lib/wa.js";
 import { supa } from "./_lib/supabase.js";
-import { TENANT_ID, normalizePhone } from "./_lib/config.js";
+import { normalizePhone } from "./_lib/config.js";
 
 export const config = { maxDuration: 30 };
 
@@ -27,25 +27,33 @@ export default async function handler(req, res) {
   // Best-effort log. If CRM didn't pass leadId, we skip logging (CRM usually has it).
   if (leadId) {
     const sb = supa();
-    await sb.from("bullion_messages").insert({
-      tenant_id: TENANT_ID,
-      lead_id: leadId,
-      phone: normalizePhone(phone),
-      funnel_id: funnelId || null,
-      wbiztool_msg_id: wa.msg_id || "",
-      direction: "out",
-      body: message,
-      status: "sent",
-    });
-    await sb
-      .from("bullion_leads")
-      .update({
-        last_msg: message,
-        last_msg_at: new Date().toISOString(),
-        bot_paused: true,
-        status: "handoff",
-      })
-      .eq("id", leadId);
+    // Discover tenant from the lead so we stay tenant-correct.
+    const { data: leadRow } = await sb.from("bullion_leads")
+      .select("tenant_id")
+      .eq("id", leadId)
+      .maybeSingle();
+    const tenantId = leadRow?.tenant_id;
+    if (tenantId) {
+      await sb.from("bullion_messages").insert({
+        tenant_id: tenantId,
+        lead_id: leadId,
+        phone: normalizePhone(phone),
+        funnel_id: funnelId || null,
+        wbiztool_msg_id: wa.msg_id || "",
+        direction: "out",
+        body: message,
+        status: "sent",
+      });
+      await sb
+        .from("bullion_leads")
+        .update({
+          last_msg: message,
+          last_msg_at: new Date().toISOString(),
+          bot_paused: true,
+          status: "handoff",
+        })
+        .eq("id", leadId);
+    }
   }
 
   return res.status(200).json({ ok: true, msg_id: wa.msg_id });

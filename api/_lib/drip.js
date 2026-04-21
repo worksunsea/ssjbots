@@ -2,7 +2,6 @@
 // and render per-step message templates with lead/funnel context.
 
 import { supa } from "./supabase.js";
-import { TENANT_ID } from "./config.js";
 
 function render(tpl, ctx) {
   return String(tpl || "").replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => {
@@ -34,7 +33,7 @@ export async function enrollLeadInDrip({ lead, funnel }) {
   const { data: steps } = await sb
     .from("bullion_funnel_steps")
     .select("*")
-    .eq("tenant_id", TENANT_ID)
+    .eq("tenant_id", funnel.tenant_id)
     .eq("funnel_id", funnel.id)
     .eq("active", true)
     .order("step_order", { ascending: true });
@@ -97,7 +96,7 @@ export async function enrollLeadInDrip({ lead, funnel }) {
     if (sendAt < nowMs) sendAt = nowMs + 60_000;
 
     rows.push({
-      tenant_id: TENANT_ID,
+      tenant_id: funnel.tenant_id,
       lead_id: lead.id,
       step_id: s.id,
       funnel_id: funnel.id,

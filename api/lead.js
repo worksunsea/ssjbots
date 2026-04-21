@@ -14,7 +14,7 @@
 
 import { supa } from "./_lib/supabase.js";
 import { enrollLeadInDrip } from "./_lib/drip.js";
-import { TENANT_ID, normalizePhone } from "./_lib/config.js";
+import { TENANT_ID as DEFAULT_TENANT_ID, normalizePhone } from "./_lib/config.js";
 
 const ALLOWED_SECRETS = [
   process.env.WA_SERVICE_SECRET,
@@ -39,9 +39,18 @@ export default async function handler(req, res) {
 
   const sb = supa();
 
+  // Caller can specify tenant explicitly, else we try to resolve from funnel,
+  // else fall back to SSJ default. Never guess silently across tenants.
+  let tenantId = body.tenant_id || null;
+  if (!tenantId && body.funnel_id) {
+    const { data: f } = await sb.from("funnels").select("tenant_id").eq("id", body.funnel_id).maybeSingle();
+    tenantId = f?.tenant_id || null;
+  }
+  tenantId = tenantId || DEFAULT_TENANT_ID;
+
   // Use the RPC (handles re-entry + funnel_history properly)
   const { data: leadRow, error } = await sb.rpc("bullion_upsert_lead", {
-    p_tenant_id: TENANT_ID,
+    p_tenant_id: tenantId,
     p_phone: phone,
     p_name: body.name || "",
     p_funnel_id: body.funnel_id || null,

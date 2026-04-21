@@ -10,7 +10,7 @@
 import { supa } from "./_lib/supabase.js";
 import { sendWhatsApp } from "./_lib/wa.js";
 import { transitionLeadToFunnel, enrollLeadInDrip } from "./_lib/drip.js";
-import { TENANT_ID, OWNER_ALERT_PHONE } from "./_lib/config.js";
+import { OWNER_ALERT_PHONE } from "./_lib/config.js";
 
 export const config = { maxDuration: 60 };
 
@@ -33,11 +33,10 @@ export default async function handler(req, res) {
   const { data: due } = await sb
     .from("bullion_scheduled_messages")
     .select(`
-      id, lead_id, funnel_id, body, send_at,
-      lead:bullion_leads!inner(id,phone,name,status,bot_paused,dnd,last_msg_at,funnel_id,funnel_history),
-      funnel:funnels!inner(id,name,active,wbiztool_client,next_on_convert,next_on_exhaust)
+      id, lead_id, funnel_id, body, send_at, tenant_id,
+      lead:bullion_leads!inner(id,phone,name,status,bot_paused,dnd,last_msg_at,funnel_id,funnel_history,tenant_id),
+      funnel:funnels!inner(id,name,active,wbiztool_client,next_on_convert,next_on_exhaust,tenant_id)
     `)
-    .eq("tenant_id", TENANT_ID)
     .eq("status", "pending")
     .lte("send_at", nowIso)
     .order("send_at", { ascending: true })
@@ -98,7 +97,7 @@ export default async function handler(req, res) {
     }
 
     await sb.from("bullion_messages").insert({
-      tenant_id: TENANT_ID, lead_id: lead.id, phone: lead.phone, funnel_id: funnel.id,
+      tenant_id: row.tenant_id, lead_id: lead.id, phone: lead.phone, funnel_id: funnel.id,
       wbiztool_msg_id: String(wa.msg_id || ""), direction: "out", body: row.body,
       stage: "drip", claude_action: "DRIP", status: "sent",
     });
@@ -114,10 +113,9 @@ export default async function handler(req, res) {
   const { data: exhaustCandidates } = await sb
     .from("bullion_leads")
     .select(`
-      id, phone, funnel_id, status, dnd, bot_paused, updated_at,
-      funnel:funnels!inner(id, next_on_exhaust, active)
+      id, phone, funnel_id, status, dnd, bot_paused, updated_at, tenant_id,
+      funnel:funnels!inner(id, next_on_exhaust, active, tenant_id)
     `)
-    .eq("tenant_id", TENANT_ID)
     .not("funnel.next_on_exhaust", "is", null)
     .not("status", "in", "(converted,dead)")
     .eq("dnd", false)
@@ -157,41 +155,37 @@ export default async function handler(req, res) {
   const monthNow = new Date().toISOString().slice(5, 7); // "MM"
 
   for (const [field, funnelId] of [["bday", "birthday"], ["anniversary", "anniversary"]]) {
-    const { data: calendarFunnel } = await sb
+    // Fetch active calendar funnels across all tenants (same slug, different tenants)
+    const { data: calendarFunnels } = await sb
       .from("funnels")
-      .select("id, active")
+      .select("*, persona:personas(*)")
       .eq("id", funnelId)
-      .single();
-    if (!calendarFunnel?.active) continue;
+      .eq("active", true);
+    if (!calendarFunnels?.length) continue;
+    const funnelByTenant = new Map(calendarFunnels.map((f) => [f.tenant_id, f]));
 
-    // Fetch leads whose field is in this month (formats: MM-DD, YYYY-MM-DD)
+    // Fetch candidate leads across ALL tenants with a matching month
     const { data: matches } = await sb
       .from("bullion_leads")
-      .select("id, phone, name, funnel_id, funnel_history")
-      .eq("tenant_id", TENANT_ID)
+      .select("id, phone, name, funnel_id, funnel_history, tenant_id")
       .eq("dnd", false)
       .not(field, "is", null)
       .or(`${field}.like.${monthNow}-%,${field}.like.%-${monthNow}-%`);
 
     for (const lead of matches || []) {
-      // Skip if already enrolled in this calendar funnel recently
+      const funnel = funnelByTenant.get(lead.tenant_id);
+      if (!funnel) continue; // tenant has no calendar funnel — skip
+
+      // Idempotency: skip if already enrolled in this calendar funnel in the last 11 months
       const elevenMonthsAgo = new Date(Date.now() - 1000 * 60 * 60 * 24 * 335).toISOString();
       const { count: recent } = await sb
         .from("bullion_scheduled_messages")
         .select("*", { count: "exact", head: true })
         .eq("lead_id", lead.id)
-        .eq("funnel_id", funnelId)
+        .eq("funnel_id", funnel.id)
         .gte("created_at", elevenMonthsAgo);
       if (recent && recent > 0) continue;
 
-      const { data: funnel } = await sb
-        .from("funnels")
-        .select("*, persona:personas(*)")
-        .eq("id", funnelId)
-        .single();
-      if (!funnel) continue;
-
-      // Enroll without changing the lead's primary funnel — calendar is parallel
       await enrollLeadInDrip({ lead, funnel }).catch(() => {});
       stats.calendarEnrolled++;
     }

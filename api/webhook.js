@@ -16,7 +16,6 @@ import { buildSystemPrompt, buildMessages } from "./_lib/prompt.js";
 import { enrollLeadInDrip, cancelPendingForLead, transitionLeadToFunnel } from "./_lib/drip.js";
 import { matchFunnelByKeywords } from "./_lib/funnel-match.js";
 import {
-  TENANT_ID,
   normalizePhone,
   OWNER_ALERT_PHONE,
   SUPABASE_SERVICE_KEY,
@@ -76,26 +75,27 @@ export default async function handler(req, res) {
   const sb = supa();
 
   try {
-    // 1. Load ALL active funnels for this tenant once — we need them for
-    //    keyword matching anyway.
+    // 1. Load ALL active funnels across ALL tenants. Keyword match + session
+    //    client picks one; that funnel's tenant_id drives the rest of the request.
     const { data: allFunnels } = await sb
       .from("funnels")
       .select("*, persona:personas(*)")
-      .eq("tenant_id", TENANT_ID)
       .eq("active", true);
 
     if (!allFunnels?.length) {
-      console.warn("webhook: no active funnels for tenant");
+      console.warn("webhook: no active funnels across tenants");
       return res.status(200).json({ ok: false, reason: "no_active_funnel" });
     }
 
-    // 1b. Look up any existing lead for this phone (ignore funnel — one row per phone).
-    const { data: existingLead } = await sb
+    // 1b. Look up any existing lead for this phone. Phone is globally unique
+    //     per tenant but we check across all tenants to find where the contact
+    //     already lives. First match wins.
+    const { data: existingLeads } = await sb
       .from("bullion_leads")
-      .select("id,funnel_id")
-      .eq("tenant_id", TENANT_ID)
+      .select("id,funnel_id,tenant_id")
       .eq("phone", phone)
-      .maybeSingle();
+      .limit(2);
+    const existingLead = (existingLeads && existingLeads[0]) || null;
 
     // 2. Pick the funnel for THIS message:
     //    - Strong keyword match against any funnel → that funnel (a new campaign entry).
@@ -113,12 +113,15 @@ export default async function handler(req, res) {
     }
     if (!funnel) funnel = allFunnels[0];
 
+    // Tenant comes from the resolved funnel. Everything downstream uses this.
+    const tenantId = funnel.tenant_id;
+
     // 2. Upsert lead. We intentionally DO NOT pass the WhatsApp pushName as
     //    the lead's real name — it's just a display hint and users want to be
     //    asked properly during onboarding. We store pushName separately in
     //    wa_display_name.
     const { data: leadRow, error: upsertErr } = await sb.rpc("bullion_upsert_lead", {
-      p_tenant_id: TENANT_ID,
+      p_tenant_id: tenantId,
       p_phone: phone,
       p_name: "",
       p_funnel_id: funnel.id,
@@ -139,7 +142,7 @@ export default async function handler(req, res) {
 
     // 3. Log inbound
     await sb.from("bullion_messages").insert({
-      tenant_id: TENANT_ID,
+      tenant_id: tenantId,
       lead_id: leadRow.id,
       phone,
       funnel_id: funnel.id,
@@ -192,12 +195,12 @@ export default async function handler(req, res) {
       sb
         .from("bullion_messages")
         .select("direction,body,created_at,stage")
-        .eq("tenant_id", TENANT_ID)
+        .eq("tenant_id", tenantId)
         .eq("lead_id", leadRow.id)
         .order("created_at", { ascending: false })
         .limit(20),
       getRates(),
-      getFaqs(),
+      getFaqs(tenantId),
     ]);
 
     const chronological = (history || []).slice().reverse();
@@ -250,7 +253,7 @@ export default async function handler(req, res) {
 
     // 9. Log outbound + update lead
     await sb.from("bullion_messages").insert({
-      tenant_id: TENANT_ID,
+      tenant_id: tenantId,
       lead_id: leadRow.id,
       phone,
       funnel_id: funnel.id,
