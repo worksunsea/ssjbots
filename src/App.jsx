@@ -10,6 +10,9 @@ const TENANT_ID = "a1b2c3d4-0000-0000-0000-000000000001";
 // ── APPS SCRIPT (rates proxy — Google Sheet "new" tab) ──
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxGazdRhKxkjOLkqxN4kPoInDuBnlWy5Azmzq-FX9mt5OIfZLbhqfFEO0AufrOWE6n49Q/exec";
 
+// ── WA Service (Baileys on Synology) — public URL for QR iframes ──
+const WA_SERVICE_URL = "https://wa.orvialuxe.com";
+
 // ── UI CONSTANTS ──
 const C = { green: "#27ae60", orange: "#e67e22", red: "#c0392b", blue: "#2980b9", gray: "#888", purple: "#8e44ad", pink: "#e84393", yellow: "#f39c12" };
 const STAGES = ["greeting", "qualifying", "quoted", "objection", "closing", "handoff", "converted", "dead"];
@@ -564,8 +567,8 @@ function FunnelForm({ funnel, personas, onClose, onSaved }) {
         <Textarea rows={2} value={form.match_keywords || ""} onChange={(e) => set("match_keywords", e.target.value)} placeholder="gold, gold coin, AKT-GOLD, sona, ginni — the first inbound is matched case-insensitive; best-match funnel wins" />
       </Field>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-        <Field label="WhatsApp number" required><Input value={form.wa_number} onChange={(e) => set("wa_number", e.target.value)} placeholder="8860866000" /></Field>
-        <Field label="WbizTool whatsapp_client id"><Input value={form.wbiztool_client || ""} onChange={(e) => set("wbiztool_client", e.target.value)} placeholder="7560" /></Field>
+        <Field label="WhatsApp number (display only)" required><Input value={form.wa_number} onChange={(e) => set("wa_number", e.target.value)} placeholder="8860866000" /></Field>
+        <Field label="WA session id (match the paired session in Connections tab)"><Input value={form.wbiztool_client || ""} onChange={(e) => set("wbiztool_client", e.target.value)} placeholder="e.g. 7560, ssj-prod, bullion-2026" /></Field>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
         <Field label="Product focus">
@@ -682,6 +685,133 @@ function PersonaForm({ persona, onClose, onSaved }) {
         <Btn color={C.blue} onClick={save} disabled={saving}>{saving ? "Saving…" : "Save persona"}</Btn>
       </div>
     </Modal>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// CONNECTIONS SCREEN — pair WhatsApp numbers via QR from the CRM
+// ──────────────────────────────────────────────────────────
+function ConnectionsScreen() {
+  const [clients, setClients] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [pairing, setPairing] = useState(null); // client_id being paired, null | string
+  const [adding, setAdding] = useState(false);
+  const [newId, setNewId] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await fetch(`${WA_SERVICE_URL}/clients`);
+      const data = await r.json();
+      setClients(data?.clients || []);
+    } catch {
+      setClients([]);
+    }
+    setLoading(false);
+  }, []);
+
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (!pairing) return;
+    // Poll every 4s while modal is open; close it once connected
+    const t = setInterval(async () => {
+      try {
+        const r = await fetch(`${WA_SERVICE_URL}/clients/${encodeURIComponent(pairing)}/status`);
+        const s = await r.json();
+        if (s?.connected) {
+          setPairing(null);
+          load();
+        }
+      } catch { /* ignore */ }
+    }, 4000);
+    return () => clearInterval(t);
+  }, [pairing, load]);
+
+  const startPair = async () => {
+    const id = newId.trim().replace(/[^a-zA-Z0-9_-]/g, "");
+    if (!id) return;
+    setPairing(id);
+    setAdding(false);
+    setNewId("");
+    // Trigger the session to boot and generate a QR
+    try { await fetch(`${WA_SERVICE_URL}/clients/${id}/status`); } catch { /* ignore */ }
+    setTimeout(load, 2000);
+  };
+
+  const rePair = async (clientId) => {
+    if (!confirm(`Re-pair session "${clientId}"? This unlinks the current WhatsApp session.`)) return;
+    // Best-effort logout; it's fine if the service rejects because bot_paused check etc.
+    try {
+      await fetch(`${WA_SERVICE_URL}/clients/${clientId}/logout`, { method: "POST" });
+    } catch { /* ignore */ }
+    setTimeout(() => { setPairing(clientId); load(); }, 1500);
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ fontSize: 13, color: "#666", flex: 1 }}>
+          WhatsApp sessions paired with your Synology Baileys service. Each session can back one or more funnels — match a funnel's <em>WA session id</em> to one of these.
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <Btn ghost small color={C.gray} onClick={load}>↻</Btn>
+          <Btn color={C.blue} onClick={() => setAdding(true)}>+ Add connection</Btn>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 12 }}>
+        {clients.map((c) => (
+          <Card key={c.client_id}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>{c.client_id}</div>
+              {c.connected
+                ? <Pill color={C.green} solid>connected</Pill>
+                : c.has_qr ? <Pill color={C.orange} solid>awaiting scan</Pill> : <Pill color={C.gray} solid>offline</Pill>}
+            </div>
+            <div style={{ fontSize: 11, color: "#888", marginBottom: 10, wordBreak: "break-all" }}>
+              {c.me ? <>Paired as <code>{c.me}</code></> : "Not yet paired"}
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              {!c.connected && <Btn small color={C.blue} onClick={() => setPairing(c.client_id)}>Pair QR</Btn>}
+              {c.connected && <Btn small ghost color={C.orange} onClick={() => rePair(c.client_id)}>Re-pair</Btn>}
+            </div>
+          </Card>
+        ))}
+        {!clients.length && !loading && (
+          <div style={{ color: "#aaa", fontSize: 13 }}>No sessions yet. Click "+ Add connection" to pair a WhatsApp number.</div>
+        )}
+      </div>
+
+      {adding && (
+        <Modal title="Add a new WhatsApp connection" onClose={() => setAdding(false)} width={480}>
+          <Field label="Session id (short slug — letters/numbers/dash/underscore)">
+            <Input value={newId} onChange={(e) => setNewId(e.target.value.replace(/[^a-zA-Z0-9_-]/g, ""))} placeholder="ssj-prod, bullion-2026, gift-wa" autoFocus />
+          </Field>
+          <p style={{ fontSize: 12, color: "#888", margin: "0 0 12px" }}>Use this id on the matching funnel's <em>WA session id</em> field.</p>
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <Btn ghost color={C.gray} onClick={() => setAdding(false)}>Cancel</Btn>
+            <Btn color={C.blue} onClick={startPair} disabled={!newId.trim()}>Continue to QR</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {pairing && (
+        <Modal title={`Pair WhatsApp · ${pairing}`} onClose={() => setPairing(null)} width={420}>
+          <p style={{ fontSize: 12, color: "#888", margin: "0 0 10px" }}>
+            Open WhatsApp on the phone you want to pair → Settings → Linked Devices → Link a device → scan.
+          </p>
+          <div style={{ border: "1px solid #eee", borderRadius: 10, overflow: "hidden", background: "#fff" }}>
+            <iframe
+              src={`${WA_SERVICE_URL}/clients/${encodeURIComponent(pairing)}/qr`}
+              title="WhatsApp QR"
+              style={{ width: "100%", height: 520, border: 0 }}
+            />
+          </div>
+          <div style={{ fontSize: 11, color: "#aaa", textAlign: "center", marginTop: 8 }}>Auto-closes when the session connects.</div>
+        </Modal>
+      )}
+    </div>
   );
 }
 
@@ -1070,6 +1200,7 @@ export default function App() {
     { k: "funnels", l: "Funnels", icon: "🎯" },
     { k: "personas", l: "Personas", icon: "🎭" },
     { k: "faqs", l: "FAQs", icon: "❓" },
+    { k: "connections", l: "Connections", icon: "📱" },
     { k: "rates", l: "Rates", icon: "📈" },
     { k: "analytics", l: "Analytics", icon: "📊" },
   ];
@@ -1097,6 +1228,7 @@ export default function App() {
       {screen === "funnels" && <FunnelsScreen funnels={funnels} personas={personas} onReload={loadFunnels} />}
       {screen === "personas" && <PersonasScreen personas={personas} onReload={loadPersonas} />}
       {screen === "faqs" && <FaqsScreen />}
+      {screen === "connections" && <ConnectionsScreen />}
       {screen === "rates" && <RatesScreen />}
       {screen === "analytics" && <AnalyticsScreen funnels={funnels} />}
     </div>
