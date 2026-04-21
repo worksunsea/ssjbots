@@ -136,7 +136,7 @@ function StageBar({ stage }) {
 // ──────────────────────────────────────────────────────────
 // LEADS SCREEN — list + conversation pane
 // ──────────────────────────────────────────────────────────
-function LeadsScreen({ funnels }) {
+function LeadsScreen({ funnels, allTags, viewMode = "leads" }) {
   const [leads, setLeads] = useState([]);
   const [loading, setLoading] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
@@ -147,13 +147,17 @@ function LeadsScreen({ funnels }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    let q = sb.from("bullion_leads").select("*").eq("tenant_id", getTenantId()).order("updated_at", { ascending: false }).limit(500);
+    let q = sb.from("bullion_leads").select("*").eq("tenant_id", getTenantId()).order("updated_at", { ascending: false }).limit(1000);
     if (filterFunnel) q = q.eq("funnel_id", filterFunnel);
     if (filterStatus) q = q.eq("status", filterStatus);
+    // In "leads" mode show only active enquiries. In "contacts" mode show everything.
+    if (viewMode === "leads") {
+      q = q.in("status", ["active", "handoff"]);
+    }
     const { data } = await q;
     if (data) setLeads(data);
     setLoading(false);
-  }, [filterFunnel, filterStatus]);
+  }, [filterFunnel, filterStatus, viewMode]);
 
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { load(); }, [load]);
@@ -222,12 +226,12 @@ function LeadsScreen({ funnels }) {
       </div>
 
       {/* Conversation pane */}
-      {selected && <ConversationPane lead={selected} funnel={selectedFunnel} onClose={() => setSelectedId(null)} onChanged={load} />}
+      {selected && <ConversationPane lead={selected} funnel={selectedFunnel} onClose={() => setSelectedId(null)} onChanged={load} allTags={allTags} />}
     </div>
   );
 }
 
-function ConversationPane({ lead, funnel, onClose, onChanged }) {
+function ConversationPane({ lead, funnel, onClose, onChanged, allTags }) {
   const [messages, setMessages] = useState([]);
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
@@ -308,6 +312,11 @@ function ConversationPane({ lead, funnel, onClose, onChanged }) {
         <Btn small ghost color={C.red} onClick={() => setStatus("handoff", { stage: "handoff", bot_paused: true })} disabled={busy}>Handoff</Btn>
         <Btn small ghost color={C.gray} onClick={() => setStatus("dead", { stage: "dead" })} disabled={busy}>Dead</Btn>
       </div>
+
+      {/* Tags + Family + Visits */}
+      <TagEditor leadId={lead.id} allTags={allTags || []} onReload={onChanged} />
+      <FamilyMembersSection leadId={lead.id} tenantId={lead.tenant_id || getTenantId()} />
+      <VisitsSection leadId={lead.id} />
 
       {/* Messages */}
       <div style={{ flex: 1, overflowY: "auto", padding: 14, background: "#f6f7f9" }}>
@@ -1168,16 +1177,355 @@ function AnalyticsScreen({ funnels }) {
 }
 
 // ──────────────────────────────────────────────────────────
-// MAIN APP
+// TAG HELPERS
 // ──────────────────────────────────────────────────────────
+function TagChip({ tag, onRemove, small }) {
+  if (!tag) return null;
+  const color = tag.color || "#888";
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: 4,
+      fontSize: small ? 10 : 11, padding: small ? "2px 6px" : "3px 8px",
+      borderRadius: 10, background: color + "22", color: color,
+      border: `1px solid ${color}55`, marginRight: 4, marginBottom: 4,
+      whiteSpace: "nowrap",
+    }}>
+      {tag.name}
+      {onRemove && (
+        <button onClick={(e) => { e.stopPropagation(); onRemove(); }}
+          style={{ background: "transparent", border: "none", color: color, cursor: "pointer", padding: 0, marginLeft: 2, fontSize: 12 }}>×</button>
+      )}
+    </span>
+  );
+}
+
+function TagEditor({ leadId, allTags, onReload }) {
+  const [attached, setAttached] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data } = await sb.from("bullion_lead_tags").select("tag_id").eq("lead_id", leadId);
+    setAttached((data || []).map((r) => r.tag_id));
+    setLoading(false);
+  }, [leadId]);
+
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { load(); }, [load]);
+
+  const toggle = async (tagId) => {
+    if (attached.includes(tagId)) {
+      await sb.from("bullion_lead_tags").delete().eq("lead_id", leadId).eq("tag_id", tagId);
+    } else {
+      await sb.from("bullion_lead_tags").insert({ lead_id: leadId, tag_id: tagId });
+    }
+    await load();
+    onReload && onReload();
+  };
+
+  const byCategory = useMemo(() => {
+    const groups = { flag: [], segment: [], source: [], custom: [] };
+    for (const t of allTags || []) {
+      (groups[t.category] || groups.custom).push(t);
+    }
+    return groups;
+  }, [allTags]);
+
+  const attachedTags = (allTags || []).filter((t) => attached.includes(t.id));
+
+  return (
+    <div style={{ padding: 10, borderBottom: "1px solid #eee", background: "#fafbfc" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 11, color: "#666", fontWeight: 500 }}>Tags:</span>
+        {attachedTags.map((t) => (
+          <TagChip key={t.id} tag={t} onRemove={() => toggle(t.id)} small />
+        ))}
+        <button onClick={() => setOpen(!open)} style={{
+          fontSize: 10, padding: "2px 8px", borderRadius: 10, border: `1px dashed ${C.gray}`,
+          background: "transparent", cursor: "pointer", color: C.gray,
+        }}>{open ? "–" : "+"} add</button>
+      </div>
+      {open && (
+        <div style={{ marginTop: 8, padding: 8, background: "#fff", border: "1px solid #eee", borderRadius: 8, maxHeight: 220, overflowY: "auto" }}>
+          {["flag", "segment", "source", "custom"].map((cat) => {
+            const list = byCategory[cat] || [];
+            if (!list.length) return null;
+            return (
+              <div key={cat} style={{ marginBottom: 6 }}>
+                <div style={{ fontSize: 10, color: "#888", textTransform: "uppercase", marginBottom: 4 }}>{cat}</div>
+                <div>
+                  {list.map((t) => {
+                    const on = attached.includes(t.id);
+                    return (
+                      <span key={t.id} onClick={() => toggle(t.id)} style={{
+                        display: "inline-block", fontSize: 10, padding: "2px 8px", borderRadius: 10,
+                        background: on ? (t.color || "#888") : (t.color || "#888") + "15",
+                        color: on ? "#fff" : (t.color || "#888"),
+                        border: `1px solid ${(t.color || "#888")}55`,
+                        marginRight: 4, marginBottom: 4, cursor: "pointer", userSelect: "none",
+                      }}>
+                        {on ? "✓ " : ""}{t.name}
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {loading && <span style={{ fontSize: 10, color: "#aaa" }}>…</span>}
+    </div>
+  );
+}
+
+function FamilyMembersSection({ leadId, tenantId }) {
+  const [rows, setRows] = useState([]);
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ relationship: "son", name: "", dob: "", mobile: "" });
+
+  const load = useCallback(async () => {
+    const { data } = await sb.from("bullion_family_members").select("*").eq("lead_id", leadId).order("created_at");
+    setRows(data || []);
+  }, [leadId]);
+
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { load(); }, [load]);
+
+  const save = async () => {
+    if (!form.name && !form.dob) return;
+    await sb.from("bullion_family_members").insert({ tenant_id: tenantId, lead_id: leadId, ...form });
+    setForm({ relationship: "son", name: "", dob: "", mobile: "" });
+    setAdding(false);
+    await load();
+  };
+  const remove = async (id) => {
+    if (!confirm("Remove this family member?")) return;
+    await sb.from("bullion_family_members").delete().eq("id", id);
+    await load();
+  };
+
+  return (
+    <div style={{ padding: 10, borderBottom: "1px solid #eee", background: "#fafbfc" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+        <span style={{ fontSize: 11, color: "#666", fontWeight: 500 }}>👨‍👩‍👧 Family ({rows.length})</span>
+        <button onClick={() => setAdding(!adding)} style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, border: `1px solid ${C.blue}`, background: "transparent", color: C.blue, cursor: "pointer" }}>{adding ? "cancel" : "+ add"}</button>
+      </div>
+      {rows.map((r) => (
+        <div key={r.id} style={{ fontSize: 11, color: "#555", marginBottom: 3, display: "flex", justifyContent: "space-between" }}>
+          <span>{r.relationship} · {r.name || "(no name)"} {r.dob && `· 🎂 ${r.dob}`} {r.mobile && `· 📞 ${r.mobile}`}</span>
+          <button onClick={() => remove(r.id)} style={{ background: "transparent", border: "none", color: C.red, cursor: "pointer", fontSize: 11 }}>×</button>
+        </div>
+      ))}
+      {adding && (
+        <div style={{ display: "grid", gridTemplateColumns: "110px 1fr 110px 130px auto", gap: 4, marginTop: 6 }}>
+          <Select value={form.relationship} onChange={(e) => setForm({ ...form, relationship: e.target.value })}>
+            {["spouse","son","daughter","father","mother","sibling","other"].map((r) => <option key={r} value={r}>{r}</option>)}
+          </Select>
+          <Input placeholder="name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          <Input placeholder="MM-DD" value={form.dob} onChange={(e) => setForm({ ...form, dob: e.target.value })} />
+          <Input placeholder="mobile" value={form.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value })} />
+          <Btn small color={C.blue} onClick={save}>save</Btn>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VisitsSection({ leadId }) {
+  const [rows, setRows] = useState([]);
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!expanded) return;
+    (async () => {
+      const { data } = await sb.from("bullion_visits").select("*").eq("lead_id", leadId).order("visited_at", { ascending: false });
+      setRows(data || []);
+    })();
+  }, [expanded, leadId]);
+
+  return (
+    <div style={{ padding: 10, borderBottom: "1px solid #eee", background: "#fafbfc" }}>
+      <div onClick={() => setExpanded(!expanded)} style={{ cursor: "pointer", fontSize: 11, color: "#666", fontWeight: 500 }}>
+        {expanded ? "▼" : "▶"} Visit history
+      </div>
+      {expanded && (
+        <div style={{ maxHeight: 200, overflowY: "auto", marginTop: 6 }}>
+          {rows.length === 0 && <div style={{ fontSize: 11, color: "#aaa" }}>No visits recorded.</div>}
+          {rows.map((v) => (
+            <div key={v.id} style={{ fontSize: 10, color: "#555", marginBottom: 3, padding: 4, background: "#fff", borderRadius: 4 }}>
+              <div><strong>{v.visited_at ? new Date(v.visited_at).toLocaleDateString("en-IN") : "—"}</strong> · {v.counter || "—"} · {v.staff || "—"} {v.sale && <span style={{ color: C.green, fontWeight: 600 }}>✓ sale</span>}</div>
+              {v.items_seen && <div style={{ color: "#888" }}>items: {v.items_seen}</div>}
+              {v.purpose && <div style={{ color: "#888" }}>note: {v.purpose}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// TAGS ADMIN SCREEN
+// ──────────────────────────────────────────────────────────
+function TagsScreen({ onReload }) {
+  const [rows, setRows] = useState([]);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    const { data } = await sb.from("bullion_tags").select("*").eq("tenant_id", getTenantId()).order("category").order("sort_order");
+    setRows(data || []);
+  }, []);
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { load(); }, [load]);
+
+  const add = () => setRows((r) => [...r, { _new: true, tenant_id: getTenantId(), name: "", category: "custom", color: "#888", sort_order: 500 }]);
+  const update = (idx, k, v) => setRows((r) => r.map((row, i) => i === idx ? { ...row, [k]: v, _dirty: true } : row));
+  const remove = async (idx) => {
+    const row = rows[idx];
+    if (row.id && !confirm(`Delete tag "${row.name}"? This will untag it from all leads.`)) return;
+    if (row.id) await sb.from("bullion_tags").delete().eq("id", row.id);
+    setRows((r) => r.filter((_, i) => i !== idx));
+  };
+  const saveAll = async () => {
+    setSaving(true);
+    for (const row of rows) {
+      if (!row._new && !row._dirty) continue;
+      if (!row.name) continue;
+      const { _new, _dirty, ...clean } = row;
+      if (row.id) await sb.from("bullion_tags").update(clean).eq("id", row.id);
+      else await sb.from("bullion_tags").insert(clean);
+    }
+    await load();
+    setSaving(false);
+    onReload && onReload();
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+        <div style={{ fontSize: 13, color: "#666" }}>Tags = flexible labels on leads. Flag = checkbox. Segment = audience. Source = which sheet it came from. Custom = anything you add.</div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <Btn ghost small color={C.gray} onClick={load}>↻</Btn>
+          <Btn small color={C.blue} onClick={add}>+ Add</Btn>
+        </div>
+      </div>
+      <Card style={{ padding: 0 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead><tr style={{ background: "#f7f7f7" }}>
+            <th style={{ padding: 8, textAlign: "left", fontSize: 10, color: "#888" }}>NAME</th>
+            <th style={{ padding: 8, textAlign: "left", fontSize: 10, color: "#888" }}>CATEGORY</th>
+            <th style={{ padding: 8, textAlign: "left", fontSize: 10, color: "#888" }}>COLOR</th>
+            <th style={{ padding: 8, textAlign: "center", fontSize: 10, color: "#888" }}>ORDER</th>
+            <th style={{ padding: 8, textAlign: "center", width: 60 }}></th>
+          </tr></thead>
+          <tbody>
+            {rows.map((row, idx) => (
+              <tr key={row.id || `new-${idx}`} style={{ borderTop: "1px solid #f5f5f5" }}>
+                <td style={{ padding: 6 }}><Input value={row.name || ""} onChange={(e) => update(idx, "name", e.target.value)} /></td>
+                <td style={{ padding: 6 }}>
+                  <Select value={row.category} onChange={(e) => update(idx, "category", e.target.value)}>
+                    <option value="flag">flag</option><option value="segment">segment</option><option value="source">source</option><option value="custom">custom</option>
+                  </Select>
+                </td>
+                <td style={{ padding: 6 }}>
+                  <Input type="color" value={row.color || "#888"} onChange={(e) => update(idx, "color", e.target.value)} style={{ width: 50, padding: 2, height: 30 }} />
+                </td>
+                <td style={{ padding: 6, textAlign: "center" }}>
+                  <Input type="number" value={row.sort_order || 0} onChange={(e) => update(idx, "sort_order", Number(e.target.value))} style={{ width: 60, padding: 4 }} />
+                </td>
+                <td style={{ padding: 6, textAlign: "center" }}>
+                  <Btn small ghost color={C.red} onClick={() => remove(idx)}>×</Btn>
+                </td>
+              </tr>
+            ))}
+            {!rows.length && <tr><td colSpan={5} style={{ padding: 20, textAlign: "center", color: "#aaa" }}>No tags.</td></tr>}
+          </tbody>
+        </table>
+      </Card>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}>
+        <Btn color={C.blue} onClick={saveAll} disabled={saving}>{saving ? "Saving…" : "Save all"}</Btn>
+      </div>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// IMPORTS SCREEN (read-only log)
+// ──────────────────────────────────────────────────────────
+function ImportsScreen() {
+  const [rows, setRows] = useState([]);
+  const load = useCallback(async () => {
+    const { data } = await sb.from("bullion_imports").select("*").eq("tenant_id", getTenantId()).order("started_at", { ascending: false }).limit(50);
+    setRows(data || []);
+  }, []);
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { load(); }, [load]);
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+        <div style={{ fontSize: 13, color: "#666" }}>History of data imports from external sheets / CSV files.</div>
+        <Btn ghost small color={C.gray} onClick={load}>↻</Btn>
+      </div>
+      <Card style={{ padding: 0 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead><tr style={{ background: "#f7f7f7" }}>
+            <th style={{ padding: 8, textAlign: "left", fontSize: 10, color: "#888" }}>FINISHED</th>
+            <th style={{ padding: 8, textAlign: "left", fontSize: 10, color: "#888" }}>FILE</th>
+            <th style={{ padding: 8, textAlign: "right", fontSize: 10, color: "#888" }}>IN</th>
+            <th style={{ padding: 8, textAlign: "right", fontSize: 10, color: "#888" }}>CREATED</th>
+            <th style={{ padding: 8, textAlign: "right", fontSize: 10, color: "#888" }}>MERGED</th>
+            <th style={{ padding: 8, textAlign: "right", fontSize: 10, color: "#888" }}>SKIPPED</th>
+          </tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id} style={{ borderTop: "1px solid #f5f5f5" }}>
+                <td style={{ padding: 8 }}>{r.finished_at ? fmtDT(r.finished_at) : "(running)"}</td>
+                <td style={{ padding: 8 }}>{r.file}</td>
+                <td style={{ padding: 8, textAlign: "right" }}>{r.rows_in}</td>
+                <td style={{ padding: 8, textAlign: "right", color: C.green }}>{r.rows_created}</td>
+                <td style={{ padding: 8, textAlign: "right", color: C.blue }}>{r.rows_merged}</td>
+                <td style={{ padding: 8, textAlign: "right", color: C.red }}>{r.rows_skipped}</td>
+              </tr>
+            ))}
+            {!rows.length && <tr><td colSpan={6} style={{ padding: 20, textAlign: "center", color: "#aaa" }}>No imports yet.</td></tr>}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// MAIN APP — / (staff, Leads only) vs /back (admin, all tabs)
+// ──────────────────────────────────────────────────────────
+const isAdminPath = () => (typeof window !== "undefined" && window.location.pathname.startsWith("/back"));
+
 export default function App() {
   const [user, setUser] = useState(loadUser);
   const [screen, setScreen] = useState("leads");
   const [funnels, setFunnels] = useState([]);
   const [personas, setPersonas] = useState([]);
+  const [allTags, setAllTags] = useState([]);
+  const [atAdmin, setAtAdmin] = useState(isAdminPath());
+
+  const canAdmin = user && ["superadmin", "admin"].includes(user.role);
 
   const login = (u) => { saveUser(u); setUser(u); };
-  const logout = () => { saveUser(null); setUser(null); };
+  const logout = () => {
+    saveUser(null); setUser(null);
+    if (atAdmin) { window.history.replaceState({}, "", "/"); setAtAdmin(false); }
+  };
+  const goAdmin = () => { window.history.pushState({}, "", "/back"); setAtAdmin(true); };
+  const goStaff = () => { window.history.pushState({}, "", "/"); setAtAdmin(false); setScreen("leads"); };
+
+  useEffect(() => {
+    const onPop = () => setAtAdmin(isAdminPath());
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
 
   const loadFunnels = useCallback(async () => {
     const { data } = await sb.from("funnels").select("*").eq("tenant_id", getTenantId()).order("active", { ascending: false }).order("id");
@@ -1187,21 +1535,61 @@ export default function App() {
     const { data } = await sb.from("personas").select("*").eq("tenant_id", getTenantId()).order("is_default", { ascending: false }).order("name");
     if (data) setPersonas(data);
   }, []);
+  const loadTags = useCallback(async () => {
+    const { data } = await sb.from("bullion_tags").select("*").eq("tenant_id", getTenantId()).order("category").order("sort_order");
+    if (data) setAllTags(data);
+  }, []);
 
   useEffect(() => {
     if (!user) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     loadFunnels();
     loadPersonas();
-  }, [user, loadFunnels, loadPersonas]);
+    loadTags();
+  }, [user, loadFunnels, loadPersonas, loadTags]);
 
   if (!user) return <LoginScreen onLogin={login} />;
 
+  if (atAdmin && !canAdmin) {
+    window.history.replaceState({}, "", "/");
+    return null;
+  }
+
+  const header = (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+      <div>
+        <h2 style={{ fontSize: 18, fontWeight: 600, margin: "0 0 2px" }}>
+          SSJ Jew CRM {atAdmin && <span style={{ fontSize: 11, color: C.purple, fontWeight: 500 }}>· admin</span>}
+        </h2>
+        <p style={{ fontSize: 12, color: "#888", margin: 0 }}>{ROLES[user.role] || user.role} · {user.name}</p>
+      </div>
+      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+        {canAdmin && !atAdmin && <button onClick={goAdmin} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 7, border: `1px solid ${C.purple}`, background: "transparent", color: C.purple, cursor: "pointer" }}>⚙️ Admin</button>}
+        {canAdmin && atAdmin && <button onClick={goStaff} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 7, border: `1px solid ${C.blue}`, background: "transparent", color: C.blue, cursor: "pointer" }}>← Leads view</button>}
+        <button onClick={logout} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 7, border: "1px solid #ddd", background: "transparent", cursor: "pointer" }}>Logout</button>
+      </div>
+    </div>
+  );
+
+  // Staff view — only Leads (filtered to active enquiries)
+  if (!atAdmin) {
+    return (
+      <div style={{ maxWidth: 1280, margin: "0 auto", padding: "1rem" }}>
+        {header}
+        <LeadsScreen funnels={funnels} allTags={allTags} viewMode="leads" />
+      </div>
+    );
+  }
+
+  // Admin view — all tabs
   const tabs = [
     { k: "leads", l: "Leads", icon: "💬" },
+    { k: "contacts", l: "Contacts", icon: "📇" },
     { k: "funnels", l: "Funnels", icon: "🎯" },
     { k: "personas", l: "Personas", icon: "🎭" },
     { k: "faqs", l: "FAQs", icon: "❓" },
+    { k: "tags", l: "Tags", icon: "🏷️" },
+    { k: "imports", l: "Imports", icon: "📥" },
     { k: "connections", l: "Connections", icon: "📱" },
     { k: "rates", l: "Rates", icon: "📈" },
     { k: "analytics", l: "Analytics", icon: "📊" },
@@ -1209,27 +1597,20 @@ export default function App() {
 
   return (
     <div style={{ maxWidth: 1280, margin: "0 auto", padding: "1rem" }}>
-      {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-        <div>
-          <h2 style={{ fontSize: 18, fontWeight: 600, margin: "0 0 2px" }}>SSJ Jew CRM</h2>
-          <p style={{ fontSize: 12, color: "#888", margin: 0 }}>{ROLES[user.role] || user.role} · {user.name}</p>
-        </div>
-        <button onClick={logout} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 7, border: "1px solid #ddd", background: "transparent", cursor: "pointer" }}>Logout</button>
-      </div>
-
-      {/* Navigation */}
+      {header}
       <div style={{ display: "flex", gap: 6, marginBottom: 16, borderBottom: "1px solid #eee", paddingBottom: 10, flexWrap: "wrap" }}>
         {tabs.map((t) => (
           <button key={t.k} onClick={() => setScreen(t.k)} style={{ fontSize: 13, padding: "6px 14px", borderRadius: 8, border: `1px solid ${screen === t.k ? C.blue : "#ddd"}`, background: screen === t.k ? C.blue : "transparent", color: screen === t.k ? "#fff" : "#333", cursor: "pointer" }}>{t.icon} {t.l}</button>
         ))}
       </div>
 
-      {/* Screens */}
-      {screen === "leads" && <LeadsScreen funnels={funnels} />}
+      {screen === "leads" && <LeadsScreen funnels={funnels} allTags={allTags} viewMode="leads" />}
+      {screen === "contacts" && <LeadsScreen funnels={funnels} allTags={allTags} viewMode="contacts" />}
       {screen === "funnels" && <FunnelsScreen funnels={funnels} personas={personas} onReload={loadFunnels} />}
       {screen === "personas" && <PersonasScreen personas={personas} onReload={loadPersonas} />}
       {screen === "faqs" && <FaqsScreen />}
+      {screen === "tags" && <TagsScreen onReload={loadTags} />}
+      {screen === "imports" && <ImportsScreen />}
       {screen === "connections" && <ConnectionsScreen />}
       {screen === "rates" && <RatesScreen />}
       {screen === "analytics" && <AnalyticsScreen funnels={funnels} />}
