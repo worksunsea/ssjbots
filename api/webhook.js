@@ -182,6 +182,7 @@ export default async function handler(req, res) {
       ratesText: ratesForPrompt(rates),
       maxExchanges,
       isEscalation: inEscalation,
+      lead: leadRow,
     });
     const messages = buildMessages({ history: priorMessages, inboundBody: msg });
     const model = inEscalation ? CLAUDE_MODEL_ESCALATION : CLAUDE_MODEL;
@@ -239,6 +240,25 @@ export default async function handler(req, res) {
       parsed.action === "HANDOFF" || inEscalation ? "handoff" :
       "active";
 
+    // Merge any details Claude extracted from the user's message — only fill
+    // fields that are currently empty (don't overwrite manual edits / earlier
+    // captures).
+    const ex = parsed.extracted || {};
+    const captureOnlyIfEmpty = (currentVal, newVal) =>
+      currentVal ? currentVal : (newVal && String(newVal).trim() ? String(newVal).trim() : null);
+
+    const extractedPatch = {
+      name: captureOnlyIfEmpty(leadRow.name, ex.name),
+      city: captureOnlyIfEmpty(leadRow.city, ex.city),
+      email: captureOnlyIfEmpty(leadRow.email, ex.email),
+      bday: captureOnlyIfEmpty(leadRow.bday, ex.bday),
+      anniversary: captureOnlyIfEmpty(leadRow.anniversary, ex.anniversary),
+    };
+    // Only include keys that are actually filled (avoids nulling out columns)
+    const patchToApply = Object.fromEntries(
+      Object.entries(extractedPatch).filter(([, v]) => v != null && v !== "")
+    );
+
     await sb
       .from("bullion_leads")
       .update({
@@ -253,6 +273,7 @@ export default async function handler(req, res) {
         // CRM (via /api/send). We never auto-pause here — the bot keeps the
         // lead warm in escalation until a human takes over.
         bot_paused: leadRow.bot_paused,
+        ...patchToApply,
       })
       .eq("id", leadRow.id);
 

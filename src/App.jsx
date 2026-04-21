@@ -277,6 +277,13 @@ function ConversationPane({ lead, funnel, onClose, onChanged }) {
             {lead.bot_paused && <Pill color={C.orange}>bot paused</Pill>}
           </div>
           <div style={{ fontSize: 11, color: "#888" }}>{lead.phone} · {funnel?.name || lead.funnel_id} · {lead.exchanges_count || 0} exchanges</div>
+          <div style={{ fontSize: 11, color: "#888", marginTop: 3 }}>
+            {lead.city && <span>📍 {lead.city} · </span>}
+            {lead.email && <span>✉️ {lead.email} · </span>}
+            {lead.bday && <span>🎂 {lead.bday} · </span>}
+            {lead.anniversary && <span>💍 {lead.anniversary}</span>}
+            {!lead.city && !lead.email && !lead.bday && !lead.anniversary && <em>(name/city/bday/anniv not captured yet)</em>}
+          </div>
           <div style={{ marginTop: 6 }}><StageBar stage={lead.stage} /></div>
         </div>
         <button onClick={onClose} style={{ background: "transparent", border: "none", fontSize: 20, color: "#888", cursor: "pointer" }}>×</button>
@@ -403,8 +410,10 @@ function FunnelStepsEditor({ funnel, onClose }) {
       step_order: next,
       name: `Step ${next}`,
       delay_minutes: next === 1 ? 120 : 1440, // 2h, then 1 day
+      trigger_type: next === 1 ? "after_enrollment" : "after_prev_step",
+      trigger_at: null,
       condition: "always",
-      message_template: "Hi {{name}}, just checking in — any questions about your enquiry?",
+      message_template: "Hi Sir/Ma'am {{name}}, just checking in — any questions about your earlier enquiry?",
       active: true,
     }]);
   };
@@ -450,29 +459,51 @@ function FunnelStepsEditor({ funnel, onClose }) {
       {loading && <div style={{ color: "#888", fontSize: 13 }}>Loading…</div>}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10, maxHeight: "55vh", overflowY: "auto" }}>
-        {steps.map((row, idx) => (
-          <Card key={row.id || `new-${idx}`} style={{ padding: 12 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "60px 1fr 120px 100px auto", gap: 8, alignItems: "center", marginBottom: 8 }}>
-              <Input type="number" value={row.step_order} onChange={(e) => updateStep(idx, "step_order", Number(e.target.value))} style={{ padding: 4 }} />
-              <Input value={row.name || ""} onChange={(e) => updateStep(idx, "name", e.target.value)} placeholder="Step name" />
-              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                <Input type="number" value={row.delay_minutes} onChange={(e) => updateStep(idx, "delay_minutes", Number(e.target.value))} style={{ padding: 4 }} />
-                <span style={{ fontSize: 11, color: "#888" }}>min ({fmtDelay(row.delay_minutes || 0)})</span>
+        {steps.map((row, idx) => {
+          const tt = row.trigger_type || "after_prev_step";
+          const showDelay = tt !== "specific_datetime";
+          const showDatetime = tt === "specific_datetime";
+          return (
+            <Card key={row.id || `new-${idx}`} style={{ padding: 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "50px 1fr 90px auto", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                <Input type="number" value={row.step_order} onChange={(e) => updateStep(idx, "step_order", Number(e.target.value))} style={{ padding: 4 }} />
+                <Input value={row.name || ""} onChange={(e) => updateStep(idx, "name", e.target.value)} placeholder="Step name" />
+                <Select value={row.active ? "on" : "off"} onChange={(e) => updateStep(idx, "active", e.target.value === "on")}>
+                  <option value="on">active</option>
+                  <option value="off">off</option>
+                </Select>
+                <Btn small ghost color={C.red} onClick={() => removeStep(idx)}>×</Btn>
               </div>
-              <Select value={row.active ? "on" : "off"} onChange={(e) => updateStep(idx, "active", e.target.value === "on")}>
-                <option value="on">active</option>
-                <option value="off">off</option>
-              </Select>
-              <Btn small ghost color={C.red} onClick={() => removeStep(idx)}>×</Btn>
-            </div>
-            <Textarea
-              rows={3}
-              value={row.message_template || ""}
-              onChange={(e) => updateStep(idx, "message_template", e.target.value)}
-              placeholder="Message text (Hinglish ok). Use {{name}} etc."
-            />
-          </Card>
-        ))}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                <Field label="Trigger">
+                  <Select value={tt} onChange={(e) => updateStep(idx, "trigger_type", e.target.value)}>
+                    <option value="after_prev_step">After previous step</option>
+                    <option value="after_enrollment">After enrollment (first enroll)</option>
+                    <option value="after_last_inbound">After lead's last inbound message</option>
+                    <option value="after_last_purchase">After lead's last purchase</option>
+                    <option value="specific_datetime">On specific date + time</option>
+                  </Select>
+                </Field>
+                {showDelay && (
+                  <Field label={`Delay (minutes) — current: ${fmtDelay(row.delay_minutes || 0)}`}>
+                    <Input type="number" value={row.delay_minutes || 0} onChange={(e) => updateStep(idx, "delay_minutes", Number(e.target.value))} />
+                  </Field>
+                )}
+                {showDatetime && (
+                  <Field label="Send at (exact date + time, IST)">
+                    <Input type="datetime-local" value={row.trigger_at ? String(row.trigger_at).slice(0, 16) : ""} onChange={(e) => updateStep(idx, "trigger_at", e.target.value ? new Date(e.target.value).toISOString() : null)} />
+                  </Field>
+                )}
+              </div>
+              <Textarea
+                rows={3}
+                value={row.message_template || ""}
+                onChange={(e) => updateStep(idx, "message_template", e.target.value)}
+                placeholder="Message text. Placeholders: {{name}} {{city}} {{phone}} {{funnel_name}} {{goal}}"
+              />
+            </Card>
+          );
+        })}
         {!steps.length && !loading && (
           <div style={{ padding: 20, textAlign: "center", color: "#aaa", fontSize: 13 }}>
             No steps yet. Add a first follow-up.
