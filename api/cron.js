@@ -10,7 +10,8 @@
 import { supa } from "./_lib/supabase.js";
 import { sendWhatsApp } from "./_lib/wa.js";
 import { transitionLeadToFunnel, enrollLeadInDrip } from "./_lib/drip.js";
-import { OWNER_ALERT_PHONE } from "./_lib/config.js";
+import { askClaude } from "./_lib/claude.js";
+import { OWNER_ALERT_PHONE, CLAUDE_MODEL_ESCALATION } from "./_lib/config.js";
 
 export const config = { maxDuration: 60 };
 
@@ -33,9 +34,10 @@ export default async function handler(req, res) {
   const { data: due } = await sb
     .from("bullion_scheduled_messages")
     .select(`
-      id, lead_id, funnel_id, body, send_at, tenant_id,
-      lead:bullion_leads!inner(id,phone,name,status,bot_paused,dnd,last_msg_at,funnel_id,funnel_history,tenant_id),
-      funnel:funnels!inner(id,name,active,wbiztool_client,next_on_convert,next_on_exhaust,tenant_id)
+      id, lead_id, funnel_id, body, send_at, tenant_id, is_reminder, reminder_phone,
+      step:bullion_funnel_steps(id,use_ai_message,message_template,step_type),
+      lead:bullion_leads!inner(id,phone,name,status,bot_paused,dnd,last_msg_at,funnel_id,funnel_history,tenant_id,city),
+      funnel:funnels!inner(id,name,active,wbiztool_client,next_on_convert,next_on_exhaust,tenant_id,goal)
     `)
     .eq("status", "pending")
     .lte("send_at", nowIso)
@@ -89,8 +91,46 @@ export default async function handler(req, res) {
       stats.canceled++; continue;
     }
 
+    // Occasion reminder → send WA to owner, not to lead
+    if (row.is_reminder) {
+      const alertPhone = row.reminder_phone || OWNER_ALERT_PHONE;
+      if (alertPhone) {
+        await sendWhatsApp({ phone: alertPhone, msg: row.body }).catch(() => {});
+      }
+      await sb.from("bullion_scheduled_messages").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", row.id);
+      stats.sent++; continue;
+    }
+
+    // AI-generated message step — call Claude to write personalized message
+    let msgBody = row.body;
+    if (row.step?.use_ai_message) {
+      try {
+        const aiSystem = [
+          "You are a warm WhatsApp assistant for Sun Sea Jewellers, Karol Bagh.",
+          "Write a short, personalized WhatsApp message for the customer. 2–3 lines max.",
+          "Use their name. Professional and warm — premium jewellery house tone.",
+          "No markdown. No bullet points. Just the message text.",
+          `Context: ${funnel.goal || "Stay in touch and nurture the relationship."}`,
+          `Lead name: ${lead.name || "(unknown)"}`,
+          `City: ${lead.city || "(unknown)"}`,
+          `Funnel: ${funnel.name}`,
+          "Template hint (do NOT copy verbatim, use as inspiration only):",
+          row.body,
+        ].join("\n");
+        const claude = await askClaude({
+          system: aiSystem,
+          messages: [{ role: "user", content: "Write the personalized message now." }],
+          maxTokens: 150,
+          model: CLAUDE_MODEL_ESCALATION,
+        });
+        if (claude?.text?.trim()) msgBody = claude.text.trim();
+      } catch (e) {
+        console.error("AI message generation failed, using template", e);
+      }
+    }
+
     // Send
-    const wa = await sendWhatsApp({ phone: lead.phone, msg: row.body });
+    const wa = await sendWhatsApp({ phone: lead.phone, msg: msgBody });
     if (wa.status !== 1) {
       await sb.from("bullion_scheduled_messages").update({ status: "failed", error: wa.message }).eq("id", row.id);
       stats.failed++; continue;
@@ -98,11 +138,11 @@ export default async function handler(req, res) {
 
     await sb.from("bullion_messages").insert({
       tenant_id: row.tenant_id, lead_id: lead.id, phone: lead.phone, funnel_id: funnel.id,
-      wbiztool_msg_id: String(wa.msg_id || ""), direction: "out", body: row.body,
+      wbiztool_msg_id: String(wa.msg_id || ""), direction: "out", body: msgBody,
       stage: "drip", claude_action: "DRIP", status: "sent",
     });
     await sb.from("bullion_scheduled_messages").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", row.id);
-    await sb.from("bullion_leads").update({ last_msg: row.body, last_msg_at: new Date().toISOString() }).eq("id", lead.id);
+    await sb.from("bullion_leads").update({ last_msg: msgBody, last_msg_at: new Date().toISOString() }).eq("id", lead.id);
     stats.sent++;
   }
 
@@ -189,6 +229,34 @@ export default async function handler(req, res) {
       await enrollLeadInDrip({ lead, funnel }).catch(() => {});
       stats.calendarEnrolled++;
     }
+  }
+
+  // ── 4. After-marriage funnel enrollment ─────────────────────
+  // Enroll leads whose wedding_date has arrived and haven't been enrolled yet.
+  const { data: weddingLeads } = await sb
+    .from("bullion_leads")
+    .select("id, phone, name, funnel_id, funnel_history, tenant_id")
+    .not("wedding_date", "is", null)
+    .is("post_wedding_enrolled_at", null)
+    .lte("wedding_date", new Date().toISOString().slice(0, 10))
+    .eq("dnd", false)
+    .limit(10);
+
+  for (const lead of weddingLeads || []) {
+    const { data: afterMarriageFunnel } = await sb
+      .from("funnels")
+      .select("*")
+      .eq("id", "after_marriage")
+      .eq("tenant_id", lead.tenant_id)
+      .eq("active", true)
+      .maybeSingle();
+    if (!afterMarriageFunnel) continue;
+
+    await enrollLeadInDrip({ lead, funnel: afterMarriageFunnel }).catch(() => {});
+    await sb.from("bullion_leads")
+      .update({ post_wedding_enrolled_at: new Date().toISOString() })
+      .eq("id", lead.id);
+    stats.calendarEnrolled++;
   }
 
   return res.status(200).json({ ok: true, ts: nowIso, stats });

@@ -23,6 +23,10 @@ const STATUSES = ["active", "handoff", "converted", "dead", "paused"];
 const STATUS_C = { active: C.blue, handoff: C.red, converted: C.green, dead: "#999", paused: C.gray };
 const PRODUCT_FOCUS = ["gold_bullion", "silver_coin", "coin_bar", "all"];
 const ROLES = { superadmin: "Super Admin", admin: "Admin", manager: "Manager", staff: "Staff" };
+const PRODUCT_CATEGORIES = ["gold", "silver", "diamond", "polki", "kundan", "gemstone", "solitaire", "lab_diamond", "other"];
+const OCCASION_TYPES = ["daughter's wedding", "son's wedding", "self wedding", "anniversary", "birthday", "Diwali gifting", "corporate gift", "self purchase", "other"];
+const FOR_WHOM_OPTIONS = ["self", "daughter", "son", "wife", "husband", "mother", "father", "sister", "brother", "other"];
+const FMS_STEP_COLORS = { new: C.gray, bot_activated: C.blue, qualifying: C.purple, catalog_sent: C.orange, call_needed: C.red, quoted: C.yellow, negotiating: C.orange, order_confirmed: C.green, delivered: C.green, closed: "#999" };
 
 // ── HELPERS ──
 const normalizePhone = (p) => String(p || "").replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, "");
@@ -231,7 +235,80 @@ function LeadsScreen({ funnels, allTags, viewMode = "leads" }) {
   );
 }
 
-function ConversationPane({ lead, funnel, onClose, onChanged, allTags }) {
+function VisitRescheduleButton({ demandId, onRescheduled }) {
+  const [open, setOpen] = useState(false);
+  const [newDate, setNewDate] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const reschedule = async () => {
+    if (!newDate) return;
+    setSaving(true);
+    const visitTs = new Date(newDate).getTime();
+    const visitTime = new Date(visitTs).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" });
+    const visitDateStr = new Date(visitTs).toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", timeZone: "Asia/Kolkata" });
+
+    // Get current demand info
+    const { data: demand } = await sb.from("bullion_demands").select("*").eq("id", demandId).single();
+    if (!demand) { setSaving(false); return; }
+
+    // Cancel old visit reminders
+    await sb.from("bullion_scheduled_messages")
+      .update({ status: "canceled", canceled_reason: "rescheduled_manual" })
+      .eq("lead_id", demand.lead_id)
+      .in("message_type", ["visit_reminder", "visit_day"])
+      .eq("status", "pending");
+
+    // Get lead name
+    const { data: lead } = await sb.from("bullion_leads").select("name,phone").eq("id", demand.lead_id).single();
+    const clientName = lead?.name || "Sir/Ma'am";
+
+    // Schedule new reminders
+    const d1ts = visitTs - 24 * 60 * 60 * 1000;
+    if (d1ts > Date.now()) {
+      await sb.from("bullion_scheduled_messages").insert({
+        tenant_id: demand.tenant_id, lead_id: demand.lead_id, funnel_id: demand.funnel_id,
+        send_at: new Date(d1ts).toISOString(),
+        body: `Hi ${clientName}, just confirming your visit to Sun Sea Jewellers tomorrow (${visitDateStr}) at ${visitTime}. Looking forward to meeting you! Please reply YES to confirm. 🙏`,
+        status: "pending", message_type: "visit_reminder",
+      });
+    }
+    const visitDay9am = new Date(visitTs);
+    visitDay9am.setUTCHours(3, 30, 0, 0);
+    if (visitDay9am > new Date()) {
+      await sb.from("bullion_scheduled_messages").insert({
+        tenant_id: demand.tenant_id, lead_id: demand.lead_id, funnel_id: demand.funnel_id,
+        send_at: visitDay9am.toISOString(),
+        body: `Good morning ${clientName}! 🙏 A warm reminder — your visit to Sun Sea Jewellers is today at ${visitTime}, Karol Bagh. We look forward to welcoming you!`,
+        status: "pending", message_type: "visit_day",
+      });
+    }
+
+    // Update demand
+    await sb.from("bullion_demands").update({
+      visit_scheduled_at: new Date(visitTs).toISOString(),
+      visit_confirmed: false,
+      visit_rescheduled_count: (demand.visit_rescheduled_count || 0) + 1,
+    }).eq("id", demandId);
+
+    setSaving(false);
+    setOpen(false);
+    onRescheduled && onRescheduled();
+  };
+
+  if (!open) {
+    return <Btn small ghost color={C.orange} onClick={() => setOpen(true)}>Reschedule</Btn>;
+  }
+
+  return (
+    <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+      <Input type="datetime-local" value={newDate} onChange={(e) => setNewDate(e.target.value)} style={{ fontSize: 11, padding: "3px 6px", width: 170 }} />
+      <Btn small color={C.green} onClick={reschedule} disabled={saving || !newDate}>{saving ? "…" : "Confirm"}</Btn>
+      <Btn small ghost color={C.gray} onClick={() => setOpen(false)}>✕</Btn>
+    </span>
+  );
+}
+
+function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand }) {
   const [messages, setMessages] = useState([]);
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
@@ -305,6 +382,32 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags }) {
         <button onClick={onClose} style={{ background: "transparent", border: "none", fontSize: 20, color: "#888", cursor: "pointer" }}>×</button>
       </div>
 
+      {/* Demand context strip */}
+      {demand && (
+        <div style={{ padding: "6px 14px", borderBottom: "1px solid #eee", background: "#fffbf0", fontSize: 11 }}>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <Pill color={C.purple}>{demand.product_category}</Pill>
+            {demand.description && <span style={{ color: "#555" }}>{demand.description.slice(0, 80)}</span>}
+            {demand.for_whom && <span style={{ color: "#888" }}>for {demand.for_whom}</span>}
+            {demand.budget && <Pill color={C.gray}>₹{Number(demand.budget).toLocaleString("en-IN")}</Pill>}
+            {demand.occasion && <Pill color={C.orange}>{demand.occasion}</Pill>}
+            {demand.occasion_date && <span style={{ color: C.red, fontWeight: 500 }}>{fmtD(demand.occasion_date)}</span>}
+            {demand.ai_summary && <span style={{ color: C.blue, fontStyle: "italic" }}>"{demand.ai_summary}"</span>}
+            {demand.needs_qualified && <Pill color={C.green} solid>✓ Qualified</Pill>}
+          </div>
+          {demand.visit_scheduled_at && (
+            <div style={{ marginTop: 4, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <span style={{ color: C.green, fontWeight: 500 }}>🏪 Visit: {fmtDT(demand.visit_scheduled_at)}</span>
+              {demand.visit_confirmed
+                ? <Pill color={C.green} solid>✓ Confirmed</Pill>
+                : <Pill color={C.orange}>Not confirmed</Pill>}
+              {demand.visit_rescheduled_count > 0 && <span style={{ color: "#aaa" }}>rescheduled {demand.visit_rescheduled_count}×</span>}
+              <VisitRescheduleButton demandId={demand.id} onRescheduled={onChanged} />
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Actions */}
       <div style={{ padding: "8px 14px", borderBottom: "1px solid #eee", display: "flex", gap: 6, flexWrap: "wrap" }}>
         <Btn small ghost color={lead.bot_paused ? C.green : C.orange} onClick={toggleBot} disabled={busy}>{lead.bot_paused ? "Resume bot" : "Pause bot"}</Btn>
@@ -344,6 +447,396 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags }) {
         <Btn color={C.green} onClick={sendManual} disabled={sending || !reply.trim()}>{sending ? "…" : "Send"}</Btn>
       </div>
     </Card>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// DEMANDS SCREEN — staff primary view
+// ──────────────────────────────────────────────────────────
+function DemandsScreen({ funnels, allTags }) {
+  const [demands, setDemands] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [selectedLeadId, setSelectedLeadId] = useState(null);
+  const [selectedDemand, setSelectedDemand] = useState(null);
+  const [filterStep, setFilterStep] = useState("");
+  const [filterCat, setFilterCat] = useState("");
+  const [search, setSearch] = useState("");
+  const [adding, setAdding] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    let q = sb
+      .from("bullion_demands")
+      .select("*, lead:bullion_leads(id,name,phone,status,bot_paused,funnel_id,stage,last_msg,last_msg_at,updated_at), step:bullion_funnel_steps(id,name,step_type)")
+      .eq("tenant_id", getTenantId())
+      .order("occasion_date", { ascending: true, nullsFirst: false });
+    if (filterStep) q = q.eq("fms_step_id", filterStep);
+    if (filterCat) q = q.eq("product_category", filterCat);
+    const { data } = await q;
+    // Sort: demands with occasion_date first (by closeness), then by updated_at
+    const sorted = (data || []).sort((a, b) => {
+      const da = a.occasion_date ? new Date(a.occasion_date) - new Date() : Infinity;
+      const db = b.occasion_date ? new Date(b.occasion_date) - new Date() : Infinity;
+      if (da !== db) return da - db;
+      return new Date(b.updated_at) - new Date(a.updated_at);
+    });
+    setDemands(sorted);
+    setLoading(false);
+  }, [filterStep, filterCat]);
+
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => { const t = setInterval(load, 15000); return () => clearInterval(t); }, [load]);
+
+  const filtered = useMemo(() => {
+    if (!search) return demands;
+    const s = search.toLowerCase();
+    return demands.filter((d) =>
+      (d.lead?.name || "").toLowerCase().includes(s) ||
+      (d.lead?.phone || "").includes(s) ||
+      (d.description || "").toLowerCase().includes(s) ||
+      (d.occasion || "").toLowerCase().includes(s)
+    );
+  }, [demands, search]);
+
+  const selectedLead = selectedLeadId ? demands.find((d) => d.lead?.id === selectedLeadId)?.lead : null;
+  const selectedFunnel = selectedLead ? funnels.find((f) => f.id === selectedLead.funnel_id) : null;
+
+  const urgencyBorder = (d) => {
+    if (!d.occasion_date) return "#eee";
+    const days = Math.round((new Date(d.occasion_date) - new Date()) / 86400000);
+    if (days < 0) return C.gray;
+    if (days < 7) return C.red;
+    if (days < 30) return C.orange;
+    return "#eee";
+  };
+
+  const urgencyLabel = (d) => {
+    if (!d.occasion_date) return null;
+    const days = Math.round((new Date(d.occasion_date) - new Date()) / 86400000);
+    if (days < 0) return { text: "Overdue", color: C.gray };
+    if (days === 0) return { text: "Today!", color: C.red };
+    if (days < 7) return { text: `${days}d left`, color: C.red };
+    if (days < 30) return { text: `${days}d`, color: C.orange };
+    return { text: `${days}d`, color: C.gray };
+  };
+
+  const advanceStep = async (demand) => {
+    const funnelId = demand.funnel_id;
+    if (!funnelId) return;
+    const { data: steps } = await sb
+      .from("bullion_funnel_steps")
+      .select("id,name,step_order,step_type")
+      .eq("funnel_id", funnelId)
+      .eq("tenant_id", getTenantId())
+      .eq("active", true)
+      .order("step_order", { ascending: true });
+    if (!steps?.length) return;
+    const curIdx = steps.findIndex((s) => s.id === demand.fms_step_id);
+    const nextStep = steps[curIdx + 1] || null;
+    if (nextStep) {
+      await sb.from("bullion_demands").update({ fms_step_id: nextStep.id, updated_at: new Date().toISOString() }).eq("id", demand.id);
+      load();
+    }
+  };
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: selectedLeadId ? "400px 1fr" : "1fr", gap: 14 }}>
+      <div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+          <Input placeholder="Search name / phone / description" value={search} onChange={(e) => setSearch(e.target.value)} style={{ flex: "1 1 180px" }} />
+          <Select value={filterCat} onChange={(e) => setFilterCat(e.target.value)} style={{ width: 130 }}>
+            <option value="">All products</option>
+            {PRODUCT_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+          </Select>
+          <Btn ghost small color={C.gray} onClick={load}>↻</Btn>
+          <Btn small color={C.blue} onClick={() => setAdding(true)}>+ New Demand</Btn>
+        </div>
+
+        {adding && (
+          <DemandEntryModal
+            funnels={funnels}
+            onClose={() => setAdding(false)}
+            onSaved={() => { setAdding(false); load(); }}
+          />
+        )}
+
+        <div style={{ fontSize: 11, color: "#888", marginBottom: 8 }}>
+          {loading ? "Loading…" : `${filtered.length} demand${filtered.length === 1 ? "" : "s"}`}
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: "75vh", overflowY: "auto" }}>
+          {filtered.map((d) => {
+            const urg = urgencyLabel(d);
+            const sel = d.lead?.id === selectedLeadId;
+            const stepName = d.step?.name || "—";
+            const isCallStep = d.step?.step_type === "call";
+            return (
+              <div
+                key={d.id}
+                onClick={() => { setSelectedLeadId(d.lead?.id || null); setSelectedDemand(d); }}
+                style={{
+                  padding: 10,
+                  background: sel ? "#eef5ff" : "#fff",
+                  border: `2px solid ${sel ? C.blue : urgencyBorder(d)}`,
+                  borderRadius: 10,
+                  cursor: "pointer",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                  <strong style={{ fontSize: 13 }}>{d.lead?.name || d.lead?.phone || "Unknown"}</strong>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    {urg && <Pill color={urg.color} solid>{urg.text}</Pill>}
+                    <Pill color={isCallStep ? C.red : C.blue}>{isCallStep ? "📞 Call" : "🤖 Bot"}</Pill>
+                  </div>
+                </div>
+                <div style={{ fontSize: 12, color: "#555", marginBottom: 3 }}>
+                  {d.description || "(no description)"}
+                  {d.for_whom ? <span style={{ color: "#888" }}> · for {d.for_whom}</span> : ""}
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <Pill color={C.purple}>{d.product_category || "?"}</Pill>
+                    {d.occasion && <Pill color={C.orange}>{d.occasion}</Pill>}
+                    {d.budget && <Pill color={C.gray}>₹{Number(d.budget).toLocaleString("en-IN")}</Pill>}
+                    {d.visit_scheduled_at && (() => {
+                      const vdays = Math.round((new Date(d.visit_scheduled_at) - new Date()) / 86400000);
+                      const color = vdays < 0 ? "#999" : vdays === 0 ? C.red : vdays <= 2 ? C.orange : C.green;
+                      const label = vdays < 0 ? "Visit passed" : vdays === 0 ? "Visit TODAY" : `Visit in ${vdays}d`;
+                      return <Pill color={color} solid>🏪 {label}{d.visit_confirmed ? " ✓" : ""}</Pill>;
+                    })()}
+                  </div>
+                  <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                    <span style={{ fontSize: 11, color: C.gray }}>{stepName}</span>
+                    <span style={{ fontSize: 10, color: "#aaa" }}>{fmtDT(d.updated_at)}</span>
+                  </div>
+                </div>
+                {isCallStep && (
+                  <div style={{ marginTop: 6, display: "flex", gap: 6 }}>
+                    <Btn small color={C.green} onClick={(e) => { e.stopPropagation(); advanceStep(d); }}>✓ Called — Next step</Btn>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {!filtered.length && !loading && (
+            <div style={{ padding: 20, textAlign: "center", color: "#aaa", fontSize: 13 }}>
+              No active demands. Click "+ New Demand" to add one.
+            </div>
+          )}
+        </div>
+      </div>
+
+      {selectedLead && (
+        <ConversationPane
+          lead={selectedLead}
+          funnel={selectedFunnel}
+          onClose={() => { setSelectedLeadId(null); setSelectedDemand(null); }}
+          onChanged={load}
+          allTags={allTags}
+          demand={selectedDemand}
+        />
+      )}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// DEMAND ENTRY MODAL — create new demand + activate bot
+// ──────────────────────────────────────────────────────────
+function DemandEntryModal({ funnels, onClose, onSaved }) {
+  const [searchQ, setSearchQ] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [selectedContact, setSelectedContact] = useState(null);
+  const [searching, setSearching] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const [toast, setToast] = useState("");
+  const [form, setForm] = useState({
+    phone: "", name: "",
+    description: "", productCategory: "gold",
+    budget: "", occasion: "", occasionDate: "", forWhom: "",
+    visitScheduledAt: "",
+    funnelId: "",
+    assignedTo: "",
+  });
+
+  const set = (k, v) => setForm((s) => ({ ...s, [k]: v }));
+
+  const doSearch = useCallback(async (q) => {
+    if (!q || q.length < 2) { setSearchResults([]); return; }
+    setSearching(true);
+    const isPhone = /^\d+$/.test(q);
+    let query = sb.from("bullion_leads").select("id,name,phone,city,client_rating,last_msg_at").eq("tenant_id", getTenantId());
+    if (isPhone) {
+      query = query.ilike("phone", `%${q}%`);
+    } else {
+      query = query.ilike("name", `%${q}%`);
+    }
+    const { data } = await query.limit(5);
+    setSearchResults(data || []);
+    setSearching(false);
+  }, []);
+
+  useEffect(() => {
+    const t = setTimeout(() => doSearch(searchQ), 300);
+    return () => clearTimeout(t);
+  }, [searchQ, doSearch]);
+
+  const pickContact = (c) => {
+    setSelectedContact(c);
+    setForm((s) => ({ ...s, phone: c.phone, name: c.name || "" }));
+    setSearchQ("");
+    setSearchResults([]);
+  };
+
+  const autoFunnel = (cat) => {
+    const map = { gold: "bullion", silver: "bullion", gold_coin: "bullion", silver_coin: "bullion", diamond: "solitaire", polki: "antique", kundan: "antique", gemstone: "gemstone", solitaire: "solitaire", lab_diamond: "lab_diamond", other: "non_gold_qualify" };
+    const fid = map[cat] || "non_gold_qualify";
+    const found = funnels.find((f) => f.id === fid);
+    return found?.id || funnels.find((f) => f.kind === "acquisition")?.id || funnels[0]?.id || "";
+  };
+
+  const handleCatChange = (cat) => {
+    set("productCategory", cat);
+    if (!form.funnelId) set("funnelId", autoFunnel(cat));
+  };
+
+  const save = async () => {
+    setErr("");
+    const phone = String(form.phone || "").replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, "");
+    if (!phone) return setErr("Phone number is required.");
+    if (!form.description) return setErr("Description is required.");
+    setSaving(true);
+    try {
+      const res = await fetch("/api/demand", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phone,
+          name: form.name || null,
+          description: form.description,
+          productCategory: form.productCategory,
+          budget: form.budget ? Number(form.budget) : null,
+          occasion: form.occasion || null,
+          occasionDate: form.occasionDate || null,
+          forWhom: form.forWhom || null,
+          visitScheduledAt: form.visitScheduledAt ? new Date(form.visitScheduledAt).toISOString() : null,
+          funnelId: form.funnelId || autoFunnel(form.productCategory),
+          leadId: selectedContact?.id || null,
+          assignedTo: form.assignedTo || null,
+          createdBy: loadUser()?.name || loadUser()?.username || null,
+          tenantId: getTenantId(),
+        }),
+      });
+      const data = await res.json();
+      if (!data.ok) { setErr(data.error || "Failed to create demand."); setSaving(false); return; }
+      setToast("Demand created. Bot sending opening message...");
+      setTimeout(() => { onSaved(); }, 1500);
+    } catch (e) {
+      setErr(String(e));
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title="New Demand" onClose={onClose} width={600}>
+      {toast ? (
+        <div style={{ padding: 20, textAlign: "center", color: C.green, fontSize: 14 }}>
+          ✅ {toast}
+        </div>
+      ) : (
+        <>
+          {/* Contact search */}
+          <Field label="Search client by name or phone">
+            <div style={{ position: "relative" }}>
+              <Input
+                value={selectedContact ? `${selectedContact.name || selectedContact.phone} · ${selectedContact.phone}` : searchQ}
+                onChange={(e) => { if (selectedContact) { setSelectedContact(null); setForm((s) => ({ ...s, phone: "", name: "" })); } setSearchQ(e.target.value); }}
+                placeholder="Type name or 10-digit phone..."
+              />
+              {selectedContact && (
+                <button onClick={() => { setSelectedContact(null); setSearchQ(""); setForm((s) => ({ ...s, phone: "", name: "" })); }}
+                  style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "transparent", border: "none", color: C.red, cursor: "pointer", fontSize: 16 }}>×</button>
+              )}
+              {searchResults.length > 0 && !selectedContact && (
+                <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1px solid #ddd", borderRadius: 8, zIndex: 10, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>
+                  {searchResults.map((c) => (
+                    <div key={c.id} onClick={() => pickContact(c)} style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, borderBottom: "1px solid #f0f0f0" }}
+                      onMouseEnter={(e) => e.currentTarget.style.background = "#f5f5f5"}
+                      onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}>
+                      <strong>{c.name || "(no name)"}</strong> · {c.phone}
+                      {c.city && <span style={{ color: "#888" }}> · {c.city}</span>}
+                    </div>
+                  ))}
+                  <div style={{ padding: "8px 12px", fontSize: 12, color: "#888" }}>Not found above? Fill phone manually below.</div>
+                </div>
+              )}
+              {searching && <span style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", fontSize: 11, color: "#aaa" }}>searching…</span>}
+            </div>
+          </Field>
+
+          {!selectedContact && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <Field label="Phone" required><Input value={form.phone} onChange={(e) => set("phone", e.target.value)} placeholder="9876543210" /></Field>
+              <Field label="Name"><Input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Client name" /></Field>
+            </div>
+          )}
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="Product category" required>
+              <Select value={form.productCategory} onChange={(e) => handleCatChange(e.target.value)}>
+                {PRODUCT_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+              </Select>
+            </Field>
+            <Field label="For whom">
+              <Select value={form.forWhom} onChange={(e) => set("forWhom", e.target.value)}>
+                <option value="">— select —</option>
+                {FOR_WHOM_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+              </Select>
+            </Field>
+          </div>
+
+          <Field label="Description — what exactly are they looking for?" required>
+            <Textarea rows={3} value={form.description} onChange={(e) => set("description", e.target.value)}
+              placeholder="e.g. Polki necklace set for daughter's wedding, traditional Rajasthani style..." />
+          </Field>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="Occasion">
+              <Select value={form.occasion} onChange={(e) => set("occasion", e.target.value)}>
+                <option value="">— select —</option>
+                {OCCASION_TYPES.map((o) => <option key={o} value={o}>{o}</option>)}
+              </Select>
+            </Field>
+            <Field label="Occasion date (when needed by)">
+              <Input type="date" value={form.occasionDate} onChange={(e) => set("occasionDate", e.target.value)} />
+            </Field>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="Budget (₹)">
+              <Input type="number" value={form.budget} onChange={(e) => set("budget", e.target.value)} placeholder="150000" />
+            </Field>
+            <Field label="Funnel">
+              <Select value={form.funnelId || autoFunnel(form.productCategory)} onChange={(e) => set("funnelId", e.target.value)}>
+                {funnels.filter((f) => f.active).map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+              </Select>
+            </Field>
+          </div>
+
+          <Field label="Showroom visit scheduled (if client has given a date/time)">
+            <Input type="datetime-local" value={form.visitScheduledAt} onChange={(e) => set("visitScheduledAt", e.target.value)} />
+          </Field>
+
+          {err && <p style={{ fontSize: 12, color: C.red, margin: "0 0 12px" }}>{err}</p>}
+
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
+            <Btn ghost color={C.gray} onClick={onClose}>Cancel</Btn>
+            <Btn color={C.blue} onClick={save} disabled={saving}>{saving ? "Creating…" : "Save & Activate Bot"}</Btn>
+          </div>
+        </>
+      )}
+    </Modal>
   );
 }
 
@@ -430,12 +923,14 @@ function FunnelStepsEditor({ funnel, onClose }) {
       funnel_id: funnel.id,
       step_order: next,
       name: `Step ${next}`,
-      delay_minutes: next === 1 ? 120 : 1440, // 2h, then 1 day
+      delay_minutes: next === 1 ? 120 : 1440,
       trigger_type: next === 1 ? "after_enrollment" : "after_prev_step",
       trigger_at: null,
       condition: "always",
       message_template: "Hi Sir/Ma'am {{name}}, just checking in — any questions about your earlier enquiry?",
       active: true,
+      step_type: "message",
+      use_ai_message: false,
     }]);
   };
 
@@ -516,6 +1011,34 @@ function FunnelStepsEditor({ funnel, onClose }) {
                   </Field>
                 )}
               </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                <Field label="Step type">
+                  <Select
+                    value={row.step_type || "message"}
+                    onChange={(e) => updateStep(idx, "step_type", e.target.value)}
+                    style={{ borderColor: row.step_type === "call" ? C.red : "#ddd" }}
+                  >
+                    <option value="message">💬 Message (bot sends)</option>
+                    <option value="call">📞 Call (staff must call)</option>
+                  </Select>
+                </Field>
+                <Field label="Message writing">
+                  <Select value={row.use_ai_message ? "ai" : "template"} onChange={(e) => updateStep(idx, "use_ai_message", e.target.value === "ai")}>
+                    <option value="template">📝 Use template below</option>
+                    <option value="ai">🤖 AI generates personalized message</option>
+                  </Select>
+                </Field>
+              </div>
+              {row.step_type === "call" && (
+                <div style={{ padding: "6px 10px", background: "#fff5f5", borderRadius: 6, fontSize: 11, color: C.red, marginBottom: 8 }}>
+                  📞 Call step — bot will NOT auto-send. Demand will stay here until staff marks it done.
+                </div>
+              )}
+              {row.use_ai_message && (
+                <div style={{ padding: "6px 10px", background: "#f0f8ff", borderRadius: 6, fontSize: 11, color: C.blue, marginBottom: 8 }}>
+                  🤖 AI will write a personalized message at send time. Template below is used as inspiration.
+                </div>
+              )}
               <Textarea
                 rows={3}
                 value={row.message_template || ""}
@@ -1030,6 +1553,142 @@ function FaqsScreen() {
 // ──────────────────────────────────────────────────────────
 // RATES SCREEN — pulls from Apps Script
 // ──────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────
+// MEDIA ASSETS SCREEN — authority building PDF/video/links
+// ──────────────────────────────────────────────────────────
+function MediaAssetsScreen() {
+  const [assets, setAssets] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [editing, setEditing] = useState(null); // null | 'new' | asset object
+  const [form, setForm] = useState({ title: "", asset_type: "pdf", url: "", caption: "", send_to_new_leads: true, active: true, sort_order: 1 });
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    const { data } = await sb.from("bullion_media_assets").select("*").eq("tenant_id", getTenantId()).order("sort_order").order("created_at");
+    setAssets(data || []);
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, []);
+
+  const setF = (k, v) => setForm((s) => ({ ...s, [k]: v }));
+
+  const startNew = () => { setForm({ title: "", asset_type: "pdf", url: "", caption: "", send_to_new_leads: true, active: true, sort_order: (assets.length + 1) }); setEditing("new"); setErr(""); };
+  const startEdit = (a) => { setForm({ ...a }); setEditing(a); setErr(""); };
+
+  const save = async () => {
+    setErr("");
+    if (!form.title) return setErr("Title is required.");
+    if (!form.url) return setErr("URL is required.");
+    setSaving(true);
+    const payload = { ...form, tenant_id: getTenantId() };
+    let error;
+    if (editing === "new") {
+      ({ error } = await sb.from("bullion_media_assets").insert(payload));
+    } else {
+      ({ error } = await sb.from("bullion_media_assets").update(payload).eq("id", editing.id));
+    }
+    setSaving(false);
+    if (error) { setErr(error.message); return; }
+    setEditing(null);
+    load();
+  };
+
+  const del = async (id) => {
+    if (!confirm("Delete this asset?")) return;
+    await sb.from("bullion_media_assets").delete().eq("id", id);
+    load();
+  };
+
+  const toggle = async (a) => {
+    await sb.from("bullion_media_assets").update({ active: !a.active }).eq("id", a.id);
+    load();
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ fontSize: 13, color: "#666" }}>
+          Authority building assets sent to new leads automatically after the first message. Add your brochure PDF, intro video link, catalogue, etc.
+        </div>
+        <Btn color={C.blue} onClick={startNew}>+ Add asset</Btn>
+      </div>
+
+      {loading && <div style={{ color: "#888", fontSize: 13 }}>Loading…</div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 12 }}>
+        {assets.map((a) => (
+          <Card key={a.id} style={{ opacity: a.active ? 1 : 0.5 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 600 }}>{a.title}</div>
+                <div style={{ fontSize: 11, color: "#888" }}>{a.asset_type} · sort {a.sort_order}</div>
+              </div>
+              <div style={{ display: "flex", gap: 4 }}>
+                {a.send_to_new_leads && <Pill color={C.green} solid>auto-send</Pill>}
+                <Pill color={a.active ? C.blue : C.gray} solid>{a.active ? "on" : "off"}</Pill>
+              </div>
+            </div>
+            <div style={{ fontSize: 12, color: C.blue, marginBottom: 4, wordBreak: "break-all" }}>
+              <a href={a.url} target="_blank" rel="noopener noreferrer" style={{ color: C.blue }}>{a.url.slice(0, 60)}{a.url.length > 60 ? "…" : ""}</a>
+            </div>
+            {a.caption && <div style={{ fontSize: 12, color: "#555", marginBottom: 8, fontStyle: "italic" }}>"{a.caption}"</div>}
+            <div style={{ display: "flex", gap: 6 }}>
+              <Btn small ghost color={C.blue} onClick={() => startEdit(a)}>Edit</Btn>
+              <Btn small ghost color={a.active ? C.orange : C.green} onClick={() => toggle(a)}>{a.active ? "Disable" : "Enable"}</Btn>
+              <Btn small ghost color={C.red} onClick={() => del(a.id)}>Delete</Btn>
+            </div>
+          </Card>
+        ))}
+        {!assets.length && !loading && (
+          <div style={{ padding: 20, color: "#aaa", fontSize: 13 }}>No assets yet. Add your first brochure or intro video link.</div>
+        )}
+      </div>
+
+      {editing !== null && (
+        <Modal title={editing === "new" ? "Add media asset" : "Edit asset"} onClose={() => setEditing(null)} width={560}>
+          <Field label="Title" required><Input value={form.title} onChange={(e) => setF("title", e.target.value)} placeholder="SSJ Brochure 2026" /></Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="Type">
+              <Select value={form.asset_type} onChange={(e) => setF("asset_type", e.target.value)}>
+                <option value="pdf">PDF</option>
+                <option value="video">Video</option>
+                <option value="image">Image</option>
+                <option value="link">Link</option>
+              </Select>
+            </Field>
+            <Field label="Sort order">
+              <Input type="number" value={form.sort_order} onChange={(e) => setF("sort_order", Number(e.target.value))} />
+            </Field>
+          </div>
+          <Field label="Public URL (Google Drive, Dropbox, YouTube, etc.)" required>
+            <Input value={form.url} onChange={(e) => setF("url", e.target.value)} placeholder="https://drive.google.com/file/d/..." />
+          </Field>
+          <Field label="Caption (message text sent with the link)">
+            <Textarea rows={2} value={form.caption} onChange={(e) => setF("caption", e.target.value)} placeholder="Here's our jewellery catalogue — take a look at our collection!" />
+          </Field>
+          <div style={{ display: "flex", gap: 12, marginBottom: 12 }}>
+            <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13, cursor: "pointer" }}>
+              <input type="checkbox" checked={form.send_to_new_leads} onChange={(e) => setF("send_to_new_leads", e.target.checked)} />
+              Auto-send to every new lead (after first message)
+            </label>
+            <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13, cursor: "pointer" }}>
+              <input type="checkbox" checked={form.active} onChange={(e) => setF("active", e.target.checked)} />
+              Active
+            </label>
+          </div>
+          {err && <p style={{ fontSize: 12, color: C.red, margin: "0 0 12px" }}>{err}</p>}
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <Btn ghost color={C.gray} onClick={() => setEditing(null)}>Cancel</Btn>
+            <Btn color={C.blue} onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</Btn>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 function RatesScreen() {
   const [rates, setRates] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -1505,7 +2164,7 @@ const isAdminPath = () => (typeof window !== "undefined" && window.location.path
 
 export default function App() {
   const [user, setUser] = useState(loadUser);
-  const [screen, setScreen] = useState("leads");
+  const [screen, setScreen] = useState("demands");
   const [funnels, setFunnels] = useState([]);
   const [personas, setPersonas] = useState([]);
   const [allTags, setAllTags] = useState([]);
@@ -1571,19 +2230,20 @@ export default function App() {
     </div>
   );
 
-  // Staff view — only Leads (filtered to active enquiries)
+  // Staff view — Demands screen (active enquiries sorted by urgency)
   if (!atAdmin) {
     return (
       <div style={{ maxWidth: 1280, margin: "0 auto", padding: "1rem" }}>
         {header}
-        <LeadsScreen funnels={funnels} allTags={allTags} viewMode="leads" />
+        <DemandsScreen funnels={funnels} allTags={allTags} />
       </div>
     );
   }
 
   // Admin view — all tabs
   const tabs = [
-    { k: "leads", l: "Leads", icon: "💬" },
+    { k: "demands", l: "Demands", icon: "🎯" },
+    { k: "leads", l: "Conversations", icon: "💬" },
     { k: "contacts", l: "Contacts", icon: "📇" },
     { k: "funnels", l: "Funnels", icon: "🎯" },
     { k: "personas", l: "Personas", icon: "🎭" },
@@ -1591,6 +2251,7 @@ export default function App() {
     { k: "tags", l: "Tags", icon: "🏷️" },
     { k: "imports", l: "Imports", icon: "📥" },
     { k: "connections", l: "Connections", icon: "📱" },
+    { k: "media", l: "Media", icon: "📎" },
     { k: "rates", l: "Rates", icon: "📈" },
     { k: "analytics", l: "Analytics", icon: "📊" },
   ];
@@ -1604,6 +2265,7 @@ export default function App() {
         ))}
       </div>
 
+      {screen === "demands" && <DemandsScreen funnels={funnels} allTags={allTags} />}
       {screen === "leads" && <LeadsScreen funnels={funnels} allTags={allTags} viewMode="leads" />}
       {screen === "contacts" && <LeadsScreen funnels={funnels} allTags={allTags} viewMode="contacts" />}
       {screen === "funnels" && <FunnelsScreen funnels={funnels} personas={personas} onReload={loadFunnels} />}
@@ -1612,6 +2274,7 @@ export default function App() {
       {screen === "tags" && <TagsScreen onReload={loadTags} />}
       {screen === "imports" && <ImportsScreen />}
       {screen === "connections" && <ConnectionsScreen />}
+      {screen === "media" && <MediaAssetsScreen />}
       {screen === "rates" && <RatesScreen />}
       {screen === "analytics" && <AnalyticsScreen funnels={funnels} />}
     </div>

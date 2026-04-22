@@ -30,6 +30,7 @@ export const config = { maxDuration: 120 }; // Fluid Compute default is 300; 120
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const daysUntil = (d) => Math.round((new Date(d) - new Date()) / 86400000);
 const randDelay = () => 30_000 + Math.floor(Math.random() * 15_000); // 30–45s
 
 function extractIncoming(body) {
@@ -191,7 +192,7 @@ export default async function handler(req, res) {
       leadRow.status === "handoff" ||
       (leadRow.exchanges_count || 0) >= maxExchanges;
 
-    const [{ data: history }, rates, faqs] = await Promise.all([
+    const [{ data: history }, rates, faqs, { data: activeDemands }] = await Promise.all([
       sb
         .from("bullion_messages")
         .select("direction,body,created_at,stage")
@@ -201,7 +202,17 @@ export default async function handler(req, res) {
         .limit(20),
       getRates(),
       getFaqs(tenantId),
+      // Load the most recent active demand for this lead
+      sb
+        .from("bullion_demands")
+        .select("*")
+        .eq("lead_id", leadRow.id)
+        .eq("bot_active", true)
+        .order("created_at", { ascending: false })
+        .limit(1),
     ]);
+
+    const activeDemand = activeDemands?.[0] || null;
 
     const chronological = (history || []).slice().reverse();
     // Drop the just-inserted inbound — we add it explicitly below
@@ -215,6 +226,7 @@ export default async function handler(req, res) {
       maxExchanges,
       isEscalation: inEscalation,
       lead: leadRow,
+      demand: activeDemand,
     });
     const messages = buildMessages({ history: priorMessages, inboundBody: msg });
     const model = inEscalation ? CLAUDE_MODEL_ESCALATION : CLAUDE_MODEL;
@@ -317,6 +329,155 @@ export default async function handler(req, res) {
     // Cancel any pending drip messages immediately on DND
     if (isDnd) {
       await cancelPendingForLead(leadRow.id, "dnd").catch(() => {});
+    }
+
+    // 9a-bis. Handle demand_update from Claude
+    const du = parsed.demand_update;
+    if (du && activeDemand) {
+      const demandPatch = {};
+      if (du.product_type)       demandPatch.product_category = du.product_type;
+      if (du.occasion)           demandPatch.occasion = du.occasion;
+      if (du.occasion_date)      demandPatch.occasion_date = du.occasion_date;
+      if (du.for_whom)           demandPatch.for_whom = du.for_whom;
+      if (du.budget_confirmed != null) demandPatch.budget_confirmed = du.budget_confirmed;
+      if (du.ai_summary)         demandPatch.ai_summary = du.ai_summary;
+      if (du.needs_qualified)    demandPatch.needs_qualified = true;
+      if (Object.keys(demandPatch).length) {
+        demandPatch.updated_at = new Date().toISOString();
+        await sb.from("bullion_demands").update(demandPatch).eq("id", activeDemand.id).catch(() => {});
+      }
+
+      // Wedding life event detected
+      if (du.wedding_date) {
+        await sb.from("bullion_leads").update({
+          wedding_date: du.wedding_date,
+          wedding_family_member: du.wedding_family_member || null,
+        }).eq("id", leadRow.id).catch(() => {});
+
+        // Schedule a reminder for the owner on the wedding date
+        if (du.wedding_date) {
+          const weddingTs = new Date(du.wedding_date).getTime();
+          if (!isNaN(weddingTs) && weddingTs > Date.now()) {
+            const reminderBody = `📅 Wedding day — ${leadRow.name || phone}${du.wedding_family_member ? ` (${du.wedding_family_member})` : ""}. Wish them today! CRM: https://ssjbots.vercel.app`;
+            await sb.from("bullion_scheduled_messages").insert({
+              tenant_id: tenantId,
+              lead_id: leadRow.id,
+              funnel_id: funnel.id,
+              send_at: new Date(weddingTs).toISOString(),
+              body: reminderBody,
+              status: "pending",
+              is_reminder: true,
+            }).catch(() => {});
+          }
+        }
+      }
+
+      // Non-gold fully qualified → handoff to sales team
+      const NON_GOLD = ["diamond","polki","kundan","gemstone","solitaire","lab_diamond","other"];
+      if (du.needs_qualified && NON_GOLD.includes((activeDemand.product_category || "").toLowerCase())) {
+        // Alert the sales team if not already notified
+        if (!activeDemand.sales_notified_at && OWNER_ALERT_PHONE) {
+          const demandRow = { ...activeDemand, ...demandPatch };
+          const urgencyLine = demandRow.occasion_date
+            ? `\n📅 Occasion: ${demandRow.occasion || "wedding/event"} on ${demandRow.occasion_date} (${daysUntil(demandRow.occasion_date)} days)`
+            : "";
+          const alert = [
+            `🔔 *Qualified Demand — Action Required*`,
+            `👤 ${leadRow.name || phone} · ${phone}`,
+            `💎 Product: ${demandRow.product_category || "custom jewellery"}`,
+            `📝 ${demandRow.description || "see CRM"}`,
+            demandRow.for_whom ? `👥 For: ${demandRow.for_whom}` : "",
+            demandRow.budget ? `💰 Budget: ₹${Number(demandRow.budget).toLocaleString("en-IN")}` : "",
+            urgencyLine,
+            demandRow.ai_summary ? `\n📋 Summary: ${demandRow.ai_summary}` : "",
+            `\nOpen CRM: https://ssjbots.vercel.app`,
+          ].filter(Boolean).join("\n");
+          await sendWhatsApp({ phone: OWNER_ALERT_PHONE, msg: alert }).catch(() => {});
+          await sb.from("bullion_demands").update({ sales_notified_at: new Date().toISOString() }).eq("id", activeDemand.id).catch(() => {});
+        }
+      }
+    }
+
+    // 9a-ter. Handle visit_update from Claude
+    const vu = parsed.visit_update;
+    if (vu && activeDemand) {
+      // Client confirmed the visit
+      if (vu.visit_confirmed && !activeDemand.visit_confirmed) {
+        await sb.from("bullion_demands").update({ visit_confirmed: true }).eq("id", activeDemand.id).catch(() => {});
+      }
+
+      // New or rescheduled visit date given
+      if (vu.visit_date) {
+        const visitTs = Date.parse(vu.visit_date);
+        if (!isNaN(visitTs) && visitTs > Date.now()) {
+          // Cancel existing visit reminder messages for this lead
+          await sb.from("bullion_scheduled_messages")
+            .update({ status: "canceled", canceled_reason: vu.rescheduled ? "rescheduled" : "replaced" })
+            .eq("lead_id", leadRow.id)
+            .in("message_type", ["visit_reminder", "visit_day"])
+            .eq("status", "pending")
+            .catch(() => {});
+
+          const visitTime = new Date(visitTs).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" });
+          const visitDateStr = new Date(visitTs).toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", timeZone: "Asia/Kolkata" });
+          const clientName = leadRow.name || "Sir/Ma'am";
+
+          // D-1 reminder (24h before)
+          const d1ts = visitTs - 24 * 60 * 60 * 1000;
+          if (d1ts > Date.now()) {
+            await sb.from("bullion_scheduled_messages").insert({
+              tenant_id: tenantId, lead_id: leadRow.id, funnel_id: funnel.id,
+              send_at: new Date(d1ts).toISOString(),
+              body: `Hi ${clientName}, just confirming your visit to Sun Sea Jewellers tomorrow (${visitDateStr}) at ${visitTime}. Looking forward to meeting you! Please reply YES to confirm. 🙏`,
+              status: "pending",
+              message_type: "visit_reminder",
+            }).catch(() => {});
+          }
+
+          // D-0 morning reminder (9 AM on visit day IST)
+          const visitDay9am = new Date(visitTs);
+          visitDay9am.setUTCHours(3, 30, 0, 0); // 9 AM IST = 3:30 AM UTC
+          if (visitDay9am > new Date()) {
+            await sb.from("bullion_scheduled_messages").insert({
+              tenant_id: tenantId, lead_id: leadRow.id, funnel_id: funnel.id,
+              send_at: visitDay9am.toISOString(),
+              body: `Good morning ${clientName}! 🙏 A warm reminder — your visit to Sun Sea Jewellers is today at ${visitTime}, Karol Bagh. We look forward to welcoming you!`,
+              status: "pending",
+              message_type: "visit_day",
+            }).catch(() => {});
+          }
+
+          // Update demand
+          const visitPatch = {
+            visit_scheduled_at: new Date(visitTs).toISOString(),
+            visit_confirmed: false,
+            updated_at: new Date().toISOString(),
+          };
+          if (vu.rescheduled) {
+            visitPatch.visit_rescheduled_count = (activeDemand.visit_rescheduled_count || 0) + 1;
+          }
+          await sb.from("bullion_demands").update(visitPatch).eq("id", activeDemand.id).catch(() => {});
+        }
+      }
+    }
+
+    // 9a-quater. Send authority assets to brand-new leads (first real exchange)
+    if ((leadRow.exchanges_count || 0) === 0 && parsed.action !== "DND") {
+      const { data: assets } = await sb
+        .from("bullion_media_assets")
+        .select("*")
+        .eq("tenant_id", tenantId)
+        .eq("active", true)
+        .eq("send_to_new_leads", true)
+        .order("sort_order", { ascending: true })
+        .limit(3);
+      for (const asset of assets || []) {
+        const assetMsg = [asset.caption || "", asset.url].filter(Boolean).join("\n");
+        if (assetMsg.trim()) {
+          await sleep(3000); // brief gap between messages
+          await sendWhatsApp({ phone, msg: assetMsg }).catch(() => {});
+        }
+      }
     }
 
     // 9b. If Claude marked this as QUOTE_SENT, enroll the lead in the funnel's
