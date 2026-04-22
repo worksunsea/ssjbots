@@ -76,9 +76,17 @@ def normalize_phone(raw) -> tuple[Optional[str], Optional[str]]:
     If input is not conformant, it goes to secondary."""
     if raw is None:
         return None, None
+    # Excel reads numbers as floats (e.g. 9810222843.0) — strip the ".0".
+    if isinstance(raw, float):
+        if raw != raw:  # NaN
+            return None, None
+        raw = str(int(raw))
     s = str(raw).strip()
     if not s or s.lower() in ("none", "nan"):
         return None, None
+    # Drop trailing ".0" from stringified floats
+    if s.endswith(".0"):
+        s = s[:-2]
     # Strip non-digits
     digits = re.sub(r"\D", "", s)
     # Drop leading zeroes
