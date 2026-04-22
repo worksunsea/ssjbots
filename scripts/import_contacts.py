@@ -1011,9 +1011,18 @@ def attach_tags(lead_id: str, tag_ids: List[str]):
 def insert_visits(tenant_id: str, lead_id: str, visits: List[Dict[str, Any]]):
     if not visits:
         return
+    # PostgREST requires all rows in a batch to have the same keys.
+    # Merge all keys seen across visits and fill missing with None.
+    all_keys = set()
+    for v in visits:
+        all_keys.update(v.keys())
+    all_keys.discard("tenant_id"); all_keys.discard("lead_id")
     rows = []
     for v in visits:
-        rows.append({"tenant_id": tenant_id, "lead_id": lead_id, **{k: v[k] for k in v if v[k] is not None}})
+        row = {"tenant_id": tenant_id, "lead_id": lead_id}
+        for k in all_keys:
+            row[k] = v.get(k)
+        rows.append(row)
     sb_post("bullion_visits", rows, prefer="return=minimal")
 
 
