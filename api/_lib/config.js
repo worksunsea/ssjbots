@@ -14,8 +14,29 @@ export const CLAUDE_MODEL_ESCALATION = process.env.CLAUDE_MODEL_ESCALATION || "c
 export const HARD_EXCHANGE_CAP = Number(process.env.HARD_EXCHANGE_CAP || 10);
 export const OWNER_ALERT_PHONE = process.env.OWNER_ALERT_PHONE || "8860866000";
 
+// Only these WA numbers run the bot (reply to inbound messages).
+// Other numbers (birthday/anniversary) are send-only.
+export const BOT_NUMBERS = (process.env.BOT_NUMBERS || "8860866000,9312839912")
+  .split(",").map((n) => n.trim()).filter(Boolean);
+
+// Secret shared between CRM frontend and these API functions.
+// Set VITE_CRM_SECRET (frontend) + CRM_SECRET (Vercel env) to the same value.
+export const CRM_SECRET = process.env.CRM_SECRET || "";
+
 export const normalizePhone = (p) =>
   String(p || "").replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, "");
+
+// Returns a 401 response object if the x-crm-secret header is missing/wrong.
+// Returns null if the request is allowed.
+export function checkCrmSecret(req, res) {
+  if (!CRM_SECRET) return null; // secret not configured = open (dev mode)
+  const header = req.headers["x-crm-secret"] || "";
+  if (header !== CRM_SECRET) {
+    res.status(401).json({ ok: false, error: "unauthorized" });
+    return res;
+  }
+  return null;
+}
 
 export function requireEnv() {
   const missing = [];

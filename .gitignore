@@ -28,3 +28,10 @@ dist-ssr
 .env.local
 .env*.local
 .vercel
+
+# Credentials / local downloads
+downloads/
+.claude/
+
+# Large binary backups
+scripts/*.sql.gz

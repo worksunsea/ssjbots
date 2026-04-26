@@ -170,20 +170,41 @@ export async function connectClient(clientIdRaw) {
   return sess;
 }
 
+function resolveJid(target) {
+  if (String(target).includes("@")) return String(target);
+  let clean = String(target).replace(/\D/g, "");
+  if (!clean) throw new Error("invalid_phone");
+  if (clean.length === 10) clean = "91" + clean;
+  return `${clean}@s.whatsapp.net`;
+}
+
 export async function sendForClient(clientIdRaw, target, message) {
   const clientId = sanitize(clientIdRaw);
   const sess = sessions.get(clientId);
   if (!sess?.sock || !sess.connected) throw new Error(`not_connected:${clientId}`);
   if (!target) throw new Error("invalid_target");
+  return sess.sock.sendMessage(resolveJid(target), { text: String(message) });
+}
 
-  if (String(target).includes("@")) {
-    return sess.sock.sendMessage(String(target), { text: String(message) });
+// Send an image, video, or document from a URL.
+export async function sendMediaForClient(clientIdRaw, { target, mediaUrl, mediaType = "image", caption = "", filename }) {
+  const clientId = sanitize(clientIdRaw);
+  const sess = sessions.get(clientId);
+  if (!sess?.sock || !sess.connected) throw new Error(`not_connected:${clientId}`);
+  if (!target || !mediaUrl) throw new Error("target_and_mediaUrl_required");
+
+  const jid = resolveJid(target);
+  let content;
+  if (mediaType === "image") {
+    content = { image: { url: mediaUrl }, caption };
+  } else if (mediaType === "video") {
+    content = { video: { url: mediaUrl }, caption };
+  } else {
+    const ext = (mediaUrl.split("?")[0].split(".").pop() || "bin").toLowerCase();
+    const mimeMap = { pdf: "application/pdf", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" };
+    content = { document: { url: mediaUrl }, mimetype: mimeMap[ext] || "application/octet-stream", fileName: filename || `file.${ext}`, caption };
   }
-  let cleanPhone = String(target).replace(/\D/g, "");
-  if (!cleanPhone) throw new Error("invalid_phone");
-  if (cleanPhone.length === 10) cleanPhone = "91" + cleanPhone;
-  const jid = `${cleanPhone}@s.whatsapp.net`;
-  return sess.sock.sendMessage(jid, { text: String(message) });
+  return sess.sock.sendMessage(jid, content);
 }
 
 export function getClients() {

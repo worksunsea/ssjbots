@@ -12,8 +12,12 @@ const getTenantId = () => loadUser()?.tenant_id || DEFAULT_TENANT_ID;
 // ── APPS SCRIPT (rates proxy — Google Sheet "new" tab) ──
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxGazdRhKxkjOLkqxN4kPoInDuBnlWy5Azmzq-FX9mt5OIfZLbhqfFEO0AufrOWE6n49Q/exec";
 
+// ── Internal API secret (set VITE_CRM_SECRET in Vercel env) ──
+const CRM_SECRET = import.meta.env.VITE_CRM_SECRET || "";
+
 // ── WA Service (Baileys on Synology) — public URL for QR iframes ──
-const WA_SERVICE_URL = "https://wa.orvialuxe.com";
+// wa-service calls are proxied through /api/wa-proxy to avoid mixed-content issues
+const WA_SERVICE_URL = "/api/wa-proxy?path=";
 
 // ── UI CONSTANTS ──
 const C = { green: "#27ae60", orange: "#e67e22", red: "#c0392b", blue: "#2980b9", gray: "#888", purple: "#8e44ad", pink: "#e84393", yellow: "#f39c12" };
@@ -39,12 +43,12 @@ const loadUser = () => loadLocal("ssj_bullion_user", null);
 const saveUser = (u) => saveLocal("ssj_bullion_user", u);
 
 // Send via our own /api/send (Vercel Function → wa-service on Synology).
-const sendWA = async ({ phone, message, leadId, funnelId }) => {
+const sendWA = async ({ phone, message, leadId, funnelId, client }) => {
   try {
     const res = await fetch("/api/send", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone: normalizePhone(phone), message, leadId, funnelId }),
+      headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
+      body: JSON.stringify({ phone: normalizePhone(phone), message, leadId, funnelId, client }),
     });
     return await res.json();
   } catch (e) {
@@ -66,7 +70,6 @@ function LoginScreen({ onLogin }) {
     setLoading(true); setErr("");
     const { data, error } = await sb.from("staff").select("*").eq("tenant_id", getTenantId()).eq("username", u.trim()).eq("password", p).single();
     if (error || !data) { setErr("Incorrect username or password."); setLoading(false); return; }
-    if (!["superadmin", "admin"].includes(data.role)) { setErr("Access restricted to admins."); setLoading(false); return; }
     setLoading(false);
     onLogin(data);
   };
@@ -74,14 +77,14 @@ function LoginScreen({ onLogin }) {
   return (
     <div style={{ maxWidth: 360, margin: "4rem auto", padding: "2rem", background: "#fff", border: "1px solid #e0e0e0", borderRadius: 16 }}>
       <h2 style={{ fontSize: 18, fontWeight: 600, margin: "0 0 4px" }}>SSJ Jew CRM</h2>
-      <p style={{ fontSize: 13, color: "#888", margin: "0 0 24px" }}>Admin · Leads · Funnels · Personas · FAQs</p>
+      <p style={{ fontSize: 13, color: "#888", margin: "0 0 24px" }}>Leads · Funnels · Approvals · Analytics</p>
       <label style={{ fontSize: 11, color: "#888", display: "block", marginBottom: 4 }}>USERNAME</label>
       <input value={u} onChange={(e) => setU(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} style={{ width: "100%", fontSize: 14, marginBottom: 12, padding: 8, borderRadius: 8, border: "1px solid #ddd" }} />
       <label style={{ fontSize: 11, color: "#888", display: "block", marginBottom: 4 }}>PASSWORD</label>
       <input type="password" value={p} onChange={(e) => setP(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} style={{ width: "100%", fontSize: 14, marginBottom: 16, padding: 8, borderRadius: 8, border: "1px solid #ddd" }} />
       {err && <p style={{ fontSize: 12, color: C.red, margin: "0 0 12px" }}>{err}</p>}
       <button onClick={submit} disabled={loading} style={{ width: "100%", padding: 10, borderRadius: 8, border: "none", background: C.blue, color: "#fff", fontSize: 14, cursor: "pointer", fontWeight: 500 }}>{loading ? "Logging in..." : "Login"}</button>
-      <p style={{ fontSize: 11, color: "#aaa", margin: "16px 0 0", textAlign: "center" }}>Uses your Sun Sea staff account (superadmin/admin).</p>
+      <p style={{ fontSize: 11, color: "#aaa", margin: "16px 0 0", textAlign: "center" }}>Uses your Sun Sea staff account.</p>
     </div>
   );
 }
@@ -154,9 +157,10 @@ function LeadsScreen({ funnels, allTags, viewMode = "leads" }) {
     let q = sb.from("bullion_leads").select("*").eq("tenant_id", getTenantId()).order("updated_at", { ascending: false }).limit(1000);
     if (filterFunnel) q = q.eq("funnel_id", filterFunnel);
     if (filterStatus) q = q.eq("status", filterStatus);
-    // In "leads" mode show only active enquiries. In "contacts" mode show everything.
+    // "leads" (Conversations) = only leads that have at least one demand (bot was manually activated).
+    // "contacts" = full contact directory.
     if (viewMode === "leads") {
-      q = q.in("status", ["active", "handoff"]);
+      q = q.in("status", ["active", "handoff"]).not("last_msg_at", "is", null);
     }
     const { data } = await q;
     if (data) setLeads(data);
@@ -260,7 +264,7 @@ function VisitRescheduleButton({ demandId, onRescheduled }) {
 
     // Get lead name
     const { data: lead } = await sb.from("bullion_leads").select("name,phone").eq("id", demand.lead_id).single();
-    const clientName = lead?.name || "Sir/Ma'am";
+    const clientName = lead?.name ? lead.name.trim().split(/\s+/)[0] : "";
 
     // Schedule new reminders
     const d1ts = visitTs - 24 * 60 * 60 * 1000;
@@ -649,6 +653,8 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
   const [selectedContact, setSelectedContact] = useState(null);
   const [searching, setSearching] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [activateBot, setActivateBot] = useState(true);
+  const [allowDuplicate, setAllowDuplicate] = useState(false);
   const [err, setErr] = useState("");
   const [toast, setToast] = useState("");
   const [form, setForm] = useState({
@@ -710,7 +716,7 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
     try {
       const res = await fetch("/api/demand", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
         body: JSON.stringify({
           phone,
           name: form.name || null,
@@ -726,12 +732,23 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
           assignedTo: form.assignedTo || null,
           createdBy: loadUser()?.name || loadUser()?.username || null,
           tenantId: getTenantId(),
+          skipBot: !activateBot,
+          allowDuplicate: allowDuplicate || false,
         }),
       });
       const data = await res.json();
+      if (!data.ok && data.error === "duplicate_demand") {
+        setErr("This contact already has an active demand open. Close or deactivate the existing demand first, or tick \"Allow duplicate\" to create another.");
+        setSaving(false);
+        return;
+      }
       if (!data.ok) { setErr(data.error || "Failed to create demand."); setSaving(false); return; }
-      setToast("Demand created. Bot sending opening message...");
-      setTimeout(() => { onSaved(); }, 1500);
+      if (activateBot && data.waError) {
+        setToast(`Demand saved but WA send failed: ${data.waError}. Number: ${data.waNumber || "unknown"}`);
+      } else {
+        setToast(activateBot ? `Demand created. Opening message sent from ${data.waNumber || "WA"}.` : "Demand saved.");
+      }
+      setTimeout(() => { onSaved(); }, 2500);
     } catch (e) {
       setErr(String(e));
       setSaving(false);
@@ -752,6 +769,8 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
               <Input
                 value={selectedContact ? `${selectedContact.name || selectedContact.phone} · ${selectedContact.phone}` : searchQ}
                 onChange={(e) => { if (selectedContact) { setSelectedContact(null); setForm((s) => ({ ...s, phone: "", name: "" })); } setSearchQ(e.target.value); }}
+                onKeyDown={(e) => { if (e.key === "Escape" || e.key === "Enter" || e.key === "Tab") setSearchResults([]); }}
+                onBlur={() => setTimeout(() => setSearchResults([]), 150)}
                 placeholder="Type name or 10-digit phone..."
               />
               {selectedContact && (
@@ -761,7 +780,7 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
               {searchResults.length > 0 && !selectedContact && (
                 <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1px solid #ddd", borderRadius: 8, zIndex: 10, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>
                   {searchResults.map((c) => (
-                    <div key={c.id} onClick={() => pickContact(c)} style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, borderBottom: "1px solid #f0f0f0" }}
+                    <div key={c.id} onMouseDown={() => pickContact(c)} style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, borderBottom: "1px solid #f0f0f0" }}
                       onMouseEnter={(e) => e.currentTarget.style.background = "#f5f5f5"}
                       onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}>
                       <strong>{c.name || "(no name)"}</strong> · {c.phone}
@@ -821,6 +840,11 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
               <Select value={form.funnelId || autoFunnel(form.productCategory)} onChange={(e) => set("funnelId", e.target.value)}>
                 {funnels.filter((f) => f.active).map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
               </Select>
+              {(() => {
+                const fid = form.funnelId || autoFunnel(form.productCategory);
+                const f = funnels.find((x) => x.id === fid);
+                return f?.wa_number ? <div style={{ fontSize: 11, color: "#555", marginTop: 3 }}>📱 Sends from: <strong>{f.wa_number}</strong></div> : null;
+              })()}
             </Field>
           </div>
 
@@ -830,9 +854,18 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
 
           {err && <p style={{ fontSize: 12, color: C.red, margin: "0 0 12px" }}>{err}</p>}
 
-          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 8, cursor: "pointer" }}>
+            <input type="checkbox" checked={activateBot} onChange={(e) => setActivateBot(e.target.checked)} />
+            <span>Send opening WhatsApp message & activate bot</span>
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, marginBottom: 12, cursor: "pointer", color: "#888" }}>
+            <input type="checkbox" checked={allowDuplicate} onChange={(e) => setAllowDuplicate(e.target.checked)} />
+            <span>Allow duplicate (contact already has an open demand)</span>
+          </label>
+
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
             <Btn ghost color={C.gray} onClick={onClose}>Cancel</Btn>
-            <Btn color={C.blue} onClick={save} disabled={saving}>{saving ? "Creating…" : "Save & Activate Bot"}</Btn>
+            <Btn color={C.blue} onClick={save} disabled={saving}>{saving ? "Creating…" : activateBot ? "Save & Activate Bot" : "Save Demand"}</Btn>
           </div>
         </>
       )}
@@ -844,8 +877,22 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
 // FUNNELS SCREEN
 // ──────────────────────────────────────────────────────────
 function FunnelsScreen({ funnels, personas, onReload }) {
-  const [editing, setEditing] = useState(null); // null | 'new' | funnel object
-  const [stepsFor, setStepsFor] = useState(null); // funnel or null — opens steps editor
+  const [editing, setEditing] = useState(null);
+  const [stepsFor, setStepsFor] = useState(null);
+  const [sessions, setSessions] = useState([]);
+
+  useEffect(() => {
+    fetch(`${WA_SERVICE_URL}/clients`)
+      .then((r) => r.json())
+      .then((d) => setSessions(d?.clients || []))
+      .catch(() => {});
+  }, []);
+
+  const disconnectedFunnels = funnels.filter((f) => {
+    if (!f.active || !f.wbiztool_client) return false;
+    const s = sessions.find((ss) => ss.client_id === f.wbiztool_client);
+    return s && !s.connected;
+  });
 
   const toggleActive = async (f) => {
     await sb.from("funnels").update({ active: !f.active }).eq("id", f.id);
@@ -854,6 +901,11 @@ function FunnelsScreen({ funnels, personas, onReload }) {
 
   return (
     <div>
+      {disconnectedFunnels.length > 0 && (
+        <div style={{ background: "#fff3cd", border: "1px solid #ffc107", borderRadius: 8, padding: "10px 14px", marginBottom: 12, fontSize: 13, color: "#856404" }}>
+          ⚠️ <strong>Disconnected sessions:</strong> {disconnectedFunnels.map((f) => `${f.name} (${f.wbiztool_client})`).join(", ")} — bot cannot send replies. Go to <strong>Connections</strong> tab to re-pair.
+        </div>
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
         <div style={{ fontSize: 13, color: "#666" }}>Each funnel has its own description, persona, WhatsApp number, and goal. Edit or clone to spin up a new campaign without code.</div>
         <Btn color={C.blue} onClick={() => setEditing("new")}>+ New funnel</Btn>
@@ -872,7 +924,7 @@ function FunnelsScreen({ funnels, personas, onReload }) {
                 <Pill color={f.active ? C.green : C.gray} solid>{f.active ? "active" : "off"}</Pill>
               </div>
               <div style={{ fontSize: 12, color: "#555", marginBottom: 10, lineHeight: 1.4 }}>{f.description}</div>
-              <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>WA: {f.wa_number} (client {f.wbiztool_client || "?"})</div>
+              <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>WA: {f.wa_number || "—"} · session: {f.wbiztool_client || "not set"}</div>
               <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>Persona: {p?.name || "—"}</div>
               <div style={{ fontSize: 11, color: "#888", marginBottom: 10 }}>Goal: {f.goal || "—"}</div>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -917,20 +969,23 @@ function FunnelStepsEditor({ funnel, onClose }) {
 
   const addStep = () => {
     const next = steps.length + 1;
+    const isCalendar = funnel.kind === "birthday" || funnel.kind === "anniversary";
     setSteps((s) => [...s, {
       _new: true,
       tenant_id: getTenantId(),
       funnel_id: funnel.id,
       step_order: next,
       name: `Step ${next}`,
-      delay_minutes: next === 1 ? 120 : 1440,
-      trigger_type: next === 1 ? "after_enrollment" : "after_prev_step",
+      // Calendar funnels: offset in days from event date (stored as days × 1440 minutes).
+      // Sales funnels: step 1 fires 2h after enrollment; subsequent steps 1 day after previous.
+      delay_minutes: isCalendar ? 0 : (next === 1 ? 120 : 1440),
+      trigger_type: isCalendar ? "calendar_event" : (next === 1 ? "after_enrollment" : "after_prev_step"),
       trigger_at: null,
       condition: "always",
-      message_template: "Hi Sir/Ma'am {{name}}, just checking in — any questions about your earlier enquiry?",
+      message_template: isCalendar ? "" : "Just checking in — any questions about your earlier enquiry?",
       active: true,
       step_type: "message",
-      use_ai_message: false,
+      use_ai_message: isCalendar,
     }]);
   };
 
@@ -960,7 +1015,14 @@ function FunnelStepsEditor({ funnel, onClose }) {
     setSaving(false);
   };
 
-  const fmtDelay = (mins) => {
+  const fmtDelay = (mins, triggerType) => {
+    if (triggerType === "calendar_event") {
+      const days = Math.round(mins / 1440);
+      if (days === 0) return "on event day";
+      if (days < 0) return `${Math.abs(days)} days before event`;
+      return `${days} days after event`;
+    }
+    if (mins < 0) return `${Math.round(mins / 1440)}d before`;
     if (mins < 60) return `${mins}m`;
     if (mins < 60 * 24) return `${Math.round(mins / 60 * 10) / 10}h`;
     return `${Math.round(mins / 60 / 24 * 10) / 10}d`;
@@ -994,15 +1056,18 @@ function FunnelStepsEditor({ funnel, onClose }) {
                 <Field label="Trigger">
                   <Select value={tt} onChange={(e) => updateStep(idx, "trigger_type", e.target.value)}>
                     <option value="after_prev_step">After previous step</option>
-                    <option value="after_enrollment">After enrollment (first enroll)</option>
-                    <option value="after_last_inbound">After lead's last inbound message</option>
+                    <option value="after_enrollment">After enrollment</option>
+                    <option value="after_last_inbound">After lead's last inbound</option>
                     <option value="after_last_purchase">After lead's last purchase</option>
                     <option value="specific_datetime">On specific date + time</option>
+                    <option value="calendar_event">📅 Days from birthday/anniversary</option>
                   </Select>
                 </Field>
                 {showDelay && (
-                  <Field label={`Delay (minutes) — current: ${fmtDelay(row.delay_minutes || 0)}`}>
-                    <Input type="number" value={row.delay_minutes || 0} onChange={(e) => updateStep(idx, "delay_minutes", Number(e.target.value))} />
+                  <Field label={tt === "calendar_event" ? `Offset days (negative = before event) — ${fmtDelay(row.delay_minutes || 0, tt)}` : `Delay (minutes) — ${fmtDelay(row.delay_minutes || 0, tt)}`}>
+                    {tt === "calendar_event"
+                      ? <Input type="number" value={Math.round((row.delay_minutes || 0) / 1440)} onChange={(e) => updateStep(idx, "delay_minutes", Number(e.target.value) * 1440)} placeholder="-20 = 20 days before, 0 = event day, 5 = 5 days after" />
+                      : <Input type="number" value={row.delay_minutes || 0} onChange={(e) => updateStep(idx, "delay_minutes", Number(e.target.value))} />}
                   </Field>
                 )}
                 {showDatetime && (
@@ -1043,8 +1108,55 @@ function FunnelStepsEditor({ funnel, onClose }) {
                 rows={3}
                 value={row.message_template || ""}
                 onChange={(e) => updateStep(idx, "message_template", e.target.value)}
-                placeholder="Message text. Placeholders: {{name}} {{city}} {{phone}} {{funnel_name}} {{goal}}"
+                placeholder="Message text or context hint for AI. Placeholders: {{name}} {{city}} {{phone}} {{funnel_name}} {{goal}}"
               />
+
+              {/* Link attachment */}
+              <div style={{ marginTop: 8, padding: "10px 12px", background: "#f9fafb", borderRadius: 8, border: "1px solid #e5e7eb" }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 8 }}>🔗 Attach link to this message</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <Field label="Link type">
+                    <Select value={row.link_type || "none"} onChange={(e) => updateStep(idx, "link_type", e.target.value)}>
+                      <option value="none">— No link —</option>
+                      <option value="save_contact">💾 Save our number (1-tap contact save)</option>
+                      <option value="profile_update">📋 Customer profile update</option>
+                      <option value="google_review">⭐ Google review</option>
+                      <option value="instagram">📸 Instagram follow</option>
+                      <option value="whatsapp_catalog">🛒 WhatsApp catalog</option>
+                      <option value="custom">🔗 Custom link</option>
+                    </Select>
+                  </Field>
+                  {row.link_type && row.link_type !== "none" && row.link_type !== "profile_update" && (
+                    <Field label="URL">
+                      <Input value={row.link_url || ""} onChange={(e) => updateStep(idx, "link_url", e.target.value)} placeholder="https://..." />
+                    </Field>
+                  )}
+                </div>
+                {row.link_type && row.link_type !== "none" && (
+                  <Field label="How to introduce it (Claude uses this)">
+                    <Input
+                      value={row.link_label || ""}
+                      onChange={(e) => updateStep(idx, "link_label", e.target.value)}
+                      placeholder={
+                        row.link_type === "profile_update" ? "e.g. confirm your details and add family birthdays" :
+                        row.link_type === "google_review" ? "e.g. share a quick review if you have a moment" :
+                        row.link_type === "instagram" ? "e.g. follow us on Instagram for new designs" :
+                        "e.g. browse our latest collection"
+                      }
+                    />
+                  </Field>
+                )}
+                {row.link_type === "save_contact" && (
+                  <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
+                    💾 Sends <code>ssjbot.gemtre.in/contact.vcf</code> — when tapped on mobile, opens the phone's "Add Contact" screen with Sun Sea Jewellers pre-filled. One tap saves. No typing needed.
+                  </div>
+                )}
+                {row.link_type === "profile_update" && (
+                  <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
+                    ℹ️ A unique link is generated per customer — Claude will include it naturally in the message.
+                  </div>
+                )}
+              </div>
             </Card>
           );
         })}
@@ -1068,18 +1180,38 @@ function FunnelStepsEditor({ funnel, onClose }) {
 
 function FunnelForm({ funnel, personas, onClose, onSaved }) {
   const isNew = !funnel?.id;
-  const [form, setForm] = useState(funnel || { id: "", name: "", description: "", wa_number: "8860866000", wbiztool_client: "7560", product_focus: "gold_bullion", persona_id: personas[0]?.id || null, active: true, goal: "", max_exchanges_before_handoff: 3 });
+  const [form, setForm] = useState(funnel || { id: "", name: "", description: "", wa_number: "", wbiztool_client: "", product_focus: "gold_bullion", persona_id: personas[0]?.id || null, active: true, goal: "", max_exchanges_before_handoff: 3 });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  const [sessions, setSessions] = useState([]);
+
+  useEffect(() => {
+    fetch(`${WA_SERVICE_URL}/clients`)
+      .then((r) => r.json())
+      .then((d) => setSessions(d?.clients || []))
+      .catch(() => {});
+  }, []);
 
   const set = (k, v) => setForm((s) => ({ ...s, [k]: v }));
+
+  // When a session is picked, auto-fill wa_number from the paired phone
+  const pickSession = (clientId) => {
+    const s = sessions.find((ss) => ss.client_id === clientId);
+    setForm((prev) => ({
+      ...prev,
+      wbiztool_client: clientId,
+      wa_number: s?.me ? normalizePhone(s.me.replace(/@.*/, "")) : prev.wa_number,
+    }));
+  };
+
+  const selectedSession = sessions.find((s) => s.client_id === form.wbiztool_client);
 
   const save = async () => {
     setErr("");
     if (!form.id) return setErr("id is required (short slug like f1, akshaya_gold_2026)");
     if (!form.name) return setErr("name is required");
     if (!form.description) return setErr("description is required — it's the bot's context for this funnel");
-    if (!form.wa_number) return setErr("WhatsApp number is required");
+    if (!form.wbiztool_client) return setErr("WhatsApp session is required — pick one from the dropdown");
     setSaving(true);
     const payload = { ...form, tenant_id: getTenantId() };
     const { error } = await sb.from("funnels").upsert(payload).select().single();
@@ -1100,10 +1232,25 @@ function FunnelForm({ funnel, personas, onClose, onSaved }) {
       <Field label="Match keywords — comma-separated phrases from your ad's prefilled WhatsApp message">
         <Textarea rows={2} value={form.match_keywords || ""} onChange={(e) => set("match_keywords", e.target.value)} placeholder="gold, gold coin, AKT-GOLD, sona, ginni — the first inbound is matched case-insensitive; best-match funnel wins" />
       </Field>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-        <Field label="WhatsApp number (display only)" required><Input value={form.wa_number} onChange={(e) => set("wa_number", e.target.value)} placeholder="8860866000" /></Field>
-        <Field label="WA session id (match the paired session in Connections tab)"><Input value={form.wbiztool_client || ""} onChange={(e) => set("wbiztool_client", e.target.value)} placeholder="e.g. 7560, ssj-prod, bullion-2026" /></Field>
-      </div>
+      <Field label="WhatsApp session — each funnel must have its own session" required>
+        <Select value={form.wbiztool_client || ""} onChange={(e) => pickSession(e.target.value)}>
+          <option value="">— choose a paired WA session —</option>
+          {sessions.map((s) => (
+            <option key={s.client_id} value={s.client_id}>
+              {s.connected ? `✅ ${s.me || s.client_id}` : `⚠️ ${s.client_id} (disconnected)`}
+            </option>
+          ))}
+          {form.wbiztool_client && !sessions.find((s) => s.client_id === form.wbiztool_client) && (
+            <option value={form.wbiztool_client}>{form.wbiztool_client} — session not found in wa-service</option>
+          )}
+        </Select>
+        {selectedSession && !selectedSession.connected && (
+          <div style={{ marginTop: 4, fontSize: 12, color: C.red }}>⚠️ This session is disconnected — go to Connections tab to re-pair it.</div>
+        )}
+        {selectedSession?.connected && (
+          <div style={{ marginTop: 4, fontSize: 12, color: "#16a34a" }}>✅ Paired as {selectedSession.me} · Messages will send from this number.</div>
+        )}
+      </Field>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
         <Field label="Product focus">
           <Select value={form.product_focus || ""} onChange={(e) => set("product_focus", e.target.value)}>
@@ -1117,8 +1264,23 @@ function FunnelForm({ funnel, personas, onClose, onSaved }) {
           </Select>
         </Field>
       </div>
-      <Field label="Goal"><Input value={form.goal || ""} onChange={(e) => set("goal", e.target.value)} placeholder="Book a showroom visit within 48 hours" /></Field>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+      <Field label={(form.kind === "birthday" || form.kind === "anniversary") ? "Offer text (used by AI in birthday/anniversary messages)" : "Goal"}>
+        <Input value={form.goal || ""} onChange={(e) => set("goal", e.target.value)} placeholder={(form.kind === "birthday" || form.kind === "anniversary") ? "e.g. Free gift on store visit + 70% off making charges this month" : "Book a showroom visit within 48 hours"} />
+        {(form.kind === "birthday" || form.kind === "anniversary") && (
+          <div style={{ fontSize: 11, color: "#6b7280", marginTop: 3 }}>This is what the AI includes as the offer in pre/post event messages. It also appears in approval message previews.</div>
+        )}
+      </Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+        <Field label="Funnel type (kind)">
+          <Select value={form.kind || "sales"} onChange={(e) => set("kind", e.target.value)}>
+            <option value="sales">Sales / enquiry</option>
+            <option value="birthday">🎂 Birthday wishes</option>
+            <option value="anniversary">💍 Anniversary wishes</option>
+            <option value="lifecycle">Lifecycle / post-event</option>
+            <option value="followup">Follow-up</option>
+            <option value="broadcast">📢 Broadcast (festival / occasion)</option>
+          </Select>
+        </Field>
         <Field label="Max exchanges before handoff"><Input type="number" value={form.max_exchanges_before_handoff || 3} onChange={(e) => set("max_exchanges_before_handoff", Number(e.target.value) || 3)} /></Field>
         <Field label="Active"><Select value={form.active ? "yes" : "no"} onChange={(e) => set("active", e.target.value === "yes")}><option value="yes">yes</option><option value="no">no</option></Select></Field>
       </div>
@@ -1222,11 +1384,53 @@ function PersonaForm({ persona, onClose, onSaved }) {
   );
 }
 
+// ── QR Pairing Modal — polls status, renders QR as <img> (no iframe needed) ──
+function QrPairingModal({ clientId, onClose }) {
+  const [state, setState] = useState({ has_qr: false, qr_data_url: null, connected: false });
+
+  useEffect(() => {
+    let active = true;
+    const poll = async () => {
+      try {
+        const r = await fetch(`${WA_SERVICE_URL}/clients/${encodeURIComponent(clientId)}/status`);
+        const d = await r.json();
+        if (!active) return;
+        setState(d);
+        if (d.connected) { setTimeout(onClose, 1000); return; }
+      } catch { /* ignore */ }
+      if (active) setTimeout(poll, 3000);
+    };
+    poll();
+    return () => { active = false; };
+  }, [clientId, onClose]);
+
+  return (
+    <Modal title={`Pair WhatsApp · ${clientId}`} onClose={onClose} width={380}>
+      <p style={{ fontSize: 12, color: "#888", margin: "0 0 12px" }}>
+        Open WhatsApp → Settings → Linked Devices → Link a device → scan the QR.
+      </p>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: 16, background: "#fff", border: "1px solid #eee", borderRadius: 10 }}>
+        {state.connected ? (
+          <div style={{ fontSize: 14, color: C.green, padding: 24 }}>✅ Connected! Closing…</div>
+        ) : state.qr_data_url ? (
+          <img src={state.qr_data_url} alt="Scan QR" style={{ width: 280, height: 280, borderRadius: 8 }} />
+        ) : (
+          <div style={{ fontSize: 13, color: "#aaa", padding: 40 }}>⏳ Generating QR…</div>
+        )}
+      </div>
+      <div style={{ fontSize: 11, color: "#aaa", textAlign: "center", marginTop: 8 }}>
+        {state.connected ? "Connected" : "Auto-closes when paired · refreshes every 3s"}
+      </div>
+    </Modal>
+  );
+}
+
 // ──────────────────────────────────────────────────────────
 // CONNECTIONS SCREEN — pair WhatsApp numbers via QR from the CRM
 // ──────────────────────────────────────────────────────────
 function ConnectionsScreen() {
   const [clients, setClients] = useState([]);
+  const [funnels, setFunnels] = useState([]);
   const [loading, setLoading] = useState(false);
   const [pairing, setPairing] = useState(null); // client_id being paired, null | string
   const [adding, setAdding] = useState(false);
@@ -1241,6 +1445,8 @@ function ConnectionsScreen() {
     } catch {
       setClients([]);
     }
+    const { data: fdata } = await sb.from("funnels").select("id,name,wbiztool_client,active").eq("tenant_id", getTenantId());
+    setFunnels(fdata || []);
     setLoading(false);
   }, []);
 
@@ -1275,11 +1481,14 @@ function ConnectionsScreen() {
 
   const rePair = async (clientId) => {
     if (!confirm(`Re-pair session "${clientId}"? This unlinks the current WhatsApp session.`)) return;
-    // Best-effort logout; it's fine if the service rejects because bot_paused check etc.
-    try {
-      await fetch(`${WA_SERVICE_URL}/clients/${clientId}/logout`, { method: "POST" });
-    } catch { /* ignore */ }
+    try { await fetch(`${WA_SERVICE_URL}/clients/${clientId}/logout`, { method: "POST" }); } catch { /* ignore */ }
     setTimeout(() => { setPairing(clientId); load(); }, 1500);
+  };
+
+  const disconnect = async (clientId) => {
+    if (!confirm(`Disconnect "${clientId}"? The WA session will be logged out. You can re-pair it later.`)) return;
+    try { await fetch(`${WA_SERVICE_URL}/clients/${clientId}/logout`, { method: "POST" }); } catch { /* ignore */ }
+    setTimeout(load, 1000);
   };
 
   return (
@@ -1294,8 +1503,23 @@ function ConnectionsScreen() {
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 12 }}>
-        {clients.map((c) => (
+      {/* Warn if two sessions share the same phone number */}
+      {(() => {
+        const meMap = {};
+        clients.forEach((c) => { if (c.me && c.connected) { meMap[c.me] = (meMap[c.me] || []).concat(c.client_id); } });
+        const dupes = Object.entries(meMap).filter(([, ids]) => ids.length > 1);
+        return dupes.length > 0 ? (
+          <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 8, padding: "10px 14px", marginBottom: 12, fontSize: 13, color: "#991b1b" }}>
+            ⚠️ <strong>Duplicate pairing detected:</strong> {dupes.map(([me, ids]) => `${me} is paired to both: ${ids.join(" and ")}`).join(". ")} — disconnect one and pair it to a different WA number, otherwise both sessions send from the same phone and messages may misfire.
+          </div>
+        ) : null;
+      })()}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
+        {clients.map((c) => {
+          const linked = funnels.filter((f) => f.wbiztool_client === c.client_id);
+          const phone = c.me ? c.me.replace(/@.*/, "").replace(/^91/, "") : null;
+          return (
           <Card key={c.client_id}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
               <div style={{ fontSize: 14, fontWeight: 600 }}>{c.client_id}</div>
@@ -1303,15 +1527,28 @@ function ConnectionsScreen() {
                 ? <Pill color={C.green} solid>connected</Pill>
                 : c.has_qr ? <Pill color={C.orange} solid>awaiting scan</Pill> : <Pill color={C.gray} solid>offline</Pill>}
             </div>
-            <div style={{ fontSize: 11, color: "#888", marginBottom: 10, wordBreak: "break-all" }}>
-              {c.me ? <>Paired as <code>{c.me}</code></> : "Not yet paired"}
+            <div style={{ fontSize: 12, color: "#555", marginBottom: 6, wordBreak: "break-all" }}>
+              {phone ? <>📱 <strong>{phone}</strong></> : <span style={{ color: "#aaa" }}>Not yet paired</span>}
             </div>
-            <div style={{ display: "flex", gap: 6 }}>
+            {linked.length > 0 && (
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>Funnels using this session:</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                  {linked.map((f) => (
+                    <span key={f.id} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 8, background: f.active ? "#dbeafe" : "#f3f4f6", color: f.active ? "#1d4ed8" : "#888" }}>{f.name}{!f.active ? " (off)" : ""}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {linked.length === 0 && <div style={{ fontSize: 11, color: "#aaa", marginBottom: 10 }}>No funnels linked to this session</div>}
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
               {!c.connected && <Btn small color={C.blue} onClick={() => setPairing(c.client_id)}>Pair QR</Btn>}
               {c.connected && <Btn small ghost color={C.orange} onClick={() => rePair(c.client_id)}>Re-pair</Btn>}
+              {c.connected && <Btn small ghost color={C.red} onClick={() => disconnect(c.client_id)}>Disconnect</Btn>}
             </div>
           </Card>
-        ))}
+          );
+        })}
         {!clients.length && !loading && (
           <div style={{ color: "#aaa", fontSize: 13 }}>No sessions yet. Click "+ Add connection" to pair a WhatsApp number.</div>
         )}
@@ -1330,21 +1567,7 @@ function ConnectionsScreen() {
         </Modal>
       )}
 
-      {pairing && (
-        <Modal title={`Pair WhatsApp · ${pairing}`} onClose={() => setPairing(null)} width={420}>
-          <p style={{ fontSize: 12, color: "#888", margin: "0 0 10px" }}>
-            Open WhatsApp on the phone you want to pair → Settings → Linked Devices → Link a device → scan.
-          </p>
-          <div style={{ border: "1px solid #eee", borderRadius: 10, overflow: "hidden", background: "#fff" }}>
-            <iframe
-              src={`${WA_SERVICE_URL}/clients/${encodeURIComponent(pairing)}/qr`}
-              title="WhatsApp QR"
-              style={{ width: "100%", height: 520, border: 0 }}
-            />
-          </div>
-          <div style={{ fontSize: 11, color: "#aaa", textAlign: "center", marginTop: 8 }}>Auto-closes when the session connects.</div>
-        </Modal>
-      )}
+      {pairing && <QrPairingModal clientId={pairing} onClose={() => { setPairing(null); load(); }} />}
     </div>
   );
 }
@@ -1560,8 +1783,9 @@ function MediaAssetsScreen() {
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(false);
   const [editing, setEditing] = useState(null); // null | 'new' | asset object
-  const [form, setForm] = useState({ title: "", asset_type: "pdf", url: "", caption: "", send_to_new_leads: true, active: true, sort_order: 1 });
+  const [form, setForm] = useState({ title: "", asset_type: "image", url: "", caption: "", send_to_new_leads: true, active: true, sort_order: 1 });
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState("");
 
   const load = async () => {
@@ -1577,10 +1801,22 @@ function MediaAssetsScreen() {
   const startNew = () => { setForm({ title: "", asset_type: "pdf", url: "", caption: "", send_to_new_leads: true, active: true, sort_order: (assets.length + 1) }); setEditing("new"); setErr(""); };
   const startEdit = (a) => { setForm({ ...a }); setEditing(a); setErr(""); };
 
+  const uploadFile = async (file) => {
+    if (!file) return;
+    setUploading(true); setErr("");
+    const type = file.type.startsWith("video") ? "video" : file.type === "application/pdf" ? "pdf" : "image";
+    const path = `media-assets/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+    const { error: upErr } = await sb.storage.from("media").upload(path, file, { upsert: true });
+    if (upErr) { setErr(`Upload failed: ${upErr.message}`); setUploading(false); return; }
+    const { data: pub } = sb.storage.from("media").getPublicUrl(path);
+    setForm((s) => ({ ...s, url: pub.publicUrl, asset_type: type }));
+    setUploading(false);
+  };
+
   const save = async () => {
     setErr("");
     if (!form.title) return setErr("Title is required.");
-    if (!form.url) return setErr("URL is required.");
+    if (!form.url) return setErr("Upload a file or paste a URL.");
     setSaving(true);
     const payload = { ...form, tenant_id: getTenantId() };
     let error;
@@ -1662,8 +1898,17 @@ function MediaAssetsScreen() {
               <Input type="number" value={form.sort_order} onChange={(e) => setF("sort_order", Number(e.target.value))} />
             </Field>
           </div>
-          <Field label="Public URL (Google Drive, Dropbox, YouTube, etc.)" required>
-            <Input value={form.url} onChange={(e) => setF("url", e.target.value)} placeholder="https://drive.google.com/file/d/..." />
+          <Field label="File">
+            <div style={{ display: "flex", gap: 8, alignItems: "flex-start", flexDirection: "column" }}>
+              <label style={{ fontSize: 13, padding: "6px 14px", borderRadius: 7, border: "1px solid #3b82f6", color: "#3b82f6", cursor: "pointer" }}>
+                {uploading ? "Uploading…" : "📤 Upload from computer"}
+                <input type="file" accept="image/*,video/*,.pdf" style={{ display: "none" }} onChange={(e) => uploadFile(e.target.files[0])} disabled={uploading} />
+              </label>
+              {form.url && form.asset_type === "image" && <img src={form.url} alt="" style={{ maxHeight: 100, maxWidth: 200, borderRadius: 6, objectFit: "cover", border: "1px solid #e5e7eb" }} />}
+              {form.url && form.asset_type !== "image" && <a href={form.url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: C.blue }}>View uploaded file ↗</a>}
+              <div style={{ fontSize: 12, color: "#888" }}>Or paste a public URL:</div>
+              <Input value={form.url} onChange={(e) => setF("url", e.target.value)} placeholder="https://..." />
+            </div>
           </Field>
           <Field label="Caption (message text sent with the link)">
             <Textarea rows={2} value={form.caption} onChange={(e) => setF("caption", e.target.value)} placeholder="Here's our jewellery catalogue — take a look at our collection!" />
@@ -1686,6 +1931,361 @@ function MediaAssetsScreen() {
         </Modal>
       )}
     </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// CONTACTS SCREEN — master client database
+// ──────────────────────────────────────────────────────────
+function ContactsScreen({ funnels }) {
+  const [contacts, setContacts] = useState([]);
+  const [allTags, setAllTags] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [search, setSearch] = useState("");
+  const [editing, setEditing] = useState(null);
+  const [sending, setSending] = useState(null);
+
+  const loadTags = useCallback(async () => {
+    const { data } = await sb.from("bullion_tags").select("name,category,color")
+      .eq("tenant_id", getTenantId()).order("sort_order");
+    setAllTags(data || []);
+  }, []);
+
+  const load = useCallback(async (q = "") => {
+    setLoading(true);
+    let query = sb.from("bullion_leads")
+      .select("*")
+      .eq("tenant_id", getTenantId())
+      .order("name", { ascending: true, nullsFirst: false })
+      .limit(200);
+    if (q) {
+      query = query.or(`name.ilike.%${q}%,phone.ilike.%${q}%,email.ilike.%${q}%,city.ilike.%${q}%`);
+    }
+    const { data } = await query;
+    setContacts(data || []);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); loadTags(); }, [load, loadTags]);
+
+  // Debounce search → server-side query
+  useEffect(() => {
+    const t = setTimeout(() => load(search), 300);
+    return () => clearTimeout(t);
+  }, [search, load]);
+
+  const filtered = contacts;
+
+  // Unique WA numbers from funnels for the sender chooser
+  const waNumbers = useMemo(() => {
+    const seen = new Set();
+    return (funnels || []).filter((f) => f.wa_number && !seen.has(f.wa_number) && seen.add(f.wa_number))
+      .map((f) => ({ number: f.wa_number, client: f.wbiztool_client, label: f.wa_number }));
+  }, [funnels]);
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <Input placeholder="Search name / phone / email / city…" value={search} onChange={(e) => setSearch(e.target.value)} style={{ flex: "1 1 220px" }} />
+        <Btn ghost small color={C.gray} onClick={load}>↻</Btn>
+        <Btn small color={C.blue} onClick={() => setEditing({})}>+ Add Contact</Btn>
+        <span style={{ fontSize: 11, color: "#888" }}>{loading ? "Loading…" : `${filtered.length} contacts`}</span>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 10 }}>
+        {filtered.map((c) => (
+          <ContactCard key={c.id} contact={c} onEdit={() => setEditing(c)} onSendWA={() => setSending(c)} />
+        ))}
+        {!filtered.length && !loading && (
+          <div style={{ gridColumn: "1/-1", padding: 40, textAlign: "center", color: "#aaa", fontSize: 13 }}>No contacts yet.</div>
+        )}
+      </div>
+
+      {editing !== null && (
+        <ContactEditModal
+          contact={editing}
+          allTags={allTags}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); load(); }}
+        />
+      )}
+      {sending && (
+        <SendWAModal
+          contact={sending}
+          waNumbers={waNumbers}
+          onClose={() => setSending(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function ContactCard({ contact: c, onEdit, onSendWA }) {
+  const stars = c.client_rating ? "★".repeat(Math.min(5, c.client_rating)) + "☆".repeat(5 - Math.min(5, c.client_rating)) : null;
+  return (
+    <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 12, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 4 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>{c.name || <span style={{ color: "#aaa" }}>(no name)</span>}</div>
+          <div style={{ fontSize: 12, color: "#555" }}>{c.phone}</div>
+        </div>
+        <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+          {c.is_client && <Pill color={C.blue} solid>Client</Pill>}
+          {c.dnd && <Pill color={C.red} solid>DND</Pill>}
+        </div>
+      </div>
+
+      {(c.city || c.email) && (
+        <div style={{ fontSize: 12, color: "#777" }}>
+          {[c.city, c.email].filter(Boolean).join(" · ")}
+        </div>
+      )}
+
+      {(c.bday || c.anniversary) && (
+        <div style={{ fontSize: 12, color: "#888" }}>
+          {c.bday && <span>🎂 {c.bday}</span>}
+          {c.bday && c.anniversary && <span style={{ margin: "0 6px" }}>·</span>}
+          {c.anniversary && <span>💍 {c.anniversary}</span>}
+        </div>
+      )}
+
+      {c.wedding_date && (
+        <div style={{ fontSize: 12, color: "#a855f7" }}>💒 {c.wedding_family_member || "Wedding"}: {c.wedding_date}</div>
+      )}
+
+      {stars && <div style={{ fontSize: 12, color: "#f59e0b", letterSpacing: 1 }}>{stars}</div>}
+
+      {Array.isArray(c.tags) && c.tags.length > 0 && (
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 2 }}>
+          {c.tags.map((t) => <Pill key={t} color={C.blue}>{t}</Pill>)}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+        <Btn ghost small color={C.blue} onClick={onEdit}>✏️ Edit</Btn>
+        <Btn small color="#25d366" onClick={onSendWA} style={{ color: "#fff" }}>📱 Send WA</Btn>
+      </div>
+    </div>
+  );
+}
+
+function ContactEditModal({ contact, allTags = [], onClose, onSaved }) {
+  const isNew = !contact.id;
+  const sourceTags = allTags.filter((t) => t.category === "source").map((t) => t.name);
+  const otherTags = allTags.filter((t) => t.category !== "source").map((t) => t.name);
+
+  const [form, setForm] = useState({
+    name: contact.name || "",
+    phone: contact.phone || "",
+    city: contact.city || "",
+    email: contact.email || "",
+    bday: contact.bday || "",
+    anniversary: contact.anniversary || "",
+    client_rating: contact.client_rating || "",
+    is_client: contact.is_client || false,
+    wedding_date: contact.wedding_date || "",
+    wedding_family_member: contact.wedding_family_member || "",
+    source: contact.source || "",
+    tags: Array.isArray(contact.tags) ? contact.tags : [],
+  });
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  const set = (k, v) => setForm((s) => ({ ...s, [k]: v }));
+
+  const toggleTag = (tag) => {
+    setForm((s) => ({
+      ...s,
+      tags: s.tags.includes(tag) ? s.tags.filter((t) => t !== tag) : [...s.tags, tag],
+    }));
+  };
+
+  const save = async () => {
+    setErr("");
+    if (!form.phone) return setErr("Phone is required.");
+    setSaving(true);
+    const payload = {
+      tenant_id: getTenantId(),
+      phone: String(form.phone).replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, ""),
+      name: form.name || null,
+      city: form.city || null,
+      email: form.email || null,
+      bday: form.bday || null,
+      anniversary: form.anniversary || null,
+      client_rating: form.client_rating ? Number(form.client_rating) : null,
+      is_client: form.is_client,
+      wedding_date: form.wedding_date || null,
+      wedding_family_member: form.wedding_family_member || null,
+      source: form.source || null,
+      tags: form.tags,
+      updated_at: new Date().toISOString(),
+    };
+    let error;
+    if (isNew) {
+      ({ error } = await sb.from("bullion_leads").insert({ ...payload, status: "new", funnel_id: "bullion" }));
+    } else {
+      ({ error } = await sb.from("bullion_leads").update(payload).eq("id", contact.id));
+    }
+    setSaving(false);
+    if (error) return setErr(error.message);
+    onSaved();
+  };
+
+  return (
+    <Modal title={isNew ? "Add Contact" : `Edit — ${contact.name || contact.phone}`} onClose={onClose} width={540}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <Field label="Name"><Input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Full name" /></Field>
+        <Field label="Phone" required><Input value={form.phone} onChange={(e) => set("phone", e.target.value)} placeholder="9876543210" readOnly={!isNew} style={!isNew ? { background: "#f5f5f5" } : {}} /></Field>
+        <Field label="City"><Input value={form.city} onChange={(e) => set("city", e.target.value)} placeholder="Delhi" /></Field>
+        <Field label="Email"><Input value={form.email} onChange={(e) => set("email", e.target.value)} placeholder="email@example.com" /></Field>
+        <Field label="Birthday (YYYY-MM-DD)"><Input value={form.bday} onChange={(e) => set("bday", e.target.value)} placeholder="1985-03-15" /></Field>
+        <Field label="Anniversary (YYYY-MM-DD)"><Input value={form.anniversary} onChange={(e) => set("anniversary", e.target.value)} placeholder="2010-11-20" /></Field>
+        <Field label="Rating">
+          <Select value={form.client_rating} onChange={(e) => set("client_rating", e.target.value)}>
+            <option value="">—</option>
+            {[1,2,3,4,5].map((n) => <option key={n} value={n}>{"★".repeat(n)} {n} star{n > 1 ? "s" : ""}</option>)}
+          </Select>
+        </Field>
+        <Field label="Source">
+          <Select value={form.source} onChange={(e) => set("source", e.target.value)}>
+            <option value="">— select source —</option>
+            {sourceTags.map((s) => <option key={s} value={s}>{s}</option>)}
+          </Select>
+        </Field>
+        <Field label="Wedding date"><Input value={form.wedding_date} onChange={(e) => set("wedding_date", e.target.value)} placeholder="2025-11-15" /></Field>
+        <Field label="Wedding (family member)"><Input value={form.wedding_family_member} onChange={(e) => set("wedding_family_member", e.target.value)} placeholder="daughter Priya" /></Field>
+      </div>
+
+      <Field label="Tags" style={{ marginTop: 10 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: "8px 0" }}>
+          {otherTags.map((tag) => {
+            const active = form.tags.includes(tag);
+            const tagMeta = allTags.find((t) => t.name === tag);
+            return (
+              <button key={tag} onClick={() => toggleTag(tag)} style={{ padding: "3px 10px", borderRadius: 20, fontSize: 12, cursor: "pointer", border: `1px solid ${active ? (tagMeta?.color || C.blue) : "#ddd"}`, background: active ? (tagMeta?.color || C.blue) : "transparent", color: active ? "#fff" : "#555", fontWeight: active ? 600 : 400 }}>
+                {tag}
+              </button>
+            );
+          })}
+          {otherTags.length === 0 && <span style={{ fontSize: 12, color: "#aaa" }}>No tags configured yet</span>}
+        </div>
+      </Field>
+
+      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, margin: "10px 0", cursor: "pointer" }}>
+        <input type="checkbox" checked={form.is_client} onChange={(e) => set("is_client", e.target.checked)} />
+        Mark as known client (has purchased before)
+      </label>
+      {err && <p style={{ fontSize: 12, color: C.red, margin: "4px 0" }}>{err}</p>}
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
+        <Btn ghost color={C.gray} onClick={onClose}>Cancel</Btn>
+        <Btn color={C.blue} onClick={save} disabled={saving}>{saving ? "Saving…" : "Save Contact"}</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+function SendWAModal({ contact, waNumbers = [], onClose, initialMsgType }) {
+  const [msgType, setMsgType] = useState(initialMsgType || "custom");
+  const [message, setMessage] = useState("");
+  const [fromClient, setFromClient] = useState("");
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState(null);
+  const [liveSessions, setLiveSessions] = useState([]);
+
+  const name = contact.name ? contact.name.trim().split(/\s+/)[0] : "";
+
+  // Load connected sessions from wa-service
+  useEffect(() => {
+    fetch(`${WA_SERVICE_URL}/clients`)
+      .then((r) => r.json())
+      .then((d) => {
+        const connected = (d?.clients || []).filter((c) => c.connected);
+        setLiveSessions(connected);
+        if (connected.length > 0 && !fromClient) setFromClient(connected[0].client_id);
+      })
+      .catch(() => {
+        // Fallback to funnel numbers if wa-service unreachable
+        if (waNumbers.length > 0 && !fromClient) setFromClient(waNumbers[0]?.client || "");
+      });
+  }, []);
+
+  // Build merged options: live sessions + funnel numbers (dedupe by client id)
+  const sessionOptions = useMemo(() => {
+    const map = new Map();
+    liveSessions.forEach((s) => {
+      map.set(s.client_id, { client: s.client_id, label: `${s.me || s.client_id} ✅ connected` });
+    });
+    waNumbers.forEach((w) => {
+      if (!map.has(w.client)) map.set(w.client, { client: w.client, label: `${w.number} (${w.client})` });
+    });
+    return [...map.values()];
+  }, [liveSessions, waNumbers]);
+
+  const templates = {
+    bday: name ? `Wishing you a very Happy Birthday ${name}! 🎂🎉 May this special day bring you joy and wonderful memories. Warm regards from Sun Sea Jewellers, Karol Bagh. 🙏` : `Wishing you a very Happy Birthday! 🎂🎉 May this special day bring you joy and wonderful memories. Warm regards from Sun Sea Jewellers, Karol Bagh. 🙏`,
+    anniv: name ? `Wishing you a very Happy Anniversary ${name}! 💍✨ May your bond grow stronger with each passing year. Warm wishes from Sun Sea Jewellers. 🙏` : `Wishing you a very Happy Anniversary! 💍✨ May your bond grow stronger with each passing year. Warm wishes from Sun Sea Jewellers. 🙏`,
+  };
+
+  useEffect(() => {
+    if (msgType === "bday") setMessage(templates.bday);
+    else if (msgType === "anniv") setMessage(templates.anniv);
+    else if (msgType === "custom") setMessage("");
+  }, [msgType]);
+
+  const send = async () => {
+    if (!message.trim()) return;
+    setSending(true);
+    const res = await sendWA({ phone: contact.phone, message, leadId: contact.id, client: fromClient || undefined });
+    setSending(false);
+    setResult(res.ok ? "sent" : (res.error || "failed"));
+  };
+
+  return (
+    <Modal title={`Send WA — ${name} · ${contact.phone}`} onClose={onClose} width={500}>
+      {result ? (
+        <div style={{ padding: 24, textAlign: "center", fontSize: 14, color: result === "sent" ? C.green : C.red }}>
+          {result === "sent" ? "✅ Message sent!" : `❌ Failed: ${result}`}
+          <div style={{ marginTop: 12 }}><Btn ghost color={C.gray} onClick={onClose}>Close</Btn></div>
+        </div>
+      ) : (
+        <>
+          <Field label="Send from">
+            <Select value={fromClient} onChange={(e) => setFromClient(e.target.value)}>
+              {sessionOptions.map((w) => (
+                <option key={w.client} value={w.client}>{w.label}</option>
+              ))}
+              {!sessionOptions.length && <option value="">— no sessions found —</option>}
+            </Select>
+          </Field>
+
+          <Field label="Message type">
+            <div style={{ display: "flex", gap: 8 }}>
+              {[["custom", "✏️ Custom"], ["bday", "🎂 Birthday"], ["anniv", "💍 Anniversary"]].map(([k, l]) => (
+                <button key={k} onClick={() => setMsgType(k)} style={{ padding: "6px 12px", borderRadius: 8, border: `1px solid ${msgType === k ? C.blue : "#ddd"}`, background: msgType === k ? C.blue : "transparent", color: msgType === k ? "#fff" : "#333", cursor: "pointer", fontSize: 13 }}>{l}</button>
+              ))}
+            </div>
+          </Field>
+
+          <Field label="Message">
+            <textarea
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              rows={5}
+              style={{ width: "100%", fontSize: 13, padding: 8, borderRadius: 8, border: "1px solid #ddd", resize: "vertical", fontFamily: "inherit", boxSizing: "border-box" }}
+              placeholder="Type your message…"
+            />
+            <div style={{ fontSize: 11, color: "#aaa", textAlign: "right" }}>{message.length} chars</div>
+          </Field>
+
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
+            <Btn ghost color={C.gray} onClick={onClose}>Cancel</Btn>
+            <Btn color="#25d366" onClick={send} disabled={sending || !message.trim()} style={{ color: "#fff" }}>
+              {sending ? "Sending…" : "📱 Send"}
+            </Btn>
+          </div>
+        </>
+      )}
+    </Modal>
   );
 }
 
@@ -1738,6 +2338,823 @@ function RatesScreen() {
         </div>
       )}
       {!rates.length && !loading && !err && <div style={{ padding: 20, color: "#aaa", textAlign: "center" }}>No rates loaded.</div>}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// APPROVALS SCREEN — review & approve scheduled drip messages
+// ──────────────────────────────────────────────────────────
+function ApprovalsScreen({ funnels }) {
+  const [rows, setRows] = useState([]);
+  const [calRows, setCalRows] = useState([]); // birthday/anniversary messages always loaded 40d ahead
+  const [loading, setLoading] = useState(true);
+  const [days, setDays] = useState(30);
+  const [tab, setTab] = useState("calendar"); // "calendar" | "drip"
+  const [groupBy, setGroupBy] = useState("person"); // "person" | "date"
+  const [editing, setEditing] = useState({});
+  const [editingName, setEditingName] = useState({});
+  const [saving, setSaving] = useState(new Set());
+  const [expanded, setExpanded] = useState(new Set()); // expanded person/date groups
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    // Calendar messages: always load 40 days ahead (birthday/anniversary funnels)
+    const calUntil = new Date(Date.now() + 40 * 86400000).toISOString();
+    const { data: calData } = await sb.from("bullion_scheduled_messages")
+      .select("id,lead_id,funnel_id,body,edited_body,send_at,approved,approved_at,status,step:bullion_funnel_steps(id,name,step_order,use_ai_message),lead:bullion_leads(id,name,phone),funnel:funnels(id,name,kind)")
+      .eq("tenant_id", getTenantId())
+      .eq("status", "pending")
+      .lte("send_at", calUntil)
+      .in("funnel_id", funnels.filter((f) => f.kind === "birthday" || f.kind === "anniversary").map((f) => f.id))
+      .order("send_at", { ascending: true })
+      .limit(300);
+    setCalRows(calData || []);
+
+    // Regular drip messages: use the days filter
+    const until = new Date(Date.now() + days * 86400000).toISOString();
+    const calIds = funnels.filter((f) => f.kind === "birthday" || f.kind === "anniversary").map((f) => f.id);
+    let dripQuery = sb.from("bullion_scheduled_messages")
+      .select("id,lead_id,funnel_id,body,edited_body,send_at,approved,approved_at,status,step:bullion_funnel_steps(id,name,step_order,use_ai_message),lead:bullion_leads(id,name,phone),funnel:funnels(id,name,kind)")
+      .eq("tenant_id", getTenantId())
+      .eq("status", "pending")
+      .lte("send_at", until)
+      .order("send_at", { ascending: true })
+      .limit(300);
+    if (calIds.length) dripQuery = dripQuery.not("funnel_id", "in", `(${calIds.map((id) => `"${id}"`).join(",")})`);
+    const { data: dripData } = await dripQuery;
+    setRows(dripData || []);
+
+    setExpanded(new Set());
+    setLoading(false);
+  }, [days, funnels]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const setSav = (id, on) => setSaving((s) => { const n = new Set(s); on ? n.add(id) : n.delete(id); return n; });
+
+  async function approve(id) {
+    setSav(id, true);
+    const body = editing[id];
+    const upd = { approved: true, approved_at: new Date().toISOString(), approved_by: loadUser()?.name || "admin" };
+    if (body !== undefined) upd.edited_body = body;
+    await sb.from("bullion_scheduled_messages").update(upd).eq("id", id);
+    setRows((r) => r.map((m) => m.id === id ? { ...m, ...upd } : m));
+    setSav(id, false);
+  }
+
+  async function reject(id) {
+    setSav(id, true);
+    await sb.from("bullion_scheduled_messages").update({ status: "canceled", canceled_reason: "rejected_in_approval" }).eq("id", id);
+    setRows((r) => r.filter((m) => m.id !== id));
+    setSav(id, false);
+  }
+
+  async function approveAll(ids) {
+    for (const id of ids) await approve(id);
+  }
+
+  async function saveName(leadId, name) {
+    if (!name?.trim()) return;
+    setSav(leadId, true);
+    await sb.from("bullion_leads").update({ name: name.trim() }).eq("id", leadId);
+    setRows((r) => r.map((m) => m.lead_id === leadId ? { ...m, lead: { ...m.lead, name: name.trim() } } : m));
+    setEditingName((e) => { const n = { ...e }; delete n[leadId]; return n; });
+    setSav(leadId, false);
+  }
+
+  const activeRows = tab === "calendar" ? calRows : rows;
+
+  const grouped = useMemo(() => {
+    const map = new Map();
+    for (const r of activeRows) {
+      const key = groupBy === "person"
+        ? (r.lead_id || r.lead?.phone)
+        : new Date(r.send_at).toISOString().slice(0, 10);
+      if (!map.has(key)) map.set(key, { label: groupBy === "person" ? (r.lead?.name || r.lead?.phone) : new Date(r.send_at).toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" }), rows: [], phone: r.lead?.phone, leadId: r.lead_id });
+      map.get(key).rows.push(r);
+    }
+    return [...map.values()].sort((a, b) => groupBy === "person" ? (a.label||"").localeCompare(b.label||"") : a.rows[0].send_at.localeCompare(b.rows[0].send_at));
+  }, [activeRows, groupBy]);
+
+  const pendingCount = activeRows.filter((r) => !r.approved).length;
+  const approvedCount = activeRows.filter((r) => r.approved).length;
+  const calPendingCount = calRows.filter((r) => !r.approved).length;
+  const toggleExpand = (key) => setExpanded((s) => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; });
+
+  const fmtSendAt = (iso) => {
+    const d = new Date(iso);
+    return d.toLocaleDateString("en-IN", { weekday:"short", day:"numeric", month:"short" }) + " · " + d.toLocaleTimeString("en-IN", { hour:"2-digit", minute:"2-digit" });
+  };
+
+  const MessageCard = ({ r }) => {
+    const body = editing[r.id] ?? (r.edited_body || r.body || "");
+    const nameVal = editingName[r.lead_id] ?? r.lead?.name ?? "";
+    const isSav = saving.has(r.id) || saving.has(r.lead_id);
+    const funnelName = funnels.find((f) => f.id === r.funnel_id)?.name || r.funnel?.name || r.funnel_id;
+    const stepName = r.step?.name || `Step ${r.step?.step_order || ""}`;
+
+    return (
+      <div style={{ background: r.approved ? "#f0fdf4" : "#fff", border: `1px solid ${r.approved ? "#86efac" : "#e5e7eb"}`, borderRadius: 10, padding: "12px 14px", marginBottom: 6 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+          {groupBy === "date" && (
+            <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              {editingName[r.lead_id] !== undefined
+                ? <input value={nameVal} onChange={(e) => setEditingName((x) => ({ ...x, [r.lead_id]: e.target.value }))} onBlur={() => saveName(r.lead_id, nameVal)} onKeyDown={(e) => e.key === "Enter" && saveName(r.lead_id, nameVal)} autoFocus style={{ fontSize: 13, fontWeight: 600, border: "1px solid #3b82f6", borderRadius: 5, padding: "2px 6px", width: 150 }} />
+                : <span style={{ fontWeight: 600, fontSize: 13 }}>{r.lead?.name || r.lead?.phone}</span>}
+              <button onClick={() => setEditingName((x) => x[r.lead_id] !== undefined ? (({ [r.lead_id]: _, ...rest }) => rest)(x) : { ...x, [r.lead_id]: r.lead?.name || "" })} style={{ fontSize: 11, padding: "1px 5px", borderRadius: 4, border: "1px solid #ddd", background: "#f9fafb", cursor: "pointer" }}>✏️</button>
+              <span style={{ fontSize: 11, color: "#888" }}>{r.lead?.phone}</span>
+            </div>
+          )}
+          <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 8, background: "#f3f4f6", color: "#555" }}>{funnelName}</span>
+          <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 8, background: "#ede9fe", color: "#5b21b6", fontWeight: 600 }}>{stepName}</span>
+          <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 8, background: "#fef9c3", color: "#713f12" }}>📅 {fmtSendAt(r.send_at)}</span>
+          {r.approved && <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 8, background: "#dcfce7", color: "#166534", fontWeight: 600 }}>✅ Approved</span>}
+          {r.step?.use_ai_message && <span style={{ fontSize: 10, color: r.edited_body ? "#6d28d9" : "#9ca3af" }}>{r.edited_body ? "🤖 AI" : "⏳ generating…"}</span>}
+        </div>
+
+        <textarea value={body} onChange={(e) => setEditing((x) => ({ ...x, [r.id]: e.target.value }))}
+          rows={Math.max(3, Math.min(8, (body.match(/\n/g) || []).length + 2))}
+          style={{ width: "100%", fontSize: 13, lineHeight: 1.5, border: "1px solid #e5e7eb", borderRadius: 7, padding: "8px 10px", resize: "vertical", boxSizing: "border-box", background: r.approved ? "#f0fdf4" : "#fafafa", fontFamily: "inherit" }} />
+
+        {!r.approved && (
+          <div style={{ display: "flex", gap: 6, marginTop: 7 }}>
+            <button onClick={() => approve(r.id)} disabled={isSav} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 6, border: "none", background: "#16a34a", color: "#fff", cursor: "pointer", fontWeight: 600 }}>{isSav ? "…" : "✅ Approve"}</button>
+            <button onClick={() => reject(r.id)} disabled={isSav} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 6, border: "1px solid #f87171", background: "#fff", color: "#dc2626", cursor: "pointer" }}>❌ Reject</button>
+          </div>
+        )}
+        {r.approved && (
+          <div style={{ display: "flex", gap: 6, marginTop: 7, alignItems: "center" }}>
+            <span style={{ fontSize: 12, color: "#16a34a" }}>✅ Will send {fmtSendAt(r.send_at)}</span>
+            <button onClick={async () => { await sb.from("bullion_scheduled_messages").update({ approved: false }).eq("id", r.id); setRows((x) => x.map((m) => m.id === r.id ? { ...m, approved: false } : m)); }} style={{ fontSize: 11, padding: "2px 7px", borderRadius: 5, border: "1px solid #ddd", background: "#fff", cursor: "pointer", color: "#666" }}>Undo</button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div>
+      {/* Tab switcher — Birthday/Anniversary vs regular drip */}
+      <div style={{ display: "flex", gap: 0, marginBottom: 14, borderBottom: "2px solid #e5e7eb" }}>
+        {[
+          ["calendar", `🎂 Birthday & Anniversary${calPendingCount > 0 ? ` · ${calPendingCount} pending` : ""}`],
+          ["drip", "💬 Regular Drip"],
+        ].map(([k, l]) => (
+          <button key={k} onClick={() => setTab(k)} style={{ fontSize: 13, padding: "8px 18px", border: "none", borderBottom: tab === k ? "2px solid #3b82f6" : "2px solid transparent", marginBottom: -2, background: "transparent", color: tab === k ? "#1d4ed8" : "#555", fontWeight: tab === k ? 600 : 400, cursor: "pointer" }}>{l}</button>
+        ))}
+      </div>
+
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", borderRadius: 7, border: "1px solid #ddd", overflow: "hidden" }}>
+          {[["person","👤 By Person"],["date","📅 By Date"]].map(([k,l]) => (
+            <button key={k} onClick={() => setGroupBy(k)} style={{ fontSize: 12, padding: "5px 12px", border: "none", background: groupBy === k ? "#1d4ed8" : "#fff", color: groupBy === k ? "#fff" : "#555", cursor: "pointer" }}>{l}</button>
+          ))}
+        </div>
+        {tab === "drip" && (
+          <select value={days} onChange={(e) => setDays(Number(e.target.value))} style={{ fontSize: 13, border: "1px solid #ddd", borderRadius: 6, padding: "5px 8px" }}>
+            {[7,14,30,60].map((d) => <option key={d} value={d}>Next {d} days</option>)}
+          </select>
+        )}
+        {tab === "calendar" && (
+          <span style={{ fontSize: 12, color: "#888" }}>Showing next 40 days — approve at least 15 days before event</span>
+        )}
+        <span style={{ fontSize: 12, padding: "3px 10px", borderRadius: 10, background: "#fef9c3", color: "#713f12" }}>⏳ {pendingCount} pending</span>
+        <span style={{ fontSize: 12, padding: "3px 10px", borderRadius: 10, background: "#dcfce7", color: "#166534" }}>✅ {approvedCount} approved</span>
+        <button onClick={load} style={{ fontSize: 12, padding: "5px 10px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>↻ Refresh</button>
+      </div>
+
+      {loading && <div style={{ padding: 32, textAlign: "center", color: "#888" }}>Loading…</div>}
+      {!loading && activeRows.length === 0 && <div style={{ padding: 32, textAlign: "center", color: "#888" }}>{tab === "calendar" ? "No birthday/anniversary messages in the next 40 days." : `No scheduled messages in the next ${days} days.`}</div>}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {grouped.map((g) => {
+          const key = g.leadId || g.label;
+          const isOpen = expanded.has(key);
+          const unapproved = g.rows.filter((r) => !r.approved);
+          const allApproved = unapproved.length === 0;
+
+          return (
+            <div key={key} style={{ border: "1px solid #e5e7eb", borderRadius: 12, overflow: "hidden" }}>
+              {/* Group header */}
+              <div onClick={() => toggleExpand(key)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: allApproved ? "#f0fdf4" : "#f9fafb", cursor: "pointer", userSelect: "none" }}>
+                <span style={{ fontSize: 14 }}>{isOpen ? "▼" : "▶"}</span>
+                {groupBy === "person" && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    {editingName[g.leadId] !== undefined
+                      ? <input value={editingName[g.leadId]} onChange={(e) => setEditingName((x) => ({ ...x, [g.leadId]: e.target.value }))} onBlur={() => saveName(g.leadId, editingName[g.leadId])} onKeyDown={(e) => e.key === "Enter" && saveName(g.leadId, editingName[g.leadId])} onClick={(e) => e.stopPropagation()} autoFocus style={{ fontSize: 14, fontWeight: 600, border: "1px solid #3b82f6", borderRadius: 5, padding: "2px 6px", width: 160 }} />
+                      : <span style={{ fontSize: 14, fontWeight: 600 }}>{g.label}</span>}
+                    <button onClick={(e) => { e.stopPropagation(); setEditingName((x) => x[g.leadId] !== undefined ? (({ [g.leadId]: _, ...rest }) => rest)(x) : { ...x, [g.leadId]: g.label }); }} style={{ fontSize: 11, padding: "1px 5px", borderRadius: 4, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>✏️ name</button>
+                    <span style={{ fontSize: 12, color: "#888" }}>{g.phone}</span>
+                  </div>
+                )}
+                {groupBy === "date" && <span style={{ fontSize: 14, fontWeight: 600 }}>{g.label}</span>}
+                <span style={{ fontSize: 12, color: "#888", marginLeft: 4 }}>{g.rows.length} message{g.rows.length > 1 ? "s" : ""}</span>
+                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                  {g.rows.map((r) => (
+                    <span key={r.id} style={{ fontSize: 10, padding: "2px 7px", borderRadius: 8, background: r.approved ? "#dcfce7" : "#fef9c3", color: r.approved ? "#166534" : "#713f12" }}>
+                      {r.step?.name || "Step"} · {new Date(r.send_at).toLocaleDateString("en-IN", { day:"numeric", month:"short" })}
+                      {r.approved ? " ✅" : " ⏳"}
+                    </span>
+                  ))}
+                </div>
+                {unapproved.length > 0 && (
+                  <button onClick={(e) => { e.stopPropagation(); approveAll(unapproved.map((r) => r.id)); }} style={{ marginLeft: "auto", fontSize: 12, padding: "3px 12px", borderRadius: 6, border: "1px solid #16a34a", background: "#f0fdf4", color: "#166534", cursor: "pointer", whiteSpace: "nowrap" }}>✅ Approve all {unapproved.length}</button>
+                )}
+              </div>
+
+              {/* Messages — shown when expanded */}
+              {isOpen && (
+                <div style={{ padding: "10px 14px", background: "#fff" }}>
+                  {g.rows.map((r) => <MessageCard key={r.id} r={r} />)}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// MESSAGE HISTORY SCREEN — all bot/manual messages sent
+// ──────────────────────────────────────────────────────────
+function MessageHistoryScreen({ funnels }) {
+  const [msgs, setMsgs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [days, setDays] = useState(7);
+  const [filterDir, setFilterDir] = useState("out");
+  const [filterFunnel, setFilterFunnel] = useState("");
+  const [search, setSearch] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const since = new Date(Date.now() - days * 86400000).toISOString();
+    let q = sb.from("bullion_messages")
+      .select("id,direction,body,status,claude_action,created_at,phone,funnel_id,lead:bullion_leads(name,phone)")
+      .eq("tenant_id", getTenantId())
+      .gte("created_at", since)
+      .order("created_at", { ascending: false })
+      .limit(500);
+    if (filterDir) q = q.eq("direction", filterDir);
+    if (filterFunnel) q = q.eq("funnel_id", filterFunnel);
+    const { data } = await q;
+    setMsgs(data || []);
+    setLoading(false);
+  }, [days, filterDir, filterFunnel]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const filtered = useMemo(() => {
+    if (!search) return msgs;
+    const s = search.toLowerCase();
+    return msgs.filter((m) =>
+      (m.lead?.name || "").toLowerCase().includes(s) ||
+      (m.phone || "").includes(s) ||
+      (m.body || "").toLowerCase().includes(s)
+    );
+  }, [msgs, search]);
+
+  const dirIcon = (d) => d === "out" ? "→" : "←";
+  const dirColor = (d) => d === "out" ? "#1d4ed8" : "#16a34a";
+  const actionBadge = (a) => {
+    if (!a) return null;
+    const colors = { CONTINUE: "#dbeafe", HANDOFF: "#fef9c3", CONVERTED: "#dcfce7", DND: "#fee2e2", DRIP: "#ede9fe" };
+    return <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: colors[a] || "#f3f4f6", color: "#333" }}>{a}</span>;
+  };
+
+  // Group by lead for cleaner view
+  const grouped = useMemo(() => {
+    const map = new Map();
+    for (const m of filtered) {
+      const key = m.phone;
+      if (!map.has(key)) map.set(key, { name: m.lead?.name || m.phone, phone: m.phone, msgs: [] });
+      map.get(key).msgs.push(m);
+    }
+    return [...map.values()];
+  }, [filtered]);
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
+        <select value={days} onChange={(e) => setDays(Number(e.target.value))}
+          style={{ fontSize: 13, border: "1px solid #ddd", borderRadius: 6, padding: "5px 8px" }}>
+          {[1,3,7,14,30].map((d) => <option key={d} value={d}>Last {d} day{d>1?"s":""}</option>)}
+        </select>
+        <select value={filterDir} onChange={(e) => setFilterDir(e.target.value)}
+          style={{ fontSize: 13, border: "1px solid #ddd", borderRadius: 6, padding: "5px 8px" }}>
+          <option value="">All directions</option>
+          <option value="out">→ Sent (bot/manual)</option>
+          <option value="in">← Received (customer)</option>
+        </select>
+        <select value={filterFunnel} onChange={(e) => setFilterFunnel(e.target.value)}
+          style={{ fontSize: 13, border: "1px solid #ddd", borderRadius: 6, padding: "5px 8px" }}>
+          <option value="">All funnels</option>
+          {funnels.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+        </select>
+        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name / phone / message…"
+          style={{ fontSize: 13, border: "1px solid #ddd", borderRadius: 6, padding: "5px 10px", flex: 1, minWidth: 180 }} />
+        <span style={{ fontSize: 12, color: "#888" }}>{filtered.length} messages · {grouped.length} contacts</span>
+        <button onClick={load} style={{ fontSize: 12, padding: "5px 10px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>↻</button>
+      </div>
+
+      {loading && <div style={{ padding: 32, textAlign: "center", color: "#888" }}>Loading…</div>}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {grouped.map((g) => (
+          <div key={g.phone} style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 10, overflow: "hidden" }}>
+            <div style={{ padding: "8px 14px", background: "#f9fafb", borderBottom: "1px solid #e5e7eb", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <span style={{ fontWeight: 600, fontSize: 14 }}>{g.name}</span>
+                <span style={{ fontSize: 12, color: "#888", marginLeft: 8 }}>{g.phone}</span>
+              </div>
+              <span style={{ fontSize: 12, color: "#888" }}>{g.msgs.length} message{g.msgs.length > 1 ? "s" : ""}</span>
+            </div>
+            <div style={{ padding: "6px 14px" }}>
+              {g.msgs.map((m) => (
+                <div key={m.id} style={{ padding: "7px 0", borderBottom: "1px solid #f3f4f6", display: "flex", gap: 10, alignItems: "flex-start" }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: dirColor(m.direction), minWidth: 16 }}>{dirIcon(m.direction)}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, lineHeight: 1.4, color: "#1a1a1a", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{m.body}</div>
+                    <div style={{ display: "flex", gap: 6, marginTop: 3, alignItems: "center", flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 11, color: "#9ca3af" }}>{new Date(m.created_at).toLocaleString("en-IN", { day:"numeric", month:"short", hour:"2-digit", minute:"2-digit" })}</span>
+                      {m.funnel_id && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#f3f4f6", color: "#555" }}>{funnels.find((f) => f.id === m.funnel_id)?.name || m.funnel_id}</span>}
+                      {actionBadge(m.claude_action)}
+                      {m.status === "failed" && <span style={{ fontSize: 10, color: "#dc2626" }}>❌ failed</span>}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+        {!loading && grouped.length === 0 && <div style={{ padding: 32, textAlign: "center", color: "#888" }}>No messages found.</div>}
+      </div>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// UPCOMING EVENTS SCREEN — birthdays & anniversaries
+// ──────────────────────────────────────────────────────────
+function UpcomingEventsScreen() {
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [days, setDays] = useState(7);
+  const [err, setErr] = useState(null);
+  const [sendTarget, setSendTarget] = useState(null); // { contact, msgType }
+
+  useEffect(() => {
+    load();
+  }, [days]);
+
+  async function load() {
+    setLoading(true);
+    setErr(null);
+    try {
+      const [{ data, error }, { data: scheduled }] = await Promise.all([
+        sb.from("bullion_leads")
+          .select("id,name,phone,city,bday,anniversary")
+          .eq("tenant_id", getTenantId())
+          .or("bday.not.is.null,anniversary.not.is.null"),
+        sb.from("bullion_scheduled_messages")
+          .select("lead_id,send_at,status,funnel_id")
+          .eq("tenant_id", getTenantId())
+          .in("funnel_id", ["birthday","anniversary"])
+          .in("status", ["pending","sent"])
+          .gte("created_at", new Date(Date.now() - 335 * 86400000).toISOString()),
+      ]);
+      if (error) { setErr(error.message); setLoading(false); return; }
+
+      // Build map: lead_id → array of scheduled messages
+      const schedMap = {};
+      for (const s of (scheduled || [])) {
+        if (!schedMap[s.lead_id]) schedMap[s.lead_id] = [];
+        schedMap[s.lead_id].push(s);
+      }
+
+      const today = new Date(); today.setHours(0,0,0,0);
+      const pastCutoff = -7 * 86400000;  // 7 days ago
+      const futureCutoff = days * 86400000;
+      const rows = [];
+
+      for (const c of (data || [])) {
+        for (const [field, icon, msgType, label] of [
+          ["bday","🎂","bday","Birthday"],
+          ["anniversary","💍","anniv","Anniversary"],
+        ]) {
+          const raw = c[field];
+          if (!raw) continue;
+          const p = raw.split("-");
+          let m, d;
+          if (p.length === 3) {
+            const a = parseInt(p[1],10), b2 = parseInt(p[2],10);
+            if (a >= 1 && a <= 12) { m = a - 1; d = b2; }
+            else { m = b2 - 1; d = a; }
+          } else if (p.length === 2) {
+            const a = parseInt(p[0],10), b2 = parseInt(p[1],10);
+            if (a >= 1 && a <= 12) { m = a - 1; d = b2; }
+            else { m = b2 - 1; d = a; }
+          } else continue;
+          if (isNaN(m) || isNaN(d) || m < 0 || m > 11 || d < 1 || d > 31) continue;
+
+          // Check this year occurrence
+          const thisYear = new Date(today.getFullYear(), m, d);
+          const diffThis = thisYear - today;
+
+          let occurrence;
+          if (diffThis >= pastCutoff && diffThis <= futureCutoff) {
+            occurrence = thisYear;
+          } else if (diffThis > futureCutoff) {
+            // Not in range this year — skip
+            continue;
+          } else {
+            // Already passed this year — check if within past 7 days
+            if (diffThis >= pastCutoff) {
+              occurrence = thisYear;
+            } else {
+              // Next year occurrence
+              const nextYear = new Date(today.getFullYear() + 1, m, d);
+              const diffNext = nextYear - today;
+              if (diffNext <= futureCutoff) occurrence = nextYear;
+              else continue;
+            }
+          }
+
+          const daysUntil = Math.round((occurrence - today) / 86400000);
+          const msgs = schedMap[c.id] || [];
+          const pending = msgs.filter((m) => m.status === "pending");
+          const sent = msgs.filter((m) => m.status === "sent");
+          const nextSend = pending.length ? new Date(pending.sort((a,b) => new Date(a.send_at)-new Date(b.send_at))[0].send_at) : null;
+          rows.push({ contact: { id: c.id, name: c.name, phone: c.phone, city: c.city }, icon, msgType, label, date: occurrence, daysUntil, pendingCount: pending.length, sentCount: sent.length, nextSend });
+        }
+      }
+      // Past events first (most recent first), then future (soonest first)
+      rows.sort((a,b) => {
+        if (a.daysUntil < 0 && b.daysUntil < 0) return b.daysUntil - a.daysUntil;
+        if (a.daysUntil < 0) return -1;
+        if (b.daysUntil < 0) return 1;
+        return a.daysUntil - b.daysUntil;
+      });
+      setEvents(rows);
+    } catch(e) {
+      setErr(e.message);
+    }
+    setLoading(false);
+  }
+
+  const urgencyColor = (d) => d < 0 ? "#9333ea" : d === 0 ? "#dc2626" : d <= 7 ? "#ea580c" : d <= 14 ? "#d97706" : "#555";
+  const urgencyBg = (d) => d < 0 ? "#faf5ff" : d === 0 ? "#fef2f2" : d <= 7 ? "#fff7ed" : d <= 14 ? "#fffbeb" : "#fff";
+  const daysLabel = (d) => d < 0 ? `${Math.abs(d)}d ago` : d === 0 ? "Today! 🎉" : d === 1 ? "Tomorrow" : `${d} days`;
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <h3 style={{ margin: 0, fontSize: 16 }}>Upcoming Events</h3>
+        <select value={days} onChange={(e) => setDays(Number(e.target.value))}
+          style={{ fontSize: 13, border: "1px solid #ddd", borderRadius: 6, padding: "4px 8px" }}>
+          {[7, 14, 30, 60, 90].map((d) => <option key={d} value={d}>Next {d} days</option>)}
+        </select>
+        <span style={{ fontSize: 13, color: "#888" }}>{events.length} events</span>
+      </div>
+
+      {loading && <div style={{ color: "#888", padding: 32, textAlign: "center" }}>Loading…</div>}
+      {err && <div style={{ color: "#dc2626", padding: 16, background: "#fef2f2", borderRadius: 8, fontSize: 13 }}>Error: {err}</div>}
+      {!loading && !err && events.length === 0 && (
+        <div style={{ color: "#888", padding: 32, textAlign: "center" }}>No birthdays or anniversaries in next {days} days.</div>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {events.map((ev, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: urgencyBg(ev.daysUntil), border: `1px solid ${urgencyColor(ev.daysUntil)}`, borderRadius: 10 }}>
+            <div style={{ fontSize: 22, width: 32, textAlign: "center" }}>{ev.icon}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>{ev.contact.name || ev.contact.phone}</div>
+              <div style={{ fontSize: 12, color: "#666" }}>{ev.contact.phone}{ev.contact.city ? ` · ${ev.contact.city}` : ""}</div>
+              <div style={{ marginTop: 3, display: "flex", gap: 5, flexWrap: "wrap" }}>
+                {ev.sentCount > 0 && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#dcfce7", color: "#166534" }}>✅ {ev.sentCount} sent</span>}
+                {ev.pendingCount > 0 && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#dbeafe", color: "#1d4ed8" }}>📅 {ev.pendingCount} queued{ev.nextSend ? ` · next ${ev.nextSend.toLocaleDateString("en-IN", { day:"numeric", month:"short" })} ${ev.nextSend.toLocaleTimeString("en-IN", { hour:"2-digit", minute:"2-digit" })}` : ""}</span>}
+                {ev.sentCount === 0 && ev.pendingCount === 0 && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#fef9c3", color: "#713f12" }}>⚠️ not enrolled</span>}
+              </div>
+            </div>
+            <div style={{ textAlign: "right", minWidth: 90 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: urgencyColor(ev.daysUntil) }}>{daysLabel(ev.daysUntil)}</div>
+              <div style={{ fontSize: 11, color: "#888" }}>{ev.label} · {ev.date.toLocaleDateString("en-IN", { day: "numeric", month: "short" })}</div>
+            </div>
+            <button onClick={() => setSendTarget({ contact: ev.contact, msgType: ev.msgType })}
+              style={{ fontSize: 12, padding: "5px 12px", borderRadius: 7, border: "1px solid #22c55e", background: "#f0fdf4", color: "#166534", cursor: "pointer", whiteSpace: "nowrap" }}>
+              💬 Wish
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {sendTarget && (
+        <SendWAModal
+          contact={sendTarget.contact}
+          initialMsgType={sendTarget.msgType}
+          onClose={() => setSendTarget(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// CONTACTS DB SCREEN — spreadsheet view with inline editing
+// ──────────────────────────────────────────────────────────
+function ContactsDBScreen() {
+  const [contacts, setContacts] = useState([]);
+  const [allTags, setAllTags] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [filterTags, setFilterTags] = useState([]);
+  const [filterSource, setFilterSource] = useState("");
+  const [filterCity, setFilterCity] = useState("");
+  const [filterRating, setFilterRating] = useState("");
+  const [selected, setSelected] = useState(new Set());
+  const [bulkTag, setBulkTag] = useState("");
+  const [editingTagsFor, setEditingTagsFor] = useState(null); // contact id
+  const [saving, setSaving] = useState(null);
+
+  const [allLeadTags, setAllLeadTags] = useState([]); // distinct tags actually used on leads
+
+  // Load tags from registry + discover all tags actually used on leads
+  useEffect(() => {
+    sb.from("bullion_tags").select("name,category,color")
+      .eq("tenant_id", getTenantId()).order("sort_order")
+      .then(({ data }) => setAllTags(data || []));
+    // Fetch a sample of leads to discover tags actually in use (covers import-added tags
+    // that may not have been registered in bullion_tags yet)
+    sb.from("bullion_leads").select("tags,source")
+      .eq("tenant_id", getTenantId()).not("tags", "is", null).limit(1000)
+      .then(({ data }) => {
+        const seen = new Set();
+        (data || []).forEach((r) => {
+          (r.tags || []).forEach((t) => seen.add(t));
+          if (r.source) seen.add(r.source);
+        });
+        setAllLeadTags([...seen].sort());
+      });
+  }, []);
+
+  // Server-side filtered query — runs when any filter changes (debounced for search)
+  const load = useCallback(async (sq, src, city, rating, tags) => {
+    setLoading(true);
+    try {
+      let q = sb.from("bullion_leads").select("*")
+        .eq("tenant_id", getTenantId())
+        .order("name", { ascending: true, nullsFirst: false })
+        .limit(500);
+      if (sq) q = q.or(`name.ilike.%${sq}%,phone.ilike.%${sq}%,mobile2.ilike.%${sq}%,email.ilike.%${sq}%,city.ilike.%${sq}%,client_code.ilike.%${sq}%,company.ilike.%${sq}%`);
+      // Source: check both the source column (manually set) AND tags array (set by import script).
+      // Imported contacts store source in tags (e.g. "sanjeevji"), not in the source column.
+      if (src) q = q.or(`source.ilike.${src},tags.cs.{"${src}"}`);
+      if (city) q = q.ilike("city", `%${city}%`);
+      if (rating) q = q.eq("client_rating", Number(rating));
+      if (tags.length > 0) q = q.contains("tags", tags);
+      const { data, error } = await q;
+      if (error) console.error("DB query error", error);
+      setContacts(data || []);
+    } catch(e) { console.error(e); }
+    setLoading(false);
+  }, []);
+
+  // Initial load
+  useEffect(() => { load("", "", "", "", []); }, [load]);
+
+  // Debounce search, instant for other filters
+  useEffect(() => {
+    const t = setTimeout(() => load(search, filterSource, filterCity, filterRating, filterTags), search ? 400 : 0);
+    return () => clearTimeout(t);
+  }, [search, filterSource, filterCity, filterRating, filterTags, load]);
+
+  // Source dropdown: tags marked category=source in registry PLUS any source-like tags
+  // actually found on leads (covers import-added sources not yet in bullion_tags)
+  const registeredSourceTags = allTags.filter((t) => t.category === "source").map((t) => t.name);
+  const sourceTags = [...new Set([...registeredSourceTags, ...allLeadTags.filter((t) =>
+    // include a lead tag in source dropdown if it looks like a source (in registry or not a common segment tag)
+    registeredSourceTags.includes(t) ||
+    ["master_client_list","signup_form","fb_bday","google_csv","saurav_phone","shivani",
+     "customer_is_king_form","sunseaclientcombined","exhibition_sheet","customer_enquiry_form",
+     "walk_in","sanjeevji","wbiztool_drip","bday_xls","customer_xls"].includes(t)
+  )])].sort();
+  const otherTags = allTags.filter((t) => t.category !== "source");
+
+  const filtered = contacts; // already filtered server-side
+
+  const toggleSelect = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleAll = () => setSelected(selected.size === contacts.length ? new Set() : new Set(contacts.map((c) => c.id)));
+
+  async function saveField(id, field, value) {
+    setSaving(id);
+    await sb.from("bullion_leads").update({ [field]: value }).eq("id", id);
+    setContacts((prev) => prev.map((c) => c.id === id ? { ...c, [field]: value } : c));
+    setSaving(null);
+  }
+
+  async function toggleTag(contactId, tag) {
+    const c = contacts.find((x) => x.id === contactId);
+    if (!c) return;
+    const tags = c.tags || [];
+    const next = tags.includes(tag) ? tags.filter((t) => t !== tag) : [...tags, tag];
+    await saveField(contactId, "tags", next);
+  }
+
+  async function applyBulkTag() {
+    if (!bulkTag || selected.size === 0) return;
+    setSaving("bulk");
+    for (const id of selected) {
+      const c = contacts.find((x) => x.id === id);
+      if (!c) continue;
+      const tags = c.tags || [];
+      if (!tags.includes(bulkTag)) {
+        await sb.from("bullion_leads").update({ tags: [...tags, bulkTag] }).eq("id", id);
+        setContacts((prev) => prev.map((x) => x.id === id ? { ...x, tags: [...(x.tags||[]), bulkTag] } : x));
+      }
+    }
+    setSaving(null);
+    setBulkTag("");
+  }
+
+  function exportCSV() {
+    const rows = selected.size > 0 ? filtered.filter((c) => selected.has(c.id)) : filtered;
+    const headers = ["Name","Phone","Email","City","Source","Tags","Rating","Birthday","Anniversary","Client","Last Message","Joined"];
+    const lines = [headers.join(","), ...rows.map((c) => [
+      `"${(c.name||"").replace(/"/g,'""')}"`,
+      c.phone||"",
+      c.email||"",
+      c.city||"",
+      c.source||"",
+      `"${(c.tags||[]).join("; ")}"`,
+      c.client_rating||"",
+      c.bday||"",
+      c.anniversary||"",
+      "",
+      c.last_msg_at ? new Date(c.last_msg_at).toLocaleDateString("en-IN") : "",
+      c.created_at ? new Date(c.created_at).toLocaleDateString("en-IN") : "",
+    ].join(","))];
+    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+    a.download = `ssj-contacts-${new Date().toISOString().slice(0,10)}.csv`; a.click();
+  }
+
+  const tagColor = (name) => allTags.find((t) => t.name === name)?.color || "#e5e7eb";
+
+  return (
+    <div>
+      {/* Filters row */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name / phone / mobile2 / email / city / company / code…"
+          style={{ fontSize: 13, border: "1px solid #ddd", borderRadius: 6, padding: "5px 10px", minWidth: 260 }} />
+        <select value={filterSource} onChange={(e) => setFilterSource(e.target.value)}
+          style={{ fontSize: 13, border: "1px solid #ddd", borderRadius: 6, padding: "5px 8px" }}>
+          <option value="">All sources</option>
+          {sourceTags.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <input value={filterCity} onChange={(e) => setFilterCity(e.target.value)} placeholder="City…"
+          style={{ fontSize: 13, border: "1px solid #ddd", borderRadius: 6, padding: "5px 8px", width: 100 }} />
+        <select value={filterRating} onChange={(e) => setFilterRating(e.target.value)}
+          style={{ fontSize: 13, border: "1px solid #ddd", borderRadius: 6, padding: "5px 8px" }}>
+          <option value="">Any rating</option>
+          {[5,4,3,2,1].map((r) => <option key={r} value={r}>{"★".repeat(r)}</option>)}
+        </select>
+        {/* Tag filters — all tags shown */}
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+          {otherTags.map((t) => (
+            <button key={t.name} onClick={() => setFilterTags((prev) => prev.includes(t.name) ? prev.filter((x) => x !== t.name) : [...prev, t.name])}
+              style={{ fontSize: 11, padding: "3px 8px", borderRadius: 12, border: `1px solid ${filterTags.includes(t.name) ? "#3b82f6" : "#ddd"}`, background: filterTags.includes(t.name) ? "#3b82f6" : (t.color || "#f3f4f6"), color: filterTags.includes(t.name) ? "#fff" : "#333", cursor: "pointer" }}>
+              {t.name}
+            </button>
+          ))}
+          {filterTags.length > 0 && <button onClick={() => setFilterTags([])} style={{ fontSize: 11, padding: "3px 8px", borderRadius: 12, border: "1px solid #f87171", background: "#fef2f2", color: "#dc2626", cursor: "pointer" }}>✕ clear</button>}
+        </div>
+        <span style={{ fontSize: 12, color: "#888", marginLeft: "auto" }}>{filtered.length} contacts</span>
+        <button onClick={exportCSV} style={{ fontSize: 12, padding: "5px 12px", borderRadius: 7, border: "1px solid #16a34a", background: "#f0fdf4", color: "#166534", cursor: "pointer" }}>
+          ⬇ Export CSV {selected.size > 0 ? `(${selected.size})` : ""}
+        </button>
+      </div>
+
+      {/* Bulk actions */}
+      {selected.size > 0 && (
+        <div style={{ display: "flex", gap: 8, alignItems: "center", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 8, padding: "8px 12px", marginBottom: 10 }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: "#1d4ed8" }}>{selected.size} selected</span>
+          <select value={bulkTag} onChange={(e) => setBulkTag(e.target.value)}
+            style={{ fontSize: 13, border: "1px solid #ddd", borderRadius: 6, padding: "4px 8px" }}>
+            <option value="">Add tag…</option>
+            {allTags.map((t) => <option key={t.name} value={t.name}>{t.name}</option>)}
+          </select>
+          <button onClick={applyBulkTag} disabled={!bulkTag || saving === "bulk"}
+            style={{ fontSize: 12, padding: "5px 12px", borderRadius: 7, border: "1px solid #3b82f6", background: "#3b82f6", color: "#fff", cursor: "pointer" }}>
+            {saving === "bulk" ? "Applying…" : "Apply to selected"}
+          </button>
+          <button onClick={() => setSelected(new Set())} style={{ fontSize: 12, padding: "5px 10px", borderRadius: 7, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>Deselect all</button>
+        </div>
+      )}
+
+      {loading && <div style={{ padding: 32, textAlign: "center", color: "#888" }}>Loading {contacts.length > 0 ? `${contacts.length}+` : ""}…</div>}
+      {!loading && <div style={{ fontSize: 12, color: "#888", marginBottom: 8 }}>Loaded {contacts.length} total · showing {filtered.length}</div>}
+
+      {/* Table */}
+      {!loading && (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: "#f9fafb", borderBottom: "2px solid #e5e7eb" }}>
+                <th style={{ padding: "8px 10px", textAlign: "left", width: 32 }}>
+                  <input type="checkbox" checked={selected.size === filtered.length && filtered.length > 0} onChange={toggleAll} />
+                </th>
+                {["Name","Phone","City","Source","Tags","Rating","Birthday","Anniversary","DND"].map((h) => (
+                  <th key={h} style={{ padding: "8px 10px", textAlign: "left", fontWeight: 600, color: "#374151", whiteSpace: "nowrap" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((c) => (
+                <tr key={c.id} style={{ borderBottom: "1px solid #f3f4f6", background: selected.has(c.id) ? "#eff6ff" : "transparent" }}
+                  onMouseEnter={(e) => { if (!selected.has(c.id)) e.currentTarget.style.background = "#fafafa"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = selected.has(c.id) ? "#eff6ff" : "transparent"; }}>
+                  <td style={{ padding: "6px 10px" }}>
+                    <input type="checkbox" checked={selected.has(c.id)} onChange={() => toggleSelect(c.id)} />
+                  </td>
+                  <td style={{ padding: "6px 10px", fontWeight: 500, whiteSpace: "nowrap" }}>
+                    {c.name || <em style={{ color: "#aaa" }}>—</em>}
+                  </td>
+                  <td style={{ padding: "6px 10px", color: "#555" }}>{c.phone}</td>
+                  <td style={{ padding: "6px 10px", color: "#555" }}>{c.city || <em style={{ color: "#ccc" }}>—</em>}</td>
+                  {/* Source — shows source column OR source tags from tags array */}
+                  <td style={{ padding: "6px 10px", minWidth: 120 }}>
+                    {(() => {
+                      const tagSources = (c.tags || []).filter((t) => sourceTags.includes(t));
+                      return (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                          <select value={c.source || ""} onChange={(e) => saveField(c.id, "source", e.target.value)}
+                            style={{ fontSize: 12, border: "1px solid #e5e7eb", borderRadius: 5, padding: "2px 6px", background: "transparent", maxWidth: 140 }}>
+                            <option value="">—</option>
+                            {sourceTags.map((s) => <option key={s} value={s}>{s}</option>)}
+                          </select>
+                          {tagSources.length > 0 && (
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 2 }}>
+                              {tagSources.map((t) => (
+                                <span key={t} style={{ fontSize: 10, padding: "1px 5px", borderRadius: 8, background: "#dbeafe", color: "#1d4ed8" }}>{t}</span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </td>
+                  {/* Tags — inline chips + add */}
+                  <td style={{ padding: "6px 10px", minWidth: 160 }}>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 3, alignItems: "center", position: "relative" }}>
+                      {(c.tags || []).map((t) => (
+                        <span key={t} style={{ fontSize: 11, padding: "2px 6px", borderRadius: 10, background: tagColor(t), cursor: "pointer", whiteSpace: "nowrap" }}
+                          onClick={() => toggleTag(c.id, t)} title="Click to remove">
+                          {t} ×
+                        </span>
+                      ))}
+                      <button onClick={() => setEditingTagsFor(editingTagsFor === c.id ? null : c.id)}
+                        style={{ fontSize: 11, padding: "2px 7px", borderRadius: 10, border: "1px dashed #9ca3af", background: "transparent", cursor: "pointer", color: "#6b7280" }}>
+                        +
+                      </button>
+                      {editingTagsFor === c.id && (
+                        <div style={{ position: "absolute", zIndex: 50, background: "#fff", border: "1px solid #e5e7eb", borderRadius: 8, boxShadow: "0 4px 12px rgba(0,0,0,.1)", padding: 8, display: "flex", flexWrap: "wrap", gap: 4, maxWidth: 260 }}>
+                          {otherTags.map((t) => (
+                            <button key={t.name} onClick={() => { toggleTag(c.id, t.name); }}
+                              style={{ fontSize: 11, padding: "3px 8px", borderRadius: 10, border: `1px solid ${(c.tags||[]).includes(t.name) ? "#3b82f6" : "#ddd"}`, background: (c.tags||[]).includes(t.name) ? "#3b82f6" : (t.color||"#f3f4f6"), color: (c.tags||[]).includes(t.name) ? "#fff" : "#333", cursor: "pointer" }}>
+                              {t.name}
+                            </button>
+                          ))}
+                          <button onClick={() => setEditingTagsFor(null)} style={{ fontSize: 11, padding: "3px 8px", borderRadius: 10, border: "1px solid #f87171", background: "#fef2f2", color: "#dc2626", cursor: "pointer" }}>done</button>
+                        </div>
+                      )}
+                    </div>
+                  </td>
+                  {/* Rating */}
+                  <td style={{ padding: "6px 10px" }}>
+                    <select value={c.client_rating || ""} onChange={(e) => saveField(c.id, "client_rating", e.target.value ? Number(e.target.value) : null)}
+                      style={{ fontSize: 12, border: "1px solid #e5e7eb", borderRadius: 5, padding: "2px 4px", background: "transparent" }}>
+                      <option value="">—</option>
+                      {[5,4,3,2,1].map((r) => <option key={r} value={r}>{"★".repeat(r)}</option>)}
+                    </select>
+                  </td>
+                  <td style={{ padding: "6px 10px", color: "#555", whiteSpace: "nowrap" }}>{c.bday || <em style={{ color: "#ccc" }}>—</em>}</td>
+                  <td style={{ padding: "6px 10px", color: "#555", whiteSpace: "nowrap" }}>{c.anniversary || <em style={{ color: "#ccc" }}>—</em>}</td>
+                  <td style={{ padding: "6px 10px", textAlign: "center" }}>
+                    <button onClick={() => saveField(c.id, "dnd", !c.dnd)}
+                      title={c.dnd ? "DND on — click to remove" : "Click to add DND"}
+                      style={{ fontSize: 11, padding: "2px 8px", borderRadius: 6, border: `1px solid ${c.dnd ? "#dc2626" : "#e5e7eb"}`, background: c.dnd ? "#fef2f2" : "transparent", color: c.dnd ? "#dc2626" : "#9ca3af", cursor: "pointer", fontWeight: c.dnd ? 600 : 400 }}>
+                      {c.dnd ? "🚫 DND" : "—"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {filtered.length === 0 && <div style={{ padding: 32, textAlign: "center", color: "#888" }}>No contacts match the filters.</div>}
+        </div>
+      )}
     </div>
   );
 }
@@ -2158,33 +3575,653 @@ function ImportsScreen() {
 }
 
 // ──────────────────────────────────────────────────────────
-// MAIN APP — / (staff, Leads only) vs /back (admin, all tabs)
+// CUSTOMER PROFILE UPDATE FORM — /update?t=TOKEN (no login)
 // ──────────────────────────────────────────────────────────
-const isAdminPath = () => (typeof window !== "undefined" && window.location.pathname.startsWith("/back"));
+function ContactUpdateForm({ token }) {
+  const [lead, setLead] = useState(null);
+  const [family, setFamily] = useState([]);
+  const [form, setForm] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [done, setDone] = useState(false);
+  const [err, setErr] = useState("");
+  const [deletedIds, setDeletedIds] = useState([]);
+
+  useEffect(() => {
+    fetch(`/api/contact-update?t=${token}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (!d.ok) { setErr("This link is invalid or expired."); setLoading(false); return; }
+        setLead(d.lead);
+        setForm({ name: d.lead.name || "", email: d.lead.email || "", city: d.lead.city || "", bday: d.lead.bday || "", anniversary: d.lead.anniversary || "" });
+        setFamily(d.family || []);
+        setLoading(false);
+      })
+      .catch(() => { setErr("Something went wrong. Please try again."); setLoading(false); });
+  }, [token]);
+
+  const setF = (k, v) => setForm((p) => ({ ...p, [k]: v }));
+  const setMember = (i, k, v) => setFamily((p) => p.map((m, idx) => idx === i ? { ...m, [k]: v } : m));
+  const addMember = () => setFamily((p) => [...p, { relationship: "spouse", name: "", dob: "", mobile: "" }]);
+  const removeMember = (i) => {
+    const m = family[i];
+    if (m.id) setDeletedIds((p) => [...p, m.id]);
+    setFamily((p) => p.filter((_, idx) => idx !== i));
+  };
+
+  const save = async () => {
+    setSaving(true); setErr("");
+    const r = await fetch(`/api/contact-update?t=${token}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...form, family, deletedFamilyIds: deletedIds }),
+    });
+    const d = await r.json();
+    setSaving(false);
+    if (d.ok) setDone(true);
+    else setErr("Failed to save. Please try again.");
+  };
+
+  const S = { fontFamily: "system-ui, sans-serif", maxWidth: 480, margin: "0 auto", padding: "24px 16px", color: "#1a1a1a" };
+  const label = { fontSize: 12, color: "#666", display: "block", marginBottom: 4, marginTop: 12 };
+  const input = { width: "100%", fontSize: 14, padding: "8px 10px", border: "1px solid #ddd", borderRadius: 8, boxSizing: "border-box", outline: "none" };
+  const btn = { width: "100%", padding: "12px", fontSize: 15, fontWeight: 600, border: "none", borderRadius: 10, background: "#1a1a1a", color: "#fff", cursor: "pointer", marginTop: 20 };
+
+  if (loading) return <div style={S}><p style={{ color: "#888", textAlign: "center", marginTop: 60 }}>Loading your details…</p></div>;
+  if (err && !lead) return <div style={S}><p style={{ color: "#dc2626", textAlign: "center", marginTop: 60 }}>{err}</p></div>;
+
+  if (done) return (
+    <div style={{ ...S, textAlign: "center", paddingTop: 60 }}>
+      <div style={{ fontSize: 48 }}>🙏</div>
+      <h2 style={{ fontSize: 20, margin: "16px 0 8px" }}>Thank you, {lead?.name?.split(" ")[0] || ""}!</h2>
+      <p style={{ color: "#555", fontSize: 14 }}>Your details have been updated. We look forward to seeing you at Sun Sea Jewellers!</p>
+    </div>
+  );
+
+  return (
+    <div style={S}>
+      <div style={{ textAlign: "center", marginBottom: 24 }}>
+        <div style={{ fontSize: 32 }}>💎</div>
+        <h2 style={{ fontSize: 18, margin: "8px 0 4px" }}>Sun Sea Jewellers</h2>
+        <p style={{ fontSize: 13, color: "#666", margin: 0 }}>Please confirm your details so we can serve you better</p>
+      </div>
+
+      <div style={{ background: "#f9fafb", borderRadius: 12, padding: 16 }}>
+        <h3 style={{ fontSize: 14, margin: "0 0 12px", color: "#374151" }}>Your Details</h3>
+        <span style={label}>Name</span>
+        <input style={input} value={form.name} onChange={(e) => setF("name", e.target.value)} placeholder="Your full name" />
+        <span style={label}>Phone</span>
+        <input style={{ ...input, background: "#f3f4f6", color: "#888" }} value={lead?.phone || ""} disabled />
+        <span style={label}>Email</span>
+        <input style={input} value={form.email} onChange={(e) => setF("email", e.target.value)} placeholder="your@email.com" type="email" />
+        <span style={label}>City</span>
+        <input style={input} value={form.city} onChange={(e) => setF("city", e.target.value)} placeholder="Delhi" />
+        <span style={label}>Your Birthday (DD-MM or YYYY-MM-DD)</span>
+        <input style={input} value={form.bday} onChange={(e) => setF("bday", e.target.value)} placeholder="25-04 or 1985-04-25" />
+        <span style={label}>Your Anniversary (DD-MM or YYYY-MM-DD)</span>
+        <input style={input} value={form.anniversary} onChange={(e) => setF("anniversary", e.target.value)} placeholder="15-11 or 2005-11-15" />
+      </div>
+
+      <div style={{ background: "#f9fafb", borderRadius: 12, padding: 16, marginTop: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <h3 style={{ fontSize: 14, margin: 0, color: "#374151" }}>Family Members</h3>
+          <button onClick={addMember} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 8, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>+ Add</button>
+        </div>
+        <p style={{ fontSize: 12, color: "#888", margin: "0 0 12px" }}>Help us wish your family on their special days too 🎂</p>
+        {family.length === 0 && <p style={{ fontSize: 13, color: "#aaa", textAlign: "center" }}>No family members added yet</p>}
+        {family.map((m, i) => (
+          <div key={i} style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 10, padding: 12, marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <select value={m.relationship} onChange={(e) => setMember(i, "relationship", e.target.value)}
+                style={{ fontSize: 13, border: "1px solid #ddd", borderRadius: 6, padding: "4px 8px" }}>
+                {["spouse","son","daughter","mother","father","brother","sister","other"].map((r) => <option key={r}>{r}</option>)}
+              </select>
+              <button onClick={() => removeMember(i)} style={{ fontSize: 12, color: "#dc2626", border: "none", background: "none", cursor: "pointer" }}>Remove</button>
+            </div>
+            <span style={label}>Name</span>
+            <input style={input} value={m.name} onChange={(e) => setMember(i, "name", e.target.value)} placeholder="Name" />
+            <span style={label}>Birthday (DD-MM or YYYY-MM-DD)</span>
+            <input style={input} value={m.dob} onChange={(e) => setMember(i, "dob", e.target.value)} placeholder="25-04 or 1985-04-25" />
+            <span style={label}>Mobile (optional)</span>
+            <input style={input} value={m.mobile || ""} onChange={(e) => setMember(i, "mobile", e.target.value)} placeholder="9810XXXXXX" />
+          </div>
+        ))}
+      </div>
+
+      {err && <p style={{ color: "#dc2626", fontSize: 13, marginTop: 8 }}>{err}</p>}
+      <button style={btn} onClick={save} disabled={saving}>{saving ? "Saving…" : "Save My Details ✓"}</button>
+      <p style={{ fontSize: 11, color: "#aaa", textAlign: "center", marginTop: 12 }}>Sun Sea Jewellers · Karol Bagh, New Delhi</p>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────
+// BROADCASTS SCREEN — festival / occasion bulk messages
+// Write one message → pick audience → schedule → cron sends all.
+// No per-message approval: the review happens once before you hit Schedule.
+// ──────────────────────────────────────────────────────────
+const PRODUCT_INTERESTS = ["24K","22K","silver","gold_coin","silver_coin","ginni","bar","polki","kundan","diamond","gemstone","unknown"];
+const LEAD_STATUSES = ["active","handoff","converted","new"];
+
+function BroadcastsScreen({ allTags }) {
+  const [broadcasts, setBroadcasts] = useState([]);
+  const [sendHistory, setSendHistory] = useState([]); // from bullion_broadcast_sends
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [scheduling, setScheduling] = useState(null);
+  const [tab, setTab] = useState("broadcasts"); // "broadcasts" | "history"
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data } = await sb.from("funnels")
+      .select("*, step:bullion_funnel_steps(id,message_template,use_ai_message,step_order,active)")
+      .eq("tenant_id", getTenantId()).eq("kind", "broadcast").order("created_at", { ascending: false });
+
+    if (data?.length) {
+      const ids = data.map((f) => f.id);
+      const { data: msgs } = await sb.from("bullion_scheduled_messages")
+        .select("funnel_id, status").in("funnel_id", ids);
+      const counts = {};
+      for (const m of msgs || []) {
+        if (!counts[m.funnel_id]) counts[m.funnel_id] = { pending: 0, sent: 0, failed: 0 };
+        counts[m.funnel_id][m.status] = (counts[m.funnel_id][m.status] || 0) + 1;
+      }
+      setBroadcasts((data || []).map((f) => ({ ...f, _counts: counts[f.id] || {} })));
+    } else { setBroadcasts([]); }
+
+    // Load send history
+    const { data: hist } = await sb.from("bullion_broadcast_sends")
+      .select("*, funnel:funnels(name)")
+      .eq("tenant_id", getTenantId())
+      .order("created_at", { ascending: false }).limit(100);
+    setSendHistory(hist || []);
+
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 0, borderBottom: "2px solid #e5e7eb" }}>
+          {[["broadcasts","📢 Broadcasts"],["history","📋 Send History"]].map(([k,l]) => (
+            <button key={k} onClick={() => setTab(k)} style={{ fontSize: 13, padding: "8px 18px", border: "none", borderBottom: tab === k ? "2px solid #3b82f6" : "2px solid transparent", marginBottom: -2, background: "transparent", color: tab === k ? "#1d4ed8" : "#555", fontWeight: tab === k ? 600 : 400, cursor: "pointer" }}>{l}</button>
+          ))}
+        </div>
+        {tab === "broadcasts" && <Btn color={C.blue} onClick={() => setCreating(true)}>+ New broadcast</Btn>}
+      </div>
+
+      {loading && <div style={{ color: "#888", fontSize: 13 }}>Loading…</div>}
+
+      {/* ── Send History tab ── */}
+      {!loading && tab === "history" && (
+        <div>
+          {sendHistory.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "#aaa", fontSize: 13 }}>No broadcasts sent yet.</div>}
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {sendHistory.map((h) => (
+              <Card key={h.id}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 14 }}>{h.funnel?.name || h.funnel_id}</div>
+                    <div style={{ fontSize: 11, color: "#888" }}>{new Date(h.created_at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" })}{h.created_by ? ` · by ${h.created_by}` : ""}</div>
+                  </div>
+                  <div style={{ display: "flex", gap: 10, fontSize: 13, fontWeight: 600 }}>
+                    <span style={{ color: C.green }}>✅ {h.recipient_count}</span>
+                    {h.skipped_count > 0 && <span style={{ color: "#888" }}>⤵ {h.skipped_count} skipped</span>}
+                  </div>
+                </div>
+                <div style={{ fontSize: 12, color: "#555", background: "#f9fafb", padding: "8px 10px", borderRadius: 8, borderLeft: "3px solid #3b82f6", whiteSpace: "pre-wrap", lineHeight: 1.5, marginBottom: 8 }}>
+                  {h.message_text || "(no message)"}
+                </div>
+                {h.media_url && (
+                  <div style={{ fontSize: 11, color: "#888" }}>📎 {h.media_type || "media"} attached: <a href={h.media_url} target="_blank" rel="noreferrer" style={{ color: C.blue }}>view file</a></div>
+                )}
+                {h.filter_json && (
+                  <div style={{ fontSize: 11, color: "#aaa", marginTop: 4 }}>
+                    Audience: {h.filter_json.includeAll ? "everyone" : `status: ${(h.filter_json.statuses||[]).join(", ") || "all"}`}
+                    {h.filter_json.city ? ` · city: ${h.filter_json.city}` : ""}
+                    {(h.filter_json.tags||[]).length > 0 ? ` · tags: ${h.filter_json.tags.join(", ")}` : ""}
+                    {` · pace: ${h.filter_json.pace || "safe"}`}
+                  </div>
+                )}
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Broadcasts tab ── */}
+      {!loading && tab === "broadcasts" && broadcasts.length === 0 && (
+        <div style={{ padding: 40, textAlign: "center", color: "#aaa", fontSize: 13, border: "2px dashed #e5e7eb", borderRadius: 12 }}>
+          No broadcasts yet. Create one for Diwali, Akshaya Tritiya, Dhanteras, etc.
+        </div>
+      )}
+
+      {tab === "broadcasts" && <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {broadcasts.map((b) => {
+          const step = (b.step || []).sort((a, z) => a.step_order - z.step_order)[0];
+          const c = b._counts || {};
+          const total = (c.pending || 0) + (c.sent || 0) + (c.failed || 0);
+          return (
+            <Card key={b.id}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>{b.name}</div>
+                  <div style={{ fontSize: 12, color: "#555", marginBottom: 8, whiteSpace: "pre-wrap", lineHeight: 1.5, background: "#f9fafb", padding: "8px 10px", borderRadius: 8, borderLeft: "3px solid #3b82f6" }}>
+                    {step?.message_template || "(no message set — edit steps)"}
+                  </div>
+                  <div style={{ display: "flex", gap: 12, fontSize: 12, color: "#888" }}>
+                    {total > 0 && <span>Total scheduled: <strong>{total}</strong></span>}
+                    {c.sent > 0 && <span style={{ color: C.green }}>✅ Sent: {c.sent}</span>}
+                    {c.pending > 0 && <span style={{ color: C.orange }}>⏳ Pending: {c.pending}</span>}
+                    {c.failed > 0 && <span style={{ color: C.red }}>❌ Failed: {c.failed}</span>}
+                    {total === 0 && <span style={{ color: "#aaa" }}>Not sent yet</span>}
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                  <Btn small ghost color={C.blue} onClick={() => setScheduling(b)}>📤 Send to audience</Btn>
+                </div>
+              </div>
+            </Card>
+          );
+        })}
+      </div>}
+
+      {creating && (
+        <BroadcastCreateModal onClose={() => setCreating(false)} onSaved={() => { setCreating(false); load(); }} />
+      )}
+      {scheduling && (
+        <BroadcastSendModal broadcast={scheduling} allTags={allTags} onClose={() => setScheduling(null)} onSent={() => { setScheduling(null); load(); }} />
+      )}
+    </div>
+  );
+}
+
+function BroadcastCreateModal({ onClose, onSaved }) {
+  const [form, setForm] = useState({
+    name: "", message: "", waSession: "", aiMessage: false,
+    addIntro: true,      // prepend "Sun Sea Jewellers here" line
+    addSaveLink: true,   // append 1-tap save contact link
+    addStop: true,       // append "Reply STOP to unsubscribe"
+  });
+  const [sessions, setSessions] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    fetch(`${WA_SERVICE_URL}/clients`).then((r) => r.json()).then((d) => setSessions(d?.clients || [])).catch(() => {});
+  }, []);
+
+  const set = (k, v) => setForm((s) => ({ ...s, [k]: v }));
+
+  // Build the final template with intro/save lines wrapped around the user's message
+  const buildTemplate = () => {
+    const parts = [];
+    if (form.addIntro) parts.push("Hi {{name}}, *Sun Sea Jewellers* here (Karol Bagh) 🙏");
+    parts.push(form.message.trim());
+    if (form.addSaveLink) parts.push("💾 Save our number in one tap:\nhttps://ssjbot.gemtre.in/contact.vcf");
+    if (form.addStop) parts.push("_Reply STOP anytime to stop receiving messages from us._");
+    return parts.join("\n\n");
+  };
+
+  const save = async () => {
+    if (!form.name.trim()) return setErr("Name is required");
+    if (!form.message.trim()) return setErr("Message text is required");
+    if (!form.waSession) return setErr("Choose a WA session to send from");
+    setSaving(true); setErr("");
+
+    const funnelId = "bc_" + Date.now();
+    const sess = sessions.find((s) => s.client_id === form.waSession);
+    const { error: fe } = await sb.from("funnels").insert({
+      id: funnelId,
+      tenant_id: getTenantId(),
+      name: form.name.trim(),
+      description: form.name.trim(),
+      kind: "broadcast",
+      active: true,
+      wbiztool_client: form.waSession,
+      wa_number: sess?.me ? normalizePhone(sess.me.replace(/@.*/, "")) : "",
+    });
+    if (fe) { setErr(fe.message); setSaving(false); return; }
+
+    const { error: se } = await sb.from("bullion_funnel_steps").insert({
+      tenant_id: getTenantId(),
+      funnel_id: funnelId,
+      step_order: 1,
+      name: "Message",
+      delay_minutes: 0,
+      trigger_type: "after_enrollment",
+      message_template: buildTemplate(),
+      use_ai_message: form.aiMessage,
+      active: true,
+      step_type: "message",
+    });
+    if (se) { setErr(se.message); setSaving(false); return; }
+
+    setSaving(false);
+    onSaved();
+  };
+
+  return (
+    <Modal title="New broadcast" onClose={onClose} width={580}>
+      <Field label="Broadcast name" required>
+        <Input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Diwali 2026, Akshaya Tritiya, Dhanteras…" />
+      </Field>
+      <Field label="WA session to send from" required>
+        <Select value={form.waSession} onChange={(e) => set("waSession", e.target.value)}>
+          <option value="">— choose session —</option>
+          {sessions.map((s) => (
+            <option key={s.client_id} value={s.client_id}>
+              {s.connected ? `✅ ${s.me || s.client_id}` : `⚠️ ${s.client_id} (disconnected)`}
+            </option>
+          ))}
+        </Select>
+        <div style={{ fontSize: 11, color: "#e67e22", marginTop: 4 }}>
+          ⚠️ Use the SAME number your customers already know. A number they haven't heard from = higher chance of "Report Spam".
+        </div>
+      </Field>
+
+      {/* Anti-ban intro options */}
+      <div style={{ background: "#fef9f0", border: "1px solid #fde8c0", borderRadius: 8, padding: "10px 14px", marginBottom: 12 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: "#92400e", marginBottom: 8 }}>🛡️ Anti-ban protection — strongly recommended</div>
+        <label style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 8, cursor: "pointer" }}>
+          <input type="checkbox" checked={form.addIntro} onChange={(e) => set("addIntro", e.target.checked)} style={{ marginTop: 2 }} />
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 500 }}>Add "Sun Sea Jewellers here, save this number" intro</div>
+            <div style={{ fontSize: 11, color: "#888" }}>Prepends: <em>Hi {"{{name}}"}, Sun Sea Jewellers here (Karol Bagh). Please save this number for future updates 📱</em></div>
+          </div>
+        </label>
+        <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer", marginBottom: 6 }}>
+          <input type="checkbox" checked={form.addSaveLink} onChange={(e) => set("addSaveLink", e.target.checked)} style={{ marginTop: 2 }} />
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 500 }}>Add 1-tap "Save our number" link at the end</div>
+            <div style={{ fontSize: 11, color: "#888" }}>Customer taps → phone opens "Add Contact" pre-filled → one tap saves.</div>
+          </div>
+        </label>
+        <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer" }}>
+          <input type="checkbox" checked={form.addStop} onChange={(e) => set("addStop", e.target.checked)} style={{ marginTop: 2 }} />
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 500 }}>Add "Reply STOP to unsubscribe" line</div>
+            <div style={{ fontSize: 11, color: "#888" }}>If they reply STOP, the bot automatically marks them DND and never messages again. Strongly recommended for cold contacts.</div>
+          </div>
+        </label>
+      </div>
+
+      <Field label="Your message (the actual festival content)">
+        <div style={{ fontSize: 11, color: "#888", marginBottom: 6 }}>Use {"{{name}}"} for customer name, {"{{city}}"} for city.</div>
+        <Textarea rows={4} value={form.message} onChange={(e) => set("message", e.target.value)} placeholder={"Happy Diwali! ✨ Visit us this festive season — exclusive jewellery, best rates, free gift on purchase.\n- Sun Sea Jewellers, Karol Bagh"} />
+      </Field>
+
+      {/* Live preview of what recipient actually receives */}
+      {form.message.trim() && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>📱 What the customer receives:</div>
+          <div style={{ fontSize: 12, whiteSpace: "pre-wrap", lineHeight: 1.7, padding: "10px 14px", background: "#f0fdf4", borderRadius: 8, border: "1px solid #86efac", color: "#166534" }}>
+            {buildTemplate().replace(/\{\{name\}\}/g, "Ramesh").replace(/\{\{city\}\}/g, "Delhi")}
+          </div>
+        </div>
+      )}
+
+      <Field label="Personalisation">
+        <Select value={form.aiMessage ? "ai" : "fixed"} onChange={(e) => set("aiMessage", e.target.value === "ai")}>
+          <option value="fixed">📝 Same message to everyone</option>
+          <option value="ai">🤖 AI adds a personal touch per customer (uses template as base)</option>
+        </Select>
+      </Field>
+
+      {err && <p style={{ fontSize: 12, color: C.red, margin: "8px 0 0" }}>{err}</p>}
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
+        <Btn ghost color={C.gray} onClick={onClose}>Cancel</Btn>
+        <Btn color={C.blue} onClick={save} disabled={saving}>{saving ? "Creating…" : "Create broadcast"}</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+const PACE_OPTIONS = [
+  { k: "safe",   label: "🐢 Safe — 1 per 12s (~5/min)", intervalS: 12, note: "Recommended for numbers under 3 months old" },
+  { k: "normal", label: "🚶 Normal — 1 per 8s (~7/min)",  intervalS: 8,  note: "Good for established numbers (6+ months)" },
+  { k: "fast",   label: "🏃 Fast — 1 per 5s (~12/min)",  intervalS: 5,  note: "Only for WhatsApp Business API numbers" },
+];
+
+function BroadcastSendModal({ broadcast, allTags, onClose, onSent }) {
+  const step = (broadcast.step || []).sort((a, z) => a.step_order - z.step_order)[0];
+  const [filter, setFilter] = useState({ tags: [], city: "", statuses: ["active", "handoff", "converted", "new"], productInterest: [] });
+  const [includeAll, setIncludeAll] = useState(false);
+  const [pace, setPace] = useState("safe");
+  const [mediaUrl, setMediaUrl] = useState("");
+  const [mediaType, setMediaType] = useState("image");
+  const [uploading, setUploading] = useState(false);
+  const [sendAt, setSendAt] = useState(() => {
+    const d = new Date(); d.setMinutes(0, 0, 0);
+    d.setHours(d.getHours() + 1);
+    return d.toISOString().slice(0, 16);
+  });
+  const [preview, setPreview] = useState(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(null);
+  const [err, setErr] = useState("");
+
+  const uploadMedia = async (file) => {
+    if (!file) return;
+    setUploading(true); setErr("");
+    const ext = file.name.split(".").pop().toLowerCase();
+    const type = file.type.startsWith("video") ? "video" : file.type === "application/pdf" ? "document" : "image";
+    const path = `broadcasts/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+    const { data, error } = await sb.storage.from("media").upload(path, file, { upsert: true });
+    if (error) { setErr(`Upload failed: ${error.message}`); setUploading(false); return; }
+    const { data: pub } = sb.storage.from("media").getPublicUrl(path);
+    setMediaUrl(pub.publicUrl);
+    setMediaType(type);
+    setUploading(false);
+  };
+
+  const setF = (k, v) => { setFilter((s) => ({ ...s, [k]: v })); setPreview(null); };
+
+  const previewCount = async () => {
+    setPreviewing(true); setPreview(null); setErr("");
+    let q = sb.from("bullion_leads")
+      .select("id", { count: "exact", head: true })
+      .eq("tenant_id", getTenantId())
+      .eq("dnd", false)
+      .neq("status", "dead")
+      .not("phone", "is", null);
+    if (filter.tags.length) q = q.overlaps("tags", filter.tags);
+    if (filter.city.trim()) q = q.ilike("city", `%${filter.city.trim()}%`);
+    if (!includeAll && filter.statuses.length) q = q.in("status", filter.statuses);
+    if (filter.productInterest.length) q = q.in("product_interest", filter.productInterest);
+    const { count, error } = await q;
+    if (error) { setErr(error.message); setPreviewing(false); return; }
+    setPreview(count);
+    setPreviewing(false);
+  };
+
+  const send = async () => {
+    if (!sendAt) return setErr("Choose a send date and time");
+    if (preview === null) return setErr("Click Preview first to count recipients");
+    if (preview === 0) return setErr("No contacts match the selected filters");
+    setSending(true); setErr("");
+    const r = await fetch("/api/broadcast-send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-crm-secret": window.__CRM_SECRET__ || "" },
+      body: JSON.stringify({ funnelId: broadcast.id, sendAt: new Date(sendAt).toISOString(), pace, includeAll, filter, mediaUrl: mediaUrl || null, mediaType: mediaUrl ? mediaType : null, createdBy: loadUser()?.name || null }),
+    });
+    const data = await r.json();
+    setSending(false);
+    if (!data.ok) { setErr(data.error || "Send failed"); return; }
+    setSent(data);
+  };
+
+  const tagOptions = (allTags || []).map((t) => t.name || t.tag).filter(Boolean);
+
+  return (
+    <Modal title={`Send · ${broadcast.name}`} onClose={onClose} width={600}>
+      {/* Message preview */}
+      <div style={{ marginBottom: 16, padding: "10px 14px", background: "#f0f9ff", borderRadius: 8, borderLeft: "3px solid #3b82f6" }}>
+        <div style={{ fontSize: 11, color: "#3b82f6", fontWeight: 600, marginBottom: 6 }}>MESSAGE PREVIEW</div>
+        <div style={{ fontSize: 13, whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{step?.message_template || "(no message)"}</div>
+        {step?.use_ai_message && <div style={{ fontSize: 11, color: "#888", marginTop: 6 }}>🤖 AI will personalise this for each recipient</div>}
+      </div>
+
+      {/* Audience filters */}
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Audience filters</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <Field label="City (leave blank = all cities)">
+            <Input value={filter.city} onChange={(e) => setF("city", e.target.value)} placeholder="Delhi, Noida…" />
+          </Field>
+          <Field label="Tags (any — leave empty = all)">
+            <Select value="" onChange={(e) => { if (e.target.value && !filter.tags.includes(e.target.value)) setF("tags", [...filter.tags, e.target.value]); }}>
+              <option value="">+ Add tag filter</option>
+              {tagOptions.filter((t) => !filter.tags.includes(t)).map((t) => <option key={t} value={t}>{t}</option>)}
+            </Select>
+            {filter.tags.length > 0 && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 6 }}>
+                {filter.tags.map((t) => (
+                  <span key={t} onClick={() => setF("tags", filter.tags.filter((x) => x !== t))} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 8, background: "#dbeafe", color: "#1d4ed8", cursor: "pointer" }}>{t} ×</span>
+                ))}
+              </div>
+            )}
+          </Field>
+        </div>
+        <Field label="Who to include">
+          <label style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 12px", borderRadius: 8, border: `1px solid ${includeAll ? C.blue : "#ddd"}`, background: includeAll ? "#eff6ff" : "#fff", cursor: "pointer", marginBottom: 8 }}>
+            <input type="checkbox" checked={includeAll} onChange={(e) => { setIncludeAll(e.target.checked); setPreview(null); }} style={{ marginTop: 2 }} />
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>Everyone (including cold contacts who've never messaged us)</div>
+              <div style={{ fontSize: 11, color: "#888" }}>All contacts in the DB except DND and dead — best for festival blasts since we're sending the save-contact link anyway</div>
+            </div>
+          </label>
+          {!includeAll && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {LEAD_STATUSES.map((s) => (
+                <label key={s} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, padding: "3px 10px", borderRadius: 8, border: `1px solid ${filter.statuses.includes(s) ? C.blue : "#ddd"}`, background: filter.statuses.includes(s) ? "#eff6ff" : "#fff", cursor: "pointer" }}>
+                  <input type="checkbox" checked={filter.statuses.includes(s)} onChange={() => { setF("statuses", filter.statuses.includes(s) ? filter.statuses.filter((x) => x !== s) : [...filter.statuses, s]); }} style={{ margin: 0 }} />
+                  {s}
+                </label>
+              ))}
+            </div>
+          )}
+        </Field>
+      </div>
+
+      {/* Media attachment — for this send only, not saved to Media tab */}
+      <Field label="Attach image / video / PDF (optional — for this broadcast only)">
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <label style={{ fontSize: 13, padding: "6px 14px", borderRadius: 7, border: "1px solid #3b82f6", color: "#3b82f6", cursor: "pointer", whiteSpace: "nowrap" }}>
+            {uploading ? "Uploading…" : mediaUrl ? "Change file" : "📎 Attach file"}
+            <input type="file" accept="image/*,video/*,.pdf" style={{ display: "none" }} onChange={(e) => uploadMedia(e.target.files[0])} disabled={uploading} />
+          </label>
+          {mediaUrl && (
+            <div style={{ flex: 1, fontSize: 12, color: "#16a34a" }}>
+              ✅ {mediaType} attached
+              {mediaType === "image" && <img src={mediaUrl} alt="" style={{ display: "block", maxHeight: 80, maxWidth: 120, borderRadius: 6, marginTop: 4, objectFit: "cover" }} />}
+              <button onClick={() => setMediaUrl("")} style={{ marginLeft: 8, fontSize: 11, color: C.red, background: "none", border: "none", cursor: "pointer" }}>✕ remove</button>
+            </div>
+          )}
+        </div>
+        <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>File is uploaded to Supabase Storage and sent as a WA media message with the text as caption. Not saved to the Media tab.</div>
+      </Field>
+
+      {/* Pace selector */}
+      <Field label="Send pace — controls time gap between messages to avoid WA ban">
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
+          {PACE_OPTIONS.map((p) => (
+            <label key={p.k} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 12px", borderRadius: 8, border: `1px solid ${pace === p.k ? C.blue : "#ddd"}`, background: pace === p.k ? "#eff6ff" : "#fff", cursor: "pointer" }}>
+              <input type="radio" name="pace" value={p.k} checked={pace === p.k} onChange={() => { setPace(p.k); setPreview(null); }} style={{ marginTop: 2 }} />
+              <div>
+                <div style={{ fontSize: 13, fontWeight: pace === p.k ? 600 : 400 }}>{p.label}</div>
+                <div style={{ fontSize: 11, color: "#888" }}>{p.note}
+                  {preview > 0 && ` · ${Math.ceil(preview * p.intervalS / 60)} min total for ${preview} contacts`}
+                </div>
+              </div>
+            </label>
+          ))}
+        </div>
+        <div style={{ fontSize: 11, color: "#e67e22", marginTop: 8, padding: "6px 10px", background: "#fef9f0", borderRadius: 6 }}>
+          ⚠️ Messages stagger automatically so WA doesn't detect bulk sending. First message goes at your chosen time; rest follow at the pace above. All stay within 9 AM–8 PM IST.
+        </div>
+      </Field>
+
+      {/* Send date */}
+      <Field label="First message sends at (IST)">
+        <Input type="datetime-local" value={sendAt} onChange={(e) => setSendAt(e.target.value)} />
+        {preview > 0 && sendAt && (() => {
+          const paceObj = PACE_OPTIONS.find((p) => p.k === pace);
+          const endMs = new Date(sendAt).getTime() + preview * paceObj.intervalS * 1000;
+          return <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>Last message ~{new Date(endMs).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" })}</div>;
+        })()}
+      </Field>
+
+      {/* Preview + Send */}
+      {err && <p style={{ fontSize: 12, color: C.red, margin: "8px 0" }}>{err}</p>}
+
+      {sent ? (
+        <div style={{ padding: "14px 16px", background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 10, textAlign: "center" }}>
+          <div style={{ fontSize: 16, fontWeight: 600, color: "#166534", marginBottom: 4 }}>✅ Scheduled!</div>
+          <div style={{ fontSize: 13, color: "#166534" }}>{sent.created} messages scheduled · {sent.skipped || 0} already enrolled (skipped)</div>
+          <div style={{ fontSize: 12, color: "#888", marginTop: 6 }}>Cron will send them at {new Date(sendAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" })}</div>
+          <Btn color={C.blue} onClick={onSent} style={{ marginTop: 12 }}>Done</Btn>
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 8, justifyContent: "space-between", alignItems: "center", marginTop: 14 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <Btn ghost color={C.blue} onClick={previewCount} disabled={previewing}>{previewing ? "Counting…" : "👁 Preview audience"}</Btn>
+            {preview !== null && (
+              <span style={{ fontSize: 13, fontWeight: 600, color: preview > 0 ? C.green : C.red }}>
+                {preview > 0 ? `${preview} contacts will receive this` : "No contacts match"}
+              </span>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <Btn ghost color={C.gray} onClick={onClose}>Cancel</Btn>
+            <Btn color={C.blue} onClick={send} disabled={sending || preview === null || preview === 0}>
+              {sending ? "Scheduling…" : `📤 Schedule${preview !== null && preview > 0 ? ` for ${preview}` : ""}`}
+            </Btn>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+// MAIN APP — tabbed interface, tabs filtered by app_permissions (set in SSJ HR → People → Permissions)
+// ──────────────────────────────────────────────────────────
 
 export default function App() {
+  // Customer profile update form — no login needed
+  const profileToken = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("t") : null;
+  if (profileToken) return <ContactUpdateForm token={profileToken} />;
+
   const [user, setUser] = useState(loadUser);
   const [screen, setScreen] = useState("demands");
   const [funnels, setFunnels] = useState([]);
   const [personas, setPersonas] = useState([]);
   const [allTags, setAllTags] = useState([]);
-  const [atAdmin, setAtAdmin] = useState(isAdminPath());
-
-  const canAdmin = user && ["superadmin", "admin"].includes(user.role);
 
   const login = (u) => { saveUser(u); setUser(u); };
-  const logout = () => {
-    saveUser(null); setUser(null);
-    if (atAdmin) { window.history.replaceState({}, "", "/"); setAtAdmin(false); }
-  };
-  const goAdmin = () => { window.history.pushState({}, "", "/back"); setAtAdmin(true); };
-  const goStaff = () => { window.history.pushState({}, "", "/"); setAtAdmin(false); setScreen("leads"); };
+  const logout = () => { saveUser(null); setUser(null); };
 
+  // Refresh app_permissions from DB every time the app gets focus (tab switch, window focus).
+  // This means if an admin changes someone's permissions in SSJ HR, it takes effect next
+  // time that person switches back to the SSJBot tab — no logout required.
   useEffect(() => {
-    const onPop = () => setAtAdmin(isAdminPath());
-    window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
-  }, []);
+    if (!user?.id) return;
+    const refresh = async () => {
+      const { data } = await sb.from("staff").select("app_permissions").eq("id", user.id).maybeSingle();
+      if (data && JSON.stringify(data.app_permissions) !== JSON.stringify(user.app_permissions)) {
+        const updated = { ...user, app_permissions: data.app_permissions };
+        saveUser(updated);
+        setUser(updated);
+      }
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+    return () => { window.removeEventListener("focus", refresh); };
+  }, [user?.id]); // eslint-disable-line
 
   const loadFunnels = useCallback(async () => {
     const { data } = await sb.from("funnels").select("*").eq("tenant_id", getTenantId()).order("active", { ascending: false }).order("id");
@@ -2209,74 +4246,79 @@ export default function App() {
 
   if (!user) return <LoginScreen onLogin={login} />;
 
-  if (atAdmin && !canAdmin) {
-    window.history.replaceState({}, "", "/");
-    return null;
-  }
-
   const header = (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
       <div>
-        <h2 style={{ fontSize: 18, fontWeight: 600, margin: "0 0 2px" }}>
-          SSJ Jew CRM {atAdmin && <span style={{ fontSize: 11, color: C.purple, fontWeight: 500 }}>· admin</span>}
-        </h2>
+        <h2 style={{ fontSize: 18, fontWeight: 600, margin: "0 0 2px" }}>SSJ Jew CRM</h2>
         <p style={{ fontSize: 12, color: "#888", margin: 0 }}>{ROLES[user.role] || user.role} · {user.name}</p>
       </div>
-      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-        {canAdmin && !atAdmin && <button onClick={goAdmin} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 7, border: `1px solid ${C.purple}`, background: "transparent", color: C.purple, cursor: "pointer" }}>⚙️ Admin</button>}
-        {canAdmin && atAdmin && <button onClick={goStaff} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 7, border: `1px solid ${C.blue}`, background: "transparent", color: C.blue, cursor: "pointer" }}>← Leads view</button>}
-        <button onClick={logout} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 7, border: "1px solid #ddd", background: "transparent", cursor: "pointer" }}>Logout</button>
-      </div>
+      <button onClick={logout} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 7, border: "1px solid #ddd", background: "transparent", cursor: "pointer" }}>Logout</button>
     </div>
   );
 
-  // Staff view — Demands screen (active enquiries sorted by urgency)
-  if (!atAdmin) {
-    return (
-      <div style={{ maxWidth: 1280, margin: "0 auto", padding: "1rem" }}>
-        {header}
-        <DemandsScreen funnels={funnels} allTags={allTags} />
-      </div>
-    );
-  }
-
-  // Admin view — all tabs
-  const tabs = [
-    { k: "demands", l: "Demands", icon: "🎯" },
-    { k: "leads", l: "Conversations", icon: "💬" },
-    { k: "contacts", l: "Contacts", icon: "📇" },
-    { k: "funnels", l: "Funnels", icon: "🎯" },
-    { k: "personas", l: "Personas", icon: "🎭" },
-    { k: "faqs", l: "FAQs", icon: "❓" },
-    { k: "tags", l: "Tags", icon: "🏷️" },
-    { k: "imports", l: "Imports", icon: "📥" },
-    { k: "connections", l: "Connections", icon: "📱" },
-    { k: "media", l: "Media", icon: "📎" },
-    { k: "rates", l: "Rates", icon: "📈" },
-    { k: "analytics", l: "Analytics", icon: "📊" },
+  // Tabs filtered by app_permissions (set in SSJ HR → People → Permissions tab)
+  const ALL_TABS = [
+    { k: "approvals",  l: "Approvals",   icon: "✅" },
+    { k: "demands",    l: "Demands",     icon: "🎯" },
+    { k: "contacts",   l: "Contacts",    icon: "📇" },
+    { k: "contactsdb", l: "DB",          icon: "📋" },
+    { k: "upcoming",   l: "Upcoming",    icon: "🎂" },
+    { k: "messages",   l: "Messages",    icon: "💬" },
+    { k: "funnels",    l: "Funnels",     icon: "🔀" },
+    { k: "personas",   l: "Personas",    icon: "🎭" },
+    { k: "faqs",       l: "FAQs",        icon: "❓" },
+    { k: "tags",       l: "Tags",        icon: "🏷️" },
+    { k: "imports",    l: "Imports",     icon: "📥" },
+    { k: "broadcasts",  l: "Broadcasts",  icon: "📢" },
+    { k: "connections",l: "Connections", icon: "📱" },
+    { k: "media",      l: "Media",       icon: "📎" },
+    { k: "rates",      l: "Rates",       icon: "📈" },
+    { k: "analytics",  l: "Analytics",   icon: "📊" },
   ];
+
+  // Role-based defaults when app_permissions.crm is not set
+  const ROLE_DEFAULT_TABS = {
+    superadmin: ALL_TABS.map((t) => t.k),
+    admin:      ALL_TABS.map((t) => t.k),
+    manager:    ["demands", "contacts", "contactsdb", "upcoming", "analytics"],
+    staff:      ["demands", "contacts", "upcoming"],
+  };
+
+  const crmPerms = user?.app_permissions?.crm;
+  const allowedKeys = crmPerms
+    ? (crmPerms.includes("all") ? ALL_TABS.map((t) => t.k) : crmPerms)
+    : (ROLE_DEFAULT_TABS[user?.role] || ["demands"]);
+
+  const tabs = ALL_TABS.filter((t) => allowedKeys.includes(t.k));
+  // If current screen was removed from permissions (e.g. after re-login as different role),
+  // silently redirect to the first allowed tab.
+  const activeScreen = tabs.find((t) => t.k === screen) ? screen : (tabs[0]?.k || "demands");
 
   return (
     <div style={{ maxWidth: 1280, margin: "0 auto", padding: "1rem" }}>
       {header}
       <div style={{ display: "flex", gap: 6, marginBottom: 16, borderBottom: "1px solid #eee", paddingBottom: 10, flexWrap: "wrap" }}>
         {tabs.map((t) => (
-          <button key={t.k} onClick={() => setScreen(t.k)} style={{ fontSize: 13, padding: "6px 14px", borderRadius: 8, border: `1px solid ${screen === t.k ? C.blue : "#ddd"}`, background: screen === t.k ? C.blue : "transparent", color: screen === t.k ? "#fff" : "#333", cursor: "pointer" }}>{t.icon} {t.l}</button>
+          <button key={t.k} onClick={() => setScreen(t.k)} style={{ fontSize: 13, padding: "6px 14px", borderRadius: 8, border: `1px solid ${activeScreen === t.k ? C.blue : "#ddd"}`, background: activeScreen === t.k ? C.blue : "transparent", color: activeScreen === t.k ? "#fff" : "#333", cursor: "pointer" }}>{t.icon} {t.l}</button>
         ))}
       </div>
 
-      {screen === "demands" && <DemandsScreen funnels={funnels} allTags={allTags} />}
-      {screen === "leads" && <LeadsScreen funnels={funnels} allTags={allTags} viewMode="leads" />}
-      {screen === "contacts" && <LeadsScreen funnels={funnels} allTags={allTags} viewMode="contacts" />}
-      {screen === "funnels" && <FunnelsScreen funnels={funnels} personas={personas} onReload={loadFunnels} />}
-      {screen === "personas" && <PersonasScreen personas={personas} onReload={loadPersonas} />}
-      {screen === "faqs" && <FaqsScreen />}
-      {screen === "tags" && <TagsScreen onReload={loadTags} />}
-      {screen === "imports" && <ImportsScreen />}
-      {screen === "connections" && <ConnectionsScreen />}
-      {screen === "media" && <MediaAssetsScreen />}
-      {screen === "rates" && <RatesScreen />}
-      {screen === "analytics" && <AnalyticsScreen funnels={funnels} />}
+      {activeScreen === "approvals" && <ApprovalsScreen funnels={funnels} />}
+      {activeScreen === "demands" && <DemandsScreen funnels={funnels} allTags={allTags} />}
+      {activeScreen === "contacts" && <ContactsScreen funnels={funnels} />}
+      {activeScreen === "contactsdb" && <ContactsDBScreen />}
+      {activeScreen === "upcoming" && <UpcomingEventsScreen />}
+      {activeScreen === "messages" && <MessageHistoryScreen funnels={funnels} />}
+      {activeScreen === "funnels" && <FunnelsScreen funnels={funnels} personas={personas} onReload={loadFunnels} />}
+      {activeScreen === "personas" && <PersonasScreen personas={personas} onReload={loadPersonas} />}
+      {activeScreen === "faqs" && <FaqsScreen />}
+      {activeScreen === "tags" && <TagsScreen onReload={loadTags} />}
+      {activeScreen === "imports" && <ImportsScreen />}
+      {activeScreen === "connections" && <ConnectionsScreen />}
+      {activeScreen === "media" && <MediaAssetsScreen />}
+      {activeScreen === "rates" && <RatesScreen />}
+      {activeScreen === "broadcasts" && <BroadcastsScreen allTags={allTags} />}
+      {activeScreen === "analytics" && <AnalyticsScreen funnels={funnels} />}
     </div>
   );
 }

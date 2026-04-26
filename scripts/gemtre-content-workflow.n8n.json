@@ -1,0 +1,97 @@
+{
+  "name": "Gemtre — Daily Content Generation",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "cronExpression", "expression": "0 7 * * *" }] }
+      },
+      "name": "Every day 7 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://gemtrebot.vercel.app/api/marketing?module=content-gen&action=status",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "x-cron-secret", "value": "={{$env.GEMTRE_CRM_SECRET}}" }]
+        }
+      },
+      "name": "Check queue status",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [{ "value1": "={{$json.needs_generation}}", "operation": "larger", "value2": 0 }]
+        }
+      },
+      "name": "Needs content?",
+      "type": "n8n-nodes-base.if",
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://gemtrebot.vercel.app/api/marketing?module=content-gen&action=generate_day&count=3",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "x-cron-secret", "value": "={{$env.GEMTRE_CRM_SECRET}}" }]
+        }
+      },
+      "name": "Generate today's content",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [900, 200]
+    },
+    {
+      "parameters": {
+        "url": "https://gemtrebot.vercel.app/api/marketing?module=approvals&action=list&status=pending",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "x-cron-secret", "value": "={{$env.GEMTRE_CRM_SECRET}}" }]
+        }
+      },
+      "name": "Get pending count",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1120, 200]
+    },
+    {
+      "parameters": {
+        "url": "https://api.interakt.ai/v1/public/message/",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Authorization", "value": "Basic ={{$env.INTERAKT_API_KEY}}" }]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "countryCode", "value": "+91" },
+            { "name": "phoneNumber", "value": "9811464488" },
+            { "name": "type", "value": "Text" },
+            { "name": "data", "value": "={ \"message\": \"✅ Gemtre Content Ready!\\n\\n{{$node['Get pending count'].json.items.length}} posts waiting for your approval.\\n\\n👉 Review at: https://crm.gemtre.in\" }" }
+          ]
+        }
+      },
+      "name": "WhatsApp notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1340, 200]
+    }
+  ],
+  "connections": {
+    "Every day 7 AM": { "main": [[{ "node": "Check queue status", "type": "main", "index": 0 }]] },
+    "Check queue status": { "main": [[{ "node": "Needs content?", "type": "main", "index": 0 }]] },
+    "Needs content?": { "main": [[{ "node": "Generate today's content", "type": "main", "index": 0 }], []] },
+    "Generate today's content": { "main": [[{ "node": "Get pending count", "type": "main", "index": 0 }]] },
+    "Get pending count": { "main": [[{ "node": "WhatsApp notification", "type": "main", "index": 0 }]] }
+  }
+}

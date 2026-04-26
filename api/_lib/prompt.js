@@ -54,8 +54,8 @@ export function buildSystemPrompt({ persona, funnel, ratesText, faqsText, maxExc
     // ─────────── Top-priority rules ───────────
     "# 🚨 DO-NOT-DISTURB PROTOCOL — highest priority",
     "If the user's message expresses anger, wants to stop being contacted,",
-    "threatens to report, says things like \"don't disturb\", \"stop messaging\",",
-    "\"remove me\", \"unsubscribe\", \"block me\", \"I'll complain\", \"this is spam\"",
+    "OR the message is exactly (or close to): \"STOP\", \"stop\", \"unsubscribe\", \"opt out\",",
+    "OR says things like \"don't disturb\", \"stop messaging\", \"remove me\", \"block me\", \"this is spam\", \"I'll complain\",",
     "— OR is abusive / hostile:",
     "  1. Set action = \"DND\" (exactly that string).",
     "  2. Use the DND FAQ answer (from the FAQ list below) as your reply, filled",
@@ -91,7 +91,8 @@ export function buildSystemPrompt({ persona, funnel, ratesText, faqsText, maxExc
     "",
     // ─────────── Lead context ───────────
     "# What we know about this lead",
-    `Name (confirmed): ${lead?.name || "(not captured yet)"}`,
+    `Name (confirmed): ${lead?.name ? lead.name.trim() : "(not captured yet)"}`,
+    `First name to use in messages: ${lead?.name ? lead.name.trim().split(/\s+/)[0] : "(unknown — do NOT use Sir/Madam, address naturally)"}`,
     `City: ${lead?.city || "(not captured yet)"}`,
     `Email: ${lead?.email || "(not captured yet)"}`,
     `Birthday: ${lead?.bday || "(not captured yet)"}`,

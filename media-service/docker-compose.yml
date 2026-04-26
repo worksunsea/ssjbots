@@ -1,0 +1,16 @@
+services:
+  media-service:
+    build: .
+    container_name: gemtre-media-service
+    restart: unless-stopped
+    ports:
+      - "3022:3022"
+    volumes:
+      - /volume1/gemtre-media:/app/media
+      - /usr/bin/ffmpeg:/usr/bin/ffmpeg:ro
+      - /usr/lib:/usr/lib:ro
+    environment:
+      PORT: 3022
+      MEDIA_DIR: /app/media
+      SERVICE_SECRET: ${SERVICE_SECRET}
+      PUBLIC_URL: ${PUBLIC_URL:-https://media.gemtre.in}

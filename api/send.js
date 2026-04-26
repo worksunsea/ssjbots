@@ -11,15 +11,14 @@ export const config = { maxDuration: 30 };
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ ok: false, error: "method_not_allowed" });
-
   let body = req.body;
   if (typeof body === "string") { try { body = JSON.parse(body); } catch { body = {}; } }
   body = body || {};
 
-  const { phone, message, leadId, funnelId } = body;
+  const { phone, message, leadId, funnelId, client } = body;
   if (!phone || !message) return res.status(400).json({ ok: false, error: "phone_and_message_required" });
 
-  const wa = await sendWhatsApp({ phone, msg: message });
+  const wa = await sendWhatsApp({ phone, msg: message, client: client || undefined });
   if (wa.status !== 1) {
     return res.status(502).json({ ok: false, error: wa.message });
   }

@@ -8,7 +8,7 @@
 // We always return 200 so WbizTool doesn't retry on our errors.
 
 import { supa } from "./_lib/supabase.js";
-import { sendWhatsApp } from "./_lib/wa.js";
+import { sendWhatsApp, sendWhatsAppMedia } from "./_lib/wa.js";
 import { askClaude, parseBotJson } from "./_lib/claude.js";
 import { getRates, ratesForPrompt } from "./_lib/rates.js";
 import { getFaqs, faqsForPrompt } from "./_lib/faqs.js";
@@ -30,8 +30,11 @@ export const config = { maxDuration: 120 }; // Fluid Compute default is 300; 120
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Supabase query builders are PromiseLike (have .then) but not full Promises (no .catch).
+// qx wraps them so we can fire-and-forget without crashing.
+const qx = (q, onErr) => Promise.resolve(q).catch(onErr || (() => {}));
 const daysUntil = (d) => Math.round((new Date(d) - new Date()) / 86400000);
-const randDelay = () => 30_000 + Math.floor(Math.random() * 15_000); // 30–45s
+const randDelay = () => 4_000 + Math.floor(Math.random() * 4_000); // 4–8s — human-feeling without risking wa-service retry
 
 function extractIncoming(body) {
   // Prefer raw JID (works for LID senders post-2024 WA privacy update).
@@ -51,8 +54,8 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, ping: true });
   }
 
-  // Optional shared-secret gate (recommended).
-  if (WEBHOOK_SECRET && req.query.secret !== WEBHOOK_SECRET) {
+  // Shared-secret gate — required. WEBHOOK_SECRET must be set in Vercel env.
+  if (!WEBHOOK_SECRET || req.query.secret !== WEBHOOK_SECRET) {
     return res.status(200).json({ ok: false, reason: "bad_secret" });
   }
 
@@ -68,10 +71,25 @@ export default async function handler(req, res) {
   body = body || {};
 
   const { phone, msg, waClient, name, msgId } = extractIncoming(body);
+  console.log("webhook:incoming", JSON.stringify({ phone, msg: msg.slice(0, 80), waClient, name, msgId, rawKeys: Object.keys(body) }));
+
   if (!phone || !msg) {
     console.warn("webhook: ignoring payload without phone/msg", { body });
     return res.status(200).json({ ok: false, reason: "no_phone_or_msg" });
   }
+
+  // Never process messages from the owner's own number — prevents reply loops.
+  if (OWNER_ALERT_PHONE && normalizePhone(phone) === normalizePhone(OWNER_ALERT_PHONE)) {
+    console.log("webhook: skipping owner number", phone);
+    return res.status(200).json({ ok: true, skipped: "owner_number" });
+  }
+
+  // Dedup is now enforced at the DB level via unique index on (wbiztool_msg_id, direction='in').
+  // The insert at step 3 will fail with code 23505 if the same msgId arrives twice.
+  // No SELECT needed here — that had a race condition anyway.
+
+  // Gate 1 is applied AFTER funnel load (we need the funnel to know if it's send-only).
+  // See below after allFunnels is loaded.
 
   const sb = supa();
 
@@ -88,9 +106,21 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: false, reason: "no_active_funnel" });
     }
 
-    // 1b. Look up any existing lead for this phone. Phone is globally unique
-    //     per tenant but we check across all tenants to find where the contact
-    //     already lives. First match wins.
+    // Gate 1: only 8860866000 runs the bot (replies to inbound messages).
+    // Every other number is send-only — used for drip, birthday wishes, broadcasts.
+    // If an inbound message arrives on any other session, drop it silently.
+    if (waClient) {
+      const matchedFunnel = allFunnels.find((f) => String(f.wbiztool_client) === String(waClient));
+      if (matchedFunnel) {
+        const funnelPhone = normalizePhone(matchedFunnel.wa_number);
+        if (!BOT_NUMBERS.includes(funnelPhone)) {
+          console.log("webhook:gate1:dropped non-bot number", funnelPhone, matchedFunnel.id);
+          return res.status(200).json({ ok: true, skipped: "non_bot_number" });
+        }
+      }
+    }
+
+    // 1b. Look up any existing lead for this phone (for funnel routing).
     const { data: existingLeads } = await sb
       .from("bullion_leads")
       .select("id,funnel_id,tenant_id")
@@ -117,10 +147,7 @@ export default async function handler(req, res) {
     // Tenant comes from the resolved funnel. Everything downstream uses this.
     const tenantId = funnel.tenant_id;
 
-    // 2. Upsert lead. We intentionally DO NOT pass the WhatsApp pushName as
-    //    the lead's real name — it's just a display hint and users want to be
-    //    asked properly during onboarding. We store pushName separately in
-    //    wa_display_name.
+    // 2. Upsert lead (lead already exists at this point).
     const { data: leadRow, error: upsertErr } = await sb.rpc("bullion_upsert_lead", {
       p_tenant_id: tenantId,
       p_phone: phone,
@@ -132,17 +159,34 @@ export default async function handler(req, res) {
       console.error("upsert_lead failed", upsertErr);
       return res.status(200).json({ ok: false, reason: "upsert_failed" });
     }
+    console.log("webhook:lead_upserted", { leadId: leadRow.id, funnelId: funnel.id, phone });
 
-    // 2b. Stash the WhatsApp display name so the operator has context even
-    //     though the bot will still ask for the real name.
+    // 2b. Stash the WhatsApp display name.
     if (name && leadRow.wa_display_name !== name) {
       await sb.from("bullion_leads")
         .update({ wa_display_name: name })
         .eq("id", leadRow.id);
     }
 
-    // 3. Log inbound
-    await sb.from("bullion_messages").insert({
+    // 2c. Ensure a demand row exists for this lead so it appears in the Demands screen.
+    //     One demand per lead (inbound enquiry). If already exists, leave it alone.
+    const { data: existingDemand } = await sb.from("bullion_demands")
+      .select("id")
+      .eq("lead_id", leadRow.id)
+      .limit(1)
+      .maybeSingle();
+    if (!existingDemand) {
+      await qx(sb.from("bullion_demands").insert({
+        tenant_id: tenantId,
+        lead_id: leadRow.id,
+        funnel_id: funnel.id,
+        bot_active: true,
+      }), (e) => console.error("demand_create failed", e));
+    }
+
+    // 3. Log inbound — insert first, check for duplicate via unique index on (wbiztool_msg_id, direction).
+    // If two webhook calls race for the same msgId, the second insert fails here and we stop immediately.
+    const { error: inboundInsertErr } = await sb.from("bullion_messages").insert({
       tenant_id: tenantId,
       lead_id: leadRow.id,
       phone,
@@ -153,6 +197,14 @@ export default async function handler(req, res) {
       stage: leadRow.stage,
       status: "received",
     });
+    if (inboundInsertErr) {
+      // Unique constraint violation = duplicate message already being processed
+      if (inboundInsertErr.code === "23505") {
+        console.log("webhook: duplicate blocked by unique index", msgId);
+        return res.status(200).json({ ok: true, skipped: "duplicate_db" });
+      }
+      console.error("webhook: inbound insert failed", inboundInsertErr);
+    }
 
     // 3b. Lead replied — cancel any pending drip messages (don't let cold-nurture
     //     fire when the lead is actively engaged).
@@ -213,6 +265,7 @@ export default async function handler(req, res) {
     ]);
 
     const activeDemand = activeDemands?.[0] || null;
+    // activeDemand injected into prompt for context if present; not a gate.
 
     const chronological = (history || []).slice().reverse();
     // Drop the just-inserted inbound — we add it explicitly below
@@ -260,7 +313,10 @@ export default async function handler(req, res) {
     await sleep(randDelay());
 
     // 8. Send via self-hosted wa-service (Baileys)
-    const wa = await sendWhatsApp({ phone, msg: parsed.reply });
+    // Use the session that received the message for the reply (waClient).
+    // Fall back to funnel.wbiztool_client for outbound-only contexts.
+    const replyClient = waClient || funnel.wbiztool_client || undefined;
+    const wa = await sendWhatsApp({ phone, msg: parsed.reply, client: replyClient });
     const sent = wa.status === 1;
 
     // 9. Log outbound + update lead
@@ -344,22 +400,22 @@ export default async function handler(req, res) {
       if (du.needs_qualified)    demandPatch.needs_qualified = true;
       if (Object.keys(demandPatch).length) {
         demandPatch.updated_at = new Date().toISOString();
-        await sb.from("bullion_demands").update(demandPatch).eq("id", activeDemand.id).catch(() => {});
+        await qx(sb.from("bullion_demands").update(demandPatch).eq("id", activeDemand.id));
       }
 
       // Wedding life event detected
       if (du.wedding_date) {
-        await sb.from("bullion_leads").update({
+        await qx(sb.from("bullion_leads").update({
           wedding_date: du.wedding_date,
           wedding_family_member: du.wedding_family_member || null,
-        }).eq("id", leadRow.id).catch(() => {});
+        }).eq("id", leadRow.id));
 
         // Schedule a reminder for the owner on the wedding date
         if (du.wedding_date) {
           const weddingTs = new Date(du.wedding_date).getTime();
           if (!isNaN(weddingTs) && weddingTs > Date.now()) {
             const reminderBody = `📅 Wedding day — ${leadRow.name || phone}${du.wedding_family_member ? ` (${du.wedding_family_member})` : ""}. Wish them today! CRM: https://ssjbots.vercel.app`;
-            await sb.from("bullion_scheduled_messages").insert({
+            await qx(sb.from("bullion_scheduled_messages").insert({
               tenant_id: tenantId,
               lead_id: leadRow.id,
               funnel_id: funnel.id,
@@ -367,7 +423,7 @@ export default async function handler(req, res) {
               body: reminderBody,
               status: "pending",
               is_reminder: true,
-            }).catch(() => {});
+            }));
           }
         }
       }
@@ -393,7 +449,7 @@ export default async function handler(req, res) {
             `\nOpen CRM: https://ssjbots.vercel.app`,
           ].filter(Boolean).join("\n");
           await sendWhatsApp({ phone: OWNER_ALERT_PHONE, msg: alert }).catch(() => {});
-          await sb.from("bullion_demands").update({ sales_notified_at: new Date().toISOString() }).eq("id", activeDemand.id).catch(() => {});
+          await qx(sb.from("bullion_demands").update({ sales_notified_at: new Date().toISOString() }).eq("id", activeDemand.id));
         }
       }
     }
@@ -403,7 +459,7 @@ export default async function handler(req, res) {
     if (vu && activeDemand) {
       // Client confirmed the visit
       if (vu.visit_confirmed && !activeDemand.visit_confirmed) {
-        await sb.from("bullion_demands").update({ visit_confirmed: true }).eq("id", activeDemand.id).catch(() => {});
+        await qx(sb.from("bullion_demands").update({ visit_confirmed: true }).eq("id", activeDemand.id));
       }
 
       // New or rescheduled visit date given
@@ -411,12 +467,12 @@ export default async function handler(req, res) {
         const visitTs = Date.parse(vu.visit_date);
         if (!isNaN(visitTs) && visitTs > Date.now()) {
           // Cancel existing visit reminder messages for this lead
-          await sb.from("bullion_scheduled_messages")
+          await qx(sb.from("bullion_scheduled_messages")
             .update({ status: "canceled", canceled_reason: vu.rescheduled ? "rescheduled" : "replaced" })
             .eq("lead_id", leadRow.id)
             .in("message_type", ["visit_reminder", "visit_day"])
             .eq("status", "pending")
-            .catch(() => {});
+            );
 
           const visitTime = new Date(visitTs).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" });
           const visitDateStr = new Date(visitTs).toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", timeZone: "Asia/Kolkata" });
@@ -425,26 +481,26 @@ export default async function handler(req, res) {
           // D-1 reminder (24h before)
           const d1ts = visitTs - 24 * 60 * 60 * 1000;
           if (d1ts > Date.now()) {
-            await sb.from("bullion_scheduled_messages").insert({
+            await qx(sb.from("bullion_scheduled_messages").insert({
               tenant_id: tenantId, lead_id: leadRow.id, funnel_id: funnel.id,
               send_at: new Date(d1ts).toISOString(),
               body: `Hi ${clientName}, just confirming your visit to Sun Sea Jewellers tomorrow (${visitDateStr}) at ${visitTime}. Looking forward to meeting you! Please reply YES to confirm. 🙏`,
               status: "pending",
               message_type: "visit_reminder",
-            }).catch(() => {});
+            }));
           }
 
           // D-0 morning reminder (9 AM on visit day IST)
           const visitDay9am = new Date(visitTs);
           visitDay9am.setUTCHours(3, 30, 0, 0); // 9 AM IST = 3:30 AM UTC
           if (visitDay9am > new Date()) {
-            await sb.from("bullion_scheduled_messages").insert({
+            await qx(sb.from("bullion_scheduled_messages").insert({
               tenant_id: tenantId, lead_id: leadRow.id, funnel_id: funnel.id,
               send_at: visitDay9am.toISOString(),
               body: `Good morning ${clientName}! 🙏 A warm reminder — your visit to Sun Sea Jewellers is today at ${visitTime}, Karol Bagh. We look forward to welcoming you!`,
               status: "pending",
               message_type: "visit_day",
-            }).catch(() => {});
+            }));
           }
 
           // Update demand
@@ -456,7 +512,7 @@ export default async function handler(req, res) {
           if (vu.rescheduled) {
             visitPatch.visit_rescheduled_count = (activeDemand.visit_rescheduled_count || 0) + 1;
           }
-          await sb.from("bullion_demands").update(visitPatch).eq("id", activeDemand.id).catch(() => {});
+          await qx(sb.from("bullion_demands").update(visitPatch).eq("id", activeDemand.id));
         }
       }
     }
@@ -472,9 +528,17 @@ export default async function handler(req, res) {
         .order("sort_order", { ascending: true })
         .limit(3);
       for (const asset of assets || []) {
+        if (!asset.url) continue;
+        await sleep(3000);
+        // Send as WA media attachment if it's an image/video/pdf; fall back to text link
+        const mediaTypes = ["image","video","pdf","document"];
+        if (mediaTypes.includes(asset.asset_type)) {
+          const mediaType = asset.asset_type === "pdf" ? "document" : asset.asset_type;
+          const wa2 = await sendWhatsAppMedia({ phone, mediaUrl: asset.url, mediaType, caption: asset.caption || "", client: replyClient }).catch(() => ({ status: 0 }));
+          if (wa2.status === 1) continue; // sent as media, skip fallback
+        }
+        // Fallback: text message with URL
         const assetMsg = [asset.caption || "", asset.url].filter(Boolean).join("\n");
-        if (assetMsg.trim()) {
-          await sleep(3000); // brief gap between messages
           await sendWhatsApp({ phone, msg: assetMsg }).catch(() => {});
         }
       }

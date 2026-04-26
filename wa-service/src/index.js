@@ -20,6 +20,7 @@ import {
   sendForClient,
   getClients,
   getClientState,
+  sendMediaForClient,
   logoutClient,
   defaultClientId,
 } from "./baileys.js";
@@ -114,6 +115,28 @@ app.post("/clients/:id/send", async (req, reply) => {
   }
 });
 
+// POST /clients/:id/send-media — send image, video, or document via WA
+// Body: { phone|jid, mediaUrl, mediaType: 'image'|'video'|'document', caption?, filename? }
+app.post("/clients/:id/send-media", async (req, reply) => {
+  const guarded = requireSecret(req, reply);
+  if (guarded) return;
+  const { id } = req.params;
+  const { phone, jid, mediaUrl, mediaType = "image", caption = "", filename } = req.body || {};
+  const target = jid || phone;
+  if (!target || !mediaUrl) return reply.code(400).send({ ok: false, error: "target_and_mediaUrl_required" });
+
+  const state = getClientState(id);
+  if (!state?.connected) return reply.code(503).send({ ok: false, error: "session_not_connected" });
+
+  try {
+    const sent = await sendMediaForClient(id, { target, mediaUrl, mediaType, caption, filename });
+    return { ok: true, msgId: sent?.key?.id || null, client: id };
+  } catch (err) {
+    app.log.error(err, "send_media_failed");
+    return reply.code(502).send({ ok: false, error: String(err.message || err) });
+  }
+});
+
 app.post("/clients/:id/logout", async (req, reply) => {
   const guarded = requireSecret(req, reply);
   if (guarded) return;
@@ -154,9 +177,34 @@ function qrPage(reply, clientId) {
   );
 }
 
+// ── Dedup: track recently-forwarded msgIds across ALL sessions ──────────
+// If two sessions are paired to the same WA number, Baileys fires the same
+// message event on both. We deduplicate here before forwarding to Vercel.
+const recentMsgIds = new Map(); // msgId → forwardedAt ms
+const DEDUP_TTL_MS = 60_000; // 60s window is more than enough
+
+function isDuplicate(msgId) {
+  if (!msgId) return false;
+  const now = Date.now();
+  if (recentMsgIds.has(msgId)) return true;
+  recentMsgIds.set(msgId, now);
+  // Prune old entries to keep memory bounded
+  if (recentMsgIds.size > 2000) {
+    for (const [id, ts] of recentMsgIds) {
+      if (now - ts > DEDUP_TTL_MS) recentMsgIds.delete(id);
+    }
+  }
+  return false;
+}
+
 // ── Boot ─────────────────────────────────────────────────────
 await bootAllSessions({
   onIncoming: async ({ clientId, phone, body, name, msgId, jid }) => {
+    // Skip if we already forwarded this exact message from another session
+    if (isDuplicate(msgId)) {
+      app.log.warn({ msgId, clientId }, "dedup:skipped_duplicate_msgId");
+      return;
+    }
     if (!VERCEL_WEBHOOK_URL) {
       app.log.warn("no VERCEL_WEBHOOK_URL configured — dropping inbound");
       return;
@@ -176,7 +224,7 @@ await bootAllSessions({
           body,
           name,
           msg_id: msgId,
-          whatsapp_client: clientId, // session id for this incoming
+          whatsapp_client: clientId,
         }),
       });
       if (!r.ok) app.log.warn({ status: r.status }, "forward_non_2xx");

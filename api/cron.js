@@ -8,9 +8,10 @@
 // Protected by CRON_SECRET. Idempotent.
 
 import { supa } from "./_lib/supabase.js";
-import { sendWhatsApp } from "./_lib/wa.js";
+import { sendWhatsApp, sendWhatsAppMedia } from "./_lib/wa.js";
 import { transitionLeadToFunnel, enrollLeadInDrip } from "./_lib/drip.js";
 import { askClaude } from "./_lib/claude.js";
+import { getFaqs, faqsForPrompt } from "./_lib/faqs.js";
 import { OWNER_ALERT_PHONE, CLAUDE_MODEL_ESCALATION } from "./_lib/config.js";
 
 export const config = { maxDuration: 60 };
@@ -34,12 +35,13 @@ export default async function handler(req, res) {
   const { data: due } = await sb
     .from("bullion_scheduled_messages")
     .select(`
-      id, lead_id, funnel_id, body, send_at, tenant_id, is_reminder, reminder_phone,
-      step:bullion_funnel_steps(id,use_ai_message,message_template,step_type),
+      id, lead_id, funnel_id, body, edited_body, send_at, tenant_id, is_reminder, reminder_phone,
+      step:bullion_funnel_steps(id,use_ai_message,message_template,step_type,link_type,link_url,link_label),
       lead:bullion_leads!inner(id,phone,name,status,bot_paused,dnd,last_msg_at,funnel_id,funnel_history,tenant_id,city),
-      funnel:funnels!inner(id,name,active,wbiztool_client,next_on_convert,next_on_exhaust,tenant_id,goal)
+      funnel:funnels!inner(id,name,active,wbiztool_client,next_on_convert,next_on_exhaust,tenant_id,goal,kind)
     `)
     .eq("status", "pending")
+    .eq("approved", true)
     .lte("send_at", nowIso)
     .order("send_at", { ascending: true })
     .limit(BATCH);
@@ -101,22 +103,62 @@ export default async function handler(req, res) {
       stats.sent++; continue;
     }
 
+    // Resolve step link if configured
+    let resolvedLink = null;
+    if (row.step?.link_type && row.step.link_type !== "none") {
+      if (row.step.link_type === "profile_update") {
+        const { data: lf } = await sb.from("bullion_leads").select("form_token").eq("id", lead.id).maybeSingle();
+        if (lf?.form_token) resolvedLink = { url: `https://ssjbots.vercel.app/update?t=${lf.form_token}`, label: row.step.link_label || "update your details" };
+      } else if (row.step.link_type === "save_contact") {
+        resolvedLink = { url: "https://ssjbot.gemtre.in/contact.vcf", label: row.step.link_label || "tap to save our number in your contacts" };
+      } else if (row.step.link_url) {
+        resolvedLink = { url: row.step.link_url, label: row.step.link_label || row.step.link_type };
+      }
+    }
+
+    // Check if this is first or last pending message for this lead in this funnel
+    const { count: remainingAfter } = await sb.from("bullion_scheduled_messages")
+      .select("*", { count: "exact", head: true })
+      .eq("lead_id", lead.id).eq("funnel_id", funnel.id).eq("status", "pending")
+      .gt("send_at", row.send_at);
+    const isLastStep = remainingAfter === 0;
+    const { count: sentBefore } = await sb.from("bullion_scheduled_messages")
+      .select("*", { count: "exact", head: true })
+      .eq("lead_id", lead.id).eq("funnel_id", funnel.id).eq("status", "sent");
+    const isFirstStep = sentBefore === 0;
+
     // AI-generated message step — call Claude to write personalized message
-    let msgBody = row.body;
+    // Use edited_body if staff manually edited during approval
+    let msgBody = row.edited_body || row.body;
     if (row.step?.use_ai_message) {
       try {
+        const faqs = await getFaqs(row.tenant_id);
+        const isBirthdayFunnel = ["birthday", "anniversary"].includes(funnel.kind);
+        const eventLabel = funnel.kind === "anniversary" ? "anniversary" : "birthday";
         const aiSystem = [
           "You are a warm WhatsApp assistant for Sun Sea Jewellers, Karol Bagh.",
-          "Write a short, personalized WhatsApp message for the customer. 2–3 lines max.",
-          "Use their name. Professional and warm — premium jewellery house tone.",
-          "No markdown. No bullet points. Just the message text.",
+          "Write a short, personalized WhatsApp message. 2–4 lines max.",
+          "Warm, genuine, premium jewellery tone — NOT corporate or stiff.",
+          "Write in simple English. No markdown. No bullet points. Plain text only.",
+          lead.name ? `Customer first name: ${lead.name.trim().split(/\s+/)[0]}` : "Customer name unknown — do NOT use Sir/Madam or any placeholder. Start naturally.",
+          `City: ${lead.city || ""}`,
+          "IMPORTANT: Always end the message with '- Sun Sea Jewellers, Karol Bagh' on a new line so the customer knows who is messaging them.",
+          isFirstStep ? "This is the FIRST message to this customer from this campaign. At the end, naturally ask them to save this number as 'Sun Sea Jewellers' for future updates." : "",
+          isLastStep ? "This is the LAST message in this sequence. End with: 'Reply STOP anytime if you prefer not to receive updates from us.'" : "",
+          ...(isBirthdayFunnel ? [
+            `Event type: ${eventLabel}`,
+            `OFFER TO MENTION: ${funnel.goal || "Free gift on store visit this special month + up to 70% off on making charges for next 25 days."}`,
+            "Mention the offer ONLY in pre-event and post-event messages. For the actual wish: just wish warmly, no selling.",
+          ] : []),
+          ...(resolvedLink ? [
+            `Include this link naturally — ${resolvedLink.label}: ${resolvedLink.url}`,
+            "Do not alter the URL. Place it at the end before the signature.",
+          ] : []),
           `Context: ${funnel.goal || "Stay in touch and nurture the relationship."}`,
-          `Lead name: ${lead.name || "(unknown)"}`,
-          `City: ${lead.city || "(unknown)"}`,
-          `Funnel: ${funnel.name}`,
-          "Template hint (do NOT copy verbatim, use as inspiration only):",
+          faqs?.length ? `Store info & links (use when relevant):\n${faqsForPrompt(faqs)}` : "",
+          "Template hint (do NOT copy verbatim, just use as context):",
           row.body,
-        ].join("\n");
+        ].filter(Boolean).join("\n");
         const claude = await askClaude({
           system: aiSystem,
           messages: [{ role: "user", content: "Write the personalized message now." }],
@@ -129,8 +171,23 @@ export default async function handler(req, res) {
       }
     }
 
-    // Send
-    const wa = await sendWhatsApp({ phone: lead.phone, msg: msgBody });
+    // Send — if this scheduled message has a media attachment, send as media first
+    const mediaUrl = row.media_url || row.step?.media_url || null;
+    const mediaType = row.media_type || row.step?.media_type || "image";
+    const waClient = funnel.wbiztool_client || undefined;
+
+    let wa;
+    if (mediaUrl) {
+      // Send media (image/video/document) with caption = msgBody
+      wa = await sendWhatsAppMedia({ phone: lead.phone, mediaUrl, mediaType, caption: msgBody, client: waClient });
+      // If media fails, fall back to text-only
+      if (wa.status !== 1) {
+        wa = await sendWhatsApp({ phone: lead.phone, msg: msgBody, client: waClient });
+      }
+    } else {
+      wa = await sendWhatsApp({ phone: lead.phone, msg: msgBody, client: waClient });
+    }
+
     if (wa.status !== 1) {
       await sb.from("bullion_scheduled_messages").update({ status: "failed", error: wa.message }).eq("id", row.id);
       stats.failed++; continue;
@@ -190,43 +247,83 @@ export default async function handler(req, res) {
   }
 
   // ── 3. Calendar enrollments (bday + anniversary) ────────────────
-  // Idempotency: we only enroll if the lead has NO scheduled messages in the
-  // target calendar funnel in the last 11 months.
-  const monthNow = new Date().toISOString().slice(5, 7); // "MM"
+  // Enroll leads whose event is within 25 days (so the -20 day step fires on time).
+  // Idempotency: skip if already enrolled in this funnel in last 11 months.
 
-  for (const [field, funnelId] of [["bday", "birthday"], ["anniversary", "anniversary"]]) {
-    // Fetch active calendar funnels across all tenants (same slug, different tenants)
-    const { data: calendarFunnels } = await sb
-      .from("funnels")
+  function parseEventDate(raw, year) {
+    if (!raw) return null;
+    const p = raw.split("-");
+    let m, d;
+    if (p.length === 3) {
+      // YYYY-MM-DD or YYYY-DD-MM
+      const a = parseInt(p[1], 10), b = parseInt(p[2], 10);
+      if (a >= 1 && a <= 12) { m = a; d = b; } else { m = b; d = a; }
+    } else if (p.length === 2) {
+      const a = parseInt(p[0], 10), b = parseInt(p[1], 10);
+      if (a >= 1 && a <= 12) { m = a; d = b; } else { m = b; d = a; }
+    }
+    if (!m || !d) return null;
+    const dt = new Date(Date.UTC(year, m - 1, d));
+    return isNaN(dt) ? null : dt.getTime();
+  }
+
+  const nowMs = Date.now();
+  const todayIST = new Date(nowMs + 5.5 * 3600000);
+  const yearNow = todayIST.getUTCFullYear();
+
+  // Track stagger per event date (ms → count of already-scheduled messages that day)
+  const staggerMap = new Map();
+
+  for (const [field, kind] of [["bday", "birthday"], ["anniversary", "anniversary"]]) {
+    const { data: calendarFunnels } = await sb.from("funnels")
       .select("*, persona:personas(*)")
-      .eq("id", funnelId)
-      .eq("active", true);
+      .eq("kind", kind).eq("active", true);
     if (!calendarFunnels?.length) continue;
     const funnelByTenant = new Map(calendarFunnels.map((f) => [f.tenant_id, f]));
 
-    // Fetch candidate leads across ALL tenants with a matching month
-    const { data: matches } = await sb
-      .from("bullion_leads")
-      .select("id, phone, name, funnel_id, funnel_history, tenant_id")
-      .eq("dnd", false)
-      .not(field, "is", null)
-      .or(`${field}.like.${monthNow}-%,${field}.like.%-${monthNow}-%`);
+    // Fetch all leads with this event field set (limit 500)
+    const { data: allLeads } = await sb.from("bullion_leads")
+      .select("id, phone, name, funnel_id, funnel_history, tenant_id, bday, anniversary")
+      .eq("dnd", false).not(field, "is", null).limit(500);
+    if (!allLeads?.length) continue;
 
-    for (const lead of matches || []) {
+    // Batch idempotency: get all lead_ids already enrolled in any calendar funnel
+    // of this kind in the last 11 months (one query, not N queries)
+    const calendarFunnelIds = calendarFunnels.map((f) => f.id);
+    const elevenMonthsAgo = new Date(nowMs - 335 * 86400000).toISOString();
+    const { data: alreadyEnrolled } = await sb.from("bullion_scheduled_messages")
+      .select("lead_id")
+      .in("funnel_id", calendarFunnelIds)
+      .in("status", ["pending", "sent"])
+      .gte("created_at", elevenMonthsAgo);
+    const enrolledSet = new Set((alreadyEnrolled || []).map((r) => r.lead_id));
+
+    for (const lead of allLeads) {
       const funnel = funnelByTenant.get(lead.tenant_id);
-      if (!funnel) continue; // tenant has no calendar funnel — skip
+      if (!funnel) continue;
 
-      // Idempotency: skip if already enrolled in this calendar funnel in the last 11 months
-      const elevenMonthsAgo = new Date(Date.now() - 1000 * 60 * 60 * 24 * 335).toISOString();
-      const { count: recent } = await sb
-        .from("bullion_scheduled_messages")
-        .select("*", { count: "exact", head: true })
-        .eq("lead_id", lead.id)
-        .eq("funnel_id", funnel.id)
-        .gte("created_at", elevenMonthsAgo);
-      if (recent && recent > 0) continue;
+      // Resolve event date (this year, or next year if already passed)
+      let eventMs = parseEventDate(lead[field], yearNow);
+      if (!eventMs) continue;
+      if (eventMs < nowMs - 6 * 86400000) {
+        eventMs = parseEventDate(lead[field], yearNow + 1);
+      }
+      if (!eventMs) continue;
 
-      await enrollLeadInDrip({ lead, funnel }).catch(() => {});
+      // Enroll up to 40 days before event so messages appear in the approval queue well in advance.
+      const daysUntil = (eventMs - nowMs) / 86400000;
+      if (daysUntil > 40 || daysUntil < -5) continue;
+
+      // Skip if already enrolled
+      if (enrolledSet.has(lead.id)) continue;
+
+      // Stagger: 7 min per person per event day
+      const dayKey = Math.floor(eventMs / 86400000);
+      const staggerIndex = staggerMap.get(dayKey) || 0;
+      staggerMap.set(dayKey, staggerIndex + 1);
+      const staggerMs = staggerIndex * 7 * 60000;
+
+      await enrollLeadInDrip({ lead, funnel, eventDateMs: eventMs, staggerMs }).catch(() => {});
       stats.calendarEnrolled++;
     }
   }
@@ -257,6 +354,54 @@ export default async function handler(req, res) {
       .update({ post_wedding_enrolled_at: new Date().toISOString() })
       .eq("id", lead.id);
     stats.calendarEnrolled++;
+  }
+
+  // ── 5. Pre-generate AI previews ──
+  // Fetch the next 20 pending-preview messages ordered by send_at.
+  // Sort so birthday/anniversary messages come first (they need previews earliest).
+  // Process up to 10 calendar + 3 regular per tick.
+  const { data: previewPool } = await sb
+    .from("bullion_scheduled_messages")
+    .select(`id, lead_id, funnel_id, body, tenant_id,
+      step:bullion_funnel_steps(id,use_ai_message,link_type,link_url,link_label),
+      lead:bullion_leads(id,name,city),
+      funnel:funnels(id,name,goal,kind)`)
+    .eq("status", "pending").eq("approved", false).is("edited_body", null)
+    .order("send_at", { ascending: true }).limit(20);
+
+  const calendarRows = (previewPool || []).filter((r) => ["birthday", "anniversary"].includes(r.funnel?.kind));
+  const dripRows = (previewPool || []).filter((r) => !["birthday", "anniversary"].includes(r.funnel?.kind));
+  const needsPreview = [...calendarRows.slice(0, 10), ...dripRows.slice(0, 3)];
+
+  for (const row of needsPreview || []) {
+    if (!row.step?.use_ai_message) continue;
+    const lead = row.lead; const funnel = row.funnel;
+    if (!lead || !funnel) continue;
+    let resolvedLink = null;
+    if (row.step?.link_type && row.step.link_type !== "none") {
+      if (row.step.link_type === "profile_update") {
+        const { data: lf } = await sb.from("bullion_leads").select("form_token").eq("id", lead.id).maybeSingle();
+        if (lf?.form_token) resolvedLink = { url: `https://ssjbots.vercel.app/update?t=${lf.form_token}`, label: row.step.link_label || "update your details" };
+      } else if (row.step.link_url) { resolvedLink = { url: row.step.link_url, label: row.step.link_label || row.step.link_type }; }
+    }
+    try {
+      const faqs = await getFaqs(row.tenant_id);
+      const isBirthdayFunnel = ["birthday","anniversary"].includes(funnel.kind);
+      const aiSystem = [
+        "You are a warm WhatsApp assistant for Sun Sea Jewellers, Karol Bagh.",
+        "Write a short, personalized WhatsApp message. 2–4 lines max. Warm and genuine. No markdown. Plain text only.",
+        lead.name ? `Customer first name: ${lead.name.trim().split(/\s+/)[0]}` : "Name unknown — do NOT use Sir/Madam. Start naturally.",
+        `City: ${lead.city || ""}`,
+        "Always end with '- Sun Sea Jewellers, Karol Bagh' on a new line.",
+        ...(isBirthdayFunnel ? [`OFFER: ${funnel.goal || "Free gift on store visit + up to 70% off making charges for 25 days."}`, "Mention only in pre/post event messages. Wish warmly on the actual day."] : []),
+        ...(resolvedLink ? [`Include naturally — ${resolvedLink.label}: ${resolvedLink.url}`] : []),
+        `Context: ${funnel.goal || "Stay in touch."}`,
+        faqs?.length ? `Store info:\n${faqsForPrompt(faqs)}` : "",
+        "Template hint (do NOT copy verbatim):", row.body,
+      ].filter(Boolean).join("\n");
+      const claude = await askClaude({ system: aiSystem, messages: [{ role: "user", content: "Write the message now." }], maxTokens: 200, model: CLAUDE_MODEL_ESCALATION });
+      if (claude?.text?.trim()) await sb.from("bullion_scheduled_messages").update({ edited_body: claude.text.trim() }).eq("id", row.id);
+    } catch (e) { console.error("preview_gen failed", row.id, e.message); }
   }
 
   return res.status(200).json({ ok: true, ts: nowIso, stats });

@@ -20,13 +20,38 @@ function render(tpl, ctx) {
 //   after_last_inbound   — delay_minutes after the lead's last inbound message
 //   after_last_purchase  — delay_minutes after bullion_leads.last_purchase_at
 //   specific_datetime    — send at step.trigger_at (ignore delay_minutes)
-export async function enrollLeadInDrip({ lead, funnel }) {
+// Snap a timestamp to 10:30 AM IST (UTC+5:30 → UTC 05:00) on its calendar day.
+// staggerMs adds offset so multiple same-day sends don't fire simultaneously.
+function snapToISTMorning(ms, staggerMs = 0) {
+  const d = new Date(ms);
+  d.setUTCHours(5, 0, 0, 0); // 10:30 AM IST
+  return d.getTime() + staggerMs;
+}
+
+// Clamp a send_at to IST business hours (9 AM–8 PM = UTC 03:30–14:30).
+// If outside window, push to 10:30 AM IST next valid day.
+function clampToBusinessHours(ms) {
+  const d = new Date(ms);
+  const hourIST = ((d.getUTCHours() * 60 + d.getUTCMinutes()) - (-330)) / 60; // convert UTC to IST hours
+  // IST hour = UTC hour + 5.5
+  const istMinutes = d.getUTCHours() * 60 + d.getUTCMinutes() + 330;
+  const istHour = (istMinutes % 1440) / 60;
+  if (istHour >= 9 && istHour < 20) return ms; // within window
+  // Push to 10:30 AM IST next day
+  const next = new Date(ms);
+  if (istHour >= 20) next.setUTCDate(next.getUTCDate() + 1);
+  next.setUTCHours(5, 0, 0, 0); // 10:30 AM IST
+  return next.getTime();
+}
+
+export async function enrollLeadInDrip({ lead, funnel, eventDateMs, staggerMs = 0 }) {
   const sb = supa();
 
   const { count } = await sb
     .from("bullion_scheduled_messages")
     .select("*", { count: "exact", head: true })
     .eq("lead_id", lead.id)
+    .eq("funnel_id", funnel.id)
     .in("status", ["pending", "sent"]);
   if (count && count > 0) return { ok: true, skipped: "already_enrolled" };
 
@@ -85,6 +110,15 @@ export async function enrollLeadInDrip({ lead, funnel }) {
         if (!s.trigger_at) continue;
         sendAt = Date.parse(s.trigger_at);
         break;
+      case "calendar_event": {
+        // delay_minutes is days-offset × 1440, can be negative (before event)
+        if (!eventDateMs) { sendAt = nowMs + Math.abs(delay); break; }
+        const calSendAt = snapToISTMorning(eventDateMs + delay, staggerMs);
+        // If this step's date is already past, SKIP it — don't push to today
+        if (calSendAt < nowMs) continue;
+        sendAt = calSendAt;
+        break;
+      }
       case "after_prev_step":
       default:
         cursor += delay;
@@ -94,6 +128,8 @@ export async function enrollLeadInDrip({ lead, funnel }) {
 
     // Don't schedule into the past
     if (sendAt < nowMs) sendAt = nowMs + 60_000;
+    // Clamp to business hours (9 AM – 8 PM IST)
+    sendAt = clampToBusinessHours(sendAt);
 
     rows.push({
       tenant_id: funnel.tenant_id,
