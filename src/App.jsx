@@ -6452,15 +6452,17 @@ function TelecallerQueueScreen({ funnels }) {
   const [demands, setDemands] = useState([]);
   const [idx, setIdx] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [logCallOpen, setLogCallOpen] = useState(false);
   const [err, setErr] = useState("");
-  const [showContext, setShowContext] = useState(false);
-  const [messages, setMessages] = useState([]);
-  const [msgsLoading, setMsgsLoading] = useState(false);
-  const [hasCalled, setHasCalled] = useState(false); // tracks if telecaller tapped the Call button
+  const [hasCalled, setHasCalled] = useState(false);
+  const [addingWalkin, setAddingWalkin] = useState(false);
   const [scripts, setScripts] = useState({ s1: "", s2: "", s3: "" });
   const [objections, setObjections] = useState([]);
   const [showScript, setShowScript] = useState(false);
+  const [allTags, setAllTags] = useState([]);
+  const [fullLead, setFullLead] = useState(null); // full lead row for ConversationPane
+  const [fullDemand, setFullDemand] = useState(null); // full demand row with step
+  const [addingDemand, setAddingDemand] = useState(false);
+
   useEffect(() => {
     sb.from("bullion_dropdowns").select("field,value,sort_order")
       .eq("tenant_id", getTenantId())
@@ -6476,6 +6478,8 @@ function TelecallerQueueScreen({ funnels }) {
         }
         setScripts(s); setObjections(obj);
       });
+    sb.from("bullion_tags").select("*").eq("tenant_id", getTenantId()).order("sort_order")
+      .then(({ data }) => setAllTags(data || []));
   }, []);
 
   const load = useCallback(async () => {
@@ -6492,6 +6496,7 @@ function TelecallerQueueScreen({ funnels }) {
       if (!data.ok) { setErr(data.error || "Failed to load queue"); setLoading(false); return; }
       setDemands(data.demands || []);
       setIdx(0);
+      setFullLead(null); setFullDemand(null);
     } catch (e) {
       setErr(String(e));
     }
@@ -6502,6 +6507,18 @@ function TelecallerQueueScreen({ funnels }) {
 
   const demand = demands[idx] || null;
   const lead = demand?.lead || null;
+
+  // When selected demand changes, load full lead + demand rows for ConversationPane
+  useEffect(() => {
+    if (!demand?.lead_id) { setFullLead(null); setFullDemand(null); return; }
+    Promise.all([
+      sb.from("bullion_leads").select("*").eq("id", demand.lead_id).single(),
+      sb.from("bullion_demands").select("*, lead:bullion_leads(id,name,phone,wa_display_name,status,bot_paused,funnel_id,stage,last_msg,last_msg_at,updated_at,source,is_client,tags), step:bullion_funnel_steps(id,name,step_type)").eq("id", demand.id).single(),
+    ]).then(([{ data: l }, { data: d }]) => {
+      setFullLead(l);
+      setFullDemand(d);
+    });
+  }, [demand?.id]);
   const funnel = demand ? funnels.find((f) => f.id === demand.funnel_id) : null;
   const total = demands.length;
 
@@ -6525,7 +6542,7 @@ function TelecallerQueueScreen({ funnels }) {
     else load();
   };
 
-  const goTo = (i) => { setShowContext(false); setMessages([]); setHasCalled(false); setIdx(i); };
+  const goTo = (i) => { setHasCalled(false); setShowScript(false); setIdx(i); };
 
   const loadMessages = async (leadId) => {
     if (!leadId) return;
@@ -6567,11 +6584,17 @@ function TelecallerQueueScreen({ funnels }) {
 
   if (!demand) {
     return (
-      <div style={{ maxWidth: 480, margin: "0 auto", padding: 20, textAlign: "center", paddingTop: 60 }}>
-        <div style={{ fontSize: 48, marginBottom: 12 }}>✅</div>
-        <div style={{ fontSize: 16, fontWeight: 600, color: "#16a085", marginBottom: 6 }}>Queue empty!</div>
-        <div style={{ fontSize: 13, color: "#888", marginBottom: 20 }}>All calls for now are done. Great work!</div>
-        <Btn color={C.blue} onClick={load}>↻ Refresh</Btn>
+      <div style={{ maxWidth: 540, margin: "0 auto", padding: 20 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <Btn color={C.blue} onClick={load}>↻ Refresh</Btn>
+          <Btn color={C.green} onClick={() => setAddingDemand(true)}>+ New Demand</Btn>
+        </div>
+        <div style={{ textAlign: "center", paddingTop: 40 }}>
+          <div style={{ fontSize: 48, marginBottom: 12 }}>✅</div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: "#16a085", marginBottom: 6 }}>Queue empty!</div>
+          <div style={{ fontSize: 13, color: "#888" }}>All calls done. Great work!</div>
+        </div>
+        {addingDemand && <DemandEntryModal funnels={funnels} onClose={() => setAddingDemand(false)} onSaved={() => { setAddingDemand(false); load(); }} />}
       </div>
     );
   }
@@ -6582,15 +6605,17 @@ function TelecallerQueueScreen({ funnels }) {
 
   return (
     <div style={{ maxWidth: 540, margin: "0 auto" }}>
-      {/* Tabs: due now vs all */}
-      <div style={{ display: "flex", gap: 6, marginBottom: 12, alignItems: "center" }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: "#333" }}>
-          📋 Your calls — {total} total
-        </div>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+      {/* Header with action buttons */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: "#333" }}>📋 Your calls — {total}</div>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+          <Btn small color={C.green} onClick={() => setAddingDemand(true)}>+ New Demand</Btn>
+          <Btn small color="#16a085" onClick={() => setAddingWalkin(true)}>🏪 Walk-in</Btn>
           <Btn small ghost color={C.gray} onClick={load}>↻</Btn>
         </div>
       </div>
+      {addingDemand && <DemandEntryModal funnels={funnels} onClose={() => setAddingDemand(false)} onSaved={() => { setAddingDemand(false); load(); }} />}
+      {addingWalkin && <WalkinEntryModal funnels={funnels} allTags={allTags} onClose={() => setAddingWalkin(false)} onSaved={() => { setAddingWalkin(false); load(); }} />}
 
       {/* Due now list */}
       {dueNow.length > 0 && (
@@ -6652,160 +6677,75 @@ function TelecallerQueueScreen({ funnels }) {
         </div>
       )}
 
-      {/* Selected demand detail card */}
-      <div style={{ background: "#fff", borderRadius: 12, border: `2px solid ${priorityColor}`, marginBottom: 12 }}>
-
-        {/* Header */}
-        <div style={{ padding: "12px 14px", background: `linear-gradient(135deg, ${priorityColor}15 0%, #fff 100%)`, borderBottom: "1px solid #eee", borderRadius: "10px 10px 0 0" }}>
-          {demand.is_callback_promised && demand.next_call_at && new Date(demand.next_call_at) <= new Date() && (
-            <div style={{ background: C.red, color: "#fff", padding: "4px 10px", borderRadius: 6, marginBottom: 8, fontSize: 12, fontWeight: 700, textAlign: "center" }}>
-              ⚡ PROMISED CALLBACK — call now!
-            </div>
-          )}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-            <div>
-              <div style={{ fontSize: 17, fontWeight: 700, color: "#111" }}>{lead?.name || "(no name)"}</div>
-              <div style={{ fontSize: 14, color: "#555", fontFamily: "monospace", marginTop: 2 }}>📱 {displayPhone(lead?.phone || "—")}</div>
-              {lead?.city && <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>📍 {lead.city}</div>}
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
-              <Pill color={tempInfo.color} solid>{tempInfo.label}</Pill>
-              <span style={{ fontSize: 11, color: "#888" }}>Attempt {(demand.call_attempts || 0) + 1}/6</span>
-            </div>
-          </div>
-          {/* Priority bar */}
-          <div style={{ height: 4, background: "#e5e7eb", borderRadius: 4, marginTop: 10, overflow: "hidden" }}>
-            <div style={{ height: "100%", width: `${Math.min(100, demand.priority_score || 0)}%`, background: priorityColor, borderRadius: 4 }} />
-          </div>
-        </div>
-
-        {/* Demand info */}
-        <div style={{ padding: "10px 14px", borderBottom: "1px solid #f0f0f0", background: "#fffbf0" }}>
-          <div style={{ fontSize: 13, color: "#333", fontWeight: 500, marginBottom: 6 }}>
-            {demand.description || "(no description added)"}
-          </div>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            <Pill color={C.purple}>{demand.product_category || "other"}</Pill>
-            {demand.occasion && <Pill color={C.orange}>{demand.occasion}</Pill>}
-            {demand.budget && <Pill color={C.gray}>₹{Number(demand.budget).toLocaleString("en-IN")}</Pill>}
-            {demand.for_whom && <Pill color={C.blue}>for {demand.for_whom}</Pill>}
-            {demand.crm_source && <Pill color={C.gray}>🔍 {demand.crm_source.replace(/_/g, " ")}</Pill>}
-            {demand.visit_scheduled_at && <Pill color={C.green} solid>🏪 Visit: {fmtDT(demand.visit_scheduled_at)}</Pill>}
-          </div>
-          {demand.ai_summary && <div style={{ marginTop: 6, fontSize: 12, color: C.blue, fontStyle: "italic" }}>💡 {demand.ai_summary}</div>}
-          {demand.step_name && <div style={{ marginTop: 4, fontSize: 11, color: "#888" }}>🛤 Step: {demand.step_name}</div>}
-          <div style={{ marginTop: 6, fontSize: 12, color: nextCallLabel === "OVERDUE" ? C.red : "#16a085", fontWeight: 600 }}>
-            ⏰ {nextCallLabel}
-          </div>
-        </div>
-
-        {/* Script panel — read before calling */}
-        {(() => {
-          const me = loadUser();
-          const attemptNo = (demand.call_attempts || 0) + 1;
-          const scriptKey = attemptNo === 1 ? "s1" : attemptNo >= 6 ? "s3" : "s2";
-          const raw = scripts[scriptKey] || "";
-          const filled = raw.replace(/\{name\}/g, lead?.name || "ji").replace(/\{staff_name\}/g, me?.name || me?.username || "").replace(/\{product_category\}/g, demand.product_category || "jewellery");
-          if (!filled && objections.length === 0) return null;
-          return (
-            <div style={{ borderBottom: "1px solid #f0f0f0" }}>
-              <button type="button" onClick={() => setShowScript(v => !v)}
-                style={{ width: "100%", padding: "8px 14px", background: "#fef9c3", border: "none", textAlign: "left", cursor: "pointer", fontSize: 12, fontWeight: 600, color: "#854d0e", display: "flex", justifyContent: "space-between" }}>
-                <span>📜 Script — Attempt {attemptNo} {attemptNo === 1 ? "(first contact)" : attemptNo >= 6 ? "(final attempt)" : "(follow-up)"}</span>
-                <span>{showScript ? "▲ Hide" : "▼ Show"}</span>
-              </button>
-              {showScript && (
-                <div style={{ padding: "10px 14px", background: "#fffbeb" }}>
-                  {filled && (
-                    <div style={{ fontSize: 13, color: "#333", lineHeight: 1.7, whiteSpace: "pre-wrap", marginBottom: objections.length ? 12 : 0 }}>
-                      {filled}
-                    </div>
-                  )}
-                  {objections.length > 0 && (
-                    <div>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: "#92400e", marginBottom: 6 }}>OBJECTIONS</div>
-                      {objections.map((o, i) => {
-                        const [q, a] = o.includes("→") ? o.split("→") : [o, ""];
-                        return (
-                          <div key={i} style={{ marginBottom: 6, fontSize: 12 }}>
-                            <div style={{ color: "#374151", fontWeight: 600 }}>{q.trim()}</div>
-                            {a && <div style={{ color: "#16a085", marginLeft: 10 }}>→ {a.trim()}</div>}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })()}
-
-        {/* Call action — 2 steps: tap Call → tap Log Call */}
-        <div style={{ padding: "12px 14px", background: hasCalled ? "#f0fff4" : "#fff" }}>
-          {!hasCalled ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <a href={`tel:+91${(lead?.phone || "").replace(/\D/g, "")}`}
-                onClick={() => setHasCalled(true)}
-                style={{ display: "block", textAlign: "center", padding: "14px", borderRadius: 10, background: C.green, color: "#fff", fontSize: 16, fontWeight: 700, textDecoration: "none" }}>
-                📞 Call {lead?.name || "client"}
-              </a>
-              <div style={{ fontSize: 11, color: "#888", textAlign: "center" }}>Tap to open phone dialer. Log call after you've spoken / got no answer.</div>
-              <div style={{ display: "flex", gap: 6, justifyContent: "center" }}>
-                <Btn small ghost color={C.gray} onClick={toggleContext}>{showContext ? "▲ Hide convo" : "💬 See WA history"}</Btn>
-                {idx < total - 1 && <Btn small ghost color={C.gray} onClick={skipToNext}>Skip →</Btn>}
-              </div>
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <div style={{ fontSize: 12, color: C.green, fontWeight: 600, textAlign: "center" }}>✅ Call initiated — what happened?</div>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                <Btn color={C.blue} onClick={() => setLogCallOpen(true)} style={{ flex: 1, textAlign: "center", fontSize: 14, padding: "10px" }}>
-                  📝 Log outcome
-                </Btn>
-                <Btn ghost color={C.gray} onClick={toggleContext}>{showContext ? "▲ Hide" : "💬 Convo"}</Btn>
-                {idx < total - 1 && <Btn ghost color={C.gray} onClick={skipToNext}>Skip →</Btn>}
-              </div>
-              <button onClick={() => setHasCalled(false)} style={{ background: "none", border: "none", color: "#aaa", fontSize: 11, cursor: "pointer", textAlign: "center" }}>
-                ← I didn't call yet
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* WA conversation thread */}
-        {showContext && (
-          <div style={{ borderTop: "1px solid #eee", maxHeight: 320, overflowY: "auto", padding: "10px 14px" }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "#888", marginBottom: 8 }}>LAST 20 WA MESSAGES</div>
-            {msgsLoading && <div style={{ color: "#aaa", fontSize: 12 }}>Loading…</div>}
-            {!msgsLoading && messages.length === 0 && <div style={{ color: "#aaa", fontSize: 12 }}>No WA messages yet.</div>}
-            {messages.map((m) => (
-              <div key={m.id} style={{ marginBottom: 8, display: "flex", flexDirection: "column", alignItems: m.direction === "out" ? "flex-end" : "flex-start" }}>
-                <div style={{ maxWidth: "82%", padding: "6px 10px", borderRadius: 10, fontSize: 12, lineHeight: 1.5,
-                  background: m.direction === "out" ? "#dcf8c6" : "#f0f0f0", color: "#222" }}>
-                  {m.body}
-                </div>
-                <div style={{ fontSize: 10, color: "#aaa", marginTop: 2 }}>{fmtDT(m.created_at)}</div>
-              </div>
-            ))}
+      {/* Big Call button — always visible above the detail card */}
+      <div style={{ marginBottom: 10 }}>
+        {!hasCalled ? (
+          <a href={`tel:+91${(lead?.phone || "").replace(/\D/g, "")}`}
+            onClick={() => setHasCalled(true)}
+            style={{ display: "block", textAlign: "center", padding: "14px", borderRadius: 12, background: C.green, color: "#fff", fontSize: 17, fontWeight: 700, textDecoration: "none", boxShadow: "0 2px 8px rgba(56,161,105,0.3)" }}>
+            📞 Call {lead?.name || "client"} · {displayPhone(lead?.phone || "")}
+          </a>
+        ) : (
+          <div style={{ background: "#f0fff4", border: `1px solid ${C.green}`, borderRadius: 12, padding: "10px 14px", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ fontSize: 13, color: C.green, fontWeight: 700, flex: 1 }}>✅ Call started — log what happened below</span>
+            <button onClick={() => setHasCalled(false)} style={{ background: "none", border: "none", color: "#aaa", fontSize: 11, cursor: "pointer" }}>← Not called yet</button>
           </div>
         )}
-      </div>{/* end selected demand detail */}
+      </div>
 
-      {logCallOpen && demand && (
-        <LogCallModal
-          demand={{ ...demand, lead: { id: lead?.id, name: lead?.name, phone: lead?.phone } }}
-          lead={lead}
+      {/* Script panel */}
+      {(() => {
+        const attemptNo = (demand.call_attempts || 0) + 1;
+        const scriptKey = attemptNo === 1 ? "s1" : attemptNo >= 6 ? "s3" : "s2";
+        const raw = scripts[scriptKey] || "";
+        const filled = raw.replace(/\{name\}/g, lead?.name || "ji").replace(/\{staff_name\}/g, me?.name || me?.username || "").replace(/\{product_category\}/g, demand.product_category || "jewellery");
+        if (!filled && objections.length === 0) return null;
+        return (
+          <div style={{ marginBottom: 10, borderRadius: 10, overflow: "hidden", border: "1px solid #fde68a" }}>
+            <button type="button" onClick={() => setShowScript(v => !v)}
+              style={{ width: "100%", padding: "8px 14px", background: "#fef9c3", border: "none", textAlign: "left", cursor: "pointer", fontSize: 12, fontWeight: 600, color: "#854d0e", display: "flex", justifyContent: "space-between" }}>
+              <span>📜 Script — Attempt {attemptNo} {attemptNo === 1 ? "(first contact)" : attemptNo >= 6 ? "(final)" : "(follow-up)"}</span>
+              <span>{showScript ? "▲" : "▼ Show"}</span>
+            </button>
+            {showScript && (
+              <div style={{ padding: "10px 14px", background: "#fffbeb" }}>
+                {filled && <div style={{ fontSize: 13, color: "#333", lineHeight: 1.7, whiteSpace: "pre-wrap", marginBottom: objections.length ? 12 : 0 }}>{filled}</div>}
+                {objections.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "#92400e", marginBottom: 6 }}>OBJECTIONS</div>
+                    {objections.map((o, i) => {
+                      const [q, a] = o.includes("→") ? o.split("→") : [o, ""];
+                      return (
+                        <div key={i} style={{ marginBottom: 6, fontSize: 12 }}>
+                          <div style={{ fontWeight: 600, color: "#374151" }}>{q.trim()}</div>
+                          {a && <div style={{ color: "#16a085", marginLeft: 10 }}>→ {a.trim()}</div>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* Full ConversationPane — all buttons, temp override, WA thread, convert/lost etc. */}
+      {fullLead && fullDemand ? (
+        <ConversationPane
+          lead={fullLead}
           funnel={funnel}
-          onClose={() => setLogCallOpen(false)}
-          onSaved={() => {
-            setLogCallOpen(false);
-            // Move to next demand after logging
-            if (idx < total - 1) setIdx((i) => i + 1);
-            else load();
-          }}
+          demand={fullDemand}
+          onClose={() => {}}
+          onChanged={() => { load(); }}
+          allTags={allTags}
+          onAdvanceStep={fullDemand.step?.step_type !== "call" ? undefined : null}
+          onRollbackStep={undefined}
         />
+      ) : (
+        <div style={{ textAlign: "center", padding: 20, color: "#aaa", fontSize: 13 }}>Loading details…</div>
       )}
+
     </div>
   );
 }
