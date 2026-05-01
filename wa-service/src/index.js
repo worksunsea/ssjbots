@@ -199,7 +199,7 @@ function isDuplicate(msgId) {
 
 // ── Boot ─────────────────────────────────────────────────────
 await bootAllSessions({
-  onIncoming: async ({ clientId, phone, body, name, msgId, jid }) => {
+  onIncoming: async ({ clientId, phone, body, name, msgId, jid, senderPn }) => {
     // Skip if we already forwarded this exact message from another session
     if (isDuplicate(msgId)) {
       app.log.warn({ msgId, clientId }, "dedup:skipped_duplicate_msgId");
@@ -221,6 +221,7 @@ await bootAllSessions({
         body: JSON.stringify({
           from: phone,
           jid,
+          sender_pn: senderPn || null,
           body,
           name,
           msg_id: msgId,

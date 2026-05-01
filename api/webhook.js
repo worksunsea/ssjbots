@@ -17,6 +17,7 @@ import { enrollLeadInDrip, cancelPendingForLead, transitionLeadToFunnel } from "
 import { matchFunnelByKeywords } from "./_lib/funnel-match.js";
 import {
   normalizePhone,
+  BOT_NUMBERS,
   OWNER_ALERT_PHONE,
   SUPABASE_SERVICE_KEY,
   ANTHROPIC_API_KEY,
@@ -37,16 +38,26 @@ const daysUntil = (d) => Math.round((new Date(d) - new Date()) / 86400000);
 const randDelay = () => 4_000 + Math.floor(Math.random() * 4_000); // 4–8s — human-feeling without risking wa-service retry
 
 function extractIncoming(body) {
-  // Prefer raw JID (works for LID senders post-2024 WA privacy update).
-  // Fall back to a "phone" extracted from common field names for older shapes.
+  // Phone resolution order:
+  //   1. sender_pn — real phone Baileys exposes for LID conversations
+  //   2. body.from / phone / sender / msisdn — wa-service sets these
+  //   3. jid localpart for @s.whatsapp.net (real phone in JID)
+  //   4. raw jid (LID fallback — only used when no real phone is available)
   const jid = String(body.jid || "");
+  const senderPn = String(body.sender_pn || "");
   const phoneRaw = body.from || body.phone || body.sender || body.msisdn || "";
-  const phone = jid || normalizePhone(phoneRaw);
+  const normPn = normalizePhone(senderPn);
+  const normFrom = normalizePhone(phoneRaw);
+  let phone = "";
+  if (normPn && normPn.length >= 8) phone = normPn;
+  else if (normFrom && normFrom.length >= 8) phone = normFrom;
+  else if (jid.endsWith("@s.whatsapp.net")) phone = normalizePhone(jid.split("@")[0]);
+  else phone = jid || normFrom; // LID fallback — JID localpart isn't a real phone
   const msg = body.body || body.message || body.msg || body.text || body.content || "";
   const waClient = String(body.whatsapp_client || body.client || body.to || "");
   const name = body.name || body.sender_name || body.pushname || "";
   const msgId = String(body.msg_id || body.id || body.message_id || "");
-  return { phone, msg, waClient, name, msgId };
+  return { phone, msg, waClient, name, msgId, jid };
 }
 
 export default async function handler(req, res) {
@@ -106,27 +117,41 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: false, reason: "no_active_funnel" });
     }
 
-    // Gate 1: only 8860866000 runs the bot (replies to inbound messages).
-    // Every other number is send-only — used for drip, birthday wishes, broadcasts.
-    // If an inbound message arrives on any other session, drop it silently.
+    // Gate 1: only sessions whose funnel has wa_number = 8860866000 run the bot.
+    // Rule: if waClient is set, it MUST map to a funnel with a BOT_NUMBERS phone.
+    //       If it maps to any other funnel (birthday, broadcast, other sales number) → drop.
+    //       If it maps to NO funnel at all → also drop (unknown/unregistered session → not a bot).
     if (waClient) {
       const matchedFunnel = allFunnels.find((f) => String(f.wbiztool_client) === String(waClient));
-      if (matchedFunnel) {
-        const funnelPhone = normalizePhone(matchedFunnel.wa_number);
-        if (!BOT_NUMBERS.includes(funnelPhone)) {
-          console.log("webhook:gate1:dropped non-bot number", funnelPhone, matchedFunnel.id);
-          return res.status(200).json({ ok: true, skipped: "non_bot_number" });
-        }
+      if (!matchedFunnel) {
+        // Unknown session — not registered as a bot number, drop it
+        console.log("webhook:gate1:dropped unknown session", waClient);
+        return res.status(200).json({ ok: true, skipped: "unknown_session" });
+      }
+      const funnelPhone = normalizePhone(matchedFunnel.wa_number || "");
+      if (!BOT_NUMBERS.includes(funnelPhone)) {
+        console.log("webhook:gate1:dropped non-bot number", funnelPhone, "session", waClient);
+        return res.status(200).json({ ok: true, skipped: "non_bot_number" });
       }
     }
 
     // 1b. Look up any existing lead for this phone (for funnel routing).
+    //     If a manual alias is set (e.g. LID JID → real-client lead), route there.
+    let aliasedLead = null;
+    {
+      const { data: alias } = await sb
+        .from("bullion_lead_aliases")
+        .select("lead_id, lead:bullion_leads(id,funnel_id,tenant_id,phone)")
+        .eq("alias_phone", phone)
+        .maybeSingle();
+      if (alias?.lead) aliasedLead = alias.lead;
+    }
     const { data: existingLeads } = await sb
       .from("bullion_leads")
       .select("id,funnel_id,tenant_id")
       .eq("phone", phone)
       .limit(2);
-    const existingLead = (existingLeads && existingLeads[0]) || null;
+    const existingLead = aliasedLead || (existingLeads && existingLeads[0]) || null;
 
     // 2. Pick the funnel for THIS message:
     //    - Strong keyword match against any funnel → that funnel (a new campaign entry).
@@ -148,18 +173,43 @@ export default async function handler(req, res) {
     const tenantId = funnel.tenant_id;
 
     // 2. Upsert lead (lead already exists at this point).
-    const { data: leadRow, error: upsertErr } = await sb.rpc("bullion_upsert_lead", {
-      p_tenant_id: tenantId,
-      p_phone: phone,
-      p_name: "",
-      p_funnel_id: funnel.id,
-      p_body: msg,
-    });
+    //    If alias mapping exists, attach to the aliased lead — skip phone-keyed
+    //    upsert which would create a separate row for the LID identifier.
+    let leadRow;
+    let upsertErr;
+    if (aliasedLead) {
+      const { data } = await sb.from("bullion_leads")
+        .select("*").eq("id", aliasedLead.id).single();
+      leadRow = data;
+      // Touch last_msg so the conversation surfaces.
+      await sb.from("bullion_leads")
+        .update({ last_msg: msg, last_msg_at: new Date().toISOString() })
+        .eq("id", aliasedLead.id);
+    } else {
+      const { data, error } = await sb.rpc("bullion_upsert_lead", {
+        p_tenant_id: tenantId,
+        p_phone: phone,
+        p_name: "",
+        p_funnel_id: funnel.id,
+        p_body: msg,
+      });
+      leadRow = data; upsertErr = error;
+    }
     if (upsertErr) {
       console.error("upsert_lead failed", upsertErr);
       return res.status(200).json({ ok: false, reason: "upsert_failed" });
     }
     console.log("webhook:lead_upserted", { leadId: leadRow.id, funnelId: funnel.id, phone });
+
+    // 2a. Auto source-tagging — first time we see this lead, stamp the funnel's
+    //     acquisition label (fb_ads / insta_ads / walk_in / etc.) onto the
+    //     contact so it's pre-classified. Don't overwrite if already set.
+    if (funnel.source_label && !leadRow.source) {
+      await sb.from("bullion_leads")
+        .update({ source: funnel.source_label })
+        .eq("id", leadRow.id);
+      leadRow.source = funnel.source_label;
+    }
 
     // 2b. Stash the WhatsApp display name.
     if (name && leadRow.wa_display_name !== name) {
@@ -168,10 +218,65 @@ export default async function handler(req, res) {
         .eq("id", leadRow.id);
     }
 
+    // 2c. Extract a real phone from the message body if the lead is currently
+    //     stored under a LID (WA-hidden) JID. Indian mobile = 10 digits starting
+    //     with 6/7/8/9, optionally with +91/91 prefix and spaces/dashes.
+    //     We update lead.phone in place — future inbound from this LID will
+    //     route here via the existing alias / phone-match logic.
+    try {
+      const isLidStored = /@lid$/i.test(String(leadRow.phone || ""));
+      if (isLidStored && msg) {
+        const re = /(?:\+?91[-\s]?)?([6-9]\d{9})\b/;
+        const m = String(msg).match(re);
+        if (m && m[1]) {
+          const realPhone = m[1];
+          // Make sure no other lead in this tenant already owns the real phone.
+          const { data: existing } = await sb.from("bullion_leads")
+            .select("id").eq("tenant_id", tenantId).eq("phone", realPhone).maybeSingle();
+          if (existing?.id && existing.id !== leadRow.id) {
+            // Real phone already exists — register an alias so future LID inbound routes there.
+            await sb.from("bullion_lead_aliases").insert({
+              tenant_id: tenantId,
+              alias_phone: leadRow.phone,
+              lead_id: existing.id,
+              created_by: "webhook_phone_extract",
+            }).then(() => {}, () => {});
+            console.log("webhook:phone_extract:aliased_to_existing", { lid: leadRow.phone, real: realPhone, leadId: existing.id });
+          } else {
+            // Replace LID phone with real digits; alias the LID so future messages still match.
+            await sb.from("bullion_leads").update({ phone: realPhone }).eq("id", leadRow.id);
+            await sb.from("bullion_lead_aliases").insert({
+              tenant_id: tenantId,
+              alias_phone: leadRow.phone,
+              lead_id: leadRow.id,
+              created_by: "webhook_phone_extract",
+            }).then(() => {}, () => {});
+            leadRow.phone = realPhone;
+            console.log("webhook:phone_extract:promoted", { lid: leadRow.phone, real: realPhone, leadId: leadRow.id });
+          }
+        }
+      }
+    } catch (e) {
+      console.error("phone_extract failed", e);
+    }
+
     // 2c. Ensure a demand row exists for this lead so it appears in the Demands screen.
-    //     One demand per lead (inbound enquiry). If already exists, leave it alone.
-    const { data: existingDemand } = await sb.from("bullion_demands")
+    //     One demand per lead (inbound enquiry). Pin fms_step_id to the funnel's
+    //     first active step so the UI cadence/flow shows correctly. If a demand
+    //     exists but is missing fms_step_id (older row created before steps were
+    //     seeded), self-heal it.
+    const { data: firstStepRow } = await sb.from("bullion_funnel_steps")
       .select("id")
+      .eq("tenant_id", tenantId)
+      .eq("funnel_id", funnel.id)
+      .eq("active", true)
+      .order("step_order", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    const firstStepId = firstStepRow?.id || null;
+
+    const { data: existingDemand } = await sb.from("bullion_demands")
+      .select("id, fms_step_id")
       .eq("lead_id", leadRow.id)
       .limit(1)
       .maybeSingle();
@@ -180,8 +285,12 @@ export default async function handler(req, res) {
         tenant_id: tenantId,
         lead_id: leadRow.id,
         funnel_id: funnel.id,
+        fms_step_id: firstStepId,
         bot_active: true,
       }), (e) => console.error("demand_create failed", e));
+    } else if (!existingDemand.fms_step_id && firstStepId) {
+      await qx(sb.from("bullion_demands").update({ fms_step_id: firstStepId }).eq("id", existingDemand.id),
+        (e) => console.error("demand_step_heal failed", e));
     }
 
     // 3. Log inbound — insert first, check for duplicate via unique index on (wbiztool_msg_id, direction).
@@ -539,14 +648,20 @@ export default async function handler(req, res) {
         }
         // Fallback: text message with URL
         const assetMsg = [asset.caption || "", asset.url].filter(Boolean).join("\n");
-          await sendWhatsApp({ phone, msg: assetMsg }).catch(() => {});
-        }
+        if (assetMsg.trim()) await sendWhatsApp({ phone, msg: assetMsg }).catch(() => {});
       }
     }
 
-    // 9b. If Claude marked this as QUOTE_SENT, enroll the lead in the funnel's
-    //     drip sequence so we don't lose them if they go cold.
-    if (parsed.action === "QUOTE_SENT") {
+    // 9b. Enroll the lead in the funnel's drip sequence so we don't lose them
+    //     if they go cold. enrollLeadInDrip is idempotent — it skips if any
+    //     pending/sent rows already exist for (lead, funnel). This means:
+    //       • First successful exchange enrolls drip steps relative to NOW.
+    //       • Subsequent replies are no-ops (no double enrollment).
+    //       • If lead replies during a drip, cron's reply-guard cancels pending
+    //         rows; the NEXT bot reply re-enrolls a fresh drip.
+    //     Skip only on terminal actions (HANDOFF / DND / CONVERTED) since those
+    //     either move the lead to another funnel or stop messaging entirely.
+    if (!["HANDOFF", "DND", "CONVERTED"].includes(parsed.action)) {
       await enrollLeadInDrip({ lead: leadRow, funnel }).catch((e) => console.error("enroll failed", e));
     }
 

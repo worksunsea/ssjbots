@@ -155,12 +155,18 @@ export async function connectClient(clientIdRaw) {
         "";
       if (!body) continue;
 
-      const phone = jid.split("@")[0];
+      // For LID JIDs (post-2024 WA privacy update), Baileys exposes the real
+      // phone via key.senderPn / participantPn when known. Use that as the
+      // canonical phone; fall back to the JID localpart only if PN is absent.
+      const senderPn = msg.key?.senderPn || msg.key?.participantPn || "";
+      const lidLocal = jid.split("@")[0];
+      const isLid = jid.endsWith("@lid");
+      const phone = senderPn ? String(senderPn).split("@")[0] : (isLid ? lidLocal : lidLocal);
       const name = msg.pushName || "";
       const msgId = msg.key.id || "";
 
       try {
-        if (onIncoming) await onIncoming({ clientId, phone, body, name, msgId, jid });
+        if (onIncoming) await onIncoming({ clientId, phone, body, name, msgId, jid, senderPn });
       } catch (err) {
         console.error(`[baileys:${clientId}] onIncoming error`, err);
       }
