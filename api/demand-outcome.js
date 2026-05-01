@@ -90,6 +90,41 @@ export default async function handler(req, res) {
   if (typeof body === "string") { try { body = JSON.parse(body); } catch { body = {}; } }
   body = body || {};
 
+  // ── Merge leads action (previously api/merge-leads.js, consolidated to save a function slot) ──
+  if (body.action === "merge") {
+    const { primaryLeadId, secondaryLeadId } = body;
+    if (!primaryLeadId || !secondaryLeadId || primaryLeadId === secondaryLeadId)
+      return res.status(400).json({ ok: false, error: "primaryLeadId and secondaryLeadId required and must differ" });
+    const sb = supa();
+    const [{ data: primary }, { data: secondary }] = await Promise.all([
+      sb.from("bullion_leads").select("*").eq("id", primaryLeadId).single(),
+      sb.from("bullion_leads").select("*").eq("id", secondaryLeadId).single(),
+    ]);
+    if (!primary) return res.status(404).json({ ok: false, error: "primary_not_found" });
+    if (!secondary) return res.status(404).json({ ok: false, error: "secondary_not_found" });
+    for (const { table, col } of [
+      { table: "bullion_demands", col: "lead_id" },
+      { table: "bullion_messages", col: "lead_id" },
+      { table: "bullion_scheduled_messages", col: "lead_id" },
+      { table: "bullion_call_logs", col: "lead_id" },
+      { table: "bullion_funnel_history", col: "lead_id" },
+    ]) {
+      const { error } = await sb.from(table).update({ [col]: primaryLeadId }).eq(col, secondaryLeadId);
+      if (error && !error.message.includes("does not exist")) console.error(`merge: reassign ${table}`, error.message);
+    }
+    const fillFields = ["name","city","email","bday","anniversary","client_rating","wedding_date","wedding_family_member","wa_display_name","source","discovery_source"];
+    const fillPatch = {};
+    for (const f of fillFields) { if (!primary[f] && secondary[f]) fillPatch[f] = secondary[f]; }
+    const mergedTags = Array.from(new Set([...(primary.tags || []), ...(secondary.tags || [])]));
+    if (mergedTags.length > (primary.tags || []).length) fillPatch.tags = mergedTags;
+    if (Object.keys(fillPatch).length > 0) await sb.from("bullion_leads").update(fillPatch).eq("id", primaryLeadId);
+    if (secondary.phone) {
+      await sb.from("bullion_lead_aliases").insert({ tenant_id: secondary.tenant_id, alias_phone: secondary.phone, lead_id: primaryLeadId, created_by: "merge_leads" }).then(() => {}, () => {});
+    }
+    await sb.from("bullion_leads").update({ status: "dead", bot_paused: true, name: `[MERGED] ${secondary.name || secondary.phone}` }).eq("id", secondaryLeadId);
+    return res.status(200).json({ ok: true, primaryLeadId, secondaryLeadId, filledFields: Object.keys(fillPatch) });
+  }
+
   const demandId  = body.demandId;
   const outcome   = String(body.outcome || "");
   const lostReason = body.lostReason || null;   // structured reason e.g. LOST_PRICE

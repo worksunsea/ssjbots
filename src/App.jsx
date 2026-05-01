@@ -5438,10 +5438,10 @@ function MergeLeadsModal({ primaryId, secondaryId, onClose, onMerged }) {
   const doMerge = async () => {
     setBusy(true); setErr("");
     try {
-      const r = await fetch("/api/merge-leads", {
+      const r = await fetch("/api/demand-outcome", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
-        body: JSON.stringify({ primaryLeadId: pid, secondaryLeadId: sid }),
+        body: JSON.stringify({ action: "merge", primaryLeadId: pid, secondaryLeadId: sid }),
       });
       const data = await r.json();
       if (!data.ok) { setErr(data.error || "Merge failed"); setBusy(false); return; }
