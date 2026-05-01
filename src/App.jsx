@@ -361,7 +361,7 @@ function VisitRescheduleButton({ demandId, onRescheduled }) {
   );
 }
 
-function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, onAdvanceStep, onRollbackStep }) {
+function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, onAdvanceStep, onRollbackStep, onMergeDuplicate }) {
   const [messages, setMessages] = useState([]);
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
@@ -786,6 +786,7 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
       <div style={{ padding: "8px 14px", borderBottom: "1px solid #eee", display: "flex", gap: 6, flexWrap: "wrap" }}>
         <Btn small ghost color={lead.bot_paused ? C.green : C.orange} onClick={toggleBot} disabled={busy}>{lead.bot_paused ? "Resume bot" : "Pause bot"}</Btn>
         <Btn small ghost color={C.red} onClick={optOut} disabled={busy} title="Block from all calls and messages (DNC)">🚫 Opt Out</Btn>
+        {onMergeDuplicate && <Btn small ghost color={C.orange} onClick={onMergeDuplicate} title="Merge this with a duplicate lead record">⊕ Merge duplicate</Btn>}
         <Btn small ghost color={C.green} onClick={() => setEditLeadOpen(true)}>✏️ Edit contact</Btn>
         {demand?.id && (
           <>
@@ -900,6 +901,15 @@ function DemandsScreen({ funnels, allTags }) {
   const [search, setSearch] = useState("");
   const [adding, setAdding] = useState(false);
   const [addingWalkin, setAddingWalkin] = useState(false);
+  const [bulkSelected, setBulkSelected] = useState(new Set());
+  const [bulkStaffId, setBulkStaffId] = useState("");
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkStaff, setBulkStaff] = useState([]);
+  const [mergeModal, setMergeModal] = useState(null); // { primaryId, secondaryId }
+  useEffect(() => {
+    sb.from("staff").select("id,name,username,role,app_permissions").eq("tenant_id", getTenantId()).order("name")
+      .then(({ data }) => setBulkStaff(data || []));
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -983,6 +993,22 @@ function DemandsScreen({ funnels, allTags }) {
     return { text: `${days}d`, color: C.gray };
   };
 
+  const bulkReassign = async () => {
+    if (!bulkStaffId || bulkSelected.size === 0) return;
+    setBulkBusy(true);
+    const picked = bulkStaff.find((s) => s.id === bulkStaffId);
+    const ids = [...bulkSelected];
+    await sb.from("bullion_demands").update({
+      assigned_staff_id: bulkStaffId,
+      assigned_to: picked?.name || picked?.username || null,
+      updated_at: new Date().toISOString(),
+    }).in("id", ids);
+    setBulkSelected(new Set());
+    setBulkStaffId("");
+    setBulkBusy(false);
+    load();
+  };
+
   const advanceStep = async (demand) => {
     const funnelId = demand.funnel_id;
     if (!funnelId) return;
@@ -1030,6 +1056,14 @@ function DemandsScreen({ funnels, allTags }) {
 
   return (
     <div style={{ display: "block" }}>
+      {mergeModal && (
+        <MergeLeadsModal
+          primaryId={mergeModal.primaryId}
+          secondaryId={mergeModal.secondaryId}
+          onClose={() => setMergeModal(null)}
+          onMerged={() => { setMergeModal(null); load(); }}
+        />
+      )}
       <div>
         <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
           <Input placeholder="Search name / phone / description" value={search} onChange={(e) => setSearch(e.target.value)} style={{ flex: "1 1 180px" }} />
@@ -1075,10 +1109,28 @@ function DemandsScreen({ funnels, allTags }) {
           {loading ? "Loading…" : `${filtered.length} demand${filtered.length === 1 ? "" : "s"}`}
         </div>
 
+        {/* Bulk reassign floating bar */}
+        {bulkSelected.size > 0 && (
+          <div style={{ position: "sticky", top: 0, zIndex: 20, background: "#1e3a8a", color: "#fff", borderRadius: 10, padding: "10px 14px", marginBottom: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", boxShadow: "0 4px 12px rgba(0,0,0,0.2)" }}>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>☑ {bulkSelected.size} selected</span>
+            <select value={bulkStaffId} onChange={(e) => setBulkStaffId(e.target.value)}
+              style={{ flex: 1, minWidth: 140, borderRadius: 6, padding: "4px 8px", fontSize: 12, border: "none" }}>
+              <option value="">— assign to —</option>
+              {bulkStaff.filter((s) => s.role === "telecaller" || (s.app_permissions?.fms || []).includes("telecaller"))
+                .map((s) => <option key={s.id} value={s.id}>{s.name || s.username}</option>)}
+              {bulkStaff.filter((s) => s.role !== "telecaller" && !(s.app_permissions?.fms || []).includes("telecaller"))
+                .map((s) => <option key={s.id} value={s.id}>{s.name || s.username} ({s.role})</option>)}
+            </select>
+            <Btn small color={C.green} onClick={bulkReassign} disabled={!bulkStaffId || bulkBusy}>{bulkBusy ? "Assigning…" : "Assign all"}</Btn>
+            <Btn small ghost color="#fff" onClick={() => setBulkSelected(new Set())}>✕ Clear</Btn>
+          </div>
+        )}
+
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {filtered.map((d) => {
             const urg = urgencyLabel(d);
             const sel = d.lead?.id === selectedLeadId;
+            const isBulkChecked = bulkSelected.has(d.id);
             const stepName = d.step?.name || "—";
             const isCallStep = d.step?.step_type === "call";
             const attempts = d.call_attempts || 0;
@@ -1086,6 +1138,11 @@ function DemandsScreen({ funnels, allTags }) {
             const overdue = d.next_call_at && new Date(d.next_call_at) < new Date();
             return (
               <React.Fragment key={d.id}>
+                <div style={{ position: "relative" }}>
+                {/* Bulk-select checkbox */}
+                <input type="checkbox" checked={isBulkChecked}
+                  onChange={(e) => { e.stopPropagation(); setBulkSelected((prev) => { const next = new Set(prev); e.target.checked ? next.add(d.id) : next.delete(d.id); return next; }); }}
+                  style={{ position: "absolute", top: 10, left: 8, zIndex: 2, width: 15, height: 15, cursor: "pointer" }} />
                 <div
                   onClick={() => {
                     if (sel) { setSelectedLeadId(null); setSelectedDemand(null); }
@@ -1093,8 +1150,9 @@ function DemandsScreen({ funnels, allTags }) {
                   }}
                   style={{
                     padding: 10,
-                    background: sel ? "#eef5ff" : "#fff",
-                    border: `2px solid ${sel ? C.blue : urgencyBorder(d)}`,
+                    paddingLeft: 28,
+                    background: sel ? "#eef5ff" : isBulkChecked ? "#f0f7ff" : "#fff",
+                    border: `2px solid ${sel ? C.blue : isBulkChecked ? C.blue : urgencyBorder(d)}`,
                     borderRadius: 10,
                     cursor: "pointer",
                   }}
@@ -1132,6 +1190,7 @@ function DemandsScreen({ funnels, allTags }) {
                     </div>
                   </div>
                 </div>
+                </div>{/* end position:relative wrapper */}
                 {sel && selectedLead && selectedDemand?.id === d.id && (
                   <ConversationPane
                     lead={selectedLead}
@@ -1140,8 +1199,12 @@ function DemandsScreen({ funnels, allTags }) {
                     onChanged={load}
                     allTags={allTags}
                     demand={selectedDemand}
-                    onAdvanceStep={() => advanceStep(d)}
+                    onAdvanceStep={d.step?.step_type !== "call" ? () => advanceStep(d) : null}
                     onRollbackStep={() => rollbackStep(d)}
+                    onMergeDuplicate={() => {
+                      const secId = window.prompt("Enter the duplicate lead ID to merge into this record (find it in Contacts tab):");
+                      if (secId?.trim()) setMergeModal({ primaryId: d.lead?.id, secondaryId: secId.trim() });
+                    }}
                   />
                 )}
               </React.Fragment>
@@ -1297,9 +1360,11 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
       if (activateBot && data.waError) {
         setToast(`Demand saved but WA send failed: ${data.waError}. Number: ${data.waNumber || "unknown"}`);
       } else {
-        setToast(activateBot ? `Demand created. Opening message sent from ${data.waNumber || "WA"}.` : "Demand saved.");
+        let msg = activateBot ? `Demand created. Opening message sent from ${data.waNumber || "WA"}.` : "Demand saved.";
+        if (data.duplicateLeadWarning) msg += ` ⚠️ Another record exists for this phone (${data.duplicateLeadWarning.existingName}) — consider merging from Contacts.`;
+        setToast(msg);
       }
-      setTimeout(() => { onSaved(); }, 2500);
+      setTimeout(() => { onSaved(); }, 3000);
     } catch (e) {
       setErr(String(e));
       setSaving(false);
@@ -5304,6 +5369,106 @@ function ConfigRow({ row, saving, onSave }) {
 // ──────────────────────────────────────────────────────────
 // TAG HELPERS
 // ──────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────────
+// MERGE LEADS MODAL — combine two records for the same person
+// ──────────────────────────────────────────────────────────────────────────
+function MergeLeadsModal({ primaryId, secondaryId, onClose, onMerged }) {
+  const [primary, setPrimary] = useState(null);
+  const [secondary, setSecondary] = useState(null);
+  const [primaryDemands, setPrimaryDemands] = useState([]);
+  const [secondaryDemands, setSecondaryDemands] = useState([]);
+  const [swapped, setSwapped] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const pid = swapped ? secondaryId : primaryId;
+  const sid = swapped ? primaryId : secondaryId;
+
+  useEffect(() => {
+    Promise.all([
+      sb.from("bullion_leads").select("id,name,phone,city,source,tags,created_at,last_msg_at").eq("id", primaryId).single(),
+      sb.from("bullion_leads").select("id,name,phone,city,source,tags,created_at,last_msg_at").eq("id", secondaryId).single(),
+      sb.from("bullion_demands").select("id,product_category,description,created_at,outcome").eq("lead_id", primaryId).limit(5),
+      sb.from("bullion_demands").select("id,product_category,description,created_at,outcome").eq("lead_id", secondaryId).limit(5),
+    ]).then(([p, s, pd, sd]) => {
+      setPrimary(p.data); setSecondary(s.data);
+      setPrimaryDemands(pd.data || []); setSecondaryDemands(sd.data || []);
+    });
+  }, [primaryId, secondaryId]);
+
+  const doMerge = async () => {
+    setBusy(true); setErr("");
+    try {
+      const r = await fetch("/api/merge-leads", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
+        body: JSON.stringify({ primaryLeadId: pid, secondaryLeadId: sid }),
+      });
+      const data = await r.json();
+      if (!data.ok) { setErr(data.error || "Merge failed"); setBusy(false); return; }
+      onMerged && onMerged(pid);
+    } catch (e) { setErr(String(e)); setBusy(false); }
+  };
+
+  const LeadCard = ({ lead, demands, label, isPrimary }) => (
+    <div style={{ flex: 1, border: `2px solid ${isPrimary ? C.green : "#ddd"}`, borderRadius: 10, padding: 14, minWidth: 0 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: isPrimary ? C.green : "#888", marginBottom: 6, textTransform: "uppercase" }}>
+        {isPrimary ? "✓ PRIMARY (keep)" : "Secondary (merge in)"}
+      </div>
+      <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 2 }}>{lead?.name || "(no name)"}</div>
+      <div style={{ fontSize: 12, color: "#555", fontFamily: "monospace" }}>📱 {lead?.phone}</div>
+      {lead?.city && <div style={{ fontSize: 12, color: "#888" }}>📍 {lead.city}</div>}
+      {lead?.source && <div style={{ fontSize: 11, color: "#888" }}>Source: {lead.source}</div>}
+      <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>Joined: {lead?.created_at ? new Date(lead.created_at).toLocaleDateString("en-IN") : "—"}</div>
+      <div style={{ marginTop: 8 }}>
+        <div style={{ fontSize: 11, fontWeight: 600, color: "#555", marginBottom: 4 }}>Demands ({demands.length})</div>
+        {demands.map((d) => (
+          <div key={d.id} style={{ fontSize: 11, color: "#555", padding: "2px 0" }}>
+            · {d.product_category} — {(d.description || "").slice(0, 40)} {d.outcome ? `[${d.outcome}]` : ""}
+          </div>
+        ))}
+        {!demands.length && <div style={{ fontSize: 11, color: "#aaa" }}>No demands</div>}
+      </div>
+    </div>
+  );
+
+  if (!primary || !secondary) return (
+    <Modal title="Merge Leads" onClose={onClose} width={680}>
+      <div style={{ padding: 30, textAlign: "center", color: "#888" }}>Loading…</div>
+    </Modal>
+  );
+
+  const p = swapped ? secondary : primary;
+  const s = swapped ? primary : secondary;
+  const pd = swapped ? secondaryDemands : primaryDemands;
+  const sd = swapped ? primaryDemands : secondaryDemands;
+
+  return (
+    <Modal title="Merge Leads — same person, two records" onClose={onClose} width={680}>
+      <div style={{ fontSize: 13, color: "#555", marginBottom: 14 }}>
+        All demands, messages and call history from the <strong>secondary</strong> will move to the <strong>primary</strong>. Secondary is then archived. This cannot be undone.
+      </div>
+      <div style={{ display: "flex", gap: 12, marginBottom: 12 }}>
+        <LeadCard lead={p} demands={pd} label="primary" isPrimary={true} />
+        <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", gap: 8 }}>
+          <button onClick={() => setSwapped((v) => !v)}
+            style={{ padding: "6px 10px", background: "#f0f0f0", border: "1px solid #ddd", borderRadius: 8, cursor: "pointer", fontSize: 13 }}
+            title="Swap which is primary">⇄</button>
+        </div>
+        <LeadCard lead={s} demands={sd} label="secondary" isPrimary={false} />
+      </div>
+      <div style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
+        ↑ Use ⇄ to swap which record becomes the primary (kept) one. Choose the one with the real phone number you want to keep.
+      </div>
+      {err && <div style={{ color: C.red, fontSize: 12, marginBottom: 8 }}>{err}</div>}
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <Btn ghost color={C.gray} onClick={onClose}>Cancel</Btn>
+        <Btn color={C.red} onClick={doMerge} disabled={busy}>{busy ? "Merging…" : "✓ Merge — keep primary"}</Btn>
+      </div>
+    </Modal>
+  );
+}
+
 function TagChip({ tag, onRemove, small }) {
   if (!tag) return null;
   const color = tag.color || "#888";

@@ -205,7 +205,7 @@ export default async function handler(req, res) {
   if (disposition === ANSWERED_INTERESTED) {
     // Advance demand to the next funnel step (messaging) — bot resumes.
     const { data: steps } = await sb.from("bullion_funnel_steps")
-      .select("id, step_order")
+      .select("id, step_order, step_type")
       .eq("tenant_id", demand.tenant_id)
       .eq("funnel_id", demand.funnel_id)
       .eq("active", true)
@@ -215,8 +215,10 @@ export default async function handler(req, res) {
     if (next) {
       demandUpdate.fms_step_id = next.id;
       nextAction = "advance_step";
+      // If the next step is a messaging step, re-activate the bot so WA resumes automatically.
+      if (next.step_type !== "call") demandUpdate.bot_active = true;
     }
-    demandUpdate.next_call_at     = null;
+    demandUpdate.next_call_at         = null;
     demandUpdate.is_callback_promised = false;
 
   } else if (disposition === ANSWERED_NOT_INTERESTED) {

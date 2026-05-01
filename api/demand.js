@@ -96,6 +96,22 @@ export default async function handler(req, res) {
       await sb.from("bullion_leads").update({ discovery_source: body.discoverySource }).eq("id", lead.id);
     }
 
+    // Phone-level duplicate check: warn if another lead with the same phone exists.
+    // Don't block creation — just surface the warning so the manager can merge.
+    let duplicateLeadWarning = null;
+    if (!body.leadId) {
+      const { data: dupes } = await sb.from("bullion_leads")
+        .select("id,name,phone,created_at")
+        .eq("tenant_id", tenantId)
+        .eq("phone", phone)
+        .neq("id", lead.id)
+        .neq("status", "dead")
+        .limit(1);
+      if (dupes?.length > 0) {
+        duplicateLeadWarning = { existingLeadId: dupes[0].id, existingName: dupes[0].name || dupes[0].phone };
+      }
+    }
+
     // Duplicate guard: if there's already an active demand for this lead and
     // the caller hasn't explicitly set allowDuplicate=true, return the existing one.
     if (!body.allowDuplicate) {
@@ -340,7 +356,7 @@ export default async function handler(req, res) {
       }).eq("id", demand.id);
     }
 
-    return res.status(200).json({ ok: true, demandId: demand.id, leadId: lead.id, sent, waError: sent ? null : (waLastErr || null), waNumber: activeFunnel?.wa_number || null, openingMsg: openingMsgSent, botActivated: !skipBot, assignedTelecaller: assignedStaff ? { id: assignedStaff.id, name: assignedStaff.name } : null });
+    return res.status(200).json({ ok: true, demandId: demand.id, leadId: lead.id, sent, waError: sent ? null : (waLastErr || null), waNumber: activeFunnel?.wa_number || null, openingMsg: openingMsgSent, botActivated: !skipBot, assignedTelecaller: assignedStaff ? { id: assignedStaff.id, name: assignedStaff.name } : null, duplicateLeadWarning });
   } catch (err) {
     console.error("demand handler error", err);
     return res.status(500).json({ ok: false, error: String(err) });
