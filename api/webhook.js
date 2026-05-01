@@ -81,8 +81,40 @@ export default async function handler(req, res) {
   }
   body = body || {};
 
-  const { phone, msg, waClient, name, msgId } = extractIncoming(body);
+  const { phone, msg, waClient, name, msgId, jid } = extractIncoming(body);
   console.log("webhook:incoming", JSON.stringify({ phone, msg: msg.slice(0, 80), waClient, name, msgId, rawKeys: Object.keys(body) }));
+
+  // ── Missed call auto-reply ─────────────────────────────────────────────────
+  // Baileys fires event_type="call_missed" (or type="call" + status="missed")
+  // when an inbound call to our WA number goes unanswered.
+  const isMissedCall = body.event_type === "call_missed"
+    || (body.type === "call" && body.status === "missed");
+  if (isMissedCall && phone) {
+    try {
+      const sb = supa();
+      const { data: configs } = await sb.from("bullion_dropdowns")
+        .select("label, value")
+        .eq("tenant_id", process.env.TENANT_ID || "a1b2c3d4-0000-0000-0000-000000000001")
+        .eq("field", "config")
+        .eq("label", "missed_call_auto_reply");
+      const template = configs?.[0]?.value ||
+        "Hi! You tried calling Sun Sea Jewellers. We're sorry we missed you! Our team will call you back shortly. 💎";
+      await sendWhatsApp({ phone, msg: template, client: waClient || null });
+      await supa().from("bullion_messages").insert({
+        tenant_id: process.env.TENANT_ID || "a1b2c3d4-0000-0000-0000-000000000001",
+        phone,
+        direction: "out",
+        body: template,
+        stage: "greeting",
+        claude_action: "MISSED_CALL_REPLY",
+        status: "sent",
+      }).then(() => {}, () => {});
+      console.log("webhook:missed_call_reply sent", { phone });
+    } catch (e) {
+      console.error("missed_call_reply failed", e);
+    }
+    return res.status(200).json({ ok: true, handled: "missed_call_reply" });
+  }
 
   if (!phone || !msg) {
     console.warn("webhook: ignoring payload without phone/msg", { body });

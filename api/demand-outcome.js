@@ -8,6 +8,61 @@
 import { supa } from "./_lib/supabase.js";
 import { transitionLeadToFunnel } from "./_lib/drip.js";
 
+async function schedulePostSaleMessages(sb, tenantId, leadId, funnelId, leadName, productCategory) {
+  // Read config templates + google review link from bullion_dropdowns
+  const { data: configs } = await sb.from("bullion_dropdowns")
+    .select("label, value")
+    .eq("tenant_id", tenantId)
+    .eq("field", "config")
+    .in("label", ["google_review_link", "post_sale_day3", "post_sale_day7", "post_sale_day30"]);
+
+  const cfg = {};
+  for (const row of configs || []) cfg[row.label] = row.value;
+
+  const vName = leadName || "Sir/Ma'am";
+  const prod = (productCategory || "jewellery").replace(/_/g, " ");
+  const reviewLink = cfg["google_review_link"] || "";
+
+  const messages = [
+    {
+      days: 3,
+      key: "post_sale_day3",
+      fallback: `Hi ${vName}, we hope you're loving your new ${prod} 💎 It was a pleasure serving you at Sun Sea Jewellers! If you need any adjustments or have questions, we're always here. 🙏`,
+      type: "post_sale_feedback",
+    },
+    {
+      days: 7,
+      key: "post_sale_day7",
+      fallback: `Hi ${vName}, we hope your ${prod} is bringing you joy! ✨ If you have a moment, we'd truly appreciate a Google review — it means the world to us:\n${reviewLink}\n\nThank you for your trust. 🙏`,
+      type: "post_sale_review",
+    },
+    {
+      days: 30,
+      key: "post_sale_day30",
+      fallback: `Hi ${vName}, it's been a month since you picked up your ${prod} from Sun Sea Jewellers 💎 We hope it's perfect! If you ever need a resize, repair, or cleaning — just reach out. Always here for you. 🙏`,
+      type: "post_sale_checkin",
+    },
+  ];
+
+  const now = Date.now();
+  for (const m of messages) {
+    let body = cfg[m.key] || m.fallback;
+    // Simple interpolation
+    body = body.replace(/\{name\}/gi, vName).replace(/\{product\}/gi, prod).replace(/\{review_link\}/gi, reviewLink);
+    const sendAt = new Date(now + m.days * 24 * 60 * 60 * 1000).toISOString();
+    const { error } = await sb.from("bullion_scheduled_messages").insert({
+      tenant_id: tenantId,
+      lead_id: leadId,
+      funnel_id: funnelId,
+      send_at: sendAt,
+      body,
+      status: "pending",
+      message_type: m.type,
+    });
+    if (error) console.error(`post_sale insert ${m.type}`, error);
+  }
+}
+
 export const config = { maxDuration: 30 };
 
 const OUTCOME_TO_LEAD_STATUS = {
@@ -46,7 +101,7 @@ export default async function handler(req, res) {
   const sb = supa();
 
   const { data: demand } = await sb.from("bullion_demands")
-    .select("id, lead_id, funnel_id, tenant_id")
+    .select("id, lead_id, funnel_id, tenant_id, product_category")
     .eq("id", demandId).single();
   if (!demand) return res.status(404).json({ ok: false, error: "demand_not_found" });
 
@@ -93,6 +148,13 @@ export default async function handler(req, res) {
     }).catch((e) => ({ ok: false, error: String(e) }));
     transitioned = r?.ok ? target : null;
     if (!r?.ok) console.error("transition failed", r);
+  }
+
+  // On CONVERTED: schedule 3 post-sale WA messages (day 3 feedback, day 7 review, day 30 check-in)
+  if (outcome === "converted") {
+    const { data: lead } = await sb.from("bullion_leads").select("name").eq("id", demand.lead_id).single();
+    await schedulePostSaleMessages(sb, demand.tenant_id, demand.lead_id, demand.funnel_id, lead?.name, demand.product_category)
+      .catch((e) => console.error("schedulePostSaleMessages failed", e));
   }
 
   return res.status(200).json({ ok: true, outcome, transitionedTo: transitioned });

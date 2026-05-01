@@ -564,6 +564,21 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
     onChanged && onChanged();
   };
 
+  const optOut = async () => {
+    const name = lead.name || lead.wa_display_name || "this contact";
+    if (!window.confirm(`Block ${name} from all calls and messages? This cannot be undone.`)) return;
+    setBusy(true);
+    await sb.from("bullion_leads").update({
+      dnd: true, dnd_at: new Date().toISOString(), dnd_reason: "opt_out_manual",
+      status: "dead", bot_paused: true,
+    }).eq("id", lead.id);
+    await sb.from("bullion_scheduled_messages")
+      .update({ status: "canceled", canceled_reason: "opt_out" })
+      .eq("lead_id", lead.id).eq("status", "pending");
+    setBusy(false);
+    onChanged && onChanged();
+  };
+
   return (
     <Card style={{ display: "flex", flexDirection: "column", height: "78vh", padding: 0 }}>
       {/* Header */}
@@ -632,6 +647,25 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
                 : <Pill color={C.orange}>Not confirmed</Pill>}
               {demand.visit_rescheduled_count > 0 && <span style={{ color: "#aaa" }}>rescheduled {demand.visit_rescheduled_count}×</span>}
               <VisitRescheduleButton demandId={demand.id} onRescheduled={onChanged} />
+            </div>
+          )}
+          {/* Jewelry + Exchange inline display */}
+          {(demand.metal || demand.stone || demand.item_category || demand.has_exchange) && (
+            <div style={{ marginTop: 4, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              {(demand.metal || demand.stone || demand.item_category) && (
+                <span style={{ color: "#555" }}>
+                  💎 {[
+                    demand.metal?.replace(/_/g, " "),
+                    demand.stone,
+                    demand.item_category,
+                    demand.ring_size ? `size ${demand.ring_size}` : null,
+                    demand.purity,
+                  ].filter(Boolean).join(" · ")}
+                </span>
+              )}
+              {demand.has_exchange && (
+                <Pill color={C.orange}>🔄 Exchange{demand.exchange_value ? ` ₹${Number(demand.exchange_value).toLocaleString("en-IN")}` : ""}</Pill>
+              )}
             </div>
           )}
         </div>
@@ -751,6 +785,7 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
       {/* Actions */}
       <div style={{ padding: "8px 14px", borderBottom: "1px solid #eee", display: "flex", gap: 6, flexWrap: "wrap" }}>
         <Btn small ghost color={lead.bot_paused ? C.green : C.orange} onClick={toggleBot} disabled={busy}>{lead.bot_paused ? "Resume bot" : "Pause bot"}</Btn>
+        <Btn small ghost color={C.red} onClick={optOut} disabled={busy} title="Block from all calls and messages (DNC)">🚫 Opt Out</Btn>
         <Btn small ghost color={C.green} onClick={() => setEditLeadOpen(true)}>✏️ Edit contact</Btn>
         {demand?.id && (
           <>
@@ -1144,6 +1179,8 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
       .then(({ data }) => setStaff(data || []));
   }, []);
 
+  const [jewExpanded, setJewExpanded] = useState(false);
+  const [exExpanded, setExExpanded] = useState(false);
   const [form, setForm] = useState({
     phone: "", name: "",
     description: "", productCategory: "gold", productTypes: [],
@@ -1152,6 +1189,10 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
     funnelId: "",
     crmSource: "",
     assignedStaffId: loadUser()?.id || "",
+    // Jewelry fields
+    metal: "", stone: "", itemCategory: "", ringSize: "", purity: "", hallmarkPref: "",
+    // Exchange
+    hasExchange: false, exchangeDesc: "", exchangeValue: "",
   });
 
   const set = (k, v) => setForm((s) => ({ ...s, [k]: v }));
@@ -1235,6 +1276,15 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
           tenantId: getTenantId(),
           skipBot: !activateBot,
           allowDuplicate: allowDuplicate || false,
+          metal: form.metal || null,
+          stone: form.stone || null,
+          itemCategory: form.itemCategory || null,
+          ringSize: form.ringSize || null,
+          purity: form.purity || null,
+          hallmarkPref: form.hallmarkPref || null,
+          hasExchange: form.hasExchange || false,
+          exchangeDesc: form.exchangeDesc || null,
+          exchangeValue: form.exchangeValue ? Number(form.exchangeValue) : null,
         }),
       });
       const data = await res.json();
@@ -1338,6 +1388,109 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
               })}
             </div>
           </Field>
+
+          {/* Jewelry details — collapsible */}
+          <div style={{ border: "1px solid #eee", borderRadius: 8, marginBottom: 8 }}>
+            <button type="button" onClick={() => setJewExpanded((v) => !v)}
+              style={{ width: "100%", padding: "8px 12px", background: "#fafafa", border: "none", borderRadius: 8, textAlign: "left", cursor: "pointer", fontSize: 13, fontWeight: 600, color: "#555" }}>
+              💎 Jewelry Details {jewExpanded ? "▲" : "▼"}
+            </button>
+            {jewExpanded && (
+              <div style={{ padding: "10px 12px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                <Field label="Metal">
+                  <Select value={form.metal} onChange={(e) => set("metal", e.target.value)}>
+                    <option value="">—</option>
+                    <option value="gold_22k">Gold 22k</option>
+                    <option value="gold_18k">Gold 18k</option>
+                    <option value="gold_14k">Gold 14k</option>
+                    <option value="white_gold">White Gold</option>
+                    <option value="platinum">Platinum</option>
+                    <option value="silver">Silver</option>
+                    <option value="other">Other</option>
+                  </Select>
+                </Field>
+                <Field label="Stone">
+                  <Select value={form.stone} onChange={(e) => set("stone", e.target.value)}>
+                    <option value="">—</option>
+                    <option value="none">None</option>
+                    <option value="diamond">Diamond</option>
+                    <option value="ruby">Ruby</option>
+                    <option value="emerald">Emerald</option>
+                    <option value="sapphire">Sapphire</option>
+                    <option value="pearl">Pearl</option>
+                    <option value="kundan">Kundan</option>
+                    <option value="polki">Polki</option>
+                    <option value="other">Other</option>
+                  </Select>
+                </Field>
+                <Field label="Category">
+                  <Select value={form.itemCategory} onChange={(e) => set("itemCategory", e.target.value)}>
+                    <option value="">—</option>
+                    <option value="ring">Ring</option>
+                    <option value="necklace">Necklace</option>
+                    <option value="earrings">Earrings</option>
+                    <option value="bangles">Bangles</option>
+                    <option value="bracelet">Bracelet</option>
+                    <option value="pendant">Pendant</option>
+                    <option value="set">Set</option>
+                    <option value="anklet">Anklet</option>
+                    <option value="other">Other</option>
+                  </Select>
+                </Field>
+                {form.itemCategory === "ring" && (
+                  <Field label="Ring size">
+                    <Input value={form.ringSize} onChange={(e) => set("ringSize", e.target.value)} placeholder="e.g. 6, 6.5, 7" />
+                  </Field>
+                )}
+                <Field label="Purity">
+                  <Select value={form.purity} onChange={(e) => set("purity", e.target.value)}>
+                    <option value="">—</option>
+                    <option value="916">916 (22k)</option>
+                    <option value="750">750 (18k)</option>
+                    <option value="585">585 (14k)</option>
+                    <option value="925">925 (Silver)</option>
+                    <option value="999">999 (Fine)</option>
+                    <option value="other">Other</option>
+                  </Select>
+                </Field>
+                <Field label="Hallmark pref">
+                  <Select value={form.hallmarkPref} onChange={(e) => set("hallmarkPref", e.target.value)}>
+                    <option value="">—</option>
+                    <option value="bis_hallmark">BIS Hallmark</option>
+                    <option value="none">None</option>
+                    <option value="client_choice">Client's choice</option>
+                  </Select>
+                </Field>
+              </div>
+            )}
+          </div>
+
+          {/* Exchange / trade-in — collapsible */}
+          <div style={{ border: "1px solid #eee", borderRadius: 8, marginBottom: 8 }}>
+            <button type="button" onClick={() => setExExpanded((v) => !v)}
+              style={{ width: "100%", padding: "8px 12px", background: "#fafafa", border: "none", borderRadius: 8, textAlign: "left", cursor: "pointer", fontSize: 13, fontWeight: 600, color: "#555" }}>
+              🔄 Trade-In / Exchange {exExpanded ? "▲" : "▼"}
+            </button>
+            {exExpanded && (
+              <div style={{ padding: "10px 12px" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 8, cursor: "pointer" }}>
+                  <input type="checkbox" checked={form.hasExchange} onChange={(e) => set("hasExchange", e.target.checked)} />
+                  <span>Client has old jewelry to exchange / trade in</span>
+                </label>
+                {form.hasExchange && (
+                  <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 8 }}>
+                    <Field label="Describe old item (type, weight, condition)">
+                      <Textarea rows={2} value={form.exchangeDesc} onChange={(e) => set("exchangeDesc", e.target.value)}
+                        placeholder="e.g. 22k gold chain ~15g, good condition" />
+                    </Field>
+                    <Field label="Estimated value (₹)">
+                      <Input type="number" value={form.exchangeValue} onChange={(e) => set("exchangeValue", e.target.value)} placeholder="45000" />
+                    </Field>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Field label="Occasion">
@@ -1465,6 +1618,10 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved }) {
     itemsSeen: [], priceQuoted: "",
     notBoughtReason: "", notBoughtNotes: "",
     competitorMentioned: "", followupRequired: false,
+    // Jewelry fields
+    metal: "", stone: "", itemCategory: "", ringSize: "", purity: "", hallmarkPref: "",
+    // Exchange
+    hasExchange: false, exchangeDesc: "", exchangeValue: "",
   });
 
   const set = (k, v) => setForm((s) => ({ ...s, [k]: v }));
@@ -1605,6 +1762,15 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved }) {
             tenantId,
             skipBot: !activateBot,
             allowDuplicate: true,
+            metal: form.metal || null,
+            stone: form.stone || null,
+            itemCategory: form.itemCategory || null,
+            ringSize: form.ringSize || null,
+            purity: form.purity || null,
+            hallmarkPref: form.hallmarkPref || null,
+            hasExchange: form.hasExchange || false,
+            exchangeDesc: form.exchangeDesc || null,
+            exchangeValue: form.exchangeValue ? Number(form.exchangeValue) : null,
           }),
         });
         const data = await res.json();
@@ -1736,6 +1902,91 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved }) {
                   })}
                 </div>
               </Field>
+
+              {/* Jewelry details */}
+              <div style={{ border: "1px solid #eee", borderRadius: 8, marginBottom: 8 }}>
+                <button type="button" onClick={() => set("_jewExp", !form._jewExp)}
+                  style={{ width: "100%", padding: "8px 12px", background: "#fafafa", border: "none", borderRadius: 8, textAlign: "left", cursor: "pointer", fontSize: 13, fontWeight: 600, color: "#555" }}>
+                  💎 Jewelry Details {form._jewExp ? "▲" : "▼"}
+                </button>
+                {form._jewExp && (
+                  <div style={{ padding: "10px 12px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                    <Field label="Metal">
+                      <Select value={form.metal} onChange={(e) => set("metal", e.target.value)}>
+                        <option value="">—</option>
+                        <option value="gold_22k">Gold 22k</option><option value="gold_18k">Gold 18k</option>
+                        <option value="gold_14k">Gold 14k</option><option value="white_gold">White Gold</option>
+                        <option value="platinum">Platinum</option><option value="silver">Silver</option>
+                        <option value="other">Other</option>
+                      </Select>
+                    </Field>
+                    <Field label="Stone">
+                      <Select value={form.stone} onChange={(e) => set("stone", e.target.value)}>
+                        <option value="">—</option>
+                        <option value="none">None</option><option value="diamond">Diamond</option>
+                        <option value="ruby">Ruby</option><option value="emerald">Emerald</option>
+                        <option value="sapphire">Sapphire</option><option value="pearl">Pearl</option>
+                        <option value="kundan">Kundan</option><option value="polki">Polki</option>
+                        <option value="other">Other</option>
+                      </Select>
+                    </Field>
+                    <Field label="Category">
+                      <Select value={form.itemCategory} onChange={(e) => set("itemCategory", e.target.value)}>
+                        <option value="">—</option>
+                        <option value="ring">Ring</option><option value="necklace">Necklace</option>
+                        <option value="earrings">Earrings</option><option value="bangles">Bangles</option>
+                        <option value="bracelet">Bracelet</option><option value="pendant">Pendant</option>
+                        <option value="set">Set</option><option value="anklet">Anklet</option>
+                        <option value="other">Other</option>
+                      </Select>
+                    </Field>
+                    {form.itemCategory === "ring" && (
+                      <Field label="Ring size"><Input value={form.ringSize} onChange={(e) => set("ringSize", e.target.value)} placeholder="e.g. 6, 6.5, 7" /></Field>
+                    )}
+                    <Field label="Purity">
+                      <Select value={form.purity} onChange={(e) => set("purity", e.target.value)}>
+                        <option value="">—</option>
+                        <option value="916">916 (22k)</option><option value="750">750 (18k)</option>
+                        <option value="585">585 (14k)</option><option value="925">925 Silver</option>
+                        <option value="999">999 Fine</option><option value="other">Other</option>
+                      </Select>
+                    </Field>
+                    <Field label="Hallmark pref">
+                      <Select value={form.hallmarkPref} onChange={(e) => set("hallmarkPref", e.target.value)}>
+                        <option value="">—</option>
+                        <option value="bis_hallmark">BIS Hallmark</option>
+                        <option value="none">None</option><option value="client_choice">Client's choice</option>
+                      </Select>
+                    </Field>
+                  </div>
+                )}
+              </div>
+
+              {/* Exchange / trade-in */}
+              <div style={{ border: "1px solid #eee", borderRadius: 8, marginBottom: 8 }}>
+                <button type="button" onClick={() => set("_exExp", !form._exExp)}
+                  style={{ width: "100%", padding: "8px 12px", background: "#fafafa", border: "none", borderRadius: 8, textAlign: "left", cursor: "pointer", fontSize: 13, fontWeight: 600, color: "#555" }}>
+                  🔄 Trade-In / Exchange {form._exExp ? "▲" : "▼"}
+                </button>
+                {form._exExp && (
+                  <div style={{ padding: "10px 12px" }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 8, cursor: "pointer" }}>
+                      <input type="checkbox" checked={form.hasExchange} onChange={(e) => set("hasExchange", e.target.checked)} />
+                      <span>Client has old jewelry to exchange / trade in</span>
+                    </label>
+                    {form.hasExchange && (
+                      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 8 }}>
+                        <Field label="Describe old item">
+                          <Textarea rows={2} value={form.exchangeDesc} onChange={(e) => set("exchangeDesc", e.target.value)} placeholder="e.g. 22k gold chain ~15g" />
+                        </Field>
+                        <Field label="Est. value (₹)">
+                          <Input type="number" value={form.exchangeValue} onChange={(e) => set("exchangeValue", e.target.value)} placeholder="45000" />
+                        </Field>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                 <Field label="Occasion">
@@ -4680,13 +4931,41 @@ function AnalyticsScreen({ funnels }) {
   const [fromDate, setFromDate] = useState(() => { const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10); });
   const [toDate, setToDate] = useState(() => new Date().toISOString().slice(0, 10));
 
+  // Pipeline dashboard
+  const [pipeline, setPipeline] = useState({ hot: { count: 0, budget: 0 }, warm: { count: 0, budget: 0 }, cold: { count: 0, budget: 0 }, converted: { count: 0, budget: 0 } });
+
+  // Manager call performance (today)
+  const [callPerf, setCallPerf] = useState([]);
+  const [leaderboard, setLeaderboard] = useState([]);
+  const [targets, setTargets] = useState({});  // staffId → { target_calls, target_conversions, target_revenue }
+  const [lbExpanded, setLbExpanded] = useState(false);
+  const [staffList, setStaffList] = useState([]);
+
+  // Config editor
+  const [configRows, setConfigRows] = useState([]);
+  const [configSaving, setConfigSaving] = useState({});
+
   const load = useCallback(async () => {
     setLoading(true);
-    const [m, leads] = await Promise.all([
-      sb.from("bullion_funnel_metrics").select("*").eq("tenant_id", getTenantId()),
-      sb.from("bullion_leads").select("funnel_id,stage,status,created_at").eq("tenant_id", getTenantId()).gte("created_at", fromDate).lte("created_at", toDate + "T23:59:59"),
+    const tid = getTenantId();
+    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+    const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+
+    const [m, leads, demands, callsToday, callsMonth, staffData, targetsData, configData] = await Promise.all([
+      sb.from("bullion_funnel_metrics").select("*").eq("tenant_id", tid),
+      sb.from("bullion_leads").select("funnel_id,stage,status,created_at").eq("tenant_id", tid).gte("created_at", fromDate).lte("created_at", toDate + "T23:59:59"),
+      sb.from("bullion_demands").select("id,budget,outcome,created_at,next_call_at,occasion_date,visit_scheduled_at,is_callback_promised,lead:bullion_leads(status,last_msg_at)").eq("tenant_id", tid).is("outcome", null).limit(500),
+      sb.from("bullion_call_logs").select("staff_id,disposition,lag_bucket,talk_bucket,is_suspicious,duration_sec").eq("tenant_id", tid).gte("called_at", todayStart.toISOString()),
+      sb.from("bullion_call_logs").select("staff_id,disposition,duration_sec").eq("tenant_id", tid).gte("called_at", monthStart.toISOString()),
+      sb.from("staff").select("id,name,username").eq("tenant_id", tid),
+      sb.from("staff_targets").select("*").eq("tenant_id", tid).eq("month", monthStart.toISOString().slice(0, 10)),
+      sb.from("bullion_dropdowns").select("id,label,value").eq("tenant_id", tid).eq("field", "config").eq("active", true).order("sort_order"),
     ]);
+
     if (m.data) setMetrics(m.data);
+    if (configData.data) setConfigRows(configData.data);
+    if (staffData.data) setStaffList(staffData.data);
+
     if (leads.data) {
       const counts = {};
       leads.data.forEach((l) => {
@@ -4697,20 +4976,223 @@ function AnalyticsScreen({ funnels }) {
       });
       setStageCounts(Object.values(counts));
     }
+
+    // Pipeline buckets — use demandTemperature-equivalent logic
+    if (demands.data) {
+      const buckets = { hot: { count: 0, budget: 0 }, warm: { count: 0, budget: 0 }, cold: { count: 0, budget: 0 }, converted: { count: 0, budget: 0 } };
+      demands.data.forEach((d) => {
+        const temp = demandTemperature(d);
+        const bucket = (temp === "converted" || temp === "dead") ? "converted" : (temp || "cold");
+        if (!buckets[bucket]) return;
+        buckets[bucket].count += 1;
+        buckets[bucket].budget += Number(d.budget || 0);
+      });
+      setPipeline(buckets);
+    }
+
+    // Call performance today
+    if (callsToday.data && staffData.data) {
+      const byStaff = {};
+      callsToday.data.forEach((c) => {
+        if (!c.staff_id) return;
+        if (!byStaff[c.staff_id]) byStaff[c.staff_id] = { calls: 0, lags: [], suspicious: 0, connects: 0 };
+        byStaff[c.staff_id].calls += 1;
+        if (c.lag_bucket) byStaff[c.staff_id].lags.push(c.lag_bucket);
+        if (c.is_suspicious) byStaff[c.staff_id].suspicious += 1;
+        if (["answered_interested","answered_not_now","answered_not_interested","callback_requested"].includes(c.disposition))
+          byStaff[c.staff_id].connects += 1;
+      });
+      const ANSWERED_DISPOSITIONS = new Set(["answered_interested","answered_not_now","answered_not_interested","callback_requested"]);
+      const perf = Object.entries(byStaff).map(([sid, v]) => {
+        const staff = staffData.data.find((s) => s.id === sid);
+        const instantCount = v.lags.filter((l) => l === "INSTANT").length;
+        const missedCount = v.lags.filter((l) => l === "MISSED").length;
+        return {
+          staffId: sid, name: staff?.name || staff?.username || sid,
+          calls: v.calls, connects: v.connects,
+          instantPct: v.lags.length ? Math.round(instantCount * 100 / v.lags.length) : null,
+          missedPct: v.lags.length ? Math.round(missedCount * 100 / v.lags.length) : null,
+          suspicious: v.suspicious,
+          connectsPct: v.calls ? Math.round(v.connects * 100 / v.calls) : 0,
+        };
+      }).sort((a, b) => b.calls - a.calls);
+      setCallPerf(perf);
+    }
+
+    // Leaderboard this month
+    if (callsMonth.data && staffData.data) {
+      const byStaff = {};
+      callsMonth.data.forEach((c) => {
+        if (!c.staff_id) return;
+        if (!byStaff[c.staff_id]) byStaff[c.staff_id] = { calls: 0, talkSec: 0 };
+        byStaff[c.staff_id].calls += 1;
+        byStaff[c.staff_id].talkSec += Number(c.duration_sec || 0);
+      });
+      const lb = Object.entries(byStaff).map(([sid, v]) => {
+        const staff = staffData.data.find((s) => s.id === sid);
+        return { staffId: sid, name: staff?.name || staff?.username || sid, calls: v.calls, talkSec: v.talkSec };
+      }).sort((a, b) => b.calls - a.calls);
+      setLeaderboard(lb);
+    }
+
+    // Targets map
+    if (targetsData.data) {
+      const t = {};
+      targetsData.data.forEach((r) => { t[r.staff_id] = r; });
+      setTargets(t);
+    }
+
     setLoading(false);
   }, [fromDate, toDate]);
 
-  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { load(); }, [load]);
+
+  const saveTarget = async (staffId, field, value) => {
+    const tid = getTenantId();
+    const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+    const month = monthStart.toISOString().slice(0, 10);
+    const existing = targets[staffId] || {};
+    const patch = { tenant_id: tid, staff_id: staffId, month, target_calls: 0, target_conversions: 0, target_revenue: 0, ...existing, [field]: Number(value) || 0 };
+    delete patch.id; delete patch.created_at;
+    await sb.from("staff_targets").upsert(patch, { onConflict: "staff_id,month" });
+    setTargets((t) => ({ ...t, [staffId]: { ...existing, [field]: Number(value) || 0 } }));
+  };
+
+  const saveConfig = async (row, newVal) => {
+    setConfigSaving((s) => ({ ...s, [row.id]: true }));
+    await sb.from("bullion_dropdowns").update({ value: newVal }).eq("id", row.id);
+    setConfigRows((rows) => rows.map((r) => r.id === row.id ? { ...r, value: newVal } : r));
+    setConfigSaving((s) => ({ ...s, [row.id]: false }));
+  };
+
+  const fmtLakh = (n) => {
+    if (!n) return "₹—";
+    if (n >= 10000000) return `₹${(n / 10000000).toFixed(1)} Cr`;
+    if (n >= 100000) return `₹${(n / 100000).toFixed(1)} L`;
+    return `₹${Number(n).toLocaleString("en-IN")}`;
+  };
+
+  const fmtTalk = (sec) => {
+    const h = Math.floor(sec / 3600); const m = Math.floor((sec % 3600) / 60);
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  };
+
+  const pipeTiles = [
+    { key: "hot", label: "🔥 Hot", color: "#e53e3e" },
+    { key: "warm", label: "🌤 Warm", color: "#dd6b20" },
+    { key: "cold", label: "❄️ Cold", color: "#3182ce" },
+    { key: "converted", label: "✅ Conv.", color: "#38a169" },
+  ];
 
   return (
     <div>
+      {/* Pipeline Overview */}
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>📊 Pipeline Overview</div>
+          <div style={{ fontSize: 11, color: "#888" }}>
+            Total: <strong>{fmtLakh(pipeTiles.reduce((s, t) => s + pipeline[t.key].budget, 0))}</strong>
+            {" · "}{pipeTiles.reduce((s, t) => s + pipeline[t.key].count, 0)} open demands
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
+          {pipeTiles.map((t) => (
+            <div key={t.key} style={{ background: "#fafafa", borderRadius: 8, padding: "12px 10px", textAlign: "center", borderTop: `3px solid ${t.color}` }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: t.color, marginBottom: 4 }}>{t.label}</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: "#333" }}>{fmtLakh(pipeline[t.key].budget)}</div>
+              <div style={{ fontSize: 11, color: "#888" }}>{pipeline[t.key].count} lead{pipeline[t.key].count !== 1 ? "s" : ""}</div>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      {/* Manager Call Performance — Today */}
+      {callPerf.length > 0 && (
+        <Card style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 10 }}>📞 Call Performance — Today</div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: "#f7f7f7" }}>
+                  {["Telecaller","Calls","Connects","INSTANT%","MISSED%","Suspicious","Connect%"].map((h) => (
+                    <th key={h} style={{ padding: "6px 10px", textAlign: h === "Telecaller" ? "left" : "center", fontSize: 10, color: "#888", fontWeight: 600 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {callPerf.map((r) => (
+                  <tr key={r.staffId} style={{ borderTop: "1px solid #f0f0f0" }}>
+                    <td style={{ padding: "6px 10px", fontWeight: 500 }}>{r.name}</td>
+                    <td style={{ padding: "6px 10px", textAlign: "center" }}>{r.calls}</td>
+                    <td style={{ padding: "6px 10px", textAlign: "center", color: C.green }}>{r.connects}</td>
+                    <td style={{ padding: "6px 10px", textAlign: "center", color: r.instantPct != null ? C.green : "#ccc" }}>{r.instantPct != null ? `${r.instantPct}%` : "—"}</td>
+                    <td style={{ padding: "6px 10px", textAlign: "center", color: r.missedPct > 30 ? C.red : "#555" }}>{r.missedPct != null ? `${r.missedPct}%` : "—"}</td>
+                    <td style={{ padding: "6px 10px", textAlign: "center", color: r.suspicious > 0 ? C.red : "#ccc" }}>{r.suspicious > 0 ? `⚠️ ${r.suspicious}` : "—"}</td>
+                    <td style={{ padding: "6px 10px", textAlign: "center", color: r.connectsPct >= 40 ? C.green : r.connectsPct >= 20 ? C.orange : C.red }}>{r.connectsPct}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {/* Leaderboard — This Month */}
+      {leaderboard.length > 0 && (
+        <Card style={{ marginBottom: 16 }}>
+          <button type="button" onClick={() => setLbExpanded((v) => !v)}
+            style={{ width: "100%", background: "none", border: "none", padding: 0, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "#333" }}>🏆 Leaderboard — This Month</span>
+            <span style={{ fontSize: 11, color: "#aaa" }}>{lbExpanded ? "▲" : "▼"}</span>
+          </button>
+          {lbExpanded && (
+            <div style={{ marginTop: 10, overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: "#f7f7f7" }}>
+                    {["Telecaller","Calls","Talk time","Target calls","Target conv."].map((h) => (
+                      <th key={h} style={{ padding: "6px 10px", textAlign: h === "Telecaller" ? "left" : "center", fontSize: 10, color: "#888", fontWeight: 600 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {leaderboard.map((r, i) => {
+                    const tgt = targets[r.staffId] || {};
+                    const callPct = tgt.target_calls ? Math.min(100, Math.round(r.calls * 100 / tgt.target_calls)) : null;
+                    return (
+                      <tr key={r.staffId} style={{ borderTop: "1px solid #f0f0f0" }}>
+                        <td style={{ padding: "6px 10px", fontWeight: 500 }}>
+                          {i === 0 ? "🥇 " : i === 1 ? "🥈 " : i === 2 ? "🥉 " : ""}{r.name}
+                        </td>
+                        <td style={{ padding: "6px 10px", textAlign: "center" }}>
+                          {r.calls}
+                          {callPct !== null && (
+                            <div style={{ height: 3, background: "#eee", borderRadius: 2, marginTop: 2 }}>
+                              <div style={{ height: 3, width: `${callPct}%`, background: callPct >= 80 ? C.green : callPct >= 50 ? C.orange : C.red, borderRadius: 2 }} />
+                            </div>
+                          )}
+                        </td>
+                        <td style={{ padding: "6px 10px", textAlign: "center", color: "#666" }}>{fmtTalk(r.talkSec)}</td>
+                        <TargetCell staffId={r.staffId} field="target_calls" value={tgt.target_calls || ""} onSave={saveTarget} />
+                        <TargetCell staffId={r.staffId} field="target_conversions" value={tgt.target_conversions || ""} onSave={saveTarget} />
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <div style={{ fontSize: 11, color: "#aaa", marginTop: 6 }}>Click any target number to edit inline.</div>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {/* Funnel conversion (existing) */}
       <div style={{ display: "flex", gap: 10, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
         <div style={{ fontSize: 13, color: "#666", flex: 1 }}>Conversion % and stage drop-off per funnel.</div>
         <Input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} style={{ width: 150 }} />
         <span style={{ color: "#888" }}>→</span>
         <Input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} style={{ width: 150 }} />
-        <Btn ghost small color={C.gray} onClick={load} disabled={loading}>↻</Btn>
+        <Btn ghost small color={C.gray} onClick={load} disabled={loading}>↻ Refresh all</Btn>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 12, marginBottom: 20 }}>
@@ -4732,7 +5214,7 @@ function AnalyticsScreen({ funnels }) {
       </div>
 
       {stageCounts.length > 0 && (
-        <Card>
+        <Card style={{ marginBottom: 16 }}>
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Stage drop-off · {fmtD(fromDate)} → {fmtD(toDate)}</div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
@@ -4759,6 +5241,54 @@ function AnalyticsScreen({ funnels }) {
           </div>
         </Card>
       )}
+
+      {/* Config editor */}
+      {configRows.length > 0 && (
+        <Card>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 10 }}>⚙️ Config — WA Templates & Links</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {configRows.map((row) => (
+              <ConfigRow key={row.id} row={row} saving={!!configSaving[row.id]} onSave={saveConfig} />
+            ))}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function TargetCell({ staffId, field, value, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(String(value || ""));
+  const commit = () => { setEditing(false); onSave(staffId, field, val); };
+  if (editing) {
+    return (
+      <td style={{ padding: "4px 10px", textAlign: "center" }}>
+        <input autoFocus type="number" value={val} onChange={(e) => setVal(e.target.value)}
+          onBlur={commit} onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") setEditing(false); }}
+          style={{ width: 60, textAlign: "center", border: "1px solid #aaa", borderRadius: 4, padding: "2px 4px", fontSize: 12 }} />
+      </td>
+    );
+  }
+  return (
+    <td style={{ padding: "6px 10px", textAlign: "center", cursor: "pointer", color: value ? "#333" : "#aaa" }}
+      onClick={() => setEditing(true)} title="Click to edit">
+      {value || "set →"}
+    </td>
+  );
+}
+
+function ConfigRow({ row, saving, onSave }) {
+  const [val, setVal] = useState(row.value || "");
+  const [dirty, setDirty] = useState(false);
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "160px 1fr auto", gap: 8, alignItems: "start" }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: "#555", paddingTop: 6 }}>{row.label}</div>
+      <Textarea rows={2} value={val} onChange={(e) => { setVal(e.target.value); setDirty(true); }}
+        style={{ fontSize: 12, resize: "vertical" }} />
+      <Btn small color={dirty ? C.blue : C.gray} disabled={!dirty || saving} onClick={() => { onSave(row, val); setDirty(false); }}>
+        {saving ? "…" : "Save"}
+      </Btn>
     </div>
   );
 }
@@ -5810,7 +6340,22 @@ function TelecallerQueueScreen({ funnels }) {
       </div>
 
       {/* Main call card */}
-      <Card style={{ padding: 0, overflow: "hidden" }}>
+      {(() => {
+        // Request browser notification permission once if callback-promised demand in queue
+        const hasCallback = demands.some((d) => d.is_callback_promised && d.next_call_at && new Date(d.next_call_at) <= new Date());
+        if (hasCallback && typeof Notification !== "undefined" && Notification.permission === "default") {
+          Notification.requestPermission().then((p) => {
+            if (p === "granted") new Notification("Promised callback due", { body: `${lead?.name || "A client"} asked you to call now!` });
+          });
+        }
+        return null;
+      })()}
+      {demand.is_callback_promised && demand.next_call_at && new Date(demand.next_call_at) <= new Date() && (
+        <div style={{ background: "#e53e3e", color: "#fff", padding: "8px 14px", borderRadius: 8, marginBottom: 8, fontSize: 13, fontWeight: 600, textAlign: "center" }}>
+          ⚡ PROMISED CALLBACK — {lead?.name || "Client"} asked you to call right now!
+        </div>
+      )}
+      <Card style={{ padding: 0, overflow: "hidden", border: demand.is_callback_promised && demand.next_call_at && new Date(demand.next_call_at) <= new Date() ? "2px solid #e53e3e" : undefined }}>
         {/* Card header */}
         <div style={{ padding: "14px 16px", background: `linear-gradient(135deg, ${priorityColor}18 0%, #fff 100%)`, borderBottom: "1px solid #eee" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
