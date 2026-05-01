@@ -6259,7 +6259,9 @@ function TelecallerQueueScreen({ funnels }) {
       const r = await fetch(`/api/demand-queue?staffId=${me.id}&limit=50`, {
         headers: { "x-crm-secret": CRM_SECRET },
       });
-      const data = await r.json();
+      const text = await r.text();
+      let data;
+      try { data = JSON.parse(text); } catch { setErr(`Server error (${r.status}). Check Vercel logs.`); setLoading(false); return; }
       if (!data.ok) { setErr(data.error || "Failed to load queue"); setLoading(false); return; }
       setDemands(data.demands || []);
       setIdx(0);

@@ -16,9 +16,9 @@
 // Sorted by: priority_score DESC, then next_call_at ASC (oldest first)
 // ──────────────────────────────────────────────────────────────────────────────
 
-import { createClient } from "@supabase/supabase-js";
+import { supa } from "./_lib/supabase.js";
+import { CRM_SECRET, SUPABASE_SERVICE_KEY } from "./_lib/config.js";
 
-const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 const DEFAULT_TENANT_ID = "a1b2c3d4-0000-0000-0000-000000000001";
 
 // ── Priority score formula ────────────────────────────────────────────────────
@@ -48,14 +48,18 @@ export default async function handler(req, res) {
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
 
   const secret = req.headers["x-crm-secret"];
-  if (secret !== process.env.CRM_SECRET) return res.status(401).json({ error: "Unauthorized" });
+  if (!SUPABASE_SERVICE_KEY) return res.status(500).json({ ok: false, error: "missing_env" });
+  if (secret !== process.env.CRM_SECRET) return res.status(401).json({ ok: false, error: "Unauthorized" });
 
   const { staffId, tenantId, limit: rawLimit } = req.query;
-  if (!staffId) return res.status(400).json({ error: "staffId is required" });
+  if (!staffId) return res.status(400).json({ ok: false, error: "staffId is required" });
 
   const tid = tenantId || DEFAULT_TENANT_ID;
   const limit = Math.min(parseInt(rawLimit || "30", 10), 100);
   const now = new Date().toISOString();
+
+  try {
+  const sb = supa();
 
   // Fetch demands assigned to this telecaller that are:
   //   - open (no outcome)
@@ -134,6 +138,10 @@ export default async function handler(req, res) {
   enriched.sort((a, b) => b.priority_score - a.priority_score);
 
   return res.status(200).json({ ok: true, demands: enriched, count: enriched.length });
+  } catch (err) {
+    console.error("[demand-queue] unhandled error", err);
+    return res.status(500).json({ ok: false, error: String(err) });
+  }
 }
 
 // ── Simple temperature heuristic matching demandTemperature() in the frontend ──
