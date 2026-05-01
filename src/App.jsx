@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 // ── SUPABASE (shared Sun Sea project — same as ssj-hr / fms-tracker) ──
@@ -28,12 +28,62 @@ const STATUS_C = { active: C.blue, handoff: C.red, converted: C.green, dead: "#9
 const PRODUCT_FOCUS = ["gold_bullion", "silver_coin", "coin_bar", "all"];
 const ROLES = { superadmin: "Super Admin", admin: "Admin", manager: "Manager", staff: "Staff" };
 const PRODUCT_CATEGORIES = ["gold", "silver", "diamond", "polki", "kundan", "gemstone", "solitaire", "lab_diamond", "other"];
-const OCCASION_TYPES = ["daughter's wedding", "son's wedding", "self wedding", "anniversary", "birthday", "Diwali gifting", "corporate gift", "self purchase", "other"];
+const PRODUCT_TYPES = ["Chain", "Earrings", "Danglers", "Nosepin", "Necklace set", "Pendant", "P Set", "Bangles", "Bracelets", "Gents Jew", "Engagement ring", "Solitaires", "Wedding Accessories", "Gemstones", "Others"];
+const DISCOVERY_SOURCES = ["Google search", "Instagram", "Facebook ad", "WhatsApp", "Walk past store", "Friend referral", "Family referral", "Existing customer", "Newspaper", "Hoarding / banner", "Website", "Other"];
+const NOT_BOUGHT_REASONS = ["Bought ✓", "Product not available", "Variety less", "Designs not good", "Price too high", "Want to compare other shops", "Just browsing", "Not their style / taste", "Need to consult family", "Will return with spouse", "Wrong size / specification", "Going for second opinion", "Other"];
+const OCCASION_TYPES = ["wedding", "anniversary", "birthday", "Diwali gifting", "corporate gift", "self purchase", "other"];
 const FOR_WHOM_OPTIONS = ["self", "daughter", "son", "wife", "husband", "mother", "father", "sister", "brother", "other"];
 const FMS_STEP_COLORS = { new: C.gray, bot_activated: C.blue, qualifying: C.purple, catalog_sent: C.orange, call_needed: C.red, quoted: C.yellow, negotiating: C.orange, order_confirmed: C.green, delivered: C.green, closed: "#999" };
 
 // ── HELPERS ──
 const normalizePhone = (p) => String(p || "").replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, "");
+// Demand temperature — drives the Demands list sort order so staff focus on
+// hottest leads first. Buckets:
+//   hot       — needs human now: handoff status, qualified non-gold, visit today/tomorrow
+//   warm      — active conversation in last 24h, or visit within a week
+//   cold      — open lead but silent > 24h, or new but no reply yet
+//   converted — won
+//   dead      — lost / closed / DND
+function demandTemperature(d) {
+  const lead = d?.lead || {};
+  // Demand-level outcome is the source of truth once sales has marked it.
+  if (d?.outcome === "converted") return "converted";
+  if (d?.outcome === "lost" || d?.outcome === "junk") return "dead";
+  if (lead.status === "converted") return "converted";
+  if (lead.status === "dead") return "dead";
+  if (d?.outcome === "not_interested") return "cold";
+  const visitMs = d.visit_scheduled_at ? new Date(d.visit_scheduled_at) - new Date() : null;
+  const lastMs  = lead.last_msg_at ? Date.now() - new Date(lead.last_msg_at) : Infinity;
+  const ageMs   = d.created_at ? Date.now() - new Date(d.created_at) : Infinity;
+  const callDueMs = d.next_call_at ? new Date(d.next_call_at) - new Date() : null;
+  if (d.step?.step_type === "call" && callDueMs !== null && callDueMs <= 36 * 3600 * 1000) return "hot";
+  if (lead.status === "handoff") return "hot";
+  if (d.needs_qualified) return "hot";
+  if (visitMs !== null && visitMs >= 0 && visitMs <= 36 * 3600 * 1000) return "hot";
+  if (ageMs < 3600 * 1000) return "hot";                       // brand new — < 1 h
+  if (visitMs !== null && visitMs > 36 * 3600 * 1000 && visitMs <= 7 * 86400 * 1000) return "warm";
+  if (lastMs < 24 * 3600 * 1000) return "warm";
+  if (ageMs < 24 * 3600 * 1000) return "warm";                 // newish
+  return "cold";
+}
+const tempRank = (t) => ({ hot: 0, warm: 1, cold: 2, converted: 3, dead: 4 }[t] ?? 5);
+const tempMeta = (t) => ({
+  hot:       { label: "🔥 Hot",       color: "#ef4444" },
+  warm:      { label: "🌤 Warm",       color: "#f59e0b" },
+  cold:      { label: "❄️ Cold",       color: "#3b82f6" },
+  converted: { label: "✅ Converted",  color: "#16a085" },
+  dead:      { label: "💀 Dead",       color: "#6b7280" },
+}[t] || { label: t, color: "#999" });
+
+// LID JIDs (e.g. "258802028912814@lid") are WA-internal identifiers, not real phone numbers.
+// WA hides the real phone for some senders post-2024 privacy update — show a friendly label instead.
+const isLid = (p) => typeof p === "string" && /@lid$/i.test(p);
+const displayPhone = (p) => {
+  const s = String(p || "");
+  if (isLid(s)) return "WA hidden #";
+  if (/@s\.whatsapp\.net$/i.test(s)) return s.replace(/@.*$/, "");
+  return s;
+};
 const fmtD = (d) => (d ? new Date(d).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—");
 const fmtDT = (d) => (d ? new Date(d).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—");
 const fmtT = (d) => (d ? new Date(d).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "");
@@ -184,8 +234,7 @@ function LeadsScreen({ funnels, allTags, viewMode = "leads" }) {
   const selectedFunnel = selected ? funnels.find((f) => f.id === selected.funnel_id) : null;
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: selected ? "380px 1fr" : "1fr", gap: 14 }}>
-      {/* List */}
+    <div style={{ display: "block" }}>
       <div>
         <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
           <Input placeholder="Search name/phone/msg" value={search} onChange={(e) => setSearch(e.target.value)} style={{ flex: "1 1 180px" }} />
@@ -207,34 +256,34 @@ function LeadsScreen({ funnels, allTags, viewMode = "leads" }) {
           {loading ? "Loading…" : `${filtered.length} lead${filtered.length === 1 ? "" : "s"}`}
         </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: "75vh", overflowY: "auto" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {filtered.map((l) => {
             const f = funnels.find((ff) => ff.id === l.funnel_id);
             const sel = l.id === selectedId;
             return (
-              <div key={l.id} onClick={() => setSelectedId(l.id)} style={{ padding: 10, background: sel ? "#eef5ff" : "#fff", border: `1px solid ${sel ? C.blue : "#eee"}`, borderRadius: 10, cursor: "pointer" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                  <strong style={{ fontSize: 13 }}>{l.name || l.phone}</strong>
-                  <div style={{ display: "flex", gap: 4 }}>
-                    {l.dnd && <Pill color={C.red} solid>DND</Pill>}
-                    <Pill color={STATUS_C[l.status] || C.gray} solid>{l.status}</Pill>
+              <React.Fragment key={l.id}>
+                <div onClick={() => setSelectedId(sel ? null : l.id)} style={{ padding: 10, background: sel ? "#eef5ff" : "#fff", border: `1px solid ${sel ? C.blue : "#eee"}`, borderRadius: 10, cursor: "pointer" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                    <strong style={{ fontSize: 13 }}>{l.name || (isLid(l.phone) ? (l.wa_display_name || displayPhone(l.phone)) : l.phone)}</strong>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      {l.dnd && <Pill color={C.red} solid>DND</Pill>}
+                      <Pill color={STATUS_C[l.status] || C.gray} solid>{l.status}</Pill>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>{displayPhone(l.phone)} · {f?.name || l.funnel_id || "—"}{l.source ? ` · ${l.source}` : ""}</div>
+                  {l.last_msg && <div style={{ fontSize: 12, color: "#555", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.last_msg}</div>}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
+                    <StageBar stage={l.stage} />
+                    <span style={{ fontSize: 10, color: "#aaa" }}>{fmtDT(l.updated_at)}</span>
                   </div>
                 </div>
-                <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>{l.phone} · {f?.name || l.funnel_id || "—"}{l.source ? ` · ${l.source}` : ""}</div>
-                {l.last_msg && <div style={{ fontSize: 12, color: "#555", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.last_msg}</div>}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
-                  <StageBar stage={l.stage} />
-                  <span style={{ fontSize: 10, color: "#aaa" }}>{fmtDT(l.updated_at)}</span>
-                </div>
-              </div>
+                {sel && selected && <ConversationPane lead={selected} funnel={selectedFunnel} onClose={() => setSelectedId(null)} onChanged={load} allTags={allTags} />}
+              </React.Fragment>
             );
           })}
           {!filtered.length && !loading && <div style={{ padding: 20, textAlign: "center", color: "#aaa", fontSize: 13 }}>No leads yet.</div>}
         </div>
       </div>
-
-      {/* Conversation pane */}
-      {selected && <ConversationPane lead={selected} funnel={selectedFunnel} onClose={() => setSelectedId(null)} onChanged={load} allTags={allTags} />}
     </div>
   );
 }
@@ -312,11 +361,163 @@ function VisitRescheduleButton({ demandId, onRescheduled }) {
   );
 }
 
-function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand }) {
+function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, onAdvanceStep, onRollbackStep }) {
   const [messages, setMessages] = useState([]);
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [logCallOpen, setLogCallOpen] = useState(false);
+  const [outcomeBusy, setOutcomeBusy] = useState(false);
+  const [lostModalOpen, setLostModalOpen] = useState(false);
+  const [funnelSteps, setFunnelSteps] = useState([]);
+  const [staff, setStaff] = useState([]);
+  const [allFunnels, setAllFunnels] = useState([]);
+  const [reassignOpen, setReassignOpen] = useState(false);
+  const [reassignBusy, setReassignBusy] = useState(false);
+  const [funnelBusy, setFunnelBusy] = useState(false);
+
+  useEffect(() => {
+    sb.from("funnels").select("id,name,kind,active").eq("tenant_id", getTenantId()).order("active", { ascending: false }).order("id")
+      .then(({ data }) => setAllFunnels(data || []));
+  }, []);
+
+  const changeFunnel = async (newFunnelId) => {
+    if (!demand?.id || !newFunnelId || newFunnelId === demand.funnel_id) return;
+    if (!window.confirm("Move this demand to a different funnel? Pending drip messages will be cancelled and the bot will enrol the new funnel's steps on its next reply.")) return;
+    setFunnelBusy(true);
+    // 1) Update demand row.
+    await sb.from("bullion_demands").update({
+      funnel_id: newFunnelId,
+      fms_step_id: null, // reset so first step of new funnel applies
+      updated_at: new Date().toISOString(),
+    }).eq("id", demand.id);
+    // 2) Update lead's funnel_id (so drip routing matches).
+    await sb.from("bullion_leads").update({ funnel_id: newFunnelId }).eq("id", lead.id);
+    // 3) Cancel any pending drips queued under the old funnel.
+    await sb.from("bullion_scheduled_messages")
+      .update({ status: "canceled", canceled_reason: "manual_funnel_change" })
+      .eq("lead_id", lead.id).eq("status", "pending");
+    setFunnelBusy(false);
+    onChanged && onChanged();
+  };
+
+  // Load the funnel's step list so we can show "current → next" flow.
+  // Self-heal: if the demand has no fms_step_id but the funnel has steps,
+  // pin it to step 1 so the cadence/flow render correctly.
+  useEffect(() => {
+    if (!demand?.funnel_id) { setFunnelSteps([]); return; }
+    sb.from("bullion_funnel_steps")
+      .select("id,step_order,name,step_type,delay_minutes,active")
+      .eq("tenant_id", getTenantId())
+      .eq("funnel_id", demand.funnel_id)
+      .eq("active", true)
+      .order("step_order")
+      .then(async ({ data }) => {
+        const steps = data || [];
+        setFunnelSteps(steps);
+        if (steps.length && demand?.id && !demand.fms_step_id) {
+          await sb.from("bullion_demands")
+            .update({ fms_step_id: steps[0].id })
+            .eq("id", demand.id);
+          onChanged && onChanged();
+        }
+      });
+  }, [demand?.funnel_id, demand?.id, demand?.fms_step_id]);
+
+  useEffect(() => {
+    sb.from("staff").select("id,name,username,role,app_permissions")
+      .eq("tenant_id", getTenantId())
+      .order("name")
+      .then(({ data }) => setStaff(data || []));
+  }, []);
+
+  // Past call attempts for the cadence strip (read-only; logging happens in modal).
+  const [callLogs, setCallLogs] = useState([]);
+  const [cadenceMinutes, setCadenceMinutes] = useState([]);
+  const [stepDetails, setStepDetails] = useState(null); // includes no_answer_template
+  const [sendingNoAnswer, setSendingNoAnswer] = useState(false);
+  const [editLeadOpen, setEditLeadOpen] = useState(false);
+
+  useEffect(() => {
+    if (!demand?.fms_step_id) { setStepDetails(null); return; }
+    sb.from("bullion_funnel_steps")
+      .select("id,name,step_type,no_answer_template,message_template")
+      .eq("id", demand.fms_step_id).maybeSingle()
+      .then(({ data }) => setStepDetails(data || null));
+  }, [demand?.fms_step_id]);
+
+  const sendTriedToCallWA = async () => {
+    if (!stepDetails?.no_answer_template) {
+      alert("No 'tried to call' WA template configured on this step. Edit the funnel step in Funnels → Steps to add one.");
+      return;
+    }
+    if (isLid(lead.phone) || !lead.phone) {
+      alert("Phone hidden / missing — can't send WA. Add a real number first.");
+      return;
+    }
+    const me = loadUser();
+    const message = String(stepDetails.no_answer_template)
+      .replace(/\{\{\s*name\s*\}\}/g, lead.name || "ji")
+      .replace(/\{\{\s*phone\s*\}\}/g, lead.phone || "")
+      .replace(/\{\{\s*staff_name\s*\}\}/g, me?.name || me?.username || "")
+      .replace(/\{\{\s*funnel_name\s*\}\}/g, funnel?.name || "")
+      .replace(/\{\{\s*goal\s*\}\}/g, funnel?.goal || "");
+    if (!window.confirm(`Send this WA to ${lead.name || lead.phone}?\n\n${message}`)) return;
+    setSendingNoAnswer(true);
+    const r = await sendWA({ phone: lead.phone, message, leadId: lead.id, funnelId: demand.funnel_id, client: funnel?.wbiztool_client });
+    setSendingNoAnswer(false);
+    if (!r.ok) { alert(`Failed: ${r.error || "unknown"}`); return; }
+    alert("✅ WA sent.");
+    onChanged && onChanged();
+  };
+  useEffect(() => {
+    if (!demand?.id) { setCallLogs([]); return; }
+    sb.from("bullion_call_logs")
+      .select("attempt_no,called_at,disposition,notes,staff_id,next_callback_at")
+      .eq("demand_id", demand.id)
+      .order("attempt_no")
+      .then(({ data }) => setCallLogs(data || []));
+  }, [demand?.id]);
+  useEffect(() => {
+    sb.from("bullion_dropdowns")
+      .select("value,sort_order")
+      .eq("tenant_id", getTenantId())
+      .eq("field", "telecaller_cadence_minutes")
+      .eq("active", true)
+      .order("sort_order")
+      .then(({ data }) => setCadenceMinutes((data || []).map((r) => Number(r.value) || 0).filter((n) => n > 0)));
+  }, []);
+
+  const reassign = async (staffId) => {
+    if (!demand?.id) return;
+    setReassignBusy(true);
+    const picked = staff.find((s) => s.id === staffId);
+    const { error } = await sb.from("bullion_demands").update({
+      assigned_staff_id: staffId || null,
+      assigned_to: picked?.name || picked?.username || null,
+      updated_at: new Date().toISOString(),
+    }).eq("id", demand.id);
+    setReassignBusy(false);
+    if (error) { alert(`Failed: ${error.message}`); return; }
+    setReassignOpen(false);
+    onChanged && onChanged();
+  };
+
+  const markOutcome = async (outcome) => {
+    if (!demand?.id) { alert("No active demand on this lead — can't mark outcome."); return; }
+    if (!window.confirm(`Mark this demand as "${outcome}"? Lead will move to the configured follow-up funnel.`)) return;
+    setOutcomeBusy(true);
+    const r = await fetch("/api/demand-outcome", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-crm-secret": window.__CRM_SECRET__ || "" },
+      body: JSON.stringify({ demandId: demand.id, outcome, staffId: loadUser()?.id || null }),
+    });
+    const data = await r.json().catch(() => ({}));
+    setOutcomeBusy(false);
+    if (!data.ok) { alert(`Failed: ${data.error || "unknown"}`); return; }
+    onChanged && onChanged();
+  };
 
   const loadMsgs = useCallback(async () => {
     const { data } = await sb.from("bullion_messages").select("*").eq("tenant_id", getTenantId()).eq("lead_id", lead.id).order("created_at", { ascending: true });
@@ -369,11 +570,11 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand })
       <div style={{ padding: 14, borderBottom: "1px solid #eee", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
         <div style={{ flex: 1 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-            <strong style={{ fontSize: 14 }}>{lead.name || lead.phone}</strong>
+            <strong style={{ fontSize: 14 }}>{lead.name || (isLid(lead.phone) ? (lead.wa_display_name || displayPhone(lead.phone)) : lead.phone)}</strong>
             <Pill color={STATUS_C[lead.status]} solid>{lead.status}</Pill>
             {lead.bot_paused && <Pill color={C.orange}>bot paused</Pill>}
           </div>
-          <div style={{ fontSize: 11, color: "#888" }}>{lead.phone} · {funnel?.name || lead.funnel_id} · {lead.exchanges_count || 0} exchanges</div>
+          <div style={{ fontSize: 11, color: "#888" }}>{displayPhone(lead.phone)} · {funnel?.name || lead.funnel_id} · {lead.exchanges_count || 0} exchanges</div>
           <div style={{ fontSize: 11, color: "#888", marginTop: 3 }}>
             {lead.city && <span>📍 {lead.city} · </span>}
             {lead.email && <span>✉️ {lead.email} · </span>}
@@ -382,9 +583,30 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand })
             {!lead.city && !lead.email && !lead.bday && !lead.anniversary && <em>(name/city/bday/anniv not captured yet)</em>}
           </div>
           <div style={{ marginTop: 6 }}><StageBar stage={lead.stage} /></div>
+          {isLid(lead.phone) && (
+            <div style={{ marginTop: 6, padding: "6px 8px", background: "#fff7ed", border: "1px solid #fdba74", borderRadius: 6, fontSize: 11, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+              <span style={{ color: "#c2410c" }}>⚠️ This is a WA-hidden (LID) sender. Real phone unknown.</span>
+              <Btn small color={C.blue} onClick={() => setLinkOpen(true)}>🔗 Link to existing contact</Btn>
+            </div>
+          )}
         </div>
         <button onClick={onClose} style={{ background: "transparent", border: "none", fontSize: 20, color: "#888", cursor: "pointer" }}>×</button>
       </div>
+      {linkOpen && (
+        <LinkLidModal
+          lead={lead}
+          onClose={() => setLinkOpen(false)}
+          onLinked={() => { setLinkOpen(false); onClose(); onChanged && onChanged(); }}
+        />
+      )}
+      {editLeadOpen && (
+        <ContactEditModal
+          contact={lead}
+          allTags={allTags || []}
+          onClose={() => setEditLeadOpen(false)}
+          onSaved={() => { setEditLeadOpen(false); onChanged && onChanged(); }}
+        />
+      )}
 
       {/* Demand context strip */}
       {demand && (
@@ -398,6 +620,9 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand })
             {demand.occasion_date && <span style={{ color: C.red, fontWeight: 500 }}>{fmtD(demand.occasion_date)}</span>}
             {demand.ai_summary && <span style={{ color: C.blue, fontStyle: "italic" }}>"{demand.ai_summary}"</span>}
             {demand.needs_qualified && <Pill color={C.green} solid>✓ Qualified</Pill>}
+            {demand.assigned_to
+              ? <Pill color={C.blue} solid>👤 {demand.assigned_to}</Pill>
+              : <Pill color={C.gray}>👤 unassigned</Pill>}
           </div>
           {demand.visit_scheduled_at && (
             <div style={{ marginTop: 4, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -412,13 +637,184 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand })
         </div>
       )}
 
+      {/* Funnel flow strip — what step is current, what comes next */}
+      {demand && funnelSteps.length > 0 && (
+        <div style={{ padding: "8px 14px", borderBottom: "1px solid #eee", background: "#f0f9ff", fontSize: 11 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+            <span style={{ fontSize: 10, fontWeight: 600, color: "#1e3a8a", letterSpacing: 0.4 }}>🛤 FUNNEL:</span>
+            <Select
+              value={demand.funnel_id || ""}
+              onChange={(e) => changeFunnel(e.target.value)}
+              disabled={funnelBusy}
+              style={{ fontSize: 11, padding: "2px 6px", height: 22, minWidth: 180, flex: "0 1 auto" }}
+            >
+              {allFunnels.filter((f) => f.active).map((f) => <option key={f.id} value={f.id}>{f.name} ({f.kind || "sales"})</option>)}
+              {allFunnels.find((f) => f.id === demand.funnel_id && !f.active) && (
+                <option value={demand.funnel_id}>{demand.funnel_id} (inactive — currently set)</option>
+              )}
+            </Select>
+            {funnelBusy && <span style={{ fontSize: 10, color: "#92400e" }}>updating…</span>}
+          </div>
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
+            {funnelSteps.map((s, i) => {
+              const isCurrent = s.id === demand.fms_step_id;
+              const curIdx = funnelSteps.findIndex((x) => x.id === demand.fms_step_id);
+              const isPast = curIdx >= 0 && i < curIdx;
+              const isFuture = curIdx >= 0 && i > curIdx;
+              const stepIcon = s.step_type === "call" ? "📞" : "💬";
+              return (
+                <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                  <span style={{
+                    fontSize: 10,
+                    padding: "2px 7px",
+                    borderRadius: 10,
+                    background: isCurrent ? C.blue : isPast ? "#d1fae5" : "#e5e7eb",
+                    color: isCurrent ? "#fff" : isPast ? "#065f46" : "#6b7280",
+                    fontWeight: isCurrent ? 600 : 400,
+                    textDecoration: isPast ? "line-through" : "none",
+                  }}>
+                    {isPast ? "✓" : isCurrent ? "▶" : stepIcon} {s.name || `Step ${s.step_order}`}
+                  </span>
+                  {i < funnelSteps.length - 1 && <span style={{ color: "#cbd5e1" }}>→</span>}
+                </div>
+              );
+            })}
+          </div>
+          {(() => {
+            const curIdx = funnelSteps.findIndex((x) => x.id === demand.fms_step_id);
+            const next = curIdx >= 0 && curIdx + 1 < funnelSteps.length ? funnelSteps[curIdx + 1] : null;
+            const cur = curIdx >= 0 ? funnelSteps[curIdx] : null;
+            if (!cur && demand.fms_step_id == null) {
+              return <div style={{ marginTop: 4, color: "#666" }}>⚠ No step set yet — bot will assign first step automatically when it replies.</div>;
+            }
+            if (next) {
+              return <div style={{ marginTop: 4, color: "#475569" }}>Next: <strong>{next.step_type === "call" ? "📞 " : "💬 "}{next.name}</strong>{next.delay_minutes ? ` · fires ~${next.delay_minutes < 60 ? `${next.delay_minutes}m` : next.delay_minutes < 1440 ? `${Math.round(next.delay_minutes/60)}h` : `${Math.round(next.delay_minutes/1440)}d`} after current`: ""}</div>;
+            }
+            if (cur && curIdx === funnelSteps.length - 1) {
+              return <div style={{ marginTop: 4, color: "#16a085" }}>🏁 Last step — funnel complete after this.</div>;
+            }
+            return null;
+          })()}
+        </div>
+      )}
+
+      {/* Call cadence strip — only for call-step demands */}
+      {demand && demand.step?.step_type === "call" && (() => {
+        const max = cadenceMinutes.length || 6;
+        const used = demand.call_attempts || 0;
+        const remaining = Math.max(0, max - used);
+        const dots = "●".repeat(used) + "○".repeat(remaining);
+        const nextDueMs = demand.next_call_at ? new Date(demand.next_call_at) - new Date() : null;
+        let nextDueLabel;
+        if (nextDueMs == null) nextDueLabel = used === 0 ? "due now" : "—";
+        else if (nextDueMs <= 0) nextDueLabel = "OVERDUE";
+        else if (nextDueMs < 60 * 60_000) nextDueLabel = `in ${Math.round(nextDueMs / 60_000)} min`;
+        else if (nextDueMs < 24 * 3600_000) nextDueLabel = `in ${Math.round(nextDueMs / 3600_000)} h`;
+        else nextDueLabel = `in ${Math.round(nextDueMs / 86400_000)} d`;
+        return (
+          <div style={{ padding: "8px 14px", borderBottom: "1px solid #eee", background: "#fef3c7", fontSize: 11 }}>
+            <div style={{ fontWeight: 600, color: "#92400e", marginBottom: 4 }}>
+              📞 CALL CADENCE — Attempt {used + 1} of {max}
+            </div>
+            <div style={{ color: "#78350f" }}>
+              <span style={{ fontFamily: "monospace", letterSpacing: 2 }}>[ {dots} ]</span>
+              {"  "}{used} used · {remaining} left
+              {"  ·  "}Next due: <strong>{nextDueLabel}</strong>
+              {used >= max && <span style={{ color: C.red }}>{"  ·  "}🛑 cadence exhausted — will auto-transition to cold_revive</span>}
+              {used < max && <span style={{ color: "#78350f" }}>{"  ·  "}After {max} unanswered → cold_revive</span>}
+            </div>
+            {callLogs.length > 0 && (
+              <div style={{ marginTop: 6, paddingTop: 4, borderTop: "1px dashed #fcd34d" }}>
+                <div style={{ fontWeight: 600, marginBottom: 3, color: "#92400e" }}>Past attempts:</div>
+                {callLogs.map((c) => {
+                  const who = staff.find((s) => s.id === c.staff_id);
+                  return (
+                    <div key={c.attempt_no} style={{ color: "#78350f", lineHeight: 1.5 }}>
+                      #{c.attempt_no} · {fmtDT(c.called_at)} · <strong>{c.disposition}</strong>
+                      {who ? ` (${who.name || who.username})` : ""}
+                      {c.notes ? ` — "${c.notes}"` : ""}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <Btn small color="#16a085" onClick={sendTriedToCallWA} disabled={sendingNoAnswer || !stepDetails?.no_answer_template || isLid(lead.phone) || !lead.phone}
+                title={!stepDetails?.no_answer_template ? "Add 'tried to call' template on this funnel step first" : (isLid(lead.phone) || !lead.phone) ? "Phone hidden — can't send" : ""}>
+                {sendingNoAnswer ? "Sending…" : "📲 Send 'tried to call' WA"}
+              </Btn>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Actions */}
       <div style={{ padding: "8px 14px", borderBottom: "1px solid #eee", display: "flex", gap: 6, flexWrap: "wrap" }}>
         <Btn small ghost color={lead.bot_paused ? C.green : C.orange} onClick={toggleBot} disabled={busy}>{lead.bot_paused ? "Resume bot" : "Pause bot"}</Btn>
-        <Btn small ghost color={C.green} onClick={() => setStatus("converted", { stage: "converted" })} disabled={busy}>Mark converted</Btn>
+        <Btn small ghost color={C.green} onClick={() => setEditLeadOpen(true)}>✏️ Edit contact</Btn>
+        {demand?.id && (
+          <>
+            <Btn small color={C.green} onClick={() => markOutcome("converted")} disabled={outcomeBusy}>✅ Converted</Btn>
+            <Btn small color={C.red} onClick={() => setLostModalOpen(true)} disabled={outcomeBusy}>❌ Lost</Btn>
+            <Btn small ghost color={C.orange} onClick={() => markOutcome("not_interested")} disabled={outcomeBusy}>🤔 Not interested</Btn>
+            <Btn small ghost color={C.gray} onClick={() => markOutcome("junk")} disabled={outcomeBusy}>🗑 Junk</Btn>
+            <Btn small ghost color={C.purple} onClick={() => markOutcome("supplier")} disabled={outcomeBusy}>🏷 Supplier</Btn>
+            <Btn small ghost color={C.blue} onClick={() => setReassignOpen((v) => !v)}>🔁 Reassign</Btn>
+            <Btn small ghost color={C.blue} onClick={() => setLogCallOpen(true)} disabled={isLid(lead.phone) || !lead.phone} title={isLid(lead.phone) || !lead.phone ? "Phone hidden — link to existing contact or add a real number first" : ""}>📝 Log call</Btn>
+            {onAdvanceStep && (
+              <Btn small ghost color={C.green} onClick={onAdvanceStep}>✓ Mark step complete</Btn>
+            )}
+            {onRollbackStep && funnelSteps.length > 0 && funnelSteps.findIndex((s) => s.id === demand.fms_step_id) > 0 && (
+              <Btn small ghost color={C.gray} onClick={onRollbackStep}>↶ Undo last step</Btn>
+            )}
+          </>
+        )}
         <Btn small ghost color={C.red} onClick={() => setStatus("handoff", { stage: "handoff", bot_paused: true })} disabled={busy}>Handoff</Btn>
         <Btn small ghost color={C.gray} onClick={() => setStatus("dead", { stage: "dead" })} disabled={busy}>Dead</Btn>
       </div>
+      {logCallOpen && demand && (
+        <LogCallModal
+          demand={demand}
+          lead={lead}
+          funnel={funnel}
+          onClose={() => setLogCallOpen(false)}
+          onSaved={() => { setLogCallOpen(false); onChanged && onChanged(); }}
+        />
+      )}
+      {lostModalOpen && demand && (
+        <LostReasonModal
+          demand={demand}
+          lead={lead}
+          onClose={() => setLostModalOpen(false)}
+          onLost={() => { setLostModalOpen(false); onChanged && onChanged(); }}
+        />
+      )}
+
+      {/* Reassign panel — visible inline when toggled */}
+      {reassignOpen && demand && (
+        <div style={{ padding: "10px 14px", borderBottom: "1px solid #eee", background: "#fef3c7", fontSize: 12 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <strong style={{ color: "#92400e" }}>🔁 Reassign to:</strong>
+            <Select
+              value={demand.assigned_staff_id || ""}
+              onChange={(e) => reassign(e.target.value)}
+              disabled={reassignBusy}
+              style={{ flex: 1 }}
+            >
+              <option value="">— unassigned —</option>
+              <optgroup label="Telecallers (round-robin pool)">
+                {staff.filter((s) => (s.app_permissions?.fms || []).includes("telecaller"))
+                  .map((s) => <option key={s.id} value={s.id}>{s.name || s.username} · @{s.username} {(s.app_permissions?.fms || []).includes("telecaller") ? "📞" : ""}</option>)}
+              </optgroup>
+              <optgroup label="All staff">
+                {staff.filter((s) => !(s.app_permissions?.fms || []).includes("telecaller"))
+                  .map((s) => <option key={s.id} value={s.id}>{s.name || s.username} · @{s.username} ({s.role})</option>)}
+              </optgroup>
+            </Select>
+            <Btn small ghost color={C.gray} onClick={() => setReassignOpen(false)}>Close</Btn>
+          </div>
+        </div>
+      )}
 
       {/* Tags + Family + Visits */}
       <TagEditor leadId={lead.id} allTags={allTags || []} onReload={onChanged} />
@@ -464,21 +860,29 @@ function DemandsScreen({ funnels, allTags }) {
   const [selectedDemand, setSelectedDemand] = useState(null);
   const [filterStep, setFilterStep] = useState("");
   const [filterCat, setFilterCat] = useState("");
+  const [filterSource, setFilterSource] = useState(""); // "" | "walk_in" | "wa_bot"
+  const [filterTemp, setFilterTemp] = useState(""); // "" | hot|warm|cold|converted|dead
   const [search, setSearch] = useState("");
   const [adding, setAdding] = useState(false);
+  const [addingWalkin, setAddingWalkin] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     let q = sb
       .from("bullion_demands")
-      .select("*, lead:bullion_leads(id,name,phone,status,bot_paused,funnel_id,stage,last_msg,last_msg_at,updated_at), step:bullion_funnel_steps(id,name,step_type)")
+      .select("*, lead:bullion_leads(id,name,phone,wa_display_name,status,bot_paused,funnel_id,stage,last_msg,last_msg_at,updated_at,source), step:bullion_funnel_steps(id,name,step_type)")
       .eq("tenant_id", getTenantId())
       .order("occasion_date", { ascending: true, nullsFirst: false });
     if (filterStep) q = q.eq("fms_step_id", filterStep);
     if (filterCat) q = q.eq("product_category", filterCat);
-    const { data } = await q;
-    // Sort: demands with occasion_date first (by closeness), then by updated_at
+    const { data, error } = await q;
+    if (error) { console.error("demands load error", error); }
+    // Sort by temperature bucket: hot → warm → cold → converted → dead
+    // Within each bucket, prefer urgent occasion dates and most recent activity.
     const sorted = (data || []).sort((a, b) => {
+      const ta = tempRank(demandTemperature(a));
+      const tb = tempRank(demandTemperature(b));
+      if (ta !== tb) return ta - tb;
       const da = a.occasion_date ? new Date(a.occasion_date) - new Date() : Infinity;
       const db = b.occasion_date ? new Date(b.occasion_date) - new Date() : Infinity;
       if (da !== db) return da - db;
@@ -492,15 +896,35 @@ function DemandsScreen({ funnels, allTags }) {
   useEffect(() => { const t = setInterval(load, 15000); return () => clearInterval(t); }, [load]);
 
   const filtered = useMemo(() => {
-    if (!search) return demands;
+    // Supplier / vendor / karigar messages are inbound to your WA but they
+    // aren't sales enquiries — exclude them from the Demands list always.
+    const SUPPLIER_SOURCES = new Set(["seller_enquiry", "supplier", "vendor", "karigar", "wholesale", "kariger"]);
+    let rows = demands.filter((d) => !SUPPLIER_SOURCES.has(d.lead?.source));
+    // Hide closed demands by default (unless temp filter explicitly asks for converted/dead).
+    // Old demands have outcome=null but lead.status='converted'/'dead' — check both signals.
+    if (!["converted", "dead"].includes(filterTemp)) {
+      rows = rows.filter((d) =>
+        !["converted", "lost", "junk"].includes(d.outcome) &&
+        !["converted", "dead"].includes(d.lead?.status)
+      );
+    }
+    if (filterSource === "walk_in") {
+      rows = rows.filter((d) => d.lead?.source === "walk_in");
+    } else if (filterSource === "wa_bot") {
+      rows = rows.filter((d) => d.lead?.source !== "walk_in");
+    }
+    if (filterTemp) rows = rows.filter((d) => demandTemperature(d) === filterTemp);
+    if (!search) return rows;
     const s = search.toLowerCase();
-    return demands.filter((d) =>
+    return rows.filter((d) =>
       (d.lead?.name || "").toLowerCase().includes(s) ||
+      (d.lead?.wa_display_name || "").toLowerCase().includes(s) ||
       (d.lead?.phone || "").includes(s) ||
       (d.description || "").toLowerCase().includes(s) ||
+      (d.ai_summary || "").toLowerCase().includes(s) ||
       (d.occasion || "").toLowerCase().includes(s)
     );
-  }, [demands, search]);
+  }, [demands, search, filterSource, filterTemp]);
 
   const selectedLead = selectedLeadId ? demands.find((d) => d.lead?.id === selectedLeadId)?.lead : null;
   const selectedFunnel = selectedLead ? funnels.find((f) => f.id === selectedLead.funnel_id) : null;
@@ -543,8 +967,34 @@ function DemandsScreen({ funnels, allTags }) {
     }
   };
 
+  // Roll back to the previous active step. Cancels any pending drip messages
+  // queued for the step we're leaving so they don't fire after the rollback.
+  // Call logs are kept intact (audit history).
+  const rollbackStep = async (demand) => {
+    const funnelId = demand.funnel_id;
+    if (!funnelId) return;
+    const { data: steps } = await sb
+      .from("bullion_funnel_steps")
+      .select("id,name,step_order,step_type")
+      .eq("funnel_id", funnelId)
+      .eq("tenant_id", getTenantId())
+      .eq("active", true)
+      .order("step_order", { ascending: true });
+    if (!steps?.length) return;
+    const curIdx = steps.findIndex((s) => s.id === demand.fms_step_id);
+    if (curIdx <= 0) { alert("Already on the first step — nothing to roll back."); return; }
+    if (!window.confirm("Roll back to the previous step? Pending drip messages for the current step will be cancelled. Call logs are kept.")) return;
+    const prevStep = steps[curIdx - 1];
+    await sb.from("bullion_demands").update({ fms_step_id: prevStep.id, updated_at: new Date().toISOString() }).eq("id", demand.id);
+    // Cancel any pending drip rows so the just-abandoned step doesn't keep firing.
+    await sb.from("bullion_scheduled_messages")
+      .update({ status: "canceled", canceled_reason: "step_rollback" })
+      .eq("lead_id", demand.lead_id).eq("status", "pending");
+    load();
+  };
+
   return (
-    <div style={{ display: "grid", gridTemplateColumns: selectedLeadId ? "400px 1fr" : "1fr", gap: 14 }}>
+    <div style={{ display: "block" }}>
       <div>
         <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
           <Input placeholder="Search name / phone / description" value={search} onChange={(e) => setSearch(e.target.value)} style={{ flex: "1 1 180px" }} />
@@ -552,7 +1002,21 @@ function DemandsScreen({ funnels, allTags }) {
             <option value="">All products</option>
             {PRODUCT_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
           </Select>
+          <Select value={filterSource} onChange={(e) => setFilterSource(e.target.value)} style={{ width: 130 }}>
+            <option value="">All sources</option>
+            <option value="walk_in">🏪 Walk-ins only</option>
+            <option value="wa_bot">📱 WA / other</option>
+          </Select>
+          <Select value={filterTemp} onChange={(e) => setFilterTemp(e.target.value)} style={{ width: 130 }}>
+            <option value="">All temps</option>
+            <option value="hot">🔥 Hot</option>
+            <option value="warm">🌤 Warm</option>
+            <option value="cold">❄️ Cold</option>
+            <option value="converted">✅ Converted</option>
+            <option value="dead">💀 Dead</option>
+          </Select>
           <Btn ghost small color={C.gray} onClick={load}>↻</Btn>
+          <Btn small color="#16a085" onClick={() => setAddingWalkin(true)} style={{ color: "#fff" }}>+ Walk-in</Btn>
           <Btn small color={C.blue} onClick={() => setAdding(true)}>+ New Demand</Btn>
         </div>
 
@@ -563,63 +1027,89 @@ function DemandsScreen({ funnels, allTags }) {
             onSaved={() => { setAdding(false); load(); }}
           />
         )}
+        {addingWalkin && (
+          <WalkinEntryModal
+            funnels={funnels}
+            allTags={allTags}
+            onClose={() => setAddingWalkin(false)}
+            onSaved={() => { setAddingWalkin(false); load(); }}
+          />
+        )}
 
         <div style={{ fontSize: 11, color: "#888", marginBottom: 8 }}>
           {loading ? "Loading…" : `${filtered.length} demand${filtered.length === 1 ? "" : "s"}`}
         </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: "75vh", overflowY: "auto" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {filtered.map((d) => {
             const urg = urgencyLabel(d);
             const sel = d.lead?.id === selectedLeadId;
             const stepName = d.step?.name || "—";
             const isCallStep = d.step?.step_type === "call";
+            const attempts = d.call_attempts || 0;
+            const cadenceColor = attempts >= 5 ? C.red : attempts >= 4 ? C.orange : C.gray;
+            const overdue = d.next_call_at && new Date(d.next_call_at) < new Date();
             return (
-              <div
-                key={d.id}
-                onClick={() => { setSelectedLeadId(d.lead?.id || null); setSelectedDemand(d); }}
-                style={{
-                  padding: 10,
-                  background: sel ? "#eef5ff" : "#fff",
-                  border: `2px solid ${sel ? C.blue : urgencyBorder(d)}`,
-                  borderRadius: 10,
-                  cursor: "pointer",
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                  <strong style={{ fontSize: 13 }}>{d.lead?.name || d.lead?.phone || "Unknown"}</strong>
-                  <div style={{ display: "flex", gap: 4 }}>
-                    {urg && <Pill color={urg.color} solid>{urg.text}</Pill>}
-                    <Pill color={isCallStep ? C.red : C.blue}>{isCallStep ? "📞 Call" : "🤖 Bot"}</Pill>
+              <React.Fragment key={d.id}>
+                <div
+                  onClick={() => {
+                    if (sel) { setSelectedLeadId(null); setSelectedDemand(null); }
+                    else { setSelectedLeadId(d.lead?.id || null); setSelectedDemand(d); }
+                  }}
+                  style={{
+                    padding: 10,
+                    background: sel ? "#eef5ff" : "#fff",
+                    border: `2px solid ${sel ? C.blue : urgencyBorder(d)}`,
+                    borderRadius: 10,
+                    cursor: "pointer",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                    <strong style={{ fontSize: 13 }}>{d.lead?.name || (isLid(d.lead?.phone) ? (d.lead?.wa_display_name || displayPhone(d.lead?.phone)) : d.lead?.phone) || "Unknown"}</strong>
+                    <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                      {(() => { const t = demandTemperature(d); const m = tempMeta(t); return <Pill color={m.color} solid>{m.label}</Pill>; })()}
+                      {(d.lead?.source === "walk_in") && <Pill color="#16a085" solid>🏪 Walk-in</Pill>}
+                      {urg && <Pill color={urg.color} solid>{urg.text}</Pill>}
+                      {isCallStep && <Pill color={overdue ? C.red : cadenceColor} solid>📞 {overdue ? "OVERDUE " : ""}{attempts}/6</Pill>}
+                      {!isCallStep && <Pill color={C.blue}>🤖 Bot</Pill>}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 12, color: "#555", marginBottom: 3 }}>
+                    {d.description || "(no description)"}
+                    {d.for_whom ? <span style={{ color: "#888" }}> · for {d.for_whom}</span> : ""}
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      <Pill color={C.purple}>{d.product_category || "?"}</Pill>
+                      {d.occasion && <Pill color={C.orange}>{d.occasion}</Pill>}
+                      {d.budget && <Pill color={C.gray}>₹{Number(d.budget).toLocaleString("en-IN")}</Pill>}
+                      {d.visit_scheduled_at && (() => {
+                        const vdays = Math.round((new Date(d.visit_scheduled_at) - new Date()) / 86400000);
+                        const color = vdays < 0 ? "#999" : vdays === 0 ? C.red : vdays <= 2 ? C.orange : C.green;
+                        const label = vdays < 0 ? "Visit passed" : vdays === 0 ? "Visit TODAY" : `Visit in ${vdays}d`;
+                        return <Pill color={color} solid>🏪 {label}{d.visit_confirmed ? " ✓" : ""}</Pill>;
+                      })()}
+                    </div>
+                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                      {d.assigned_to && <Pill color={C.blue}>👤 {d.assigned_to}</Pill>}
+                      <span style={{ fontSize: 11, color: C.gray }}>{stepName}</span>
+                      <span style={{ fontSize: 10, color: "#aaa" }}>{fmtDT(d.updated_at)}</span>
+                    </div>
                   </div>
                 </div>
-                <div style={{ fontSize: 12, color: "#555", marginBottom: 3 }}>
-                  {d.description || "(no description)"}
-                  {d.for_whom ? <span style={{ color: "#888" }}> · for {d.for_whom}</span> : ""}
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    <Pill color={C.purple}>{d.product_category || "?"}</Pill>
-                    {d.occasion && <Pill color={C.orange}>{d.occasion}</Pill>}
-                    {d.budget && <Pill color={C.gray}>₹{Number(d.budget).toLocaleString("en-IN")}</Pill>}
-                    {d.visit_scheduled_at && (() => {
-                      const vdays = Math.round((new Date(d.visit_scheduled_at) - new Date()) / 86400000);
-                      const color = vdays < 0 ? "#999" : vdays === 0 ? C.red : vdays <= 2 ? C.orange : C.green;
-                      const label = vdays < 0 ? "Visit passed" : vdays === 0 ? "Visit TODAY" : `Visit in ${vdays}d`;
-                      return <Pill color={color} solid>🏪 {label}{d.visit_confirmed ? " ✓" : ""}</Pill>;
-                    })()}
-                  </div>
-                  <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                    <span style={{ fontSize: 11, color: C.gray }}>{stepName}</span>
-                    <span style={{ fontSize: 10, color: "#aaa" }}>{fmtDT(d.updated_at)}</span>
-                  </div>
-                </div>
-                {isCallStep && (
-                  <div style={{ marginTop: 6, display: "flex", gap: 6 }}>
-                    <Btn small color={C.green} onClick={(e) => { e.stopPropagation(); advanceStep(d); }}>✓ Called — Next step</Btn>
-                  </div>
+                {sel && selectedLead && selectedDemand?.id === d.id && (
+                  <ConversationPane
+                    lead={selectedLead}
+                    funnel={selectedFunnel}
+                    onClose={() => { setSelectedLeadId(null); setSelectedDemand(null); }}
+                    onChanged={load}
+                    allTags={allTags}
+                    demand={selectedDemand}
+                    onAdvanceStep={() => advanceStep(d)}
+                    onRollbackStep={() => rollbackStep(d)}
+                  />
                 )}
-              </div>
+              </React.Fragment>
             );
           })}
           {!filtered.length && !loading && (
@@ -629,17 +1119,6 @@ function DemandsScreen({ funnels, allTags }) {
           )}
         </div>
       </div>
-
-      {selectedLead && (
-        <ConversationPane
-          lead={selectedLead}
-          funnel={selectedFunnel}
-          onClose={() => { setSelectedLeadId(null); setSelectedDemand(null); }}
-          onChanged={load}
-          allTags={allTags}
-          demand={selectedDemand}
-        />
-      )}
     </div>
   );
 }
@@ -657,16 +1136,26 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
   const [allowDuplicate, setAllowDuplicate] = useState(false);
   const [err, setErr] = useState("");
   const [toast, setToast] = useState("");
+  const [staff, setStaff] = useState([]);
+  useEffect(() => {
+    sb.from("staff").select("id,name,username,role")
+      .eq("tenant_id", getTenantId())
+      .order("name")
+      .then(({ data }) => setStaff(data || []));
+  }, []);
+
   const [form, setForm] = useState({
     phone: "", name: "",
-    description: "", productCategory: "gold",
-    budget: "", occasion: "", occasionDate: "", forWhom: "",
+    description: "", productCategory: "gold", productTypes: [],
+    estimate: "", occasion: "", occasionDate: "", forWhom: "",
     visitScheduledAt: "",
     funnelId: "",
-    assignedTo: "",
+    crmSource: "",
+    assignedStaffId: loadUser()?.id || "",
   });
 
   const set = (k, v) => setForm((s) => ({ ...s, [k]: v }));
+  const toggleProductType = (t) => setForm((s) => ({ ...s, productTypes: s.productTypes.includes(t) ? s.productTypes.filter((x) => x !== t) : [...s.productTypes, t] }));
 
   const doSearch = useCallback(async (q) => {
     if (!q || q.length < 2) { setSearchResults([]); return; }
@@ -695,16 +1184,23 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
     setSearchResults([]);
   };
 
-  const autoFunnel = (cat) => {
-    const map = { gold: "bullion", silver: "bullion", gold_coin: "bullion", silver_coin: "bullion", diamond: "solitaire", polki: "antique", kundan: "antique", gemstone: "gemstone", solitaire: "solitaire", lab_diamond: "lab_diamond", other: "non_gold_qualify" };
-    const fid = map[cat] || "non_gold_qualify";
-    const found = funnels.find((f) => f.id === fid);
-    return found?.id || funnels.find((f) => f.kind === "acquisition")?.id || funnels[0]?.id || "";
+  const walkinFunnel = funnels.find((f) => f.active && (/walk[\s_-]?in/i.test(f.id) || /walk[\s_-]?in/i.test(f.name || "")));
+
+  const autoFunnel = () => {
+    return walkinFunnel?.id
+      || funnels.find((f) => f.active)?.id
+      || funnels[0]?.id
+      || "";
   };
+
+  // Pre-select walk-in funnel as soon as funnels load
+  useEffect(() => {
+    if (!form.funnelId && funnels.length) set("funnelId", autoFunnel());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [funnels.length]);
 
   const handleCatChange = (cat) => {
     set("productCategory", cat);
-    if (!form.funnelId) set("funnelId", autoFunnel(cat));
   };
 
   const save = async () => {
@@ -722,14 +1218,19 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
           name: form.name || null,
           description: form.description,
           productCategory: form.productCategory,
-          budget: form.budget ? Number(form.budget) : null,
+          productTypes: form.productTypes,
+          budget: form.estimate ? Number(form.estimate) : null,
           occasion: form.occasion || null,
           occasionDate: form.occasionDate || null,
           forWhom: form.forWhom || null,
           visitScheduledAt: form.visitScheduledAt ? new Date(form.visitScheduledAt).toISOString() : null,
           funnelId: form.funnelId || autoFunnel(form.productCategory),
           leadId: selectedContact?.id || null,
-          assignedTo: form.assignedTo || null,
+          assignedStaffId: form.assignedStaffId || null,
+          assignedTo: form.assignedStaffId
+            ? (staff.find((s) => s.id === form.assignedStaffId)?.name || null)
+            : null,
+          crmSource: form.crmSource || null,
           createdBy: loadUser()?.name || loadUser()?.username || null,
           tenantId: getTenantId(),
           skipBot: !activateBot,
@@ -817,7 +1318,25 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
 
           <Field label="Description — what exactly are they looking for?" required>
             <Textarea rows={3} value={form.description} onChange={(e) => set("description", e.target.value)}
-              placeholder="e.g. Polki necklace set for daughter's wedding, traditional Rajasthani style..." />
+              placeholder="e.g. Polki necklace set for wedding, traditional Rajasthani style..." />
+          </Field>
+
+          <Field label="Product type — pick all that apply">
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: "4px 0" }}>
+              {PRODUCT_TYPES.map((p) => {
+                const active = form.productTypes.includes(p);
+                return (
+                  <button key={p} type="button" onClick={() => toggleProductType(p)}
+                    style={{ padding: "4px 12px", borderRadius: 16, fontSize: 12, cursor: "pointer",
+                             border: `1px solid ${active ? C.blue : "#ddd"}`,
+                             background: active ? C.blue : "transparent",
+                             color: active ? "#fff" : "#555",
+                             fontWeight: active ? 600 : 400 }}>
+                    {p}
+                  </button>
+                );
+              })}
+            </div>
           </Field>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -833,8 +1352,8 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <Field label="Budget (₹)">
-              <Input type="number" value={form.budget} onChange={(e) => set("budget", e.target.value)} placeholder="150000" />
+            <Field label="Estimate (₹)">
+              <Input type="number" value={form.estimate} onChange={(e) => set("estimate", e.target.value)} placeholder="150000" />
             </Field>
             <Field label="Funnel">
               <Select value={form.funnelId || autoFunnel(form.productCategory)} onChange={(e) => set("funnelId", e.target.value)}>
@@ -845,6 +1364,29 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
                 const f = funnels.find((x) => x.id === fid);
                 return f?.wa_number ? <div style={{ fontSize: 11, color: "#555", marginTop: 3 }}>📱 Sends from: <strong>{f.wa_number}</strong></div> : null;
               })()}
+            </Field>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="Attended by (salesperson)">
+              <Select value={form.assignedStaffId} onChange={(e) => set("assignedStaffId", e.target.value)}>
+                <option value="">— select salesperson —</option>
+                {staff.map((s) => <option key={s.id} value={s.id}>{s.name || s.username} · @{s.username}</option>)}
+              </Select>
+            </Field>
+            <Field label="CRM source (how did they find us?)">
+              <Select value={form.crmSource} onChange={(e) => set("crmSource", e.target.value)}>
+                <option value="">— select source —</option>
+                <option value="online_google">🔍 Google / SEO</option>
+                <option value="online_instagram">📸 Instagram</option>
+                <option value="online_other">🌐 Other online</option>
+                <option value="walkin">🏪 Walk-in</option>
+                <option value="referral">🤝 Referral</option>
+                <option value="old_client">⭐ Old client</option>
+                <option value="exhibition">🎪 Exhibition / event</option>
+                <option value="broadcast">📢 Broadcast</option>
+                <option value="other">❓ Other</option>
+              </Select>
             </Field>
           </div>
 
@@ -869,6 +1411,822 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
           </div>
         </>
       )}
+    </Modal>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// WALK-IN ENTRY MODAL — full contact details + optional demand
+// Saves contact (bullion_leads) with source=walk_in + tag walk_in,
+// then optionally records a demand. Bot is OFF by default (client is in store).
+// ──────────────────────────────────────────────────────────
+function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved }) {
+  const sourceTags = allTags.filter((t) => t.category === "source").map((t) => t.name);
+  const otherTags = allTags.filter((t) => t.category !== "source").map((t) => t.name);
+
+  const [searchQ, setSearchQ] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [selectedContact, setSelectedContact] = useState(null);
+  const [searching, setSearching] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [createDemand, setCreateDemand] = useState(true);
+  const [activateBot, setActivateBot] = useState(false);
+  const [err, setErr] = useState("");
+  const [toast, setToast] = useState("");
+  const [dupContact, setDupContact] = useState(null); // existing contact with same phone
+  const [editingContact, setEditingContact] = useState(null); // when user wants to fix the dup contact's name/details
+
+  const walkinFunnel = funnels.find((f) => f.active && (/walk[\s_-]?in/i.test(f.id) || /walk[\s_-]?in/i.test(f.name || "")));
+
+  const [staff, setStaff] = useState([]);
+  const [uploading, setUploading] = useState(false);
+  const [refImageUrl, setRefImageUrl] = useState("");
+
+  useEffect(() => {
+    sb.from("staff").select("id,name,username,role")
+      .eq("tenant_id", getTenantId())
+      .order("name")
+      .then(({ data }) => setStaff(data || []));
+  }, []);
+
+  const [form, setForm] = useState({
+    // contact
+    name: "", phone: "", city: "", email: "",
+    bday: "", anniversary: "", client_rating: "",
+    is_client: false, wedding_date: "", wedding_family_member: "",
+    source: "walk_in", tags: ["walk_in"], discoverySource: "",
+    // demand (optional)
+    description: "", productCategory: "gold", productTypes: [],
+    estimate: "", occasion: "", occasionDate: "", forWhom: "",
+    visitScheduledAt: "", funnelId: walkinFunnel?.id || "",
+    assignedStaffId: "",
+    // visit tracking
+    partySize: "", inTime: "", outTime: "",
+    itemsSeen: [], priceQuoted: "",
+    notBoughtReason: "", notBoughtNotes: "",
+    competitorMentioned: "", followupRequired: false,
+  });
+
+  const set = (k, v) => setForm((s) => ({ ...s, [k]: v }));
+  const toggleTag = (tag) => setForm((s) => ({ ...s, tags: s.tags.includes(tag) ? s.tags.filter((t) => t !== tag) : [...s.tags, tag] }));
+  const toggleProductType = (t) => setForm((s) => ({ ...s, productTypes: s.productTypes.includes(t) ? s.productTypes.filter((x) => x !== t) : [...s.productTypes, t] }));
+  const toggleItemSeen = (t) => setForm((s) => ({ ...s, itemsSeen: s.itemsSeen.includes(t) ? s.itemsSeen.filter((x) => x !== t) : [...s.itemsSeen, t] }));
+
+  const uploadDesignRef = async (file) => {
+    if (!file) return;
+    setUploading(true);
+    try {
+      const path = `walkin-refs/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+      const { error } = await sb.storage.from("media").upload(path, file, { upsert: true });
+      if (error) { alert(`Upload failed: ${error.message}`); setUploading(false); return; }
+      const { data: pub } = sb.storage.from("media").getPublicUrl(path);
+      setRefImageUrl(pub.publicUrl);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // pre-pick walk-in funnel once funnels load
+  useEffect(() => {
+    if (!form.funnelId && walkinFunnel?.id) set("funnelId", walkinFunnel.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [funnels.length]);
+
+  const doSearch = useCallback(async (q) => {
+    if (!q || q.length < 2) { setSearchResults([]); return; }
+    setSearching(true);
+    const isPhone = /^\d+$/.test(q);
+    let query = sb.from("bullion_leads").select("id,name,phone,city,client_rating,last_msg_at,source,tags").eq("tenant_id", getTenantId());
+    query = isPhone ? query.ilike("phone", `%${q}%`) : query.ilike("name", `%${q}%`);
+    const { data } = await query.limit(5);
+    setSearchResults(data || []);
+    setSearching(false);
+  }, []);
+
+  useEffect(() => { const t = setTimeout(() => doSearch(searchQ), 300); return () => clearTimeout(t); }, [searchQ, doSearch]);
+
+  const pickContact = (c) => {
+    setSelectedContact(c);
+    setForm((s) => ({
+      ...s,
+      name: c.name || "", phone: c.phone || "", city: c.city || "",
+      client_rating: c.client_rating || "",
+      tags: Array.from(new Set([...(c.tags || []), "walk_in"])),
+      source: c.source || "walk_in",
+    }));
+    setSearchQ(""); setSearchResults([]);
+  };
+
+  const save = async () => {
+    setErr("");
+    setDupContact(null);
+    const phone = String(form.phone || "").replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, "");
+    if (!phone) return setErr("Phone number is required.");
+    if (createDemand && !form.description) return setErr("Description is required when creating a demand.");
+    setSaving(true);
+
+    try {
+      // 1) Upsert contact (bullion_leads)
+      const tenantId = getTenantId();
+      const tags = Array.from(new Set([...(form.tags || []), "walk_in"]));
+      const contactPayload = {
+        tenant_id: tenantId,
+        phone,
+        name: form.name || null,
+        city: form.city || null,
+        email: form.email || null,
+        bday: form.bday || null,
+        anniversary: form.anniversary || null,
+        client_rating: form.client_rating ? Number(form.client_rating) : null,
+        is_client: !!form.is_client,
+        wedding_date: form.wedding_date || null,
+        wedding_family_member: form.wedding_family_member || null,
+        source: form.source || "walk_in",
+        tags,
+        updated_at: new Date().toISOString(),
+      };
+
+      let leadId = selectedContact?.id || null;
+      if (leadId) {
+        const { error } = await sb.from("bullion_leads").update(contactPayload).eq("id", leadId);
+        if (error) { setErr(error.message); setSaving(false); return; }
+      } else {
+        // Block on duplicate phone — force user to pick the existing contact
+        const { data: existing } = await sb.from("bullion_leads")
+          .select("id,name,phone,city,client_rating,source,tags")
+          .eq("tenant_id", tenantId).eq("phone", phone).maybeSingle();
+        if (existing?.id) {
+          setDupContact(existing);
+          setSaving(false);
+          return;
+        }
+        {
+          const { data: ins, error } = await sb.from("bullion_leads")
+            .insert({ ...contactPayload, status: "new", funnel_id: form.funnelId || walkinFunnel?.id || "bullion" })
+            .select("id").single();
+          if (error) { setErr(error.message); setSaving(false); return; }
+          leadId = ins.id;
+        }
+      }
+
+      // 2) Optionally create demand
+      if (createDemand) {
+        const res = await fetch("/api/demand", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
+          body: JSON.stringify({
+            phone, name: form.name || null,
+            description: form.description,
+            productCategory: form.productCategory,
+            productTypes: form.productTypes,
+            budget: form.estimate ? Number(form.estimate) : null,
+            occasion: form.occasion || null,
+            occasionDate: form.occasionDate || null,
+            forWhom: form.forWhom || null,
+            visitScheduledAt: form.visitScheduledAt ? new Date(form.visitScheduledAt).toISOString() : null,
+            funnelId: form.funnelId || walkinFunnel?.id,
+            leadId,
+            assignedStaffId: form.assignedStaffId || null,
+            assignedTo: form.assignedStaffId
+              ? (staff.find((s) => s.id === form.assignedStaffId)?.name || null)
+              : null,
+            imageUrls: refImageUrl ? [refImageUrl] : [],
+            discoverySource: form.discoverySource || null,
+            partySize: form.partySize ? Number(form.partySize) : null,
+            inTime: form.inTime || null,
+            outTime: form.outTime || null,
+            itemsSeen: form.itemsSeen,
+            priceQuoted: form.priceQuoted ? Number(form.priceQuoted) : null,
+            notBoughtReason: form.notBoughtReason || null,
+            notBoughtNotes: form.notBoughtNotes || null,
+            competitorMentioned: form.competitorMentioned || null,
+            followupRequired: !!form.followupRequired,
+            createdBy: loadUser()?.name || loadUser()?.username || null,
+            tenantId,
+            skipBot: !activateBot,
+            allowDuplicate: true,
+          }),
+        });
+        const data = await res.json();
+        if (!data.ok) { setErr(data.error || "Demand create failed."); setSaving(false); return; }
+      }
+
+      setToast(createDemand ? "Walk-in saved with demand." : "Walk-in contact saved.");
+      setTimeout(() => onSaved(), 1500);
+    } catch (e) {
+      setErr(String(e)); setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title="Walk-in Client Entry" onClose={onClose} width={680}>
+      {toast ? (
+        <div style={{ padding: 20, textAlign: "center", color: C.green, fontSize: 14 }}>✅ {toast}</div>
+      ) : (
+        <>
+          <Field label="Search existing client by name or phone">
+            <div style={{ position: "relative" }}>
+              <Input
+                value={selectedContact ? `${selectedContact.name || selectedContact.phone} · ${selectedContact.phone}` : searchQ}
+                onChange={(e) => { if (selectedContact) setSelectedContact(null); setSearchQ(e.target.value); }}
+                onBlur={() => setTimeout(() => setSearchResults([]), 150)}
+                placeholder="Type name or 10-digit phone — leave blank to add new"
+              />
+              {selectedContact && (
+                <button onClick={() => { setSelectedContact(null); setSearchQ(""); }}
+                  style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "transparent", border: "none", color: C.red, cursor: "pointer", fontSize: 16 }}>×</button>
+              )}
+              {searchResults.length > 0 && !selectedContact && (
+                <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1px solid #ddd", borderRadius: 8, zIndex: 10, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>
+                  {searchResults.map((c) => (
+                    <div key={c.id} onMouseDown={() => pickContact(c)} style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, borderBottom: "1px solid #f0f0f0" }}>
+                      <strong>{c.name || "(no name)"}</strong> · {c.phone}
+                      {c.city && <span style={{ color: "#888" }}> · {c.city}</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {searching && <span style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", fontSize: 11, color: "#aaa" }}>searching…</span>}
+            </div>
+          </Field>
+
+          <div style={{ fontSize: 12, color: "#666", margin: "10px 0 6px", fontWeight: 600 }}>👤 Contact Details</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="Name"><Input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Full name" /></Field>
+            <Field label="Phone" required><Input value={form.phone} onChange={(e) => set("phone", e.target.value)} placeholder="9876543210" /></Field>
+            <Field label="City"><Input value={form.city} onChange={(e) => set("city", e.target.value)} placeholder="Delhi" /></Field>
+            <Field label="Email"><Input value={form.email} onChange={(e) => set("email", e.target.value)} placeholder="email@example.com" /></Field>
+            <Field label="Birthday"><Input type="date" value={form.bday} onChange={(e) => set("bday", e.target.value)} /></Field>
+            <Field label="Anniversary"><Input type="date" value={form.anniversary} onChange={(e) => set("anniversary", e.target.value)} /></Field>
+            <Field label="Wedding date"><Input type="date" value={form.wedding_date} onChange={(e) => set("wedding_date", e.target.value)} /></Field>
+            <Field label="Wedding (family member)"><Input value={form.wedding_family_member} onChange={(e) => set("wedding_family_member", e.target.value)} placeholder="daughter Priya" /></Field>
+            <Field label="Rating">
+              <Select value={form.client_rating} onChange={(e) => set("client_rating", e.target.value)}>
+                <option value="">—</option>
+                {[1,2,3,4,5].map((n) => <option key={n} value={n}>{"★".repeat(n)} {n}</option>)}
+              </Select>
+            </Field>
+            <Field label="Source">
+              <Select value={form.source} onChange={(e) => set("source", e.target.value)}>
+                <option value="walk_in">walk_in</option>
+                {sourceTags.filter((s) => s !== "walk_in").map((s) => <option key={s} value={s}>{s}</option>)}
+              </Select>
+            </Field>
+          </div>
+
+          {otherTags.length > 0 && (
+            <Field label="Tags" style={{ marginTop: 8 }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {otherTags.map((tag) => {
+                  const active = form.tags.includes(tag);
+                  const meta = allTags.find((t) => t.name === tag);
+                  return (
+                    <button key={tag} onClick={() => toggleTag(tag)} style={{ padding: "3px 10px", borderRadius: 20, fontSize: 12, cursor: "pointer", border: `1px solid ${active ? (meta?.color || C.blue) : "#ddd"}`, background: active ? (meta?.color || C.blue) : "transparent", color: active ? "#fff" : "#555", fontWeight: active ? 600 : 400 }}>
+                      {tag}
+                    </button>
+                  );
+                })}
+              </div>
+            </Field>
+          )}
+
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, margin: "8px 0", cursor: "pointer" }}>
+            <input type="checkbox" checked={form.is_client} onChange={(e) => set("is_client", e.target.checked)} />
+            Mark as known client (has purchased before)
+          </label>
+
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, margin: "14px 0 6px", cursor: "pointer", fontWeight: 600, color: "#444" }}>
+            <input type="checkbox" checked={createDemand} onChange={(e) => setCreateDemand(e.target.checked)} />
+            🛒 Also record a demand (purchase enquiry)
+          </label>
+
+          {createDemand && (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <Field label="Product category" required>
+                  <Select value={form.productCategory} onChange={(e) => set("productCategory", e.target.value)}>
+                    {PRODUCT_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </Select>
+                </Field>
+                <Field label="For whom">
+                  <Select value={form.forWhom} onChange={(e) => set("forWhom", e.target.value)}>
+                    <option value="">— select —</option>
+                    {FOR_WHOM_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+                  </Select>
+                </Field>
+              </div>
+              <Field label="Description — what they're looking for" required>
+                <Textarea rows={3} value={form.description} onChange={(e) => set("description", e.target.value)}
+                  placeholder="e.g. Wedding necklace set in polki, around 5 lakhs..." />
+              </Field>
+              <Field label="Product type — pick all that apply">
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: "4px 0" }}>
+                  {PRODUCT_TYPES.map((p) => {
+                    const active = form.productTypes.includes(p);
+                    return (
+                      <button key={p} type="button" onClick={() => toggleProductType(p)}
+                        style={{ padding: "4px 12px", borderRadius: 16, fontSize: 12, cursor: "pointer",
+                                 border: `1px solid ${active ? C.blue : "#ddd"}`,
+                                 background: active ? C.blue : "transparent",
+                                 color: active ? "#fff" : "#555",
+                                 fontWeight: active ? 600 : 400 }}>
+                        {p}
+                      </button>
+                    );
+                  })}
+                </div>
+              </Field>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <Field label="Occasion">
+                  <Select value={form.occasion} onChange={(e) => set("occasion", e.target.value)}>
+                    <option value="">— select —</option>
+                    {OCCASION_TYPES.map((o) => <option key={o} value={o}>{o}</option>)}
+                  </Select>
+                </Field>
+                <Field label="Occasion date"><Input type="date" value={form.occasionDate} onChange={(e) => set("occasionDate", e.target.value)} /></Field>
+                <Field label="Estimate (₹)"><Input type="number" value={form.estimate} onChange={(e) => set("estimate", e.target.value)} placeholder="150000" /></Field>
+                <Field label="Funnel">
+                  <Select value={form.funnelId} onChange={(e) => set("funnelId", e.target.value)}>
+                    {funnels.filter((f) => f.active).map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+                  </Select>
+                </Field>
+                <Field label="Attended by">
+                  <Select value={form.assignedStaffId} onChange={(e) => set("assignedStaffId", e.target.value)}>
+                    <option value="">— select salesperson —</option>
+                    {staff.map((s) => <option key={s.id} value={s.id}>{s.name || s.username} · @{s.username}</option>)}
+                  </Select>
+                </Field>
+                <Field label="Where did you find us?">
+                  <Select value={form.discoverySource} onChange={(e) => set("discoverySource", e.target.value)}>
+                    <option value="">— select —</option>
+                    {DISCOVERY_SOURCES.map((d) => <option key={d} value={d}>{d}</option>)}
+                  </Select>
+                </Field>
+              </div>
+
+              <Field label="Design reference (image)">
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <input type="file" accept="image/*" onChange={(e) => uploadDesignRef(e.target.files?.[0])} disabled={uploading}
+                    style={{ fontSize: 12, color: "#555" }} />
+                  {uploading && <span style={{ fontSize: 11, color: "#888" }}>uploading…</span>}
+                  {refImageUrl && (
+                    <a href={refImageUrl} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: C.green }}>
+                      ✓ uploaded — preview
+                    </a>
+                  )}
+                </div>
+              </Field>
+
+              <Field label="Visit / next appointment">
+                <Input type="datetime-local" value={form.visitScheduledAt} onChange={(e) => set("visitScheduledAt", e.target.value)} />
+              </Field>
+
+              <div style={{ fontSize: 12, color: "#666", margin: "14px 0 6px", fontWeight: 600 }}>🏪 Visit tracking</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+                <Field label="No. of people">
+                  <Input type="number" min="1" value={form.partySize} onChange={(e) => set("partySize", e.target.value)} placeholder="2" />
+                </Field>
+                <Field label="In time">
+                  <Input type="datetime-local" value={form.inTime} onChange={(e) => set("inTime", e.target.value)} />
+                </Field>
+                <Field label="Out time">
+                  <Input type="datetime-local" value={form.outTime} onChange={(e) => set("outTime", e.target.value)} />
+                </Field>
+              </div>
+
+              <Field label="Items seen — pick all">
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: "4px 0" }}>
+                  {PRODUCT_TYPES.map((p) => {
+                    const active = form.itemsSeen.includes(p);
+                    return (
+                      <button key={p} type="button" onClick={() => toggleItemSeen(p)}
+                        style={{ padding: "4px 12px", borderRadius: 16, fontSize: 12, cursor: "pointer",
+                                 border: `1px solid ${active ? C.purple : "#ddd"}`,
+                                 background: active ? C.purple : "transparent",
+                                 color: active ? "#fff" : "#555",
+                                 fontWeight: active ? 600 : 400 }}>
+                        {p}
+                      </button>
+                    );
+                  })}
+                </div>
+              </Field>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <Field label="Price quoted (₹)">
+                  <Input type="number" value={form.priceQuoted} onChange={(e) => set("priceQuoted", e.target.value)} placeholder="225000" />
+                </Field>
+                <Field label="Outcome / reason">
+                  <Select value={form.notBoughtReason} onChange={(e) => set("notBoughtReason", e.target.value)}>
+                    <option value="">— select —</option>
+                    {NOT_BOUGHT_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
+                  </Select>
+                </Field>
+              </div>
+
+              <Field label="Notes (optional — anything specific they said)">
+                <Textarea rows={2} value={form.notBoughtNotes} onChange={(e) => set("notBoughtNotes", e.target.value)}
+                  placeholder="e.g. wanted lighter weight chains, kept asking about HUID, wife liked the pearl set" />
+              </Field>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <Field label="Competitor mentioned">
+                  <Input value={form.competitorMentioned} onChange={(e) => set("competitorMentioned", e.target.value)} placeholder="Tanishq / PNG / Khazana / Tribhovandas" />
+                </Field>
+                <Field label="Follow-up required?">
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, padding: "6px 0", cursor: "pointer" }}>
+                    <input type="checkbox" checked={form.followupRequired} onChange={(e) => set("followupRequired", e.target.checked)} />
+                    Yes — needs WA follow-up
+                  </label>
+                </Field>
+              </div>
+
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, margin: "6px 0", cursor: "pointer", color: "#666" }}>
+                <input type="checkbox" checked={activateBot} onChange={(e) => setActivateBot(e.target.checked)} />
+                Send WhatsApp opening message & activate bot (usually OFF for walk-ins)
+              </label>
+            </>
+          )}
+
+          {err && <p style={{ fontSize: 12, color: C.red, margin: "8px 0" }}>{err}</p>}
+
+          {dupContact && (
+            <div style={{ background: "#fff7ed", border: "1px solid #fdba74", borderRadius: 8, padding: 12, margin: "10px 0", fontSize: 13 }}>
+              <div style={{ fontWeight: 600, color: "#c2410c", marginBottom: 4 }}>⚠️ Phone already exists</div>
+              <div style={{ color: "#555", marginBottom: 8 }}>
+                <strong>{dupContact.name || "(no name)"}</strong> · {dupContact.phone}
+                {dupContact.city ? ` · ${dupContact.city}` : ""}
+                {dupContact.source ? ` · source: ${dupContact.source}` : ""}
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <Btn small color={C.blue} onClick={() => { pickContact(dupContact); setDupContact(null); }}>Use existing contact</Btn>
+                <Btn small ghost color={C.green} onClick={() => setEditingContact(dupContact)}>✏️ Edit existing (fix name/details)</Btn>
+                <Btn small ghost color={C.gray} onClick={() => { setDupContact(null); set("phone", ""); }}>Change phone</Btn>
+              </div>
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
+            <Btn ghost color={C.gray} onClick={onClose}>Cancel</Btn>
+            <Btn color={C.blue} onClick={save} disabled={saving || !!dupContact}>{saving ? "Saving…" : "Save Walk-in"}</Btn>
+          </div>
+        </>
+      )}
+
+      {editingContact && (
+        <ContactEditModal
+          contact={editingContact}
+          allTags={allTags}
+          onClose={() => setEditingContact(null)}
+          onSaved={async () => {
+            // Refresh dup info after edit so the panel shows updated name.
+            const { data: refreshed } = await sb.from("bullion_leads")
+              .select("id,name,phone,city,client_rating,source,tags").eq("id", editingContact.id).maybeSingle();
+            setDupContact(refreshed || null);
+            setEditingContact(null);
+          }}
+        />
+      )}
+    </Modal>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// LINK LID → EXISTING CONTACT
+// Folds a LID-only lead into an existing real-phone contact: moves messages
+// and demands over, registers an alias so future LID inbound routes correctly,
+// then deletes the LID stub row.
+// ──────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────
+// LOG CALL MODAL — telecaller logs call attempt + result
+// Shows the right script (S1/S2/S3) based on attempt #, plus an objections cheat-sheet.
+// On save, POSTs to /api/log-call which advances cadence / transitions funnel.
+// ──────────────────────────────────────────────────────────
+const DISPOSITION_LABELS = {
+  answered_interested: "✅ Answered — interested (advance to messaging)",
+  answered_not_now: "🕒 Answered — not now (callback)",
+  answered_not_interested: "❌ Answered — not interested",
+  no_answer: "🔕 No answer",
+  busy: "📞 Busy (retry in 15 min)",
+  voicemail_left: "📩 Voicemail left",
+  callback_requested: "📅 Callback requested",
+  wrong_number: "🚫 Wrong number",
+  dnc: "⛔ Do not call (DNC)",
+};
+
+function LogCallModal({ demand, lead, funnel, onClose, onSaved }) {
+  const tenantId = getTenantId();
+  const attemptNo = (demand?.call_attempts || 0) + 1;
+  const openedAtRef = useRef(Date.now()); // timestamp when modal mounted = when telecaller started dialling
+  const [scripts, setScripts] = useState({ s1: "", s2: "", s3: "" });
+  const [objections, setObjections] = useState([]);
+  const [disposition, setDisposition] = useState("answered_interested");
+  const [notes, setNotes] = useState("");
+  const [nextCallback, setNextCallback] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const [showScript, setShowScript] = useState(true);
+  const [elapsedSec, setElapsedSec] = useState(0);
+
+  // Live timer so telecaller can see how long the call has been running
+  useEffect(() => {
+    const t = setInterval(() => setElapsedSec(Math.round((Date.now() - openedAtRef.current) / 1000)), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await sb.from("bullion_dropdowns")
+        .select("field,value,sort_order")
+        .eq("tenant_id", tenantId)
+        .in("field", ["telecaller_script_s1","telecaller_script_s2","telecaller_script_s3","telecaller_objection"])
+        .eq("active", true)
+        .order("sort_order");
+      const s = { s1: "", s2: "", s3: "" };
+      const obj = [];
+      for (const row of data || []) {
+        if (row.field === "telecaller_script_s1") s.s1 = row.value;
+        else if (row.field === "telecaller_script_s2") s.s2 = row.value;
+        else if (row.field === "telecaller_script_s3") s.s3 = row.value;
+        else if (row.field === "telecaller_objection") obj.push(row.value);
+      }
+      setScripts(s);
+      setObjections(obj);
+    })();
+  }, [tenantId]);
+
+  const scriptKey = attemptNo === 1 ? "s1" : attemptNo >= 6 ? "s3" : "s2";
+  const scriptRaw = scripts[scriptKey] || "";
+  const me = loadUser();
+  const fillScript = (str) => str
+    .replace(/\{name\}/g, lead?.name || "ji")
+    .replace(/\{staff_name\}/g, me?.name || me?.username || "")
+    .replace(/\{product_category\}/g, demand?.product_category || "jewellery");
+  const scriptFilled = fillScript(scriptRaw);
+
+  const save = async () => {
+    setErr("");
+    if (!disposition) { setErr("Pick a disposition."); return; }
+    if ((disposition === "answered_not_now" || disposition === "callback_requested") && !nextCallback) {
+      setErr("Set a callback time for this disposition.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const durationSec = Math.round((Date.now() - openedAtRef.current) / 1000);
+      const r = await fetch("/api/log-call", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-crm-secret": window.__CRM_SECRET__ || "" },
+        body: JSON.stringify({
+          demandId: demand.id,
+          staffId: me?.id || null,
+          disposition,
+          notes: notes || null,
+          durationSec,
+          openedAt: new Date(openedAtRef.current).toISOString(),
+          nextCallbackAt: nextCallback ? new Date(nextCallback).toISOString() : null,
+        }),
+      });
+      const data = await r.json();
+      setSaving(false);
+      if (!data.ok) { setErr(data.error || "Failed to log call"); return; }
+      onSaved && onSaved(data);
+    } catch (e) { setErr(String(e)); setSaving(false); }
+  };
+
+  return (
+    <Modal title={`📝 Log call — attempt #${attemptNo} · ${lead?.name || lead?.phone || ""}`} onClose={onClose} width={760}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 280px", gap: 14 }}>
+        <div>
+          <Field label="Disposition" required>
+            <Select value={disposition} onChange={(e) => setDisposition(e.target.value)}>
+              {Object.entries(DISPOSITION_LABELS).map(([k,l]) => <option key={k} value={k}>{l}</option>)}
+            </Select>
+          </Field>
+
+          {(disposition === "answered_not_now" || disposition === "callback_requested") && (
+            <Field label="Callback at" required>
+              <Input type="datetime-local" value={nextCallback} onChange={(e) => setNextCallback(e.target.value)} />
+            </Field>
+          )}
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="Duration (auto-tracked)">
+              <div style={{ padding: "8px 10px", background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 7, fontSize: 13, fontVariantNumeric: "tabular-nums", color: "#0369a1", fontWeight: 600 }}>
+                ⏱ {Math.floor(elapsedSec / 60)}:{String(elapsedSec % 60).padStart(2, "0")}
+                <span style={{ fontSize: 11, fontWeight: 400, color: "#0284c7", marginLeft: 8 }}>(saved on submit)</span>
+              </div>
+            </Field>
+            <Field label="Phone">
+              <Input value={displayPhone(lead?.phone || "")} readOnly style={{ background: "#f5f5f5" }} />
+            </Field>
+          </div>
+
+          <Field label="Notes">
+            <Textarea rows={4} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Conversation notes — what they said, next action…" />
+          </Field>
+
+          {err && <p style={{ fontSize: 12, color: C.red, margin: "8px 0" }}>{err}</p>}
+
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
+            <Btn ghost color={C.gray} onClick={onClose}>Cancel</Btn>
+            <Btn color={C.blue} onClick={save} disabled={saving}>{saving ? "Saving…" : "Save call log"}</Btn>
+          </div>
+        </div>
+
+        <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: 10, fontSize: 12, lineHeight: 1.5 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+            <strong style={{ fontSize: 12 }}>📜 Script {scriptKey.toUpperCase()} (attempt #{attemptNo})</strong>
+            <button onClick={() => setShowScript((v) => !v)} style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: 11, color: "#3b82f6" }}>{showScript ? "hide" : "show"}</button>
+          </div>
+          {showScript && <div style={{ whiteSpace: "pre-wrap", color: "#334155", marginBottom: 10 }}>{scriptFilled || "(no script configured)"}</div>}
+
+          {objections.length > 0 && (
+            <>
+              <strong style={{ fontSize: 12, display: "block", marginTop: 8, marginBottom: 6 }}>💬 Objections</strong>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {objections.map((line, i) => {
+                  const [q, a] = line.split("|||").map((s) => s.trim());
+                  return (
+                    <div key={i} style={{ borderLeft: "3px solid #cbd5e1", paddingLeft: 8 }}>
+                      <div style={{ fontWeight: 600, color: "#475569" }}>"{q}"</div>
+                      <div style={{ color: "#334155" }}>{a}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// LOST REASON MODAL — structured reason before marking a demand lost
+// ──────────────────────────────────────────────────────────
+const LOST_REASONS = [
+  { value: "LOST_PRICE",          label: "💰 Price too high",           color: "#dc2626" },
+  { value: "LOST_TIMING",         label: "⏰ Bad timing / not ready",    color: "#ea580c" },
+  { value: "LOST_COMPETITOR",     label: "🏪 Went to competitor",        color: "#7c3aed" },
+  { value: "LOST_NOT_INTERESTED", label: "🚫 Not interested at all",     color: "#6b7280" },
+  { value: "LOST_BUDGET",         label: "💸 Budget too low",            color: "#b45309" },
+  { value: "LOST_NO_SHOW",        label: "👻 No show / ghosted",         color: "#0891b2" },
+  { value: "LOST_JUNK",           label: "🗑 Junk / wrong number",       color: "#9ca3af" },
+];
+
+function LostReasonModal({ demand, lead, onClose, onLost }) {
+  const [reason, setReason] = useState("");
+  const [lostNotes, setLostNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  const confirm = async () => {
+    if (!reason) { setErr("Please pick a reason."); return; }
+    setSaving(true);
+    try {
+      const r = await fetch("/api/demand-outcome", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-crm-secret": window.__CRM_SECRET__ || "" },
+        body: JSON.stringify({
+          demandId: demand.id,
+          outcome: "lost",
+          lostReason: reason,
+          notes: lostNotes || null,
+          staffId: loadUser()?.id || null,
+        }),
+      });
+      const data = await r.json().catch(() => ({}));
+      setSaving(false);
+      if (!data.ok) { setErr(data.error || "Failed to mark lost"); return; }
+      onLost && onLost(reason);
+    } catch (e) { setErr(String(e)); setSaving(false); }
+  };
+
+  return (
+    <Modal title={`❌ Mark as Lost — ${lead?.name || lead?.phone || ""}`} onClose={onClose} width={480}>
+      <div style={{ fontSize: 13, color: "#555", marginBottom: 14 }}>
+        Pick the main reason this demand is being closed as lost. This helps us improve follow-up strategies.
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
+        {LOST_REASONS.map((r) => (
+          <label key={r.value} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: 8, border: `2px solid ${reason === r.value ? r.color : "#e5e7eb"}`, background: reason === r.value ? r.color + "12" : "#fff", cursor: "pointer", transition: "all 0.15s" }}>
+            <input type="radio" name="lostReason" value={r.value} checked={reason === r.value} onChange={() => setReason(r.value)} style={{ accentColor: r.color }} />
+            <span style={{ fontSize: 13, fontWeight: reason === r.value ? 600 : 400, color: reason === r.value ? r.color : "#374151" }}>{r.label}</span>
+          </label>
+        ))}
+      </div>
+      <Field label="Notes (optional)">
+        <Textarea rows={2} value={lostNotes} onChange={(e) => setLostNotes(e.target.value)} placeholder="Any extra context — e.g. competitor name, price they got elsewhere…" />
+      </Field>
+      {err && <p style={{ fontSize: 12, color: C.red, margin: "4px 0 8px" }}>{err}</p>}
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn ghost color={C.gray} onClick={onClose}>Cancel</Btn>
+        <Btn color={C.red} onClick={confirm} disabled={saving || !reason}>{saving ? "Saving…" : "Confirm — Mark Lost"}</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+function LinkLidModal({ lead, onClose, onLinked }) {
+  const [searchQ, setSearchQ] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [target, setTarget] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const doSearch = useCallback(async (q) => {
+    if (!q || q.length < 2) { setSearchResults([]); return; }
+    setSearching(true);
+    const isPhone = /^\d+$/.test(q);
+    let query = sb.from("bullion_leads")
+      .select("id,name,phone,city,client_rating")
+      .eq("tenant_id", getTenantId())
+      .neq("id", lead.id);
+    query = isPhone ? query.ilike("phone", `%${q}%`) : query.ilike("name", `%${q}%`);
+    const { data } = await query.limit(8);
+    // Hide other LID rows from picker
+    setSearchResults((data || []).filter((c) => !/@lid$/i.test(c.phone || "")));
+    setSearching(false);
+  }, [lead.id]);
+
+  useEffect(() => { const t = setTimeout(() => doSearch(searchQ), 300); return () => clearTimeout(t); }, [searchQ, doSearch]);
+
+  const link = async () => {
+    if (!target) return setErr("Pick a contact to link to.");
+    setErr(""); setBusy(true);
+    try {
+      const tenantId = getTenantId();
+      // 1) Register alias (LID phone → real lead)
+      const { error: aliasErr } = await sb.from("bullion_lead_aliases").insert({
+        tenant_id: tenantId,
+        alias_phone: lead.phone,
+        lead_id: target.id,
+        created_by: loadUser()?.name || loadUser()?.username || null,
+      });
+      if (aliasErr && !String(aliasErr.message || "").includes("duplicate")) {
+        setErr(aliasErr.message); setBusy(false); return;
+      }
+      // 2) Move messages
+      await sb.from("bullion_messages").update({ lead_id: target.id, phone: target.phone }).eq("lead_id", lead.id);
+      // 3) Move demands
+      await sb.from("bullion_demands").update({ lead_id: target.id }).eq("lead_id", lead.id);
+      // 4) Move scheduled messages
+      await sb.from("bullion_scheduled_messages").update({ lead_id: target.id }).eq("lead_id", lead.id);
+      // 5) Delete LID stub lead
+      await sb.from("bullion_leads").delete().eq("id", lead.id);
+      onLinked && onLinked();
+    } catch (e) {
+      setErr(String(e)); setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title="Link LID conversation to existing contact" onClose={onClose} width={520}>
+      <div style={{ fontSize: 12, color: "#666", marginBottom: 10 }}>
+        WA hides the real phone for some senders. Pick the actual client below — all messages and demands from this LID conversation will be moved to that contact, and any future inbound from this LID will route to them automatically.
+      </div>
+
+      <Field label="Search by name or phone">
+        <div style={{ position: "relative" }}>
+          <Input
+            value={target ? `${target.name || target.phone} · ${target.phone}` : searchQ}
+            onChange={(e) => { if (target) setTarget(null); setSearchQ(e.target.value); }}
+            onBlur={() => setTimeout(() => setSearchResults([]), 150)}
+            placeholder="Type at least 2 chars…"
+          />
+          {target && (
+            <button onClick={() => { setTarget(null); setSearchQ(""); }}
+              style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "transparent", border: "none", color: C.red, cursor: "pointer", fontSize: 16 }}>×</button>
+          )}
+          {searchResults.length > 0 && !target && (
+            <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1px solid #ddd", borderRadius: 8, zIndex: 10, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>
+              {searchResults.map((c) => (
+                <div key={c.id} onMouseDown={() => { setTarget(c); setSearchQ(""); setSearchResults([]); }}
+                  style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, borderBottom: "1px solid #f0f0f0" }}>
+                  <strong>{c.name || "(no name)"}</strong> · {c.phone}
+                  {c.city && <span style={{ color: "#888" }}> · {c.city}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+          {searching && <span style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", fontSize: 11, color: "#aaa" }}>searching…</span>}
+        </div>
+      </Field>
+
+      {err && <p style={{ fontSize: 12, color: C.red, margin: "8px 0" }}>{err}</p>}
+
+      <div style={{ background: "#fff7ed", border: "1px solid #fdba74", borderRadius: 6, padding: 10, fontSize: 11, color: "#7c2d12", margin: "8px 0" }}>
+        ⚠️ This will move all messages, demands, and scheduled drips from <code>{lead.phone}</code> into the chosen contact, then delete the LID stub. Cannot be undone.
+      </div>
+
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 10 }}>
+        <Btn ghost color={C.gray} onClick={onClose}>Cancel</Btn>
+        <Btn color={C.blue} onClick={link} disabled={busy || !target}>{busy ? "Linking…" : "Link & merge"}</Btn>
+      </div>
     </Modal>
   );
 }
@@ -938,7 +2296,7 @@ function FunnelsScreen({ funnels, personas, onReload }) {
         })}
       </div>
 
-      {editing && <FunnelForm funnel={editing === "new" ? null : editing} personas={personas} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); onReload(); }} />}
+      {editing && <FunnelForm funnel={editing === "new" ? null : editing} personas={personas} funnels={funnels} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); onReload(); }} />}
       {stepsFor && <FunnelStepsEditor funnel={stepsFor} onClose={() => setStepsFor(null)} />}
     </div>
   );
@@ -999,6 +2357,27 @@ function FunnelStepsEditor({ funnel, onClose }) {
     setSteps((s) => s.filter((_, i) => i !== idx));
   };
 
+  // Swap two adjacent steps' step_order. Persist immediately so the order
+  // change survives navigating away without clicking Save All.
+  const moveStep = async (idx, direction) => {
+    const target = idx + direction;
+    if (target < 0 || target >= steps.length) return;
+    const a = steps[idx];
+    const b = steps[target];
+    const aOrder = a.step_order;
+    const bOrder = b.step_order;
+    setSteps((s) => {
+      const next = [...s];
+      next[idx] = { ...a, step_order: bOrder };
+      next[target] = { ...b, step_order: aOrder };
+      // Re-sort so visual order matches
+      return next.sort((x, y) => (x.step_order || 0) - (y.step_order || 0));
+    });
+    // Persist if both rows have ids
+    if (a.id) await sb.from("bullion_funnel_steps").update({ step_order: bOrder }).eq("id", a.id);
+    if (b.id) await sb.from("bullion_funnel_steps").update({ step_order: aOrder }).eq("id", b.id);
+  };
+
   const saveAll = async () => {
     setSaving(true);
     for (const row of steps) {
@@ -1043,8 +2422,12 @@ function FunnelStepsEditor({ funnel, onClose }) {
           const showDatetime = tt === "specific_datetime";
           return (
             <Card key={row.id || `new-${idx}`} style={{ padding: 12 }}>
-              <div style={{ display: "grid", gridTemplateColumns: "50px 1fr 90px auto", gap: 8, alignItems: "center", marginBottom: 8 }}>
-                <Input type="number" value={row.step_order} onChange={(e) => updateStep(idx, "step_order", Number(e.target.value))} style={{ padding: 4 }} />
+              <div style={{ display: "grid", gridTemplateColumns: "70px 36px 1fr 90px auto", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                <div style={{ display: "flex", gap: 2 }}>
+                  <Btn small ghost color={C.gray} onClick={() => moveStep(idx, -1)} disabled={idx === 0} style={{ padding: "2px 6px", fontSize: 14 }}>↑</Btn>
+                  <Btn small ghost color={C.gray} onClick={() => moveStep(idx, 1)} disabled={idx === steps.length - 1} style={{ padding: "2px 6px", fontSize: 14 }}>↓</Btn>
+                </div>
+                <div style={{ fontSize: 13, color: "#666", textAlign: "center", fontWeight: 600 }}>#{row.step_order}</div>
                 <Input value={row.name || ""} onChange={(e) => updateStep(idx, "name", e.target.value)} placeholder="Step name" />
                 <Select value={row.active ? "on" : "off"} onChange={(e) => updateStep(idx, "active", e.target.value === "on")}>
                   <option value="on">active</option>
@@ -1110,6 +2493,19 @@ function FunnelStepsEditor({ funnel, onClose }) {
                 onChange={(e) => updateStep(idx, "message_template", e.target.value)}
                 placeholder="Message text or context hint for AI. Placeholders: {{name}} {{city}} {{phone}} {{funnel_name}} {{goal}}"
               />
+
+              {row.step_type === "call" && (
+                <div style={{ marginTop: 8 }}>
+                  <Field label={`📲 "Tried to call" WA fallback (sent from demand detail when call doesn't connect)`}>
+                    <Textarea
+                      rows={2}
+                      value={row.no_answer_template || ""}
+                      onChange={(e) => updateStep(idx, "no_answer_template", e.target.value)}
+                      placeholder='Hi {{name}}, just tried calling you about your enquiry — call back when free or reply here. Placeholders: {{name}} {{phone}} {{staff_name}} {{funnel_name}}'
+                    />
+                  </Field>
+                </div>
+              )}
 
               {/* Link attachment */}
               <div style={{ marginTop: 8, padding: "10px 12px", background: "#f9fafb", borderRadius: 8, border: "1px solid #e5e7eb" }}>
@@ -1178,7 +2574,7 @@ function FunnelStepsEditor({ funnel, onClose }) {
   );
 }
 
-function FunnelForm({ funnel, personas, onClose, onSaved }) {
+function FunnelForm({ funnel, personas, funnels = [], onClose, onSaved }) {
   const isNew = !funnel?.id;
   const [form, setForm] = useState(funnel || { id: "", name: "", description: "", wa_number: "", wbiztool_client: "", product_focus: "gold_bullion", persona_id: personas[0]?.id || null, active: true, goal: "", max_exchanges_before_handoff: 3 });
   const [saving, setSaving] = useState(false);
@@ -1232,6 +2628,19 @@ function FunnelForm({ funnel, personas, onClose, onSaved }) {
       <Field label="Match keywords — comma-separated phrases from your ad's prefilled WhatsApp message">
         <Textarea rows={2} value={form.match_keywords || ""} onChange={(e) => set("match_keywords", e.target.value)} placeholder="gold, gold coin, AKT-GOLD, sona, ginni — the first inbound is matched case-insensitive; best-match funnel wins" />
       </Field>
+      <Field label="Source label — auto-tagged on every new lead from this funnel">
+        <Select value={form.source_label || ""} onChange={(e) => set("source_label", e.target.value)}>
+          <option value="">— none (don't auto-tag) —</option>
+          <option value="fb_ads">📘 fb_ads</option>
+          <option value="insta_ads">📸 insta_ads</option>
+          <option value="google_ads">🔎 google_ads</option>
+          <option value="wa_organic">💬 wa_organic</option>
+          <option value="walk_in">🏪 walk_in</option>
+          <option value="referral">🤝 referral</option>
+          <option value="exotel">📞 exotel</option>
+          <option value="seller_enquiry">🏷️ seller_enquiry</option>
+        </Select>
+      </Field>
       <Field label="WhatsApp session — each funnel must have its own session" required>
         <Select value={form.wbiztool_client || ""} onChange={(e) => pickSession(e.target.value)}>
           <option value="">— choose a paired WA session —</option>
@@ -1270,10 +2679,36 @@ function FunnelForm({ funnel, personas, onClose, onSaved }) {
           <div style={{ fontSize: 11, color: "#6b7280", marginTop: 3 }}>This is what the AI includes as the offer in pre/post event messages. It also appears in approval message previews.</div>
         )}
       </Field>
+      <div style={{ fontSize: 12, color: "#666", margin: "12px 0 4px", fontWeight: 600 }}>📤 Post-outcome routing — when sales marks the demand, lead auto-moves to the chosen funnel</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+        <Field label="✅ next_on_convert">
+          <Select value={form.next_on_convert || ""} onChange={(e) => set("next_on_convert", e.target.value || null)}>
+            <option value="">— none —</option>
+            {funnels.filter((f) => f.id !== form.id && f.active).map((f) => <option key={f.id} value={f.id}>{f.name} ({f.kind || "sales"})</option>)}
+          </Select>
+        </Field>
+        <Field label="❌ next_on_lost">
+          <Select value={form.next_on_lost || ""} onChange={(e) => set("next_on_lost", e.target.value || null)}>
+            <option value="">— none —</option>
+            {funnels.filter((f) => f.id !== form.id && f.active).map((f) => <option key={f.id} value={f.id}>{f.name} ({f.kind || "sales"})</option>)}
+          </Select>
+        </Field>
+        <Field label="🤔 next_on_not_interested">
+          <Select value={form.next_on_not_interested || ""} onChange={(e) => set("next_on_not_interested", e.target.value || null)}>
+            <option value="">— none —</option>
+            {funnels.filter((f) => f.id !== form.id && f.active).map((f) => <option key={f.id} value={f.id}>{f.name} ({f.kind || "sales"})</option>)}
+          </Select>
+        </Field>
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
         <Field label="Funnel type (kind)">
           <Select value={form.kind || "sales"} onChange={(e) => set("kind", e.target.value)}>
             <option value="sales">Sales / enquiry</option>
+            <option value="acquisition">🎯 Acquisition (new leads)</option>
+            <option value="hot_followup">🔥 Hot follow-up (re-engage)</option>
+            <option value="nurture">🌱 Nurture (long-term)</option>
+            <option value="cold_revive">❄️ Cold revive (lost leads)</option>
+            <option value="after_sales">✅ After-sales (post-purchase)</option>
             <option value="birthday">🎂 Birthday wishes</option>
             <option value="anniversary">💍 Anniversary wishes</option>
             <option value="lifecycle">Lifecycle / post-event</option>
@@ -1944,6 +3379,7 @@ function ContactsScreen({ funnels }) {
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState(null);
   const [sending, setSending] = useState(null);
+  const [showLid, setShowLid] = useState(false); // hide WA-hidden (LID) leads by default
 
   const loadTags = useCallback(async () => {
     const { data } = await sb.from("bullion_tags").select("name,category,color")
@@ -1974,7 +3410,11 @@ function ContactsScreen({ funnels }) {
     return () => clearTimeout(t);
   }, [search, load]);
 
-  const filtered = contacts;
+  const filtered = useMemo(
+    () => showLid ? contacts : contacts.filter((c) => !isLid(c.phone)),
+    [contacts, showLid]
+  );
+  const lidCount = contacts.filter((c) => isLid(c.phone)).length;
 
   // Unique WA numbers from funnels for the sender chooser
   const waNumbers = useMemo(() => {
@@ -1989,6 +3429,10 @@ function ContactsScreen({ funnels }) {
         <Input placeholder="Search name / phone / email / city…" value={search} onChange={(e) => setSearch(e.target.value)} style={{ flex: "1 1 220px" }} />
         <Btn ghost small color={C.gray} onClick={load}>↻</Btn>
         <Btn small color={C.blue} onClick={() => setEditing({})}>+ Add Contact</Btn>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#666", cursor: "pointer" }}>
+          <input type="checkbox" checked={showLid} onChange={(e) => setShowLid(e.target.checked)} />
+          Show WA-hidden ({lidCount})
+        </label>
         <span style={{ fontSize: 11, color: "#888" }}>{loading ? "Loading…" : `${filtered.length} contacts`}</span>
       </div>
 
@@ -2026,7 +3470,7 @@ function ContactCard({ contact: c, onEdit, onSendWA }) {
     <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 12, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 4 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
-          <div style={{ fontWeight: 600, fontSize: 14 }}>{c.name || <span style={{ color: "#aaa" }}>(no name)</span>}</div>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>{c.name || c.phone || <span style={{ color: "#aaa" }}>(no name)</span>}</div>
           <div style={{ fontSize: 12, color: "#555" }}>{c.phone}</div>
         </div>
         <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
@@ -2087,9 +3531,35 @@ function ContactEditModal({ contact, allTags = [], onClose, onSaved }) {
     wedding_family_member: contact.wedding_family_member || "",
     source: contact.source || "",
     tags: Array.isArray(contact.tags) ? contact.tags : [],
+    partner_lead_id: contact.partner_lead_id || null,
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  const [partnerInfo, setPartnerInfo] = useState(null);
+  const [partnerSearch, setPartnerSearch] = useState("");
+  const [partnerResults, setPartnerResults] = useState([]);
+
+  // Resolve current partner info for display
+  useEffect(() => {
+    if (!form.partner_lead_id) { setPartnerInfo(null); return; }
+    sb.from("bullion_leads").select("id,name,phone").eq("id", form.partner_lead_id).maybeSingle()
+      .then(({ data }) => setPartnerInfo(data || null));
+  }, [form.partner_lead_id]);
+
+  // Search for partner candidates
+  useEffect(() => {
+    if (!partnerSearch || partnerSearch.length < 2) { setPartnerResults([]); return; }
+    const t = setTimeout(async () => {
+      const isPhone = /^\d+$/.test(partnerSearch);
+      let q = sb.from("bullion_leads").select("id,name,phone,city")
+        .eq("tenant_id", getTenantId())
+        .neq("id", contact.id || "00000000-0000-0000-0000-000000000000");
+      q = isPhone ? q.ilike("phone", `%${partnerSearch}%`) : q.ilike("name", `%${partnerSearch}%`);
+      const { data } = await q.limit(6);
+      setPartnerResults(data || []);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [partnerSearch, contact.id]);
 
   const set = (k, v) => setForm((s) => ({ ...s, [k]: v }));
 
@@ -2118,16 +3588,31 @@ function ContactEditModal({ contact, allTags = [], onClose, onSaved }) {
       wedding_family_member: form.wedding_family_member || null,
       source: form.source || null,
       tags: form.tags,
+      partner_lead_id: form.partner_lead_id || null,
       updated_at: new Date().toISOString(),
     };
     let error;
+    let savedId = contact.id;
     if (isNew) {
-      ({ error } = await sb.from("bullion_leads").insert({ ...payload, status: "new", funnel_id: "bullion" }));
+      const { data, error: e } = await sb.from("bullion_leads")
+        .insert({ ...payload, status: "new", funnel_id: "bullion" })
+        .select("id").single();
+      error = e; savedId = data?.id;
     } else {
       ({ error } = await sb.from("bullion_leads").update(payload).eq("id", contact.id));
     }
+    if (error) { setSaving(false); return setErr(error.message); }
+    // Bidirectional partner link — if A points at B, also point B at A.
+    // (And clear stale partner link on B if A's link was just removed.)
+    if (form.partner_lead_id && savedId) {
+      await sb.from("bullion_leads").update({ partner_lead_id: savedId }).eq("id", form.partner_lead_id);
+    }
+    if (!form.partner_lead_id && contact.partner_lead_id && savedId) {
+      // Was linked, now unlinked — clear the other side too.
+      await sb.from("bullion_leads").update({ partner_lead_id: null })
+        .eq("id", contact.partner_lead_id).eq("partner_lead_id", savedId);
+    }
     setSaving(false);
-    if (error) return setErr(error.message);
     onSaved();
   };
 
@@ -2135,7 +3620,7 @@ function ContactEditModal({ contact, allTags = [], onClose, onSaved }) {
     <Modal title={isNew ? "Add Contact" : `Edit — ${contact.name || contact.phone}`} onClose={onClose} width={540}>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
         <Field label="Name"><Input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Full name" /></Field>
-        <Field label="Phone" required><Input value={form.phone} onChange={(e) => set("phone", e.target.value)} placeholder="9876543210" readOnly={!isNew} style={!isNew ? { background: "#f5f5f5" } : {}} /></Field>
+        <Field label="Phone" required><Input value={form.phone} onChange={(e) => set("phone", e.target.value)} placeholder="9876543210" /></Field>
         <Field label="City"><Input value={form.city} onChange={(e) => set("city", e.target.value)} placeholder="Delhi" /></Field>
         <Field label="Email"><Input value={form.email} onChange={(e) => set("email", e.target.value)} placeholder="email@example.com" /></Field>
         <Field label="Birthday (YYYY-MM-DD)"><Input value={form.bday} onChange={(e) => set("bday", e.target.value)} placeholder="1985-03-15" /></Field>
@@ -2169,6 +3654,32 @@ function ContactEditModal({ contact, allTags = [], onClose, onSaved }) {
           })}
           {otherTags.length === 0 && <span style={{ fontSize: 12, color: "#aaa" }}>No tags configured yet</span>}
         </div>
+      </Field>
+
+      <Field label="🔗 Linked partner / spouse / family member" style={{ marginTop: 10 }}>
+        {partnerInfo ? (
+          <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "6px 10px", background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 6 }}>
+            <span style={{ fontSize: 13, color: "#0c4a6e", flex: 1 }}>
+              <strong>{partnerInfo.name || "(no name)"}</strong> · {partnerInfo.phone}
+            </span>
+            <Btn small ghost color={C.red} onClick={() => set("partner_lead_id", null)}>× Unlink</Btn>
+          </div>
+        ) : (
+          <div style={{ position: "relative" }}>
+            <Input value={partnerSearch} onChange={(e) => setPartnerSearch(e.target.value)}
+              placeholder="Search by name or phone to link spouse / family — leave empty if none" />
+            {partnerResults.length > 0 && (
+              <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1px solid #ddd", borderRadius: 6, zIndex: 10, boxShadow: "0 2px 8px rgba(0,0,0,0.08)" }}>
+                {partnerResults.map((p) => (
+                  <div key={p.id} onMouseDown={() => { set("partner_lead_id", p.id); setPartnerSearch(""); setPartnerResults([]); }}
+                    style={{ padding: "6px 10px", fontSize: 13, cursor: "pointer", borderBottom: "1px solid #f0f0f0" }}>
+                    <strong>{p.name || "(no name)"}</strong> · {p.phone}{p.city ? ` · ${p.city}` : ""}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </Field>
 
       <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, margin: "10px 0", cursor: "pointer" }}>
@@ -4190,6 +5701,224 @@ function BroadcastSendModal({ broadcast, allTags, onClose, onSent }) {
 
 // MAIN APP — tabbed interface, tabs filtered by app_permissions (set in SSJ HR → People → Permissions)
 // ──────────────────────────────────────────────────────────
+// TELECALLER QUEUE SCREEN — mobile-first one-card-at-a-time call queue
+// Shows the highest-priority call task, with full script + objection cheat-sheet.
+// After logging a call the next card loads automatically.
+// ──────────────────────────────────────────────────────────
+function TelecallerQueueScreen({ funnels }) {
+  const me = loadUser();
+  const [demands, setDemands] = useState([]);
+  const [idx, setIdx] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [logCallOpen, setLogCallOpen] = useState(false);
+  const [err, setErr] = useState("");
+
+  const load = useCallback(async () => {
+    if (!me?.id) return;
+    setLoading(true);
+    setErr("");
+    try {
+      const r = await fetch(`/api/demand-queue?staffId=${me.id}&limit=50`, {
+        headers: { "x-crm-secret": CRM_SECRET },
+      });
+      const data = await r.json();
+      if (!data.ok) { setErr(data.error || "Failed to load queue"); setLoading(false); return; }
+      setDemands(data.demands || []);
+      setIdx(0);
+    } catch (e) {
+      setErr(String(e));
+    }
+    setLoading(false);
+  }, [me?.id]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const demand = demands[idx] || null;
+  const lead = demand?.lead || null;
+  const funnel = demand ? funnels.find((f) => f.id === demand.funnel_id) : null;
+  const total = demands.length;
+
+  // Temperature + urgency display
+  const temp = demand?.temperature || "warm";
+  const tempInfo = tempMeta(temp);
+
+  // Next call due label
+  const nextCallLabel = (() => {
+    if (!demand?.next_call_at) return "Due now";
+    const ms = new Date(demand.next_call_at) - Date.now();
+    if (ms <= 0) return "OVERDUE";
+    if (ms < 60 * 60_000) return `In ${Math.round(ms / 60_000)} min`;
+    if (ms < 24 * 3600_000) return `In ${Math.round(ms / 3600_000)} h`;
+    return `In ${Math.round(ms / 86400_000)} d`;
+  })();
+
+  const skipToNext = () => {
+    if (idx < total - 1) setIdx((i) => i + 1);
+    else load(); // reached the end — reload
+  };
+
+  if (loading) {
+    return (
+      <div style={{ maxWidth: 480, margin: "0 auto", padding: 20, textAlign: "center", color: "#888", paddingTop: 60 }}>
+        <div style={{ fontSize: 24, marginBottom: 12 }}>📞</div>
+        Loading your queue…
+      </div>
+    );
+  }
+
+  if (err) {
+    return (
+      <div style={{ maxWidth: 480, margin: "0 auto", padding: 20 }}>
+        <div style={{ background: "#fee2e2", border: "1px solid #fca5a5", borderRadius: 10, padding: 14, fontSize: 13, color: "#991b1b" }}>
+          {err}
+          <br /><Btn small color={C.blue} onClick={load} style={{ marginTop: 8 }}>Retry</Btn>
+        </div>
+      </div>
+    );
+  }
+
+  if (!demand) {
+    return (
+      <div style={{ maxWidth: 480, margin: "0 auto", padding: 20, textAlign: "center", paddingTop: 60 }}>
+        <div style={{ fontSize: 48, marginBottom: 12 }}>✅</div>
+        <div style={{ fontSize: 16, fontWeight: 600, color: "#16a085", marginBottom: 6 }}>Queue empty!</div>
+        <div style={{ fontSize: 13, color: "#888", marginBottom: 20 }}>All calls for now are done. Great work!</div>
+        <Btn color={C.blue} onClick={load}>↻ Refresh</Btn>
+      </div>
+    );
+  }
+
+  const priorityColor = temp === "hot" ? "#ef4444" : temp === "warm" ? "#f59e0b" : "#3b82f6";
+
+  return (
+    <div style={{ maxWidth: 520, margin: "0 auto" }}>
+      {/* Queue progress */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ fontSize: 12, color: "#888" }}>
+          📋 {idx + 1} of {total} calls in queue
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <Btn small ghost color={C.gray} onClick={load}>↻ Reload</Btn>
+          {idx > 0 && <Btn small ghost color={C.gray} onClick={() => setIdx((i) => i - 1)}>← Prev</Btn>}
+          {idx < total - 1 && <Btn small ghost color={C.gray} onClick={skipToNext}>Skip →</Btn>}
+        </div>
+      </div>
+
+      {/* Priority bar */}
+      <div style={{ height: 6, background: "#e5e7eb", borderRadius: 4, marginBottom: 12, overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${Math.min(100, demand.priority_score)}%`, background: priorityColor, borderRadius: 4, transition: "width 0.3s" }} />
+      </div>
+
+      {/* Main call card */}
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        {/* Card header */}
+        <div style={{ padding: "14px 16px", background: `linear-gradient(135deg, ${priorityColor}18 0%, #fff 100%)`, borderBottom: "1px solid #eee" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: "#111", marginBottom: 4 }}>
+                {lead?.name || displayPhone(lead?.phone || "")}
+              </div>
+              <div style={{ fontSize: 13, color: "#555", fontFamily: "monospace" }}>
+                📱 {displayPhone(lead?.phone || "—")}
+              </div>
+              {lead?.city && <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>📍 {lead.city}</div>}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
+              <Pill color={tempInfo.color} solid>{tempInfo.label}</Pill>
+              <Pill color={demand.priority_score >= 60 ? C.red : demand.priority_score >= 35 ? C.orange : C.gray}>
+                🎯 Score {demand.priority_score}
+              </Pill>
+            </div>
+          </div>
+        </div>
+
+        {/* Demand details */}
+        <div style={{ padding: "10px 16px", borderBottom: "1px solid #f0f0f0", background: "#fffbf0" }}>
+          <div style={{ fontSize: 13, color: "#374151", fontWeight: 500, marginBottom: 6 }}>
+            {demand.description || "(no description)"}
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <Pill color={C.purple}>{demand.product_category || "?"}</Pill>
+            {demand.occasion && <Pill color={C.orange}>{demand.occasion}</Pill>}
+            {demand.budget && <Pill color={C.gray}>₹{Number(demand.budget).toLocaleString("en-IN")}</Pill>}
+            {demand.for_whom && <Pill color={C.blue}>for {demand.for_whom}</Pill>}
+          </div>
+        </div>
+
+        {/* Call status */}
+        <div style={{ padding: "10px 16px", borderBottom: "1px solid #f0f0f0", fontSize: 12, display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <span style={{ color: "#6b7280" }}>
+            📞 Attempt <strong>{(demand.call_attempts || 0) + 1}</strong> of 6
+          </span>
+          <span style={{ color: demand.next_call_at && new Date(demand.next_call_at) < new Date() ? C.red : "#16a085", fontWeight: 600 }}>
+            ⏰ {nextCallLabel}
+          </span>
+          {demand.is_callback_promised && (
+            <Pill color={C.red} solid>📅 Callback promised</Pill>
+          )}
+          {demand.crm_source && (
+            <span style={{ color: "#6b7280" }}>
+              🔍 {demand.crm_source.replace(/_/g, " ")}
+            </span>
+          )}
+          {demand.visit_scheduled_at && (
+            <span style={{ color: C.green, fontWeight: 500 }}>
+              🏪 Visit: {fmtDT(demand.visit_scheduled_at)}
+            </span>
+          )}
+        </div>
+
+        {/* Action buttons */}
+        <div style={{ padding: "12px 16px", display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Btn
+            color={C.blue}
+            onClick={() => setLogCallOpen(true)}
+            style={{ flex: 1, minWidth: 140, textAlign: "center" }}
+          >
+            📝 Log Call
+          </Btn>
+          {idx < total - 1 && (
+            <Btn ghost color={C.gray} onClick={skipToNext} style={{ minWidth: 80 }}>
+              Skip →
+            </Btn>
+          )}
+        </div>
+      </Card>
+
+      {/* AI summary if available */}
+      {demand.ai_summary && (
+        <div style={{ marginTop: 10, padding: "10px 14px", background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 10, fontSize: 12, color: "#0369a1", fontStyle: "italic" }}>
+          💡 {demand.ai_summary}
+        </div>
+      )}
+
+      {/* Funnel context */}
+      {demand.step_name && (
+        <div style={{ marginTop: 8, padding: "8px 12px", background: "#fef3c7", border: "1px solid #fcd34d", borderRadius: 8, fontSize: 11, color: "#92400e" }}>
+          🛤 Current step: <strong>{demand.step_name}</strong>
+          {funnel?.name && <span> in <strong>{funnel.name}</strong></span>}
+        </div>
+      )}
+
+      {logCallOpen && demand && (
+        <LogCallModal
+          demand={{ ...demand, lead: { id: lead?.id, name: lead?.name, phone: lead?.phone } }}
+          lead={lead}
+          funnel={funnel}
+          onClose={() => setLogCallOpen(false)}
+          onSaved={() => {
+            setLogCallOpen(false);
+            // Move to next demand after logging
+            if (idx < total - 1) setIdx((i) => i + 1);
+            else load();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
 
 export default function App() {
   // Customer profile update form — no login needed
@@ -4197,13 +5926,42 @@ export default function App() {
   if (profileToken) return <ContactUpdateForm token={profileToken} />;
 
   const [user, setUser] = useState(loadUser);
-  const [screen, setScreen] = useState("demands");
+  const isTelecallerUser = (() => {
+    if (!user) return false;
+    if (user.role === "telecaller") return true;
+    const p = user.app_permissions;
+    if (!p || typeof p !== "object") return false;
+    return Object.values(p).some((v) => Array.isArray(v) && v.includes("telecaller"));
+  })();
+  const [screen, setScreen] = useState(isTelecallerUser ? "queue" : "demands");
   const [funnels, setFunnels] = useState([]);
   const [personas, setPersonas] = useState([]);
   const [allTags, setAllTags] = useState([]);
 
   const login = (u) => { saveUser(u); setUser(u); };
   const logout = () => { saveUser(null); setUser(null); };
+
+  // SSO via postMessage — when iframed inside fms.gemtre.in, the parent sends
+  // the logged-in user object so this app inherits the session without a
+  // second login (mobile browsers partition iframe localStorage by parent).
+  useEffect(() => {
+    const handler = (e) => {
+      const allowed = ["https://fms.gemtre.in", "https://fms-tracker.vercel.app"];
+      if (!allowed.includes(e.origin) && !/^https:\/\/fms-tracker-.*\.vercel\.app$/.test(e.origin)) return;
+      if (e.data?.type === "sso-login" && e.data.user) {
+        saveUser(e.data.user);
+        setUser(e.data.user);
+      }
+      if (e.data?.type === "sso-logout") {
+        saveUser(null);
+        setUser(null);
+      }
+    };
+    window.addEventListener("message", handler);
+    // Tell the parent we're ready so it can replay the user payload.
+    try { window.parent?.postMessage({ type: "sso-ready" }, "*"); } catch { /* ignore */ }
+    return () => window.removeEventListener("message", handler);
+  }, []);
 
   // Refresh app_permissions from DB every time the app gets focus (tab switch, window focus).
   // This means if an admin changes someone's permissions in SSJ HR, it takes effect next
@@ -4258,6 +6016,7 @@ export default function App() {
 
   // Tabs filtered by app_permissions (set in SSJ HR → People → Permissions tab)
   const ALL_TABS = [
+    { k: "queue",      l: "My Queue",    icon: "📞" },
     { k: "approvals",  l: "Approvals",   icon: "✅" },
     { k: "demands",    l: "Demands",     icon: "🎯" },
     { k: "contacts",   l: "Contacts",    icon: "📇" },
@@ -4282,6 +6041,7 @@ export default function App() {
     admin:      ALL_TABS.map((t) => t.k),
     manager:    ["demands", "contacts", "contactsdb", "upcoming", "analytics"],
     staff:      ["demands", "contacts", "upcoming"],
+    telecaller: ["queue", "demands"],
   };
 
   const crmPerms = user?.app_permissions?.crm;
@@ -4294,6 +6054,23 @@ export default function App() {
   // silently redirect to the first allowed tab.
   const activeScreen = tabs.find((t) => t.k === screen) ? screen : (tabs[0]?.k || "demands");
 
+  // Embed mode (iframed from fms-tracker): hide outer header/tabs, render only
+  // the requested screen. Keeps login chrome out of the embedded view.
+  const embedScreen = (() => {
+    try {
+      const p = new URLSearchParams(window.location.search);
+      return p.get("embed");
+    } catch { return null; }
+  })();
+  if (embedScreen) {
+    return (
+      <div style={{ maxWidth: 1280, margin: "0 auto", padding: "0.5rem" }}>
+        {embedScreen === "demands"  && <DemandsScreen funnels={funnels} allTags={allTags} />}
+        {embedScreen === "contacts" && <ContactsScreen funnels={funnels} />}
+      </div>
+    );
+  }
+
   return (
     <div style={{ maxWidth: 1280, margin: "0 auto", padding: "1rem" }}>
       {header}
@@ -4303,6 +6080,7 @@ export default function App() {
         ))}
       </div>
 
+      {activeScreen === "queue" && <TelecallerQueueScreen funnels={funnels} />}
       {activeScreen === "approvals" && <ApprovalsScreen funnels={funnels} />}
       {activeScreen === "demands" && <DemandsScreen funnels={funnels} allTags={allTags} />}
       {activeScreen === "contacts" && <ContactsScreen funnels={funnels} />}

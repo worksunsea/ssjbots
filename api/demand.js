@@ -11,9 +11,20 @@
 import { supa } from "./_lib/supabase.js";
 import { sendWhatsApp } from "./_lib/wa.js";
 import { askClaude } from "./_lib/claude.js";
+import { assignNextTelecaller } from "./_lib/assign.js";
 import { normalizePhone, SUPABASE_SERVICE_KEY, ANTHROPIC_API_KEY, CLAUDE_MODEL_ESCALATION } from "./_lib/config.js";
 
 export const config = { maxDuration: 60 };
+
+// Initial priority score on demand creation: hot (brand new) + source weight
+function calcInitialPriority(crmSource) {
+  const tempWeight = 40; // brand new = hot
+  const sourceWeight = {
+    online_google: 15, online_instagram: 15, walkin: 10,
+    old_client: 8, referral: 12, exhibition: 10,
+  }[crmSource] || 5;
+  return tempWeight + sourceWeight; // 45–55 range on creation
+}
 
 const NON_GOLD = ["diamond", "polki", "kundan", "gemstone", "solitaire", "lab_diamond", "other"];
 const CATEGORY_TO_FUNNEL = {
@@ -31,6 +42,11 @@ const CATEGORY_TO_FUNNEL = {
 };
 
 export default async function handler(req, res) {
+  // CORS — allow fms-tracker (and any other Vercel/local origin) to POST.
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-crm-secret");
+  if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") {
     return res.status(405).json({ ok: false, error: "method_not_allowed" });
   }
@@ -75,6 +91,10 @@ export default async function handler(req, res) {
       await sb.from("bullion_leads").update({ name: body.name }).eq("id", lead.id);
       lead.name = body.name;
     }
+    // Stash how the client found us (walk-in only sends this).
+    if (body.discoverySource) {
+      await sb.from("bullion_leads").update({ discovery_source: body.discoverySource }).eq("id", lead.id);
+    }
 
     // Duplicate guard: if there's already an active demand for this lead and
     // the caller hasn't explicitly set allowDuplicate=true, return the existing one.
@@ -98,7 +118,7 @@ export default async function handler(req, res) {
     // 3. Get first step of the funnel (for fms_step_id)
     const { data: firstStep } = await sb
       .from("bullion_funnel_steps")
-      .select("id")
+      .select("id, step_type")
       .eq("tenant_id", tenantId)
       .eq("funnel_id", funnelId)
       .eq("active", true)
@@ -117,6 +137,16 @@ export default async function handler(req, res) {
         funnel_id: funnelId,
         description: body.description || null,
         product_category: body.productCategory || "other",
+        product_types: Array.isArray(body.productTypes) ? body.productTypes : [],
+        items_seen: Array.isArray(body.itemsSeen) ? body.itemsSeen : [],
+        party_size: body.partySize ? Number(body.partySize) : null,
+        in_time: body.inTime ? new Date(body.inTime).toISOString() : null,
+        out_time: body.outTime ? new Date(body.outTime).toISOString() : null,
+        price_quoted: body.priceQuoted ? Number(body.priceQuoted) : null,
+        not_bought_reason: body.notBoughtReason || null,
+        not_bought_notes: body.notBoughtNotes || null,
+        competitor_mentioned: body.competitorMentioned || null,
+        followup_required: !!body.followupRequired,
         budget: body.budget ? Number(body.budget) : null,
         image_urls: body.imageUrls || [],
         occasion: body.occasion || null,
@@ -125,6 +155,9 @@ export default async function handler(req, res) {
         visit_scheduled_at: visitScheduledAt,
         fms_step_id: firstStep?.id || null,
         assigned_to: body.assignedTo || null,
+        assigned_staff_id: body.assignedStaffId || null,
+        crm_source: body.crmSource || null,
+        priority_score: calcInitialPriority(body.crmSource),
         created_by: body.createdBy || null,
         bot_active: false,
       })
@@ -134,6 +167,22 @@ export default async function handler(req, res) {
     if (demandErr) {
       console.error("demand insert failed", demandErr);
       return res.status(500).json({ ok: false, error: demandErr.message });
+    }
+
+    // 4a. If the funnel starts on a call step → round-robin assign a telecaller
+    //     and schedule the first-attempt call window. Skip the bot opening message —
+    //     the human call comes first.
+    let assignedStaff = null;
+    if (firstStep?.step_type === "call") {
+      try {
+        assignedStaff = await assignNextTelecaller(tenantId, demand.id);
+      } catch (e) {
+        console.error("assignNextTelecaller failed", e);
+      }
+      // First call due ~5 min from now (cadence row 1 default).
+      await sb.from("bullion_demands").update({
+        next_call_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      }).eq("id", demand.id);
     }
 
     // 5. Generate personalized AI opening message
@@ -185,7 +234,9 @@ export default async function handler(req, res) {
       openingMsg = `Hello ${name}, thank you for reaching out to Sun Sea Jewellers! I'm here to assist with your enquiry. Could you share a bit more about what you're looking for?`;
     }
 
-    const skipBot = body.skipBot === true;
+    // If demand starts on a call step, the telecaller is the first contact —
+    // don't send a bot opening WA message regardless of skipBot flag.
+    const skipBot = body.skipBot === true || firstStep?.step_type === "call";
     let sent = false;
     let openingMsgSent = "";
     let waLastErr = null;
@@ -278,7 +329,7 @@ export default async function handler(req, res) {
       }).eq("id", demand.id);
     }
 
-    return res.status(200).json({ ok: true, demandId: demand.id, leadId: lead.id, sent, waError: sent ? null : (waLastErr || null), waNumber: activeFunnel?.wa_number || null, openingMsg: openingMsgSent, botActivated: !skipBot });
+    return res.status(200).json({ ok: true, demandId: demand.id, leadId: lead.id, sent, waError: sent ? null : (waLastErr || null), waNumber: activeFunnel?.wa_number || null, openingMsg: openingMsgSent, botActivated: !skipBot, assignedTelecaller: assignedStaff ? { id: assignedStaff.id, name: assignedStaff.name } : null });
   } catch (err) {
     console.error("demand handler error", err);
     return res.status(500).json({ ok: false, error: String(err) });
