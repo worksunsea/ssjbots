@@ -6454,6 +6454,9 @@ function TelecallerQueueScreen({ funnels }) {
   const [loading, setLoading] = useState(false);
   const [logCallOpen, setLogCallOpen] = useState(false);
   const [err, setErr] = useState("");
+  const [showContext, setShowContext] = useState(false);
+  const [messages, setMessages] = useState([]);
+  const [msgsLoading, setMsgsLoading] = useState(false);
 
   const load = useCallback(async () => {
     if (!me?.id) return;
@@ -6497,8 +6500,29 @@ function TelecallerQueueScreen({ funnels }) {
   })();
 
   const skipToNext = () => {
+    setShowContext(false); setMessages([]);
     if (idx < total - 1) setIdx((i) => i + 1);
-    else load(); // reached the end — reload
+    else load();
+  };
+
+  const goTo = (i) => { setShowContext(false); setMessages([]); setIdx(i); };
+
+  const loadMessages = async (leadId) => {
+    if (!leadId) return;
+    setMsgsLoading(true);
+    const { data } = await sb.from("bullion_messages")
+      .select("id,direction,body,created_at,stage")
+      .eq("lead_id", leadId)
+      .order("created_at", { ascending: false })
+      .limit(20);
+    setMessages((data || []).reverse());
+    setMsgsLoading(false);
+  };
+
+  const toggleContext = () => {
+    const next = !showContext;
+    setShowContext(next);
+    if (next && messages.length === 0 && demand?.lead_id) loadMessages(demand.lead_id);
   };
 
   if (loading) {
@@ -6533,24 +6557,97 @@ function TelecallerQueueScreen({ funnels }) {
   }
 
   const priorityColor = temp === "hot" ? "#ef4444" : temp === "warm" ? "#f59e0b" : "#3b82f6";
+  const dueNow = demands.filter((d) => !d.next_call_at || new Date(d.next_call_at) <= new Date());
+  const upcoming = demands.filter((d) => d.next_call_at && new Date(d.next_call_at) > new Date());
 
   return (
-    <div style={{ maxWidth: 520, margin: "0 auto" }}>
-      {/* Queue progress */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-        <div style={{ fontSize: 12, color: "#888" }}>
-          📋 {idx + 1} of {total} calls in queue
+    <div style={{ maxWidth: 540, margin: "0 auto" }}>
+      {/* Tabs: due now vs all */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, alignItems: "center" }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: "#333" }}>
+          📋 Your calls — {total} total
         </div>
-        <div style={{ display: "flex", gap: 6 }}>
-          <Btn small ghost color={C.gray} onClick={load}>↻ Reload</Btn>
-          {idx > 0 && <Btn small ghost color={C.gray} onClick={() => setIdx((i) => i - 1)}>← Prev</Btn>}
-          {idx < total - 1 && <Btn small ghost color={C.gray} onClick={skipToNext}>Skip →</Btn>}
+        <div style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
+          <Btn small ghost color={C.gray} onClick={load}>↻</Btn>
         </div>
       </div>
 
+      {/* Due now list */}
+      {dueNow.length > 0 && (
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.red, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
+            🔴 Call now ({dueNow.length})
+          </div>
+          {dueNow.map((d, i) => {
+            const globalIdx = demands.indexOf(d);
+            const isCurrent = globalIdx === idx;
+            const t = tempMeta(d.temperature || "warm");
+            return (
+              <div key={d.id} onClick={() => goTo(globalIdx)}
+                style={{ padding: "8px 12px", marginBottom: 4, borderRadius: 8, cursor: "pointer",
+                  border: `2px solid ${isCurrent ? C.blue : "#e5e7eb"}`,
+                  background: isCurrent ? "#eef5ff" : d.is_callback_promised ? "#fff7ed" : "#fff" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontWeight: 600, fontSize: 13 }}>{d.lead?.name || d.lead?.phone || "Unknown"}</span>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    {d.is_callback_promised && <Pill color={C.red} solid>📅 Callback</Pill>}
+                    <Pill color={t.color} solid>{t.label}</Pill>
+                  </div>
+                </div>
+                <div style={{ fontSize: 12, color: "#555", marginTop: 2 }}>
+                  {d.description?.slice(0, 60) || d.product_category} · Attempt {(d.call_attempts || 0) + 1}/6
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Upcoming list */}
+      {upcoming.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#888", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
+            🕐 Scheduled ({upcoming.length})
+          </div>
+          {upcoming.map((d) => {
+            const globalIdx = demands.indexOf(d);
+            const isCurrent = globalIdx === idx;
+            const ms = new Date(d.next_call_at) - Date.now();
+            const dueLabel = ms < 3600000 ? `in ${Math.round(ms/60000)}m` : ms < 86400000 ? `in ${Math.round(ms/3600000)}h` : `in ${Math.round(ms/86400000)}d`;
+            return (
+              <div key={d.id} onClick={() => goTo(globalIdx)}
+                style={{ padding: "8px 12px", marginBottom: 4, borderRadius: 8, cursor: "pointer",
+                  border: `2px solid ${isCurrent ? C.blue : "#e5e7eb"}`,
+                  background: isCurrent ? "#eef5ff" : "#fafafa" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontWeight: 600, fontSize: 13 }}>{d.lead?.name || d.lead?.phone || "Unknown"}</span>
+                  <span style={{ fontSize: 11, color: "#888" }}>⏰ {dueLabel}</span>
+                </div>
+                <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>
+                  {d.description?.slice(0, 60) || d.product_category}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Selected demand detail */}
+      <div style={{ background: "#f8fafc", borderRadius: 12, border: `2px solid ${priorityColor}`, overflow: "hidden" }}>
+        <div style={{ padding: "12px 16px", background: `linear-gradient(135deg, ${priorityColor}22 0%, #fff 100%)`, borderBottom: "1px solid #eee" }}>
+          <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>SELECTED DEMAND</div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div>
+              <div style={{ fontSize: 17, fontWeight: 700 }}>{lead?.name || displayPhone(lead?.phone || "")}</div>
+              <div style={{ fontSize: 13, color: "#555", fontFamily: "monospace" }}>📱 {displayPhone(lead?.phone || "—")}</div>
+            </div>
+            <Pill color={tempInfo.color} solid>{tempInfo.label}</Pill>
+          </div>
+        </div>
+
       {/* Priority bar */}
-      <div style={{ height: 6, background: "#e5e7eb", borderRadius: 4, marginBottom: 12, overflow: "hidden" }}>
-        <div style={{ height: "100%", width: `${Math.min(100, demand.priority_score)}%`, background: priorityColor, borderRadius: 4, transition: "width 0.3s" }} />
+      <div style={{ height: 5, background: "#e5e7eb", overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${Math.min(100, demand.priority_score)}%`, background: priorityColor, transition: "width 0.3s" }} />
       </div>
 
       {/* Main call card */}
@@ -6569,27 +6666,6 @@ function TelecallerQueueScreen({ funnels }) {
           ⚡ PROMISED CALLBACK — {lead?.name || "Client"} asked you to call right now!
         </div>
       )}
-      <Card style={{ padding: 0, overflow: "hidden", border: demand.is_callback_promised && demand.next_call_at && new Date(demand.next_call_at) <= new Date() ? "2px solid #e53e3e" : undefined }}>
-        {/* Card header */}
-        <div style={{ padding: "14px 16px", background: `linear-gradient(135deg, ${priorityColor}18 0%, #fff 100%)`, borderBottom: "1px solid #eee" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-            <div>
-              <div style={{ fontSize: 18, fontWeight: 700, color: "#111", marginBottom: 4 }}>
-                {lead?.name || displayPhone(lead?.phone || "")}
-              </div>
-              <div style={{ fontSize: 13, color: "#555", fontFamily: "monospace" }}>
-                📱 {displayPhone(lead?.phone || "—")}
-              </div>
-              {lead?.city && <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>📍 {lead.city}</div>}
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
-              <Pill color={tempInfo.color} solid>{tempInfo.label}</Pill>
-              <Pill color={demand.priority_score >= 60 ? C.red : demand.priority_score >= 35 ? C.orange : C.gray}>
-                🎯 Score {demand.priority_score}
-              </Pill>
-            </div>
-          </div>
-        </div>
 
         {/* Demand details */}
         <div style={{ padding: "10px 16px", borderBottom: "1px solid #f0f0f0", background: "#fffbf0" }}>
@@ -6629,35 +6705,38 @@ function TelecallerQueueScreen({ funnels }) {
 
         {/* Action buttons */}
         <div style={{ padding: "12px 16px", display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <Btn
-            color={C.blue}
-            onClick={() => setLogCallOpen(true)}
-            style={{ flex: 1, minWidth: 140, textAlign: "center" }}
-          >
+          <Btn color={C.blue} onClick={() => setLogCallOpen(true)} style={{ flex: 1, textAlign: "center" }}>
             📝 Log Call
           </Btn>
+          <Btn ghost color={C.gray} onClick={toggleContext} style={{ minWidth: 100 }}>
+            {showContext ? "▲ Hide" : "💬 Show convo"}
+          </Btn>
           {idx < total - 1 && (
-            <Btn ghost color={C.gray} onClick={skipToNext} style={{ minWidth: 80 }}>
-              Skip →
-            </Btn>
+            <Btn ghost color={C.gray} onClick={skipToNext}>Skip →</Btn>
           )}
         </div>
-      </Card>
 
-      {/* AI summary if available */}
-      {demand.ai_summary && (
-        <div style={{ marginTop: 10, padding: "10px 14px", background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 10, fontSize: 12, color: "#0369a1", fontStyle: "italic" }}>
-          💡 {demand.ai_summary}
-        </div>
-      )}
-
-      {/* Funnel context */}
-      {demand.step_name && (
-        <div style={{ marginTop: 8, padding: "8px 12px", background: "#fef3c7", border: "1px solid #fcd34d", borderRadius: 8, fontSize: 11, color: "#92400e" }}>
-          🛤 Current step: <strong>{demand.step_name}</strong>
-          {funnel?.name && <span> in <strong>{funnel.name}</strong></span>}
-        </div>
-      )}
+        {/* Conversation thread — shown on demand */}
+        {showContext && (
+          <div style={{ borderTop: "1px solid #eee", maxHeight: 340, overflowY: "auto", padding: "10px 14px" }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#888", marginBottom: 8 }}>LAST 20 MESSAGES</div>
+            {msgsLoading && <div style={{ color: "#aaa", fontSize: 12 }}>Loading…</div>}
+            {!msgsLoading && messages.length === 0 && <div style={{ color: "#aaa", fontSize: 12 }}>No messages yet.</div>}
+            {messages.map((m) => (
+              <div key={m.id} style={{ marginBottom: 8, display: "flex", flexDirection: "column", alignItems: m.direction === "out" ? "flex-end" : "flex-start" }}>
+                <div style={{
+                  maxWidth: "80%", padding: "6px 10px", borderRadius: 10, fontSize: 12, lineHeight: 1.4,
+                  background: m.direction === "out" ? "#dcf8c6" : "#f0f0f0",
+                  color: "#222",
+                }}>
+                  {m.body}
+                </div>
+                <div style={{ fontSize: 10, color: "#aaa", marginTop: 2 }}>{fmtDT(m.created_at)}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>{/* end selected demand detail */}
 
       {logCallOpen && demand && (
         <LogCallModal

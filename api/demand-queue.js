@@ -92,7 +92,6 @@ export default async function handler(req, res) {
     .eq("tenant_id", tid)
     .eq("assigned_staff_id", staffId)
     .is("outcome", null)
-    .or(`next_call_at.is.null,next_call_at.lte.${now}`)
     .order("priority_score", { ascending: false })
     .order("next_call_at", { ascending: true, nullsFirst: true })
     .limit(limit);
