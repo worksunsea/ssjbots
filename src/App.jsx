@@ -52,6 +52,8 @@ function demandTemperature(d) {
   if (lead.status === "converted") return "converted";
   if (lead.status === "dead") return "dead";
   if (d?.outcome === "not_interested") return "cold";
+  // Manual override — set by sales team, beats all auto-logic below.
+  if (d?.temperature_override) return d.temperature_override;
   const visitMs = d.visit_scheduled_at ? new Date(d.visit_scheduled_at) - new Date() : null;
   const lastMs  = lead.last_msg_at ? Date.now() - new Date(lead.last_msg_at) : Infinity;
   const ageMs   = d.created_at ? Date.now() - new Date(d.created_at) : Infinity;
@@ -64,6 +66,9 @@ function demandTemperature(d) {
   if (visitMs !== null && visitMs > 36 * 3600 * 1000 && visitMs <= 7 * 86400 * 1000) return "warm";
   if (lastMs < 24 * 3600 * 1000) return "warm";
   if (ageMs < 24 * 3600 * 1000) return "warm";                 // newish
+  // Old / returning clients: never fall to cold automatically — stay warm until manually overridden.
+  const isReturning = lead.is_client || d?.crm_source === "old_client" || lead.source === "old_client";
+  if (isReturning) return "warm";
   return "cold";
 }
 const tempRank = (t) => ({ hot: 0, warm: 1, cold: 2, converted: 3, dead: 4 }[t] ?? 5);
@@ -564,6 +569,12 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
     onChanged && onChanged();
   };
 
+  const setTempOverride = async (val) => {
+    if (!demand?.id) return;
+    await sb.from("bullion_demands").update({ temperature_override: val || null, updated_at: new Date().toISOString() }).eq("id", demand.id);
+    onChanged && onChanged();
+  };
+
   const optOut = async () => {
     const name = lead.name || lead.wa_display_name || "this contact";
     if (!window.confirm(`Block ${name} from all calls and messages? This cannot be undone.`)) return;
@@ -623,6 +634,17 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
         />
       )}
 
+      {/* Old / returning client VIP banner */}
+      {demand && (lead.is_client || demand.crm_source === "old_client" || lead.source === "old_client") && (
+        <div style={{ padding: "6px 14px", background: "#fef9c3", borderBottom: "1px solid #fde047", fontSize: 12, display: "flex", gap: 8, alignItems: "center" }}>
+          <span style={{ fontWeight: 700, color: "#854d0e" }}>⭐ Returning client</span>
+          <span style={{ color: "#92400e" }}>— known customer, treat as priority. Confirm their previous purchase preference before calling.</span>
+          {(lead.tags || []).length > 0 && (
+            <span style={{ color: "#78350f" }}>Tags: {(lead.tags || []).slice(0, 5).join(", ")}{(lead.tags || []).length > 5 ? ` +${(lead.tags || []).length - 5}` : ""}</span>
+          )}
+        </div>
+      )}
+
       {/* Demand context strip */}
       {demand && (
         <div style={{ padding: "6px 14px", borderBottom: "1px solid #eee", background: "#fffbf0", fontSize: 11 }}>
@@ -638,6 +660,21 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
             {demand.assigned_to
               ? <Pill color={C.blue} solid>👤 {demand.assigned_to}</Pill>
               : <Pill color={C.gray}>👤 unassigned</Pill>}
+            {/* Manual temperature override */}
+            <div style={{ marginLeft: "auto", display: "flex", gap: 3, alignItems: "center" }}>
+              <span style={{ color: "#aaa", fontSize: 10 }}>temp:</span>
+              {[["hot","🔥"],["warm","🌤"],["cold","❄️"]].map(([val, icon]) => (
+                <button key={val} type="button" onClick={() => setTempOverride(demand.temperature_override === val ? null : val)}
+                  title={demand.temperature_override === val ? `Remove override (back to auto)` : `Pin as ${val}`}
+                  style={{ padding: "2px 6px", fontSize: 11, borderRadius: 6, cursor: "pointer",
+                    border: `1px solid ${demand.temperature_override === val ? "#555" : "#ddd"}`,
+                    background: demand.temperature_override === val ? "#333" : "transparent",
+                    color: demand.temperature_override === val ? "#fff" : "#555" }}>
+                  {icon}
+                </button>
+              ))}
+              {demand.temperature_override && <span style={{ fontSize: 9, color: "#888" }}>pinned</span>}
+            </div>
           </div>
           {demand.visit_scheduled_at && (
             <div style={{ marginTop: 4, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -915,7 +952,7 @@ function DemandsScreen({ funnels, allTags }) {
     setLoading(true);
     let q = sb
       .from("bullion_demands")
-      .select("*, lead:bullion_leads(id,name,phone,wa_display_name,status,bot_paused,funnel_id,stage,last_msg,last_msg_at,updated_at,source), step:bullion_funnel_steps(id,name,step_type)")
+      .select("*, lead:bullion_leads(id,name,phone,wa_display_name,status,bot_paused,funnel_id,stage,last_msg,last_msg_at,updated_at,source,is_client,tags), step:bullion_funnel_steps(id,name,step_type)")
       .eq("tenant_id", getTenantId())
       .order("occasion_date", { ascending: true, nullsFirst: false });
     if (filterStep) q = q.eq("fms_step_id", filterStep);
@@ -1131,6 +1168,7 @@ function DemandsScreen({ funnels, allTags }) {
             const urg = urgencyLabel(d);
             const sel = d.lead?.id === selectedLeadId;
             const isBulkChecked = bulkSelected.has(d.id);
+            const isVip = d.lead?.is_client || d.crm_source === "old_client" || d.lead?.source === "old_client";
             const stepName = d.step?.name || "—";
             const isCallStep = d.step?.step_type === "call";
             const attempts = d.call_attempts || 0;
@@ -1160,7 +1198,8 @@ function DemandsScreen({ funnels, allTags }) {
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
                     <strong style={{ fontSize: 13 }}>{d.lead?.name || (isLid(d.lead?.phone) ? (d.lead?.wa_display_name || displayPhone(d.lead?.phone)) : d.lead?.phone) || "Unknown"}</strong>
                     <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                      {(() => { const t = demandTemperature(d); const m = tempMeta(t); return <Pill color={m.color} solid>{m.label}</Pill>; })()}
+                      {(() => { const t = demandTemperature(d); const m = tempMeta(t); return <Pill color={m.color} solid>{m.label}{d.temperature_override ? " 📌" : ""}</Pill>; })()}
+                      {isVip && <Pill color="#d97706" solid>⭐ VIP</Pill>}
                       {(d.lead?.source === "walk_in") && <Pill color="#16a085" solid>🏪 Walk-in</Pill>}
                       {urg && <Pill color={urg.color} solid>{urg.text}</Pill>}
                       {isCallStep && <Pill color={overdue ? C.red : cadenceColor} solid>📞 {overdue ? "OVERDUE " : ""}{attempts}/6</Pill>}
