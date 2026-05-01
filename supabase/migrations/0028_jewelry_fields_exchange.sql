@@ -35,16 +35,39 @@ ALTER TABLE bullion_demands
 --    These are editable by admin via the Config UI without redeploy.
 -- ─────────────────────────────────────────────────────────────
 
+-- Seed config keys using field as the key name (no label column in this table).
+-- Use NOT EXISTS so re-running is safe and won't overwrite admin edits.
 DO $$
 DECLARE
   _tid uuid := 'a1b2c3d4-0000-0000-0000-000000000001'::uuid;
 BEGIN
-  INSERT INTO bullion_dropdowns (tenant_id, field, label, value, active, sort_order)
-  VALUES
-    (_tid, 'config', 'Google Review Link',      'google_review_link',        true, 10),
-    (_tid, 'config', 'Post-Sale Day 3 WA',       'post_sale_day3',            true, 11),
-    (_tid, 'config', 'Post-Sale Day 7 WA (Review)', 'post_sale_day7',         true, 12),
-    (_tid, 'config', 'Post-Sale Day 30 WA',      'post_sale_day30',           true, 13),
-    (_tid, 'config', 'Missed Call Auto-Reply',   'missed_call_auto_reply',    true, 14)
-  ON CONFLICT DO NOTHING;
+  INSERT INTO bullion_dropdowns (tenant_id, field, value, active, sort_order)
+  SELECT _tid, 'google_review_link', '', true, 90
+  WHERE NOT EXISTS (SELECT 1 FROM bullion_dropdowns WHERE tenant_id = _tid AND field = 'google_review_link');
+
+  INSERT INTO bullion_dropdowns (tenant_id, field, value, active, sort_order)
+  SELECT _tid, 'post_sale_day3',
+    'Hi {name}, we hope you are loving your new {product} 💎 It was a pleasure serving you at Sun Sea Jewellers! If you need any adjustments or have questions, we are always here. 🙏',
+    true, 91
+  WHERE NOT EXISTS (SELECT 1 FROM bullion_dropdowns WHERE tenant_id = _tid AND field = 'post_sale_day3');
+
+  INSERT INTO bullion_dropdowns (tenant_id, field, value, active, sort_order)
+  SELECT _tid, 'post_sale_day7',
+    'Hi {name}, we hope your {product} is bringing you joy! ✨ If you have a moment, we would truly appreciate a Google review — it means the world to us: {review_link}
+
+Thank you for your trust. 🙏',
+    true, 92
+  WHERE NOT EXISTS (SELECT 1 FROM bullion_dropdowns WHERE tenant_id = _tid AND field = 'post_sale_day7');
+
+  INSERT INTO bullion_dropdowns (tenant_id, field, value, active, sort_order)
+  SELECT _tid, 'post_sale_day30',
+    'Hi {name}, it has been a month since you picked up your {product} from Sun Sea Jewellers 💎 We hope it is perfect! If you ever need a resize, repair, or cleaning — just reach out. Always here for you. 🙏',
+    true, 93
+  WHERE NOT EXISTS (SELECT 1 FROM bullion_dropdowns WHERE tenant_id = _tid AND field = 'post_sale_day30');
+
+  INSERT INTO bullion_dropdowns (tenant_id, field, value, active, sort_order)
+  SELECT _tid, 'missed_call_auto_reply',
+    'Hi! You tried calling Sun Sea Jewellers. We are sorry we missed you! Our team will call you back shortly. 💎 Or WhatsApp us here anytime.',
+    true, 94
+  WHERE NOT EXISTS (SELECT 1 FROM bullion_dropdowns WHERE tenant_id = _tid AND field = 'missed_call_auto_reply');
 END $$;

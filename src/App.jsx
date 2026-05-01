@@ -4959,7 +4959,7 @@ function AnalyticsScreen({ funnels }) {
       sb.from("bullion_call_logs").select("staff_id,disposition,duration_sec").eq("tenant_id", tid).gte("called_at", monthStart.toISOString()),
       sb.from("staff").select("id,name,username").eq("tenant_id", tid),
       sb.from("staff_targets").select("*").eq("tenant_id", tid).eq("month", monthStart.toISOString().slice(0, 10)),
-      sb.from("bullion_dropdowns").select("id,label,value").eq("tenant_id", tid).eq("field", "config").eq("active", true).order("sort_order"),
+      sb.from("bullion_dropdowns").select("id,field,value").eq("tenant_id", tid).in("field", ["google_review_link","post_sale_day3","post_sale_day7","post_sale_day30","missed_call_auto_reply"]).eq("active", true).order("sort_order"),
     ]);
 
     if (m.data) setMetrics(m.data);
@@ -5278,12 +5278,20 @@ function TargetCell({ staffId, field, value, onSave }) {
   );
 }
 
+const CONFIG_LABELS = {
+  google_review_link: "Google Review Link",
+  post_sale_day3: "Post-Sale Day 3 WA",
+  post_sale_day7: "Post-Sale Day 7 WA (Review)",
+  post_sale_day30: "Post-Sale Day 30 WA",
+  missed_call_auto_reply: "Missed Call Auto-Reply",
+};
+
 function ConfigRow({ row, saving, onSave }) {
   const [val, setVal] = useState(row.value || "");
   const [dirty, setDirty] = useState(false);
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "160px 1fr auto", gap: 8, alignItems: "start" }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: "#555", paddingTop: 6 }}>{row.label}</div>
+    <div style={{ display: "grid", gridTemplateColumns: "200px 1fr auto", gap: 8, alignItems: "start" }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: "#555", paddingTop: 6 }}>{CONFIG_LABELS[row.field] || row.field}</div>
       <Textarea rows={2} value={val} onChange={(e) => { setVal(e.target.value); setDirty(true); }}
         style={{ fontSize: 12, resize: "vertical" }} />
       <Btn small color={dirty ? C.blue : C.gray} disabled={!dirty || saving} onClick={() => { onSave(row, val); setDirty(false); }}>

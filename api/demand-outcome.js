@@ -11,13 +11,12 @@ import { transitionLeadToFunnel } from "./_lib/drip.js";
 async function schedulePostSaleMessages(sb, tenantId, leadId, funnelId, leadName, productCategory) {
   // Read config templates + google review link from bullion_dropdowns
   const { data: configs } = await sb.from("bullion_dropdowns")
-    .select("label, value")
+    .select("field, value")
     .eq("tenant_id", tenantId)
-    .eq("field", "config")
-    .in("label", ["google_review_link", "post_sale_day3", "post_sale_day7", "post_sale_day30"]);
+    .in("field", ["google_review_link", "post_sale_day3", "post_sale_day7", "post_sale_day30"]);
 
   const cfg = {};
-  for (const row of configs || []) cfg[row.label] = row.value;
+  for (const row of configs || []) cfg[row.field] = row.value;
 
   const vName = leadName || "Sir/Ma'am";
   const prod = (productCategory || "jewellery").replace(/_/g, " ");

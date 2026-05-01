@@ -93,10 +93,9 @@ export default async function handler(req, res) {
     try {
       const sb = supa();
       const { data: configs } = await sb.from("bullion_dropdowns")
-        .select("label, value")
+        .select("field, value")
         .eq("tenant_id", process.env.TENANT_ID || "a1b2c3d4-0000-0000-0000-000000000001")
-        .eq("field", "config")
-        .eq("label", "missed_call_auto_reply");
+        .eq("field", "missed_call_auto_reply");
       const template = configs?.[0]?.value ||
         "Hi! You tried calling Sun Sea Jewellers. We're sorry we missed you! Our team will call you back shortly. 💎";
       await sendWhatsApp({ phone, msg: template, client: waClient || null });
