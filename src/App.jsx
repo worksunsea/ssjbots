@@ -6458,6 +6458,25 @@ function TelecallerQueueScreen({ funnels }) {
   const [messages, setMessages] = useState([]);
   const [msgsLoading, setMsgsLoading] = useState(false);
   const [hasCalled, setHasCalled] = useState(false); // tracks if telecaller tapped the Call button
+  const [scripts, setScripts] = useState({ s1: "", s2: "", s3: "" });
+  const [objections, setObjections] = useState([]);
+  const [showScript, setShowScript] = useState(false);
+  useEffect(() => {
+    sb.from("bullion_dropdowns").select("field,value,sort_order")
+      .eq("tenant_id", getTenantId())
+      .in("field", ["telecaller_script_s1","telecaller_script_s2","telecaller_script_s3","telecaller_objection"])
+      .eq("active", true).order("sort_order")
+      .then(({ data }) => {
+        const s = { s1: "", s2: "", s3: "" }; const obj = [];
+        for (const row of data || []) {
+          if (row.field === "telecaller_script_s1") s.s1 = row.value;
+          else if (row.field === "telecaller_script_s2") s.s2 = row.value;
+          else if (row.field === "telecaller_script_s3") s.s3 = row.value;
+          else if (row.field === "telecaller_objection") obj.push(row.value);
+        }
+        setScripts(s); setObjections(obj);
+      });
+  }, []);
 
   const load = useCallback(async () => {
     if (!me?.id) return;
@@ -6679,6 +6698,48 @@ function TelecallerQueueScreen({ funnels }) {
             ⏰ {nextCallLabel}
           </div>
         </div>
+
+        {/* Script panel — read before calling */}
+        {(() => {
+          const me = loadUser();
+          const attemptNo = (demand.call_attempts || 0) + 1;
+          const scriptKey = attemptNo === 1 ? "s1" : attemptNo >= 6 ? "s3" : "s2";
+          const raw = scripts[scriptKey] || "";
+          const filled = raw.replace(/\{name\}/g, lead?.name || "ji").replace(/\{staff_name\}/g, me?.name || me?.username || "").replace(/\{product_category\}/g, demand.product_category || "jewellery");
+          if (!filled && objections.length === 0) return null;
+          return (
+            <div style={{ borderBottom: "1px solid #f0f0f0" }}>
+              <button type="button" onClick={() => setShowScript(v => !v)}
+                style={{ width: "100%", padding: "8px 14px", background: "#fef9c3", border: "none", textAlign: "left", cursor: "pointer", fontSize: 12, fontWeight: 600, color: "#854d0e", display: "flex", justifyContent: "space-between" }}>
+                <span>📜 Script — Attempt {attemptNo} {attemptNo === 1 ? "(first contact)" : attemptNo >= 6 ? "(final attempt)" : "(follow-up)"}</span>
+                <span>{showScript ? "▲ Hide" : "▼ Show"}</span>
+              </button>
+              {showScript && (
+                <div style={{ padding: "10px 14px", background: "#fffbeb" }}>
+                  {filled && (
+                    <div style={{ fontSize: 13, color: "#333", lineHeight: 1.7, whiteSpace: "pre-wrap", marginBottom: objections.length ? 12 : 0 }}>
+                      {filled}
+                    </div>
+                  )}
+                  {objections.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: "#92400e", marginBottom: 6 }}>OBJECTIONS</div>
+                      {objections.map((o, i) => {
+                        const [q, a] = o.includes("→") ? o.split("→") : [o, ""];
+                        return (
+                          <div key={i} style={{ marginBottom: 6, fontSize: 12 }}>
+                            <div style={{ color: "#374151", fontWeight: 600 }}>{q.trim()}</div>
+                            {a && <div style={{ color: "#16a085", marginLeft: 10 }}>→ {a.trim()}</div>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Call action — 2 steps: tap Call → tap Log Call */}
         <div style={{ padding: "12px 14px", background: hasCalled ? "#f0fff4" : "#fff" }}>
