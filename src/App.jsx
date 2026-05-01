@@ -432,7 +432,7 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
 
   useEffect(() => {
     sb.from("staff").select("id,name,username,role,app_permissions")
-      .eq("tenant_id", getTenantId())
+      .eq("tenant_id", getTenantId()).neq("type", "artisan")
       .order("name")
       .then(({ data }) => setStaff(data || []));
   }, []);
@@ -944,7 +944,7 @@ function DemandsScreen({ funnels, allTags }) {
   const [bulkStaff, setBulkStaff] = useState([]);
   const [mergeModal, setMergeModal] = useState(null); // { primaryId, secondaryId }
   useEffect(() => {
-    sb.from("staff").select("id,name,username,role,app_permissions").eq("tenant_id", getTenantId()).order("name")
+    sb.from("staff").select("id,name,username,role,app_permissions").eq("tenant_id", getTenantId()).neq("type", "artisan").order("name")
       .then(({ data }) => setBulkStaff(data || []));
   }, []);
 
@@ -1276,7 +1276,7 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
   const [staff, setStaff] = useState([]);
   useEffect(() => {
     sb.from("staff").select("id,name,username,role")
-      .eq("tenant_id", getTenantId())
+      .eq("tenant_id", getTenantId()).neq("type", "artisan")
       .order("name")
       .then(({ data }) => setStaff(data || []));
   }, []);
@@ -1701,7 +1701,7 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved }) {
 
   useEffect(() => {
     sb.from("staff").select("id,name,username,role")
-      .eq("tenant_id", getTenantId())
+      .eq("tenant_id", getTenantId()).neq("type", "artisan")
       .order("name")
       .then(({ data }) => setStaff(data || []));
   }, []);
@@ -5061,7 +5061,7 @@ function AnalyticsScreen({ funnels }) {
       sb.from("bullion_demands").select("id,budget,outcome,created_at,next_call_at,occasion_date,visit_scheduled_at,is_callback_promised,lead:bullion_leads(status,last_msg_at)").eq("tenant_id", tid).is("outcome", null).limit(500),
       sb.from("bullion_call_logs").select("staff_id,disposition,lag_bucket,talk_bucket,is_suspicious,duration_sec").eq("tenant_id", tid).gte("called_at", todayStart.toISOString()),
       sb.from("bullion_call_logs").select("staff_id,disposition,duration_sec").eq("tenant_id", tid).gte("called_at", monthStart.toISOString()),
-      sb.from("staff").select("id,name,username").eq("tenant_id", tid),
+      sb.from("staff").select("id,name,username").eq("tenant_id", tid).neq("type", "artisan"),
       sb.from("staff_targets").select("*").eq("tenant_id", tid).eq("month", monthStart.toISOString().slice(0, 10)),
       sb.from("bullion_dropdowns").select("id,field,value").eq("tenant_id", tid).in("field", ["google_review_link","post_sale_day3","post_sale_day7","post_sale_day30","missed_call_auto_reply"]).eq("active", true).order("sort_order"),
     ]);
@@ -6958,6 +6958,7 @@ export default function App() {
     return (
       <div style={{ maxWidth: 1280, margin: "0 auto", padding: "0.5rem" }}>
         {embedScreen === "demands"  && <DemandsScreen funnels={funnels} allTags={allTags} />}
+        {embedScreen === "queue"    && <TelecallerQueueScreen funnels={funnels} />}
         {embedScreen === "contacts" && <ContactsScreen funnels={funnels} />}
       </div>
     );
