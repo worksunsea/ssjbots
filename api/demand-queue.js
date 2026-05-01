@@ -86,6 +86,7 @@ export default async function handler(req, res) {
       updated_at,
       visit_scheduled_at,
       ai_summary,
+      temperature_override,
       bullion_funnel_steps!fms_step_id ( step_type, name ),
       bullion_leads!lead_id ( id, name, phone, city, source )
     `)
@@ -143,15 +144,17 @@ export default async function handler(req, res) {
 
 // ── Simple temperature heuristic matching demandTemperature() in the frontend ──
 function deriveTemperature(d) {
-  if (!d.next_call_at) return "warm";
-  const ageMs = Date.now() - new Date(d.next_call_at).getTime();
-  const ageDays = ageMs / 86400000;
+  if (d.temperature_override) return d.temperature_override;
   if (d.is_callback_promised) return "hot";
   if (d.occasion_date) {
     const daysToOccasion = (new Date(d.occasion_date).getTime() - Date.now()) / 86400000;
     if (daysToOccasion <= 30) return "hot";
   }
+  const isReturning = d.bullion_leads?.source === "old_client";
+  if (!d.next_call_at) return isReturning ? "warm" : "warm";
+  const ageMs = Date.now() - new Date(d.next_call_at).getTime();
+  const ageDays = ageMs / 86400000;
   if (ageDays <= 1) return "hot";
   if (ageDays <= 7) return "warm";
-  return "cold";
+  return isReturning ? "warm" : "cold";
 }

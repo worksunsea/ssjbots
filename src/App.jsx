@@ -6457,6 +6457,7 @@ function TelecallerQueueScreen({ funnels }) {
   const [showContext, setShowContext] = useState(false);
   const [messages, setMessages] = useState([]);
   const [msgsLoading, setMsgsLoading] = useState(false);
+  const [hasCalled, setHasCalled] = useState(false); // tracks if telecaller tapped the Call button
 
   const load = useCallback(async () => {
     if (!me?.id) return;
@@ -6505,7 +6506,7 @@ function TelecallerQueueScreen({ funnels }) {
     else load();
   };
 
-  const goTo = (i) => { setShowContext(false); setMessages([]); setIdx(i); };
+  const goTo = (i) => { setShowContext(false); setMessages([]); setHasCalled(false); setIdx(i); };
 
   const loadMessages = async (leadId) => {
     if (!leadId) return;
@@ -6632,103 +6633,95 @@ function TelecallerQueueScreen({ funnels }) {
         </div>
       )}
 
-      {/* Selected demand detail */}
-      <div style={{ background: "#f8fafc", borderRadius: 12, border: `2px solid ${priorityColor}`, overflow: "hidden" }}>
-        <div style={{ padding: "12px 16px", background: `linear-gradient(135deg, ${priorityColor}22 0%, #fff 100%)`, borderBottom: "1px solid #eee" }}>
-          <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>SELECTED DEMAND</div>
+      {/* Selected demand detail card */}
+      <div style={{ background: "#fff", borderRadius: 12, border: `2px solid ${priorityColor}`, marginBottom: 12 }}>
+
+        {/* Header */}
+        <div style={{ padding: "12px 14px", background: `linear-gradient(135deg, ${priorityColor}15 0%, #fff 100%)`, borderBottom: "1px solid #eee", borderRadius: "10px 10px 0 0" }}>
+          {demand.is_callback_promised && demand.next_call_at && new Date(demand.next_call_at) <= new Date() && (
+            <div style={{ background: C.red, color: "#fff", padding: "4px 10px", borderRadius: 6, marginBottom: 8, fontSize: 12, fontWeight: 700, textAlign: "center" }}>
+              ⚡ PROMISED CALLBACK — call now!
+            </div>
+          )}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
             <div>
-              <div style={{ fontSize: 17, fontWeight: 700 }}>{lead?.name || displayPhone(lead?.phone || "")}</div>
-              <div style={{ fontSize: 13, color: "#555", fontFamily: "monospace" }}>📱 {displayPhone(lead?.phone || "—")}</div>
+              <div style={{ fontSize: 17, fontWeight: 700, color: "#111" }}>{lead?.name || "(no name)"}</div>
+              <div style={{ fontSize: 14, color: "#555", fontFamily: "monospace", marginTop: 2 }}>📱 {displayPhone(lead?.phone || "—")}</div>
+              {lead?.city && <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>📍 {lead.city}</div>}
             </div>
-            <Pill color={tempInfo.color} solid>{tempInfo.label}</Pill>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
+              <Pill color={tempInfo.color} solid>{tempInfo.label}</Pill>
+              <span style={{ fontSize: 11, color: "#888" }}>Attempt {(demand.call_attempts || 0) + 1}/6</span>
+            </div>
+          </div>
+          {/* Priority bar */}
+          <div style={{ height: 4, background: "#e5e7eb", borderRadius: 4, marginTop: 10, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: `${Math.min(100, demand.priority_score || 0)}%`, background: priorityColor, borderRadius: 4 }} />
           </div>
         </div>
 
-      {/* Priority bar */}
-      <div style={{ height: 5, background: "#e5e7eb", overflow: "hidden" }}>
-        <div style={{ height: "100%", width: `${Math.min(100, demand.priority_score)}%`, background: priorityColor, transition: "width 0.3s" }} />
-      </div>
-
-      {/* Main call card */}
-      {(() => {
-        // Request browser notification permission once if callback-promised demand in queue
-        const hasCallback = demands.some((d) => d.is_callback_promised && d.next_call_at && new Date(d.next_call_at) <= new Date());
-        if (hasCallback && typeof Notification !== "undefined" && Notification.permission === "default") {
-          Notification.requestPermission().then((p) => {
-            if (p === "granted") new Notification("Promised callback due", { body: `${lead?.name || "A client"} asked you to call now!` });
-          });
-        }
-        return null;
-      })()}
-      {demand.is_callback_promised && demand.next_call_at && new Date(demand.next_call_at) <= new Date() && (
-        <div style={{ background: "#e53e3e", color: "#fff", padding: "8px 14px", borderRadius: 8, marginBottom: 8, fontSize: 13, fontWeight: 600, textAlign: "center" }}>
-          ⚡ PROMISED CALLBACK — {lead?.name || "Client"} asked you to call right now!
-        </div>
-      )}
-
-        {/* Demand details */}
-        <div style={{ padding: "10px 16px", borderBottom: "1px solid #f0f0f0", background: "#fffbf0" }}>
-          <div style={{ fontSize: 13, color: "#374151", fontWeight: 500, marginBottom: 6 }}>
-            {demand.description || "(no description)"}
+        {/* Demand info */}
+        <div style={{ padding: "10px 14px", borderBottom: "1px solid #f0f0f0", background: "#fffbf0" }}>
+          <div style={{ fontSize: 13, color: "#333", fontWeight: 500, marginBottom: 6 }}>
+            {demand.description || "(no description added)"}
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            <Pill color={C.purple}>{demand.product_category || "?"}</Pill>
+            <Pill color={C.purple}>{demand.product_category || "other"}</Pill>
             {demand.occasion && <Pill color={C.orange}>{demand.occasion}</Pill>}
             {demand.budget && <Pill color={C.gray}>₹{Number(demand.budget).toLocaleString("en-IN")}</Pill>}
             {demand.for_whom && <Pill color={C.blue}>for {demand.for_whom}</Pill>}
+            {demand.crm_source && <Pill color={C.gray}>🔍 {demand.crm_source.replace(/_/g, " ")}</Pill>}
+            {demand.visit_scheduled_at && <Pill color={C.green} solid>🏪 Visit: {fmtDT(demand.visit_scheduled_at)}</Pill>}
+          </div>
+          {demand.ai_summary && <div style={{ marginTop: 6, fontSize: 12, color: C.blue, fontStyle: "italic" }}>💡 {demand.ai_summary}</div>}
+          {demand.step_name && <div style={{ marginTop: 4, fontSize: 11, color: "#888" }}>🛤 Step: {demand.step_name}</div>}
+          <div style={{ marginTop: 6, fontSize: 12, color: nextCallLabel === "OVERDUE" ? C.red : "#16a085", fontWeight: 600 }}>
+            ⏰ {nextCallLabel}
           </div>
         </div>
 
-        {/* Call status */}
-        <div style={{ padding: "10px 16px", borderBottom: "1px solid #f0f0f0", fontSize: 12, display: "flex", gap: 12, flexWrap: "wrap" }}>
-          <span style={{ color: "#6b7280" }}>
-            📞 Attempt <strong>{(demand.call_attempts || 0) + 1}</strong> of 6
-          </span>
-          <span style={{ color: demand.next_call_at && new Date(demand.next_call_at) < new Date() ? C.red : "#16a085", fontWeight: 600 }}>
-            ⏰ {nextCallLabel}
-          </span>
-          {demand.is_callback_promised && (
-            <Pill color={C.red} solid>📅 Callback promised</Pill>
-          )}
-          {demand.crm_source && (
-            <span style={{ color: "#6b7280" }}>
-              🔍 {demand.crm_source.replace(/_/g, " ")}
-            </span>
-          )}
-          {demand.visit_scheduled_at && (
-            <span style={{ color: C.green, fontWeight: 500 }}>
-              🏪 Visit: {fmtDT(demand.visit_scheduled_at)}
-            </span>
-          )}
-        </div>
-
-        {/* Action buttons */}
-        <div style={{ padding: "12px 16px", display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <Btn color={C.blue} onClick={() => setLogCallOpen(true)} style={{ flex: 1, textAlign: "center" }}>
-            📝 Log Call
-          </Btn>
-          <Btn ghost color={C.gray} onClick={toggleContext} style={{ minWidth: 100 }}>
-            {showContext ? "▲ Hide" : "💬 Show convo"}
-          </Btn>
-          {idx < total - 1 && (
-            <Btn ghost color={C.gray} onClick={skipToNext}>Skip →</Btn>
+        {/* Call action — 2 steps: tap Call → tap Log Call */}
+        <div style={{ padding: "12px 14px", background: hasCalled ? "#f0fff4" : "#fff" }}>
+          {!hasCalled ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <a href={`tel:+91${(lead?.phone || "").replace(/\D/g, "")}`}
+                onClick={() => setHasCalled(true)}
+                style={{ display: "block", textAlign: "center", padding: "14px", borderRadius: 10, background: C.green, color: "#fff", fontSize: 16, fontWeight: 700, textDecoration: "none" }}>
+                📞 Call {lead?.name || "client"}
+              </a>
+              <div style={{ fontSize: 11, color: "#888", textAlign: "center" }}>Tap to open phone dialer. Log call after you've spoken / got no answer.</div>
+              <div style={{ display: "flex", gap: 6, justifyContent: "center" }}>
+                <Btn small ghost color={C.gray} onClick={toggleContext}>{showContext ? "▲ Hide convo" : "💬 See WA history"}</Btn>
+                {idx < total - 1 && <Btn small ghost color={C.gray} onClick={skipToNext}>Skip →</Btn>}
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ fontSize: 12, color: C.green, fontWeight: 600, textAlign: "center" }}>✅ Call initiated — what happened?</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <Btn color={C.blue} onClick={() => setLogCallOpen(true)} style={{ flex: 1, textAlign: "center", fontSize: 14, padding: "10px" }}>
+                  📝 Log outcome
+                </Btn>
+                <Btn ghost color={C.gray} onClick={toggleContext}>{showContext ? "▲ Hide" : "💬 Convo"}</Btn>
+                {idx < total - 1 && <Btn ghost color={C.gray} onClick={skipToNext}>Skip →</Btn>}
+              </div>
+              <button onClick={() => setHasCalled(false)} style={{ background: "none", border: "none", color: "#aaa", fontSize: 11, cursor: "pointer", textAlign: "center" }}>
+                ← I didn't call yet
+              </button>
+            </div>
           )}
         </div>
 
-        {/* Conversation thread — shown on demand */}
+        {/* WA conversation thread */}
         {showContext && (
-          <div style={{ borderTop: "1px solid #eee", maxHeight: 340, overflowY: "auto", padding: "10px 14px" }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "#888", marginBottom: 8 }}>LAST 20 MESSAGES</div>
+          <div style={{ borderTop: "1px solid #eee", maxHeight: 320, overflowY: "auto", padding: "10px 14px" }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#888", marginBottom: 8 }}>LAST 20 WA MESSAGES</div>
             {msgsLoading && <div style={{ color: "#aaa", fontSize: 12 }}>Loading…</div>}
-            {!msgsLoading && messages.length === 0 && <div style={{ color: "#aaa", fontSize: 12 }}>No messages yet.</div>}
+            {!msgsLoading && messages.length === 0 && <div style={{ color: "#aaa", fontSize: 12 }}>No WA messages yet.</div>}
             {messages.map((m) => (
               <div key={m.id} style={{ marginBottom: 8, display: "flex", flexDirection: "column", alignItems: m.direction === "out" ? "flex-end" : "flex-start" }}>
-                <div style={{
-                  maxWidth: "80%", padding: "6px 10px", borderRadius: 10, fontSize: 12, lineHeight: 1.4,
-                  background: m.direction === "out" ? "#dcf8c6" : "#f0f0f0",
-                  color: "#222",
-                }}>
+                <div style={{ maxWidth: "82%", padding: "6px 10px", borderRadius: 10, fontSize: 12, lineHeight: 1.5,
+                  background: m.direction === "out" ? "#dcf8c6" : "#f0f0f0", color: "#222" }}>
                   {m.body}
                 </div>
                 <div style={{ fontSize: 10, color: "#aaa", marginTop: 2 }}>{fmtDT(m.created_at)}</div>
