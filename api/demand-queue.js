@@ -17,7 +17,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { supa } from "./_lib/supabase.js";
-import { CRM_SECRET, SUPABASE_SERVICE_KEY } from "./_lib/config.js";
+import { checkCrmSecret, SUPABASE_SERVICE_KEY } from "./_lib/config.js";
 
 const DEFAULT_TENANT_ID = "a1b2c3d4-0000-0000-0000-000000000001";
 
@@ -47,9 +47,9 @@ function calcPriority({ temperature, nextCallAt, isCallbackPromised, crmSource, 
 export default async function handler(req, res) {
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
 
-  const secret = req.headers["x-crm-secret"];
   if (!SUPABASE_SERVICE_KEY) return res.status(500).json({ ok: false, error: "missing_env" });
-  if (secret !== process.env.CRM_SECRET) return res.status(401).json({ ok: false, error: "Unauthorized" });
+  const authErr = checkCrmSecret(req, res);
+  if (authErr) return;
 
   const { staffId, tenantId, limit: rawLimit } = req.query;
   if (!staffId) return res.status(400).json({ ok: false, error: "staffId is required" });
