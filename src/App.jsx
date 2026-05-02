@@ -498,14 +498,17 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
     if (!demand?.id) return;
     setReassignBusy(true);
     const picked = staff.find((s) => s.id === staffId);
+    const newName = picked?.name || picked?.username || null;
     const { error } = await sb.from("bullion_demands").update({
       assigned_staff_id: staffId || null,
-      assigned_to: picked?.name || picked?.username || null,
+      assigned_to: newName,
       updated_at: new Date().toISOString(),
     }).eq("id", demand.id);
     setReassignBusy(false);
     if (error) { alert(`Failed: ${error.message}`); return; }
     setReassignOpen(false);
+    // Optimistic update — reflect new name immediately without waiting for reload
+    if (demand) { demand.assigned_to = newName; demand.assigned_staff_id = staffId || null; }
     onChanged && onChanged();
   };
 
