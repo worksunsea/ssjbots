@@ -233,6 +233,7 @@ await bootAllSessions({
           name,
           msg_id: msgId,
           whatsapp_client: clientId,
+          session_phone: getClientState(clientId).me || null,
         }),
       });
       if (!r.ok) app.log.warn({ status: r.status }, "forward_non_2xx");

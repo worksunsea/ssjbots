@@ -153,10 +153,22 @@ export default async function handler(req, res) {
     //       If it maps to any other funnel (birthday, broadcast, other sales number) → drop.
     //       If it maps to NO funnel at all → also drop (unknown/unregistered session → not a bot).
     if (waClient) {
-      const matchedFunnel = allFunnels.find((f) => String(f.wbiztool_client) === String(waClient));
+      let matchedFunnel = allFunnels.find((f) => String(f.wbiztool_client) === String(waClient));
+
+      // Self-healing: session ID changed (e.g. reconnected with new name) but phone is the same.
+      // Try matching by the session's own phone number, then auto-update the funnel so it
+      // works next time without any manual SQL or code change.
+      if (!matchedFunnel && body.session_phone) {
+        const sessionPhone = normalizePhone(String(body.session_phone).replace(/@.*/, ""));
+        matchedFunnel = allFunnels.find((f) => normalizePhone(f.wa_number || "") === sessionPhone);
+        if (matchedFunnel) {
+          console.log(`webhook:gate1:auto-heal funnel ${matchedFunnel.id} session ${matchedFunnel.wbiztool_client} → ${waClient}`);
+          sb.from("funnels").update({ wbiztool_client: waClient }).eq("id", matchedFunnel.id).then(() => {}, () => {});
+        }
+      }
+
       if (!matchedFunnel) {
-        // Unknown session — not registered as a bot number, drop it
-        console.log("webhook:gate1:dropped unknown session", waClient);
+        console.log("webhook:gate1:dropped unknown session", waClient, "session_phone:", body.session_phone);
         return res.status(200).json({ ok: true, skipped: "unknown_session" });
       }
       const funnelPhone = normalizePhone(matchedFunnel.wa_number || "");
