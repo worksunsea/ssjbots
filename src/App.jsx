@@ -3281,6 +3281,31 @@ function ConnectionsScreen() {
     setTimeout(load, 1000);
   };
 
+  const deleteSession = async (clientId) => {
+    const linked = funnels.filter((f) => f.wbiztool_client === clientId);
+    const msg = linked.length > 0
+      ? `Delete session "${clientId}"? It is linked to ${linked.length} funnel(s): ${linked.map((f) => f.name).join(", ")}.\n\nThose funnels will be unlinked (no WA session) — reassign them after.`
+      : `Delete session "${clientId}"? This cannot be undone.`;
+    if (!confirm(msg)) return;
+    // Remove from wa-service
+    try { await fetch(`${WA_SERVICE_URL}/clients/${clientId}/logout`, { method: "POST" }); } catch { /* ignore */ }
+    try { await fetch(`${WA_SERVICE_URL}/clients/${clientId}`, { method: "DELETE" }); } catch { /* ignore */ }
+    // Clear from funnels so they don't reference a dead session
+    if (linked.length > 0) {
+      await sb.from("funnels").update({ wbiztool_client: null }).in("id", linked.map((f) => f.id));
+    }
+    load();
+  };
+
+  const moveFunnels = async (fromClientId, toClientId) => {
+    const linked = funnels.filter((f) => f.wbiztool_client === fromClientId);
+    if (linked.length === 0) { alert("No funnels linked to this session."); return; }
+    const target = clients.find((c) => c.client_id === toClientId);
+    if (!confirm(`Move ${linked.length} funnel(s) from "${fromClientId}" → "${toClientId}" (${target?.me?.replace(/@.*/, "") || toClientId})?`)) return;
+    await sb.from("funnels").update({ wbiztool_client: toClientId }).in("id", linked.map((f) => f.id));
+    load();
+  };
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
@@ -3335,6 +3360,20 @@ function ConnectionsScreen() {
               {!c.connected && <Btn small color={C.blue} onClick={() => setPairing(c.client_id)}>Pair QR</Btn>}
               {c.connected && <Btn small ghost color={C.orange} onClick={() => rePair(c.client_id)}>Re-pair</Btn>}
               {c.connected && <Btn small ghost color={C.red} onClick={() => disconnect(c.client_id)}>Disconnect</Btn>}
+              {/* Move funnels to another connected session */}
+              {linked.length > 0 && (() => {
+                const others = clients.filter((o) => o.connected && o.client_id !== c.client_id);
+                if (!others.length) return null;
+                return (
+                  <select defaultValue="" onChange={(e) => { if (e.target.value) moveFunnels(c.client_id, e.target.value); e.target.value = ""; }}
+                    style={{ fontSize: 11, padding: "2px 6px", borderRadius: 6, border: "1px solid #ddd", cursor: "pointer" }}>
+                    <option value="">Move funnels →</option>
+                    {others.map((o) => <option key={o.client_id} value={o.client_id}>{o.client_id} ({o.me?.replace(/@.*/, "") || "?"})</option>)}
+                  </select>
+                );
+              })()}
+              {/* Delete disconnected session */}
+              {!c.connected && <Btn small ghost color={C.red} onClick={() => deleteSession(c.client_id)}>🗑 Delete</Btn>}
             </div>
           </Card>
           );
@@ -6585,9 +6624,12 @@ function TelecallerQueueScreen({ funnels }) {
   if (!demand) {
     return (
       <div style={{ maxWidth: 540, margin: "0 auto", padding: 20 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 6 }}>
           <Btn color={C.blue} onClick={load}>↻ Refresh</Btn>
-          <Btn color={C.green} onClick={() => setAddingDemand(true)}>+ New Demand</Btn>
+          <div style={{ display: "flex", gap: 6 }}>
+            <Btn color={C.green} onClick={() => setAddingDemand(true)}>+ New Demand</Btn>
+            <Btn color="#16a085" onClick={() => setAddingWalkin(true)}>🏪 Walk-in</Btn>
+          </div>
         </div>
         <div style={{ textAlign: "center", paddingTop: 40 }}>
           <div style={{ fontSize: 48, marginBottom: 12 }}>✅</div>
@@ -6595,6 +6637,7 @@ function TelecallerQueueScreen({ funnels }) {
           <div style={{ fontSize: 13, color: "#888" }}>All calls done. Great work!</div>
         </div>
         {addingDemand && <DemandEntryModal funnels={funnels} onClose={() => setAddingDemand(false)} onSaved={() => { setAddingDemand(false); load(); }} />}
+        {addingWalkin && <WalkinEntryModal funnels={funnels} allTags={allTags} onClose={() => setAddingWalkin(false)} onSaved={() => { setAddingWalkin(false); load(); }} />}
       </div>
     );
   }
