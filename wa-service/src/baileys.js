@@ -243,10 +243,11 @@ export function getClientState(clientIdRaw) {
 export async function logoutClient(clientIdRaw) {
   const clientId = sanitize(clientIdRaw);
   const s = sessions.get(clientId);
-  if (!s) return { ok: false, error: "no_session" };
-  try { await s.sock?.logout(); } catch {}
-  sessions.delete(clientId);
-  // remove auth dir so next pair starts fresh
+  if (s) {
+    try { await s.sock?.logout(); } catch {}
+    sessions.delete(clientId);
+  }
+  // Always remove auth dir, even if session wasn't in memory (disconnected state)
   try { fs.rmSync(clientDir(clientId), { recursive: true, force: true }); } catch {}
   return { ok: true };
 }

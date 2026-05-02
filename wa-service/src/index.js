@@ -143,6 +143,13 @@ app.post("/clients/:id/logout", async (req, reply) => {
   return logoutClient(req.params.id);
 });
 
+// DELETE /clients/:id — force-remove session (works even when disconnected)
+app.delete("/clients/:id", async (req, reply) => {
+  const guarded = requireSecret(req, reply);
+  if (guarded) return;
+  return logoutClient(req.params.id);
+});
+
 function qrPage(reply, clientId) {
   const state = getClientState(clientId);
   if (state.connected) {
