@@ -7,13 +7,18 @@ export default async function handler(_req, res) {
   let wa = { configured: Boolean(WA_SERVICE_URL), reachable: null, connected: null };
   if (WA_SERVICE_URL) {
     try {
-      const r = await fetch(`${WA_SERVICE_URL.replace(/\/+$/, "")}/status`);
+      // Check all clients, find first connected one (avoids stale DEFAULT_CLIENT_ID issue)
+      const base = WA_SERVICE_URL.replace(/\/+$/, "");
+      const r = await fetch(`${base}/clients`);
       if (r.ok) {
         const data = await r.json();
         wa.reachable = true;
-        wa.connected = Boolean(data.connected);
-        wa.me = data.me || null;
-        wa.client = data.client || null;
+        const all = data.clients || [];
+        const connected = all.filter((c) => c.connected);
+        wa.connected = connected.length > 0;
+        wa.me = connected[0]?.me || null;
+        wa.client = connected[0]?.client_id || null;
+        wa.sessions = all.map((c) => ({ id: c.client_id, connected: c.connected, me: c.me }));
       } else {
         wa.reachable = false;
       }
