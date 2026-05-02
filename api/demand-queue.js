@@ -87,6 +87,12 @@ export default async function handler(req, res) {
       visit_scheduled_at,
       ai_summary,
       temperature_override,
+      design_notes,
+      metal,
+      stone,
+      item_category,
+      has_exchange,
+      exchange_value,
       bullion_funnel_steps!fms_step_id ( step_type, name ),
       bullion_leads!lead_id ( id, name, phone, city, source )
     `)

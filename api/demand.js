@@ -186,6 +186,7 @@ export default async function handler(req, res) {
         has_exchange: !!body.hasExchange,
         exchange_desc: body.exchangeDesc || null,
         exchange_value: body.exchangeValue ? Number(body.exchangeValue) : null,
+        design_notes: body.designNotes || null,
         bot_active: false,
       })
       .select()

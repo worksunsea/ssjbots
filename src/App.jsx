@@ -381,6 +381,8 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
   const [reassignOpen, setReassignOpen] = useState(false);
   const [reassignBusy, setReassignBusy] = useState(false);
   const [funnelBusy, setFunnelBusy] = useState(false);
+  const [scheduleVisitOpen, setScheduleVisitOpen] = useState(false);
+  const [sendDesignOpen, setSendDesignOpen] = useState(false);
 
   useEffect(() => {
     sb.from("funnels").select("id,name,kind,active").eq("tenant_id", getTenantId()).order("active", { ascending: false }).order("id")
@@ -708,6 +710,11 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
               )}
             </div>
           )}
+          {demand.design_notes && (
+            <div style={{ marginTop: 6, padding: "6px 10px", background: "#fdf4ff", border: "1px solid #e9d5ff", borderRadius: 6, fontSize: 12, color: "#6b21a8", whiteSpace: "pre-wrap" }}>
+              📐 {demand.design_notes}
+            </div>
+          )}
         </div>
       )}
 
@@ -837,6 +844,8 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
             <Btn small ghost color={C.purple} onClick={() => markOutcome("supplier")} disabled={outcomeBusy}>🏷 Supplier</Btn>
             <Btn small ghost color={C.blue} onClick={() => setReassignOpen((v) => !v)}>🔁 Reassign</Btn>
             <Btn small ghost color={C.blue} onClick={() => setLogCallOpen(true)} disabled={isLid(lead.phone) || !lead.phone} title={isLid(lead.phone) || !lead.phone ? "Phone hidden — link to existing contact or add a real number first" : ""}>📝 Log call</Btn>
+            <Btn small ghost color={C.green} onClick={() => setScheduleVisitOpen(true)}>📅 Schedule visit</Btn>
+            <Btn small ghost color={C.purple} onClick={() => setSendDesignOpen(true)} disabled={isLid(lead.phone) || !lead.phone}>📤 Send design</Btn>
             {onAdvanceStep && (
               <Btn small ghost color={C.green} onClick={onAdvanceStep}>✓ Mark step complete</Btn>
             )}
@@ -863,6 +872,21 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
           lead={lead}
           onClose={() => setLostModalOpen(false)}
           onLost={() => { setLostModalOpen(false); onChanged && onChanged(); }}
+        />
+      )}
+      {scheduleVisitOpen && demand && (
+        <ScheduleVisitModal
+          demand={demand}
+          onClose={() => setScheduleVisitOpen(false)}
+          onSaved={() => { setScheduleVisitOpen(false); onChanged && onChanged(); }}
+        />
+      )}
+      {sendDesignOpen && demand && (
+        <SendDesignModal
+          demand={demand}
+          lead={lead}
+          onClose={() => setSendDesignOpen(false)}
+          onSent={() => { setSendDesignOpen(false); onChanged && onChanged(); }}
         />
       )}
 
@@ -1298,6 +1322,8 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
     metal: "", stone: "", itemCategory: "", ringSize: "", purity: "", hallmarkPref: "",
     // Exchange
     hasExchange: false, exchangeDesc: "", exchangeValue: "",
+    // Design notes
+    designNotes: "",
   });
 
   const set = (k, v) => setForm((s) => ({ ...s, [k]: v }));
@@ -1390,6 +1416,7 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
           hasExchange: form.hasExchange || false,
           exchangeDesc: form.exchangeDesc || null,
           exchangeValue: form.exchangeValue ? Number(form.exchangeValue) : null,
+          designNotes: form.designNotes || null,
         }),
       });
       const data = await res.json();
@@ -1652,6 +1679,11 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
 
           <Field label="Showroom visit scheduled (if client has given a date/time)">
             <Input type="datetime-local" value={form.visitScheduledAt} onChange={(e) => set("visitScheduledAt", e.target.value)} />
+          </Field>
+
+          <Field label="Design notes (designs shown / sent, references, client preferences)">
+            <Textarea rows={2} value={form.designNotes} onChange={(e) => set("designNotes", e.target.value)}
+              placeholder="e.g. Sent 3 bracelet designs on WhatsApp — she liked the polki one. Wants antique finish." />
           </Field>
 
           {err && <p style={{ fontSize: 12, color: C.red, margin: "0 0 12px" }}>{err}</p>}
@@ -2484,6 +2516,133 @@ function LostReasonModal({ demand, lead, onClose, onLost }) {
         <Btn ghost color={C.gray} onClick={onClose}>Cancel</Btn>
         <Btn color={C.red} onClick={confirm} disabled={saving || !reason}>{saving ? "Saving…" : "Confirm — Mark Lost"}</Btn>
       </div>
+    </Modal>
+  );
+}
+
+// ── Schedule Visit Modal ──────────────────────────────────────────────────
+// Sets next_call_at on a demand so it surfaces in the telecaller queue on that day.
+function ScheduleVisitModal({ demand, onClose, onSaved }) {
+  const nextSat = (() => {
+    const d = new Date();
+    const day = d.getDay(); // 0=Sun,6=Sat
+    const daysUntilSat = ((6 - day) + 7) % 7 || 7;
+    d.setDate(d.getDate() + daysUntilSat);
+    d.setHours(10, 0, 0, 0);
+    return d.toISOString().slice(0, 16);
+  })();
+  const [dt, setDt] = useState(nextSat);
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  const save = async () => {
+    if (!dt) { setErr("Pick a date and time."); return; }
+    setSaving(true);
+    const updates = {
+      next_call_at: new Date(dt).toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    if (note) updates.design_notes = (demand.design_notes ? demand.design_notes + "\n" : "") + `📅 Visit scheduled ${new Date(dt).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}: ${note}`;
+    const { error } = await sb.from("bullion_demands").update(updates).eq("id", demand.id);
+    setSaving(false);
+    if (error) { setErr(error.message); return; }
+    onSaved && onSaved();
+  };
+
+  return (
+    <Modal title="📅 Schedule Visit" onClose={onClose} width={400}>
+      <div style={{ fontSize: 13, color: "#555", marginBottom: 14 }}>
+        Set when the client is coming to the shop. The demand will appear in the telecaller queue on that date.
+      </div>
+      <Field label="Visit date & time" required>
+        <Input type="datetime-local" value={dt} onChange={(e) => setDt(e.target.value)} />
+      </Field>
+      <Field label="Note (optional — e.g. 'coming with husband, wants to see polki set')">
+        <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Any context for the visit…" />
+      </Field>
+      {err && <p style={{ fontSize: 12, color: C.red, margin: "4px 0 8px" }}>{err}</p>}
+      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
+        <Btn ghost color={C.gray} onClick={onClose}>Cancel</Btn>
+        <Btn color={C.green} onClick={save} disabled={saving}>{saving ? "Saving…" : "✅ Schedule Visit"}</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+// ── Send Design Modal ─────────────────────────────────────────────────────
+// Sends an image/doc to the client via WhatsApp and logs it in design_notes.
+function SendDesignModal({ demand, lead, onClose, onSent }) {
+  const [mediaUrl, setMediaUrl] = useState("");
+  const [caption, setCaption] = useState("");
+  const [note, setNote] = useState("");
+  const [sending, setSending] = useState(false);
+  const [err, setErr] = useState("");
+  const [connectedClient, setConnectedClient] = useState(null);
+  const [clientsLoading, setClientsLoading] = useState(true);
+
+  useEffect(() => {
+    fetch("/api/wa-proxy?path=/clients")
+      .then((r) => r.json())
+      .then((data) => {
+        const connected = (data.clients || []).find((c) => c.connected);
+        setConnectedClient(connected || null);
+        setClientsLoading(false);
+      })
+      .catch(() => setClientsLoading(false));
+  }, []);
+
+  const send = async () => {
+    if (!mediaUrl) { setErr("Paste an image/file URL first."); return; }
+    if (!connectedClient) { setErr("No WhatsApp session connected."); return; }
+    setSending(true);
+    setErr("");
+    try {
+      const r = await fetch(`/api/wa-proxy?path=/clients/${encodeURIComponent(connectedClient.client_id)}/send-media`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: lead.phone, mediaUrl, mediaType: "image", caption }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!data.ok) { setErr(data.error || "Send failed"); setSending(false); return; }
+
+      const logLine = `📤 Design sent ${new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}: ${note || caption || mediaUrl}`;
+      const newNotes = (demand.design_notes ? demand.design_notes + "\n" : "") + logLine;
+      await sb.from("bullion_demands").update({ design_notes: newNotes, updated_at: new Date().toISOString() }).eq("id", demand.id);
+      setSending(false);
+      onSent && onSent();
+    } catch (e) { setErr(String(e)); setSending(false); }
+  };
+
+  return (
+    <Modal title="📤 Send Design via WhatsApp" onClose={onClose} width={480}>
+      {clientsLoading ? (
+        <div style={{ padding: 20, textAlign: "center", color: "#888" }}>Checking WA connection…</div>
+      ) : !connectedClient ? (
+        <div style={{ padding: 20, textAlign: "center", color: C.red, fontSize: 13 }}>
+          No WhatsApp session connected. Connect a session in the Connections tab first.
+        </div>
+      ) : (
+        <>
+          <div style={{ fontSize: 12, color: "#555", marginBottom: 12, padding: "6px 10px", background: "#f0fdf4", borderRadius: 6 }}>
+            Sending from: <strong>{connectedClient.me || connectedClient.client_id}</strong> → to <strong>{lead.phone}</strong>
+          </div>
+          <Field label="Image or file URL (paste a link — Google Drive 'anyone with link', Dropbox, Supabase storage, etc.)" required>
+            <Input value={mediaUrl} onChange={(e) => setMediaUrl(e.target.value)} placeholder="https://drive.google.com/uc?id=…  or  https://…/bracelet.jpg" />
+          </Field>
+          <Field label="Caption (sent with the image)">
+            <Input value={caption} onChange={(e) => setCaption(e.target.value)} placeholder="e.g. 3 bracelet options as discussed — please check and let us know which you prefer 🙏" />
+          </Field>
+          <Field label="Internal note (saved in design notes, not sent to client)">
+            <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Sent 3 polki bracelet designs, she liked option 2" />
+          </Field>
+          {err && <p style={{ fontSize: 12, color: C.red, margin: "4px 0 8px" }}>{err}</p>}
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
+            <Btn ghost color={C.gray} onClick={onClose}>Cancel</Btn>
+            <Btn color={C.purple} onClick={send} disabled={sending || !mediaUrl}>{sending ? "Sending…" : "📤 Send on WhatsApp"}</Btn>
+          </div>
+        </>
+      )}
     </Modal>
   );
 }
