@@ -1290,7 +1290,7 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
     visitScheduledAt: "",
     funnelId: "",
     crmSource: "",
-    assignedStaffId: loadUser()?.id || "",
+    assignedStaffId: "",
     // Jewelry fields
     metal: "", stone: "", itemCategory: "", ringSize: "", purity: "", hallmarkPref: "",
     // Exchange
