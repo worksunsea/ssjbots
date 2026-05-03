@@ -12,7 +12,7 @@ import { sendWhatsApp, sendWhatsAppMedia } from "./_lib/wa.js";
 import { transitionLeadToFunnel, enrollLeadInDrip } from "./_lib/drip.js";
 import { askClaude } from "./_lib/claude.js";
 import { getFaqs, faqsForPrompt } from "./_lib/faqs.js";
-import { OWNER_ALERT_PHONE, CLAUDE_MODEL_ESCALATION } from "./_lib/config.js";
+import { OWNER_ALERT_PHONE, CLAUDE_MODEL } from "./_lib/config.js";
 
 export const config = { maxDuration: 60 };
 
@@ -163,7 +163,7 @@ export default async function handler(req, res) {
           system: aiSystem,
           messages: [{ role: "user", content: "Write the personalized message now." }],
           maxTokens: 150,
-          model: CLAUDE_MODEL_ESCALATION,
+          model: CLAUDE_MODEL,
         });
         if (claude?.text?.trim()) msgBody = claude.text.trim();
       } catch (e) {
@@ -399,7 +399,7 @@ export default async function handler(req, res) {
         faqs?.length ? `Store info:\n${faqsForPrompt(faqs)}` : "",
         "Template hint (do NOT copy verbatim):", row.body,
       ].filter(Boolean).join("\n");
-      const claude = await askClaude({ system: aiSystem, messages: [{ role: "user", content: "Write the message now." }], maxTokens: 200, model: CLAUDE_MODEL_ESCALATION });
+      const claude = await askClaude({ system: aiSystem, messages: [{ role: "user", content: "Write the message now." }], maxTokens: 200, model: CLAUDE_MODEL });
       if (claude?.text?.trim()) await sb.from("bullion_scheduled_messages").update({ edited_body: claude.text.trim() }).eq("id", row.id);
     } catch (e) { console.error("preview_gen failed", row.id, e.message); }
   }

@@ -1,0 +1,24 @@
+services:
+  media-service:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM node:20-alpine
+        RUN apk add --no-cache ffmpeg
+        WORKDIR /app
+        RUN printf '{"name":"gemtre-media-service","version":"0.1.0","type":"module","dependencies":{"@fastify/cors":"^9.0.1","@fastify/multipart":"^8.3.0","@fastify/static":"^7.0.4","fastify":"^5.2.1"}}' > package.json
+        RUN npm install --production
+        COPY src ./src
+        EXPOSE 3022
+        CMD ["node", "src/index.js"]
+    container_name: gemtre-media-service
+    restart: unless-stopped
+    ports:
+      - "3022:3022"
+    volumes:
+      - /volume1/gemtre-media:/app/media
+    environment:
+      PORT: 3022
+      MEDIA_DIR: /app/media
+      SERVICE_SECRET: 1027bba48e81f724481baf1919ce81c0375fca170152167233c52d481ad10c0b
+      PUBLIC_URL: https://media.gemtre.in

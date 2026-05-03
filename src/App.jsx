@@ -36,7 +36,8 @@ const FOR_WHOM_OPTIONS = ["self", "daughter", "son", "wife", "husband", "mother"
 const FMS_STEP_COLORS = { new: C.gray, bot_activated: C.blue, qualifying: C.purple, catalog_sent: C.orange, call_needed: C.red, quoted: C.yellow, negotiating: C.orange, order_confirmed: C.green, delivered: C.green, closed: "#999" };
 
 // ── HELPERS ──
-const normalizePhone = (p) => String(p || "").replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, "");
+// WA JID localparts look like "918860866000:19" — strip the device-index suffix before normalizing.
+const normalizePhone = (p) => String(p || "").replace(/:\d+$/, "").replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, "");
 // Demand temperature — drives the Demands list sort order so staff focus on
 // hottest leads first. Buckets:
 //   hot       — needs human now: handoff status, qualified non-gold, visit today/tomorrow
@@ -3113,7 +3114,7 @@ function FunnelForm({ funnel, personas, funnels = [], onClose, onSaved }) {
     setForm((prev) => ({
       ...prev,
       wbiztool_client: clientId,
-      wa_number: s?.me ? normalizePhone(s.me.replace(/@.*/, "")) : prev.wa_number,
+      wa_number: s?.me ? normalizePhone(s.me.replace(/[:@].*/, "")) : prev.wa_number,
     }));
   };
 
@@ -6336,7 +6337,7 @@ function BroadcastCreateModal({ onClose, onSaved }) {
       kind: "broadcast",
       active: true,
       wbiztool_client: form.waSession,
-      wa_number: sess?.me ? normalizePhone(sess.me.replace(/@.*/, "")) : "",
+      wa_number: sess?.me ? normalizePhone(sess.me.replace(/[:@].*/, "")) : "",
     });
     if (fe) { setErr(fe.message); setSaving(false); return; }
 
@@ -7138,3 +7139,593 @@ export default function App() {
     </div>
   );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PETTY CASH — uses the shared sb client (SUPABASE_URL / SUPABASE_ANON above)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function makePCClient() {
+  const url = SUPABASE_URL;
+  const key = SUPABASE_ANON;
+  const headers = {
+    "Content-Type": "application/json",
+    apikey: key,
+    Authorization: `Bearer ${key}`,
+  };
+  const base = `${url}/rest/v1`;
+
+  const buildSelect = (table, cols, filters, order) => {
+    let q = `${base}/${table}?select=${cols}`;
+    if (filters.length) q += "&" + filters.join("&");
+    if (order) q += `&order=${order}`;
+    return q;
+  };
+
+  return {
+    from: (table) => ({
+      select: (cols = "*") => {
+        const state = { _cols: cols, _filters: [], _order: null };
+        const chain = {
+          eq(col, val) { state._filters.push(`${col}=eq.${encodeURIComponent(val)}`); return chain; },
+          order(col, { ascending = true } = {}) { state._order = `${col}.${ascending ? "asc" : "desc"}`; return chain; },
+          async execute() {
+            const q = buildSelect(table, state._cols, state._filters, state._order);
+            const r = await fetch(q, { headers: { ...headers, Prefer: "return=representation" } });
+            const data = await r.json();
+            return { data: Array.isArray(data) ? data : [], error: r.ok ? null : data };
+          },
+        };
+        return chain;
+      },
+      insert: (rows) => ({
+        async execute() {
+          const r = await fetch(`${base}/${table}`, {
+            method: "POST",
+            headers: { ...headers, Prefer: "return=representation" },
+            body: JSON.stringify(rows),
+          });
+          const data = await r.json();
+          return { data, error: r.ok ? null : data };
+        },
+      }),
+      update: (vals) => {
+        const state = { _filters: [] };
+        const chain = {
+          eq(col, val) { state._filters.push(`${col}=eq.${encodeURIComponent(val)}`); return chain; },
+          async execute() {
+            const q = `${base}/${table}?` + state._filters.join("&");
+            const r = await fetch(q, {
+              method: "PATCH",
+              headers: { ...headers, Prefer: "return=representation" },
+              body: JSON.stringify(vals),
+            });
+            const data = await r.json();
+            return { data, error: r.ok ? null : data };
+          },
+        };
+        return chain;
+      },
+      delete: () => {
+        const state = { _filters: [] };
+        const chain = {
+          eq(col, val) { state._filters.push(`${col}=eq.${encodeURIComponent(val)}`); return chain; },
+          async execute() {
+            const q = `${base}/${table}?` + state._filters.join("&");
+            const r = await fetch(q, { method: "DELETE", headers });
+            return { error: r.ok ? null : await r.json() };
+          },
+        };
+        return chain;
+      },
+    }),
+  };
+}
+
+const PC_HEADS_DEFAULT = [
+  { id: "h1", name: "किराना / दैनिक सामान", emoji: "🛒" },
+  { id: "h2", name: "यात्रा / ऑटो / कैब",   emoji: "🚗" },
+  { id: "h3", name: "खाना / कैंटीन",         emoji: "🍱" },
+  { id: "h4", name: "कार्यालय सामग्री",       emoji: "🖨️" },
+  { id: "h5", name: "मरम्मत / रखरखाव",       emoji: "🔧" },
+  { id: "h6", name: "कूरियर / डिलीवरी",      emoji: "📦" },
+  { id: "h7", name: "अन्य / विविध",           emoji: "🌐" },
+];
+const PC_STORE_HEADS   = "pc_heads";
+const PC_STORE_BUDGETS = "pc_budgets";
+const PC_STORE_ROLE    = "pc_role";
+const PC_STORE_USER    = "pc_user";
+const PC_STAFF_TABLE   = "staff";
+
+function PettyCash() {
+  const db = makePCClient();
+
+  const [staff,       setStaff]       = useState([]);
+  const [role,        setRole]        = useState(() => localStorage.getItem(PC_STORE_ROLE) || null);
+  const [currentUser, setCurrentUser] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(PC_STORE_USER)); } catch { return null; }
+  });
+  const [view,    setView]    = useState("dashboard");
+  const [heads,   setHeads]   = useState(() => {
+    try { return JSON.parse(localStorage.getItem(PC_STORE_HEADS)) || PC_HEADS_DEFAULT; } catch { return PC_HEADS_DEFAULT; }
+  });
+  const [budgets, setBudgets] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(PC_STORE_BUDGETS)) || {}; } catch { return {}; }
+  });
+  const [txns,     setTxns]     = useState([]);
+  const [balances, setBalances] = useState({});
+  const [loading,  setLoading]  = useState(false);
+
+  useEffect(() => { localStorage.setItem(PC_STORE_HEADS,   JSON.stringify(heads));   }, [heads]);
+  useEffect(() => { localStorage.setItem(PC_STORE_BUDGETS, JSON.stringify(budgets)); }, [budgets]);
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await db.from(PC_STAFF_TABLE).select("id,name").execute();
+      setStaff(data || []);
+    })();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const loadTxns = useCallback(async () => {
+    setLoading(true);
+    const { data } = await db.from("petty_cash_txns")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .execute();
+    const rows = data || [];
+    setTxns(rows);
+    const bal = {};
+    rows.forEach(t => {
+      if (!bal[t.runner_id]) bal[t.runner_id] = 0;
+      bal[t.runner_id] += t.type === "credit" ? +t.amount : -t.amount;
+    });
+    setBalances(bal);
+    setLoading(false);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => { if (role) loadTxns(); }, [role, loadTxns]);
+
+  function pcLogin(r, u) {
+    setRole(r); setCurrentUser(u);
+    localStorage.setItem(PC_STORE_ROLE, r);
+    localStorage.setItem(PC_STORE_USER, JSON.stringify(u));
+    setView(r === "admin" ? "dashboard" : "runner");
+  }
+  function pcLogout() {
+    setRole(null); setCurrentUser(null);
+    localStorage.removeItem(PC_STORE_ROLE);
+    localStorage.removeItem(PC_STORE_USER);
+  }
+
+  if (!role) return <PCRoleSelect staff={staff} onSelect={pcLogin} />;
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#f4f6fb", fontFamily: "sans-serif", margin: "-1rem" }}>
+      <PCTopBar role={role} user={currentUser} view={view} setView={setView} onLogout={pcLogout} loading={loading} />
+      <div style={{ maxWidth: 900, margin: "0 auto", padding: "16px 12px" }}>
+        {role === "admin" && view === "dashboard"    && <PCAdminDashboard txns={txns} heads={heads} budgets={budgets} staff={staff} balances={balances} db={db} onRefresh={loadTxns} />}
+        {role === "admin" && view === "transactions" && <PCAllTransactions txns={txns} heads={heads} staff={staff} db={db} onRefresh={loadTxns} />}
+        {role === "admin" && view === "settings"     && <PCSettings heads={heads} setHeads={setHeads} budgets={budgets} setBudgets={setBudgets} />}
+        {role === "runner" && currentUser            && <PCRunnerPanel user={currentUser} txns={txns.filter(t => String(t.runner_id) === String(currentUser.id))} heads={heads} balance={balances[String(currentUser.id)] || 0} db={db} onRefresh={loadTxns} />}
+      </div>
+    </div>
+  );
+}
+
+function PCRoleSelect({ staff, onSelect }) {
+  const [sel, setSel] = useState("");
+  return (
+    <div style={{ minHeight: "60vh", background: "linear-gradient(135deg,#1a1a2e,#16213e)", display: "flex", alignItems: "center", justifyContent: "center", margin: "-1rem" }}>
+      <div style={pcCard({ width: 340 })}>
+        <h2 style={{ margin: "0 0 4px", color: "#1a1a2e" }}>💰 Petty Cash</h2>
+        <p style={{ margin: "0 0 20px", color: "#888", fontSize: 13 }}>Login करें</p>
+        <button style={{ ...pcBtn(), width: "100%", marginBottom: 16 }} onClick={() => onSelect("admin", { id: "admin", name: "Admin" })}>
+          🔐 Admin Login
+        </button>
+        <hr style={{ border: "none", borderTop: "1px solid #eee", margin: "0 0 16px" }} />
+        <p style={{ margin: "0 0 8px", fontSize: 13, color: "#555", fontWeight: 600 }}>Runner Login</p>
+        <select style={pcInp()} value={sel} onChange={e => setSel(e.target.value)}>
+          <option value="">-- अपना नाम चुनें --</option>
+          {staff.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+        <button style={{ ...pcBtn({ bg: "#e67e22" }), width: "100%" }} disabled={!sel}
+          onClick={() => onSelect("runner", staff.find(s => String(s.id) === sel))}>
+          🏃 Runner के रूप में जारी रखें
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PCTopBar({ role, user, view, setView, onLogout, loading }) {
+  const tabs = [
+    { k: "dashboard",    l: "📊 Dashboard"   },
+    { k: "transactions", l: "📋 Transactions" },
+    { k: "settings",     l: "⚙️ Settings"    },
+  ];
+  return (
+    <div style={{ background: "#1a1a2e", color: "#fff", padding: "0 16px", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", minHeight: 52 }}>
+      <span style={{ fontWeight: 700, fontSize: 16, marginRight: 8 }}>💰 Petty Cash</span>
+      {role === "admin" && tabs.map(t => (
+        <button key={t.k} onClick={() => setView(t.k)}
+          style={{ background: view === t.k ? "#e67e22" : "transparent", color: "#fff", border: "none", padding: "6px 12px", borderRadius: 6, cursor: "pointer", fontSize: 13 }}>
+          {t.l}
+        </button>
+      ))}
+      {loading && <span style={{ fontSize: 12, opacity: 0.6, marginLeft: 4 }}>⏳</span>}
+      <span style={{ marginLeft: "auto", fontSize: 13, opacity: 0.8 }}>
+        {role === "admin" ? "🔐 Admin" : `🏃 ${user?.name}`}
+      </span>
+      <button onClick={onLogout} style={{ background: "transparent", color: "#fff", border: "1px solid rgba(255,255,255,0.3)", padding: "4px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>
+        Logout
+      </button>
+    </div>
+  );
+}
+
+function PCAdminDashboard({ txns, heads, budgets, staff, balances, db, onRefresh }) {
+  const [showGive, setShowGive] = useState(false);
+  const [giveForm, setGiveForm] = useState({ runner_id: "", amount: "", note: "" });
+  const [saving,   setSaving]   = useState(false);
+
+  const thisMonth   = new Date().toISOString().slice(0, 7);
+  const monthDebits = txns.filter(t => t.created_at?.startsWith(thisMonth) && t.type === "debit");
+  const headTotals  = Object.fromEntries(heads.map(h => [h.id, 0]));
+  monthDebits.forEach(t => { if (headTotals[t.head_id] !== undefined) headTotals[t.head_id] += +t.amount; });
+
+  const totalGiven = txns.filter(t => t.type === "credit").reduce((s, t) => s + +t.amount, 0);
+  const totalSpent = txns.filter(t => t.type === "debit" ).reduce((s, t) => s + +t.amount, 0);
+
+  async function giveCash() {
+    if (!giveForm.runner_id || !giveForm.amount) return;
+    setSaving(true);
+    await db.from("petty_cash_txns").insert({
+      runner_id: giveForm.runner_id, type: "credit",
+      amount: +giveForm.amount, head_id: null,
+      note: giveForm.note || "Cash दिया",
+      created_at: new Date().toISOString(),
+    }).execute();
+    setGiveForm({ runner_id: "", amount: "", note: "" });
+    setShowGive(false);
+    await onRefresh();
+    setSaving(false);
+  }
+
+  const summaryCards = [
+    { l: "कुल दिया गया",  v: totalGiven,              c: "#27ae60" },
+    { l: "कुल खर्च",      v: totalSpent,              c: "#e74c3c" },
+    { l: "बचा हुआ (सभी)", v: totalGiven - totalSpent, c: "#2980b9" },
+    { l: "इस महीने खर्च", v: monthDebits.reduce((s,t)=>s+ +t.amount,0), c: "#e67e22" },
+  ];
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12, marginBottom: 20 }}>
+        {summaryCards.map(c => (
+          <div key={c.l} style={{ background: "#fff", borderRadius: 12, padding: "14px 16px", boxShadow: pcShadow, borderLeft: `4px solid ${c.c}` }}>
+            <div style={{ fontSize: 12, color: "#888" }}>{c.l}</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: c.c }}>₹{c.v.toLocaleString()}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ background: "#fff", borderRadius: 12, padding: 16, marginBottom: 16, boxShadow: pcShadow }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <h3 style={{ margin: 0, fontSize: 15 }}>🏃 Runner Balances</h3>
+          <button style={{ ...pcBtn(), fontSize: 12, padding: "6px 12px" }} onClick={() => setShowGive(true)}>+ Cash दें</button>
+        </div>
+        {staff.filter(s => s.id !== "admin").map(s => {
+          const bal = balances[String(s.id)] || 0;
+          return (
+            <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #f0f0f0" }}>
+              <span style={{ fontWeight: 500 }}>{s.name}</span>
+              <span style={{ fontWeight: 700, color: bal >= 0 ? "#27ae60" : "#e74c3c", fontSize: 16 }}>₹{bal.toLocaleString()}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ background: "#fff", borderRadius: 12, padding: 16, boxShadow: pcShadow }}>
+        <h3 style={{ margin: "0 0 12px", fontSize: 15 }}>📊 इस महीने — Head-wise खर्च</h3>
+        {heads.map(h => {
+          const spent  = headTotals[h.id] || 0;
+          const budget = budgets[h.id]    || 0;
+          const pct    = budget ? Math.min(100, (spent / budget) * 100) : 0;
+          const over   = budget && spent > budget;
+          const warn   = budget && !over && pct > 80;
+          return (
+            <div key={h.id} style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
+                <span>{h.emoji} {h.name}</span>
+                <span style={{ color: over ? "#e74c3c" : "#333", fontWeight: over ? 700 : 400 }}>
+                  ₹{spent.toLocaleString()}
+                  {budget ? ` / ₹${budget.toLocaleString()}` : ""}
+                  {over && " ⚠️ Budget पार!"}
+                  {warn && " 🔶 80% पहुंच गया"}
+                </span>
+              </div>
+              {budget > 0 && (
+                <div style={{ height: 6, background: "#f0f0f0", borderRadius: 3 }}>
+                  <div style={{ height: 6, borderRadius: 3, width: `${pct}%`, background: over ? "#e74c3c" : warn ? "#e67e22" : "#27ae60", transition: "width 0.4s" }} />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {showGive && (
+        <PCModal title="💵 Cash दें" onClose={() => setShowGive(false)}>
+          <label style={pcLbl}>Runner चुनें</label>
+          <select style={pcInp()} value={giveForm.runner_id} onChange={e => setGiveForm(f => ({ ...f, runner_id: e.target.value }))}>
+            <option value="">-- Runner --</option>
+            {staff.filter(s => s.id !== "admin").map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+          <label style={pcLbl}>Amount (₹)</label>
+          <input style={pcInp()} type="number" placeholder="0" value={giveForm.amount} onChange={e => setGiveForm(f => ({ ...f, amount: e.target.value }))} />
+          <label style={pcLbl}>Note</label>
+          <input style={pcInp()} placeholder="कारण..." value={giveForm.note} onChange={e => setGiveForm(f => ({ ...f, note: e.target.value }))} />
+          <button style={{ ...pcBtn(), width: "100%", marginTop: 8 }} onClick={giveCash} disabled={saving}>
+            {saving ? "Saving..." : "✅ Confirm दें"}
+          </button>
+        </PCModal>
+      )}
+    </div>
+  );
+}
+
+function PCAllTransactions({ txns, heads, staff, db, onRefresh }) {
+  const [filter, setFilter] = useState("all");
+  const staffMap = Object.fromEntries((staff || []).map(s => [String(s.id), s.name]));
+  const headMap  = Object.fromEntries(heads.map(h => [h.id, h]));
+  const rows     = filter === "all" ? txns : txns.filter(t => String(t.runner_id) === filter);
+
+  async function deleteTxn(id) {
+    if (!window.confirm("यह transaction delete करें?")) return;
+    await db.from("petty_cash_txns").delete().eq("id", id).execute();
+    onRefresh();
+  }
+
+  return (
+    <div style={{ background: "#fff", borderRadius: 12, padding: 16, boxShadow: pcShadow }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
+        <h3 style={{ margin: 0, fontSize: 15, flex: 1 }}>📋 सभी Transactions</h3>
+        <select style={{ ...pcInp(), width: "auto", margin: 0 }} value={filter} onChange={e => setFilter(e.target.value)}>
+          <option value="all">सभी Runner</option>
+          {staff.map(s => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
+        </select>
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ background: "#f8f8f8" }}>
+              {["Date","Runner","Type","Head","Amount","Note",""].map(h => (
+                <th key={h} style={{ padding: "8px 10px", textAlign: "left", color: "#555", fontWeight: 600 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(t => {
+              const head = headMap[t.head_id];
+              return (
+                <tr key={t.id} style={{ borderBottom: "1px solid #f0f0f0" }}>
+                  <td style={pcTd}>{t.created_at?.slice(0, 10)}</td>
+                  <td style={pcTd}>{staffMap[String(t.runner_id)] || t.runner_id}</td>
+                  <td style={pcTd}>
+                    <span style={{ background: t.type === "credit" ? "#d5f5e3" : "#fde8e8", color: t.type === "credit" ? "#27ae60" : "#e74c3c", borderRadius: 4, padding: "2px 8px", fontSize: 11 }}>
+                      {t.type === "credit" ? "💵 Credit" : "💸 Debit"}
+                    </span>
+                  </td>
+                  <td style={pcTd}>{head ? `${head.emoji} ${head.name}` : t.head_id === "return" ? "💵 Return" : "—"}</td>
+                  <td style={{ ...pcTd, fontWeight: 600, color: t.type === "credit" ? "#27ae60" : "#e74c3c" }}>₹{(+t.amount).toLocaleString()}</td>
+                  <td style={{ ...pcTd, color: "#888" }}>{t.note || "—"}</td>
+                  <td style={pcTd}>
+                    <button onClick={() => deleteTxn(t.id)} style={{ background: "transparent", border: "none", cursor: "pointer", color: "#e74c3c", fontSize: 16 }}>🗑</button>
+                  </td>
+                </tr>
+              );
+            })}
+            {rows.length === 0 && (
+              <tr><td colSpan={7} style={{ padding: 24, textAlign: "center", color: "#aaa" }}>कोई transaction नहीं</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function PCSettings({ heads, setHeads, budgets, setBudgets }) {
+  const [newHead, setNewHead] = useState({ name: "", emoji: "📌" });
+
+  function addHead() {
+    if (!newHead.name.trim()) return;
+    setHeads(h => [...h, { id: "h_" + Date.now(), name: newHead.name.trim(), emoji: newHead.emoji }]);
+    setNewHead({ name: "", emoji: "📌" });
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 16 }}>
+      <div style={{ background: "#fff", borderRadius: 12, padding: 16, boxShadow: pcShadow }}>
+        <h3 style={{ margin: "0 0 12px", fontSize: 15 }}>🗂️ Expense Heads + Monthly Budget</h3>
+        {heads.map(h => (
+          <div key={h.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: "1px solid #f0f0f0" }}>
+            <span style={{ fontSize: 20 }}>{h.emoji}</span>
+            <span style={{ flex: 1, fontSize: 13 }}>{h.name}</span>
+            <input type="number" placeholder="Budget ₹" value={budgets[h.id] || ""}
+              onChange={e => setBudgets(b => ({ ...b, [h.id]: +e.target.value }))}
+              style={{ width: 100, ...pcInp(), margin: 0, padding: "4px 8px" }} />
+            <button onClick={() => setHeads(hds => hds.filter(x => x.id !== h.id))}
+              style={{ background: "transparent", border: "none", color: "#e74c3c", cursor: "pointer", fontSize: 18 }}>✕</button>
+          </div>
+        ))}
+        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+          <input style={{ width: 44, ...pcInp(), margin: 0, padding: "6px 8px", textAlign: "center" }}
+            value={newHead.emoji} onChange={e => setNewHead(n => ({ ...n, emoji: e.target.value }))} />
+          <input style={{ flex: 1, ...pcInp(), margin: 0 }} placeholder="नया head नाम (हिंदी में)"
+            value={newHead.name} onChange={e => setNewHead(n => ({ ...n, name: e.target.value }))} />
+          <button style={{ ...pcBtn(), padding: "6px 14px" }} onClick={addHead}>+ Add</button>
+        </div>
+      </div>
+
+      <div style={{ background: "#fff", borderRadius: 12, padding: 16, boxShadow: pcShadow }}>
+        <h3 style={{ margin: "0 0 8px", fontSize: 15 }}>🛠️ Supabase Table (one-time setup)</h3>
+        <p style={{ fontSize: 12, color: "#666", margin: "0 0 8px" }}>Supabase SQL Editor में एक बार run करें:</p>
+        <pre style={{ background: "#f4f6fb", padding: 12, borderRadius: 8, fontSize: 11, overflowX: "auto", color: "#1a1a2e", lineHeight: 1.6 }}>{
+`CREATE TABLE IF NOT EXISTS petty_cash_txns (
+  id         UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  runner_id  TEXT        NOT NULL,
+  type       TEXT        NOT NULL CHECK (type IN ('credit','debit')),
+  amount     NUMERIC     NOT NULL,
+  head_id    TEXT,
+  note       TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE petty_cash_txns ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow all" ON petty_cash_txns FOR ALL USING (true);`
+        }</pre>
+      </div>
+    </div>
+  );
+}
+
+function PCRunnerPanel({ user, txns, heads, balance, db, onRefresh }) {
+  const [form,       setForm]       = useState({ amount: "", head_id: "", note: "" });
+  const [returnForm, setReturnForm] = useState({ amount: "", note: "" });
+  const [saving,     setSaving]     = useState(false);
+  const [tab,        setTab]        = useState("log");
+
+  async function logExpense() {
+    if (!form.amount || !form.head_id) return;
+    setSaving(true);
+    await db.from("petty_cash_txns").insert({
+      runner_id: String(user.id), type: "debit",
+      amount: +form.amount, head_id: form.head_id,
+      note: form.note, created_at: new Date().toISOString(),
+    }).execute();
+    setForm({ amount: "", head_id: "", note: "" });
+    await onRefresh();
+    setSaving(false);
+  }
+
+  async function returnCash() {
+    if (!returnForm.amount) return;
+    setSaving(true);
+    await db.from("petty_cash_txns").insert({
+      runner_id: String(user.id), type: "debit",
+      amount: +returnForm.amount, head_id: "return",
+      note: returnForm.note || "Cash वापस किया",
+      created_at: new Date().toISOString(),
+    }).execute();
+    setReturnForm({ amount: "", note: "" });
+    await onRefresh();
+    setSaving(false);
+  }
+
+  return (
+    <div>
+      <div style={{ background: "linear-gradient(135deg,#1a1a2e,#2c3e50)", color: "#fff", borderRadius: 16, padding: "28px 20px", marginBottom: 16, textAlign: "center" }}>
+        <div style={{ fontSize: 14, opacity: 0.7 }}>नमस्ते, {user.name} 👋</div>
+        <div style={{ fontSize: 12, opacity: 0.5, margin: "4px 0 8px" }}>आपके पास अभी</div>
+        <div style={{ fontSize: 44, fontWeight: 800, color: balance >= 0 ? "#2ecc71" : "#e74c3c" }}>
+          ₹{balance.toLocaleString()}
+        </div>
+        <div style={{ fontSize: 12, opacity: 0.5, marginTop: 4 }}>बचा हुआ balance</div>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        {[["log","💸 खर्च डालें"],["return","💵 वापस करें"],["history","📜 History"]].map(([k,l]) => (
+          <button key={k} onClick={() => setTab(k)}
+            style={{ flex: 1, padding: "10px 4px", borderRadius: 8, border: "none", cursor: "pointer",
+              fontWeight: 600, fontSize: 12, background: tab === k ? "#e67e22" : "#fff",
+              color: tab === k ? "#fff" : "#333", boxShadow: pcShadow }}>
+            {l}
+          </button>
+        ))}
+      </div>
+
+      {tab === "log" && (
+        <div style={{ background: "#fff", borderRadius: 12, padding: 16, boxShadow: pcShadow }}>
+          <h3 style={{ margin: "0 0 14px", fontSize: 15 }}>💸 खर्च डालें</h3>
+          <label style={pcLbl}>Expense Head चुनें</label>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8, marginBottom: 12 }}>
+            {heads.map(h => (
+              <button key={h.id} onClick={() => setForm(f => ({ ...f, head_id: h.id }))}
+                style={{ padding: "10px 8px", borderRadius: 8, textAlign: "left", cursor: "pointer", fontSize: 12, fontWeight: 500,
+                  border: `2px solid ${form.head_id === h.id ? "#e67e22" : "#e0e0e0"}`,
+                  background: form.head_id === h.id ? "#fff3e8" : "#fafafa" }}>
+                {h.emoji} {h.name}
+              </button>
+            ))}
+          </div>
+          <label style={pcLbl}>Amount (₹)</label>
+          <input style={pcInp()} type="number" placeholder="0" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} />
+          <label style={pcLbl}>Note / विवरण</label>
+          <input style={pcInp()} placeholder="क्या खरीदा? कहाँ गए?" value={form.note} onChange={e => setForm(f => ({ ...f, note: e.target.value }))} />
+          <button
+            style={{ ...pcBtn({ bg: balance < +form.amount ? "#e74c3c" : "#27ae60" }), width: "100%", marginTop: 4 }}
+            onClick={logExpense} disabled={saving || !form.amount || !form.head_id}>
+            {saving ? "Saving..." : balance < +form.amount ? "⚠️ Balance कम — फिर भी Save?" : "✅ खर्च Save करें"}
+          </button>
+        </div>
+      )}
+
+      {tab === "return" && (
+        <div style={{ background: "#fff", borderRadius: 12, padding: 16, boxShadow: pcShadow }}>
+          <h3 style={{ margin: "0 0 14px", fontSize: 15 }}>💵 Cash वापस करना है?</h3>
+          <label style={pcLbl}>Amount (₹)</label>
+          <input style={pcInp()} type="number" placeholder="0" value={returnForm.amount} onChange={e => setReturnForm(f => ({ ...f, amount: e.target.value }))} />
+          <label style={pcLbl}>Note</label>
+          <input style={pcInp()} placeholder="Note..." value={returnForm.note} onChange={e => setReturnForm(f => ({ ...f, note: e.target.value }))} />
+          <button style={{ ...pcBtn({ bg: "#2980b9" }), width: "100%", marginTop: 4 }} onClick={returnCash} disabled={saving || !returnForm.amount}>
+            {saving ? "Saving..." : "✅ Return Confirm करें"}
+          </button>
+        </div>
+      )}
+
+      {tab === "history" && (
+        <div style={{ background: "#fff", borderRadius: 12, padding: 16, boxShadow: pcShadow }}>
+          <h3 style={{ margin: "0 0 12px", fontSize: 15 }}>📜 मेरा History</h3>
+          {txns.length === 0 && <p style={{ color: "#aaa", textAlign: "center", padding: 20 }}>कोई record नहीं</p>}
+          {txns.map(t => {
+            const head = heads.find(h => h.id === t.head_id);
+            return (
+              <div key={t.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #f0f0f0" }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 500 }}>
+                    {head ? `${head.emoji} ${head.name}` : t.head_id === "return" ? "💵 Return" : "💰 Cash मिला"}
+                  </div>
+                  <div style={{ fontSize: 11, color: "#aaa" }}>{t.note || "—"} · {t.created_at?.slice(0, 10)}</div>
+                </div>
+                <span style={{ fontWeight: 700, fontSize: 15, color: t.type === "credit" ? "#27ae60" : "#e74c3c" }}>
+                  {t.type === "credit" ? "+" : "−"}₹{(+t.amount).toLocaleString()}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PCModal({ onClose, title, children }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200 }}>
+      <div style={pcCard({ width: 340 })}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <h3 style={{ margin: 0, fontSize: 16 }}>{title}</h3>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", fontSize: 20, cursor: "pointer", color: "#888" }}>✕</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+const pcShadow = "0 2px 8px rgba(0,0,0,0.08)";
+const pcTd     = { padding: "8px 10px" };
+const pcLbl    = { display: "block", fontSize: 12, color: "#555", marginBottom: 4, fontWeight: 600 };
+const pcInp    = () => ({ display: "block", width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid #ddd", fontSize: 14, marginBottom: 10, boxSizing: "border-box", outline: "none" });
+const pcBtn    = ({ bg = "#1a1a2e" } = {}) => ({ background: bg, color: "#fff", border: "none", padding: "10px 18px", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 14 });
+const pcCard   = ({ width = 360 } = {}) => ({ background: "#fff", borderRadius: 16, padding: 28, width, maxWidth: "90vw", boxShadow: "0 8px 32px rgba(0,0,0,0.15)", fontFamily: "sans-serif" });

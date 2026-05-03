@@ -197,21 +197,8 @@ export default async function handler(req, res) {
       return res.status(500).json({ ok: false, error: demandErr.message });
     }
 
-    // 4a. If the funnel starts on a call step → round-robin assign a telecaller
-    //     and schedule the first-attempt call window. Skip the bot opening message —
-    //     the human call comes first.
-    let assignedStaff = null;
-    if (firstStep?.step_type === "call") {
-      try {
-        assignedStaff = await assignNextTelecaller(tenantId, demand.id);
-      } catch (e) {
-        console.error("assignNextTelecaller failed", e);
-      }
-      // First call due ~5 min from now (cadence row 1 default).
-      await sb.from("bullion_demands").update({
-        next_call_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-      }).eq("id", demand.id);
-    }
+    // Staff assignment is manual-only — no auto round-robin
+    const assignedStaff = null;
 
     // 5. Generate personalized AI opening message
     const clientName = lead.name || body.name || "";

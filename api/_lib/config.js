@@ -7,11 +7,9 @@ export const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 export const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL || "https://script.google.com/macros/s/AKfycbxGazdRhKxkjOLkqxN4kPoInDuBnlWy5Azmzq-FX9mt5OIfZLbhqfFEO0AufrOWE6n49Q/exec";
 export const TENANT_ID = process.env.TENANT_ID || "a1b2c3d4-0000-0000-0000-000000000001";
 export const CLAUDE_MODEL = process.env.CLAUDE_MODEL || "claude-haiku-4-5-20251001";
-// When a lead is in escalation (status=handoff or past maxExchanges threshold)
-// but no human has replied yet, we upgrade to Sonnet for warmer, more careful replies.
-export const CLAUDE_MODEL_ESCALATION = process.env.CLAUDE_MODEL_ESCALATION || "claude-sonnet-4-6";
-// Absolute cap on exchanges per lead to prevent runaway. Once hit, bot is hard-paused.
-export const HARD_EXCHANGE_CAP = Number(process.env.HARD_EXCHANGE_CAP || 10);
+// Safety cap — bot is paused only if this many exchanges happen with no manual pause.
+// Set high since we no longer have escalation; staff monitor and pause manually.
+export const HARD_EXCHANGE_CAP = Number(process.env.HARD_EXCHANGE_CAP || 100);
 export const OWNER_ALERT_PHONE = process.env.OWNER_ALERT_PHONE || "8860866000";
 
 // Only these WA numbers run the bot (reply to inbound messages).
@@ -23,8 +21,10 @@ export const BOT_NUMBERS = (process.env.BOT_NUMBERS || "8860866000,9312839912")
 // Set VITE_CRM_SECRET (frontend) + CRM_SECRET (Vercel env) to the same value.
 export const CRM_SECRET = process.env.CRM_SECRET || "";
 
+// WA JID localparts include a device index ("918860866000:19") — strip it before normalizing
+// so wa_number stored in funnels never contains the suffix (which breaks BOT_NUMBERS matching).
 export const normalizePhone = (p) =>
-  String(p || "").replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, "");
+  String(p || "").replace(/:\d+$/, "").replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, "");
 
 // Returns a 401 response object if the x-crm-secret header is missing/wrong.
 // Returns null if the request is allowed.
