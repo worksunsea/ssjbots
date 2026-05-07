@@ -24,16 +24,14 @@ const C = { green: "#27ae60", orange: "#e67e22", red: "#c0392b", blue: "#2980b9"
 const CUSTOM_FIELDS_KEY = "ssj_contact_custom_fields";
 const FIELD_ORDER_KEY = "ssj_contact_field_order";
 const FIXED_CONTACT_FIELDS = [
-  { key: "name",                  label: "Name",                    fixed: true },
-  { key: "phone",                 label: "Phone",                   fixed: true, required: true },
-  { key: "city",                  label: "City",                    fixed: true },
-  { key: "email",                 label: "Email",                   fixed: true },
-  { key: "bday",                  label: "Birthday (YYYY-MM-DD)",   fixed: true },
-  { key: "anniversary",           label: "Anniversary (YYYY-MM-DD)",fixed: true },
-  { key: "client_rating",         label: "Rating",                  fixed: true },
-  { key: "source",                label: "Source",                  fixed: true },
-  { key: "wedding_date",          label: "Wedding Date",            fixed: true },
-  { key: "wedding_family_member", label: "Wedding (family member)", fixed: true },
+  { key: "name",         label: "Name",                    fixed: true },
+  { key: "phone",        label: "Phone",                   fixed: true, required: true },
+  { key: "city",         label: "City",                    fixed: true },
+  { key: "email",        label: "Email",                   fixed: true },
+  { key: "bday",         label: "Birthday (YYYY-MM-DD)",   fixed: true },
+  { key: "anniversary",  label: "Anniversary (YYYY-MM-DD)",fixed: true },
+  { key: "client_rating",label: "Rating",                  fixed: true },
+  { key: "source",       label: "Source",                  fixed: true },
 ];
 const getCustomFields = () => { try { const d = localStorage.getItem(CUSTOM_FIELDS_KEY); return d ? JSON.parse(d) : []; } catch { return []; } };
 const saveCustomFieldDefs = (list) => { try { localStorage.setItem(CUSTOM_FIELDS_KEY, JSON.stringify(list)); } catch {} };
@@ -4304,6 +4302,8 @@ function CustomFieldsManager({ fields, onChange }) {
   const [newLabel, setNewLabel] = useState("");
   const [dragIdx, setDragIdx] = useState(null);
   const [overIdx, setOverIdx] = useState(null);
+  const [editingKey, setEditingKey] = useState(null);
+  const [editingLabel, setEditingLabel] = useState("");
   const allFields = getAllFieldsOrdered(fields);
 
   const saveCustom = (next) => { onChange(next); saveCustomFieldDefs(next); };
@@ -4323,6 +4323,13 @@ function CustomFieldsManager({ fields, onChange }) {
     const nextAll = allFields.filter(f => f.key !== key);
     saveCustom(nextCustom);
     saveFieldOrder(nextAll.map(f => f.key));
+  };
+  const rename = (key) => {
+    const label = editingLabel.trim();
+    if (!label) { setEditingKey(null); return; }
+    const nextCustom = fields.map(f => f.key === key ? { ...f, label } : f);
+    saveCustom(nextCustom);
+    setEditingKey(null);
   };
   const onDrop = (e, idx) => {
     e.preventDefault();
@@ -4350,7 +4357,14 @@ function CustomFieldsManager({ fields, onChange }) {
             onDragEnd={() => { setDragIdx(null); setOverIdx(null); }}
             style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, padding: "5px 8px", borderRadius: 6, background: overIdx === i ? "#fef3c7" : dragIdx === i ? "#fffbeb" : f.fixed ? "#f0f9ff" : "#fff", border: `1px solid ${overIdx === i ? C.orange : f.fixed ? "#bae6fd" : "#ddd"}`, cursor: "grab", userSelect: "none" }}>
             <span style={{ color: "#bbb", fontSize: 14, flexShrink: 0 }}>⠿</span>
-            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.label}</span>
+            {!f.fixed && editingKey === f.key
+              ? <input autoFocus value={editingLabel} onChange={e => setEditingLabel(e.target.value)}
+                  onBlur={() => rename(f.key)} onKeyDown={e => { if(e.key==="Enter") rename(f.key); if(e.key==="Escape") setEditingKey(null); }}
+                  style={{ flex: 1, fontSize: 12, border: "none", outline: "1px solid #93c5fd", borderRadius: 4, padding: "1px 4px", minWidth: 0 }} />
+              : <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  onDoubleClick={!f.fixed ? () => { setEditingKey(f.key); setEditingLabel(f.label); } : undefined}
+                  title={!f.fixed ? "Double-click to rename" : ""}>{f.label}</span>
+            }
             {f.fixed
               ? <span style={{ fontSize: 10, color: "#93c5fd", flexShrink: 0 }}>🔒</span>
               : <button onClick={() => remove(f.key)} style={{ border: "none", background: "none", color: C.red, cursor: "pointer", fontSize: 12, padding: 0, lineHeight: 1, flexShrink: 0 }}>×</button>
