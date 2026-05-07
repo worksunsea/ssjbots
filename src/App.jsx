@@ -26,6 +26,8 @@ const FIELD_ORDER_KEY = "ssj_contact_field_order";
 const FIXED_CONTACT_FIELDS = [
   { key: "name",         label: "Name",                    fixed: true },
   { key: "phone",        label: "Phone",                   fixed: true, required: true },
+  { key: "mobile2",      label: "Phone 2",                 fixed: true },
+  { key: "spouse_mobile",label: "Phone 3 / Spouse",        fixed: true },
   { key: "city",         label: "City",                    fixed: true },
   { key: "email",        label: "Email",                   fixed: true },
   { key: "bday",         label: "Birthday (YYYY-MM-DD)",   fixed: true },
@@ -4058,7 +4060,7 @@ function ContactsScreen({ funnels }) {
       .order("name", { ascending: true, nullsFirst: false })
       .range(from, to);
     if (q.trim()) {
-      query = query.or(`name.ilike.%${q}%,phone.ilike.%${q}%,email.ilike.%${q}%,city.ilike.%${q}%,source.ilike.%${q}%,wedding_family_member.ilike.%${q}%,bday.ilike.%${q}%`);
+      query = query.or(`name.ilike.%${q}%,phone.ilike.%${q}%,mobile2.ilike.%${q}%,spouse_mobile.ilike.%${q}%,email.ilike.%${q}%,city.ilike.%${q}%,source.ilike.%${q}%,bday.ilike.%${q}%`);
     }
     if (tags.length > 0) {
       if (logic === "AND") tags.forEach(t => { query = query.contains("tags", [t]); });
@@ -4085,8 +4087,8 @@ function ContactsScreen({ funnels }) {
     return (showLid ? contacts : contacts.filter(c => !isLid(c.phone))).filter(c => {
       const extraVals = Object.values(c.extra_fields || {}).join(" ").toLowerCase();
       const tgs = (c.tags || []).join(" ").toLowerCase();
-      return [c.name, c.phone, c.email, c.city, c.source, c.bday, c.anniversary,
-              c.wedding_date, c.wedding_family_member, extraVals, tgs]
+      return [c.name, c.phone, c.mobile2, c.spouse_mobile, c.email, c.city, c.source, c.bday, c.anniversary,
+              extraVals, tgs]
         .some(v => v && String(v).toLowerCase().includes(q));
     });
   }, [contacts, showLid, search]);
@@ -4227,7 +4229,7 @@ function ContactsScreen({ funnels }) {
                       onChange={() => selected.size === filtered.length ? clearSel() : selectAll()}
                       style={{ width: 14, height: 14, cursor: "pointer", accentColor: C.purple }} />
                   </th>}
-                  {["Name","Phone","City","Email","Birthday","Anniversary","Rating","Source","Tags","Extra Fields",""].map(h => (
+                  {["Name","Phone","Phone 2","Phone 3","City","Email","Birthday","Anniversary","Rating","Source","Tags","Extra Fields",""].map(h => (
                     <th key={h} style={{ padding: "8px 10px", textAlign: "left", fontSize: 11, color: "#888", fontWeight: 600, whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
@@ -4247,6 +4249,8 @@ function ContactsScreen({ funnels }) {
                         {c.is_client && <span style={{ marginLeft: 4, fontSize: 10, padding: "1px 5px", borderRadius: 4, background: C.blue+"22", color: C.blue }}>Client</span>}
                       </td>
                       <td style={{ padding: "6px 10px", color: "#555", whiteSpace: "nowrap" }}>{c.phone}</td>
+                      <td style={{ padding: "6px 10px", color: "#555", whiteSpace: "nowrap" }}>{c.mobile2 || "—"}</td>
+                      <td style={{ padding: "6px 10px", color: "#555", whiteSpace: "nowrap" }}>{c.spouse_mobile || "—"}</td>
                       <td style={{ padding: "6px 10px", color: "#555" }}>{c.city || "—"}</td>
                       <td style={{ padding: "6px 10px", color: "#555" }}>{c.email || "—"}</td>
                       <td style={{ padding: "6px 10px", color: "#555", whiteSpace: "nowrap" }}>{c.bday || "—"}</td>
@@ -4274,7 +4278,7 @@ function ContactsScreen({ funnels }) {
                     </tr>
                   );
                 })}
-                {!filtered.length && !loading && <tr><td colSpan={bulkMode ? 12 : 11} style={{ padding: 40, textAlign: "center", color: "#aaa" }}>No contacts found.</td></tr>}
+                {!filtered.length && !loading && <tr><td colSpan={bulkMode ? 14 : 13} style={{ padding: 40, textAlign: "center", color: "#aaa" }}>No contacts found.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -4451,6 +4455,8 @@ function ContactEditModal({ contact, allTags = [], customFields = [], onClose, o
   const [form, setForm] = useState({
     name: contact.name || "",
     phone: contact.phone || "",
+    mobile2: contact.mobile2 || "",
+    spouse_mobile: contact.spouse_mobile || "",
     city: contact.city || "",
     email: contact.email || "",
     bday: contact.bday || "",
@@ -4509,6 +4515,8 @@ function ContactEditModal({ contact, allTags = [], customFields = [], onClose, o
       tenant_id: getTenantId(),
       phone: String(form.phone).replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, ""),
       name: form.name || null,
+      mobile2: form.mobile2 || null,
+      spouse_mobile: form.spouse_mobile || null,
       city: form.city || null,
       email: form.email || null,
       bday: form.bday || null,
