@@ -4276,24 +4276,43 @@ function ContactCard({ contact: c, onEdit, onSendWA, onDelete }) {
 
 function CustomFieldsManager({ fields, onChange }) {
   const [newLabel, setNewLabel] = useState("");
+  const [dragIdx, setDragIdx] = useState(null);
+  const [overIdx, setOverIdx] = useState(null);
+
+  const save = (next) => { onChange(next); saveCustomFieldDefs(next); };
   const add = () => {
     const label = newLabel.trim();
     if (!label) return;
     const key = label.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
     if (!key || fields.find(f => f.key === key)) return;
-    const next = [...fields, { key, label }];
-    onChange(next); saveCustomFieldDefs(next); setNewLabel("");
+    save([...fields, { key, label }]); setNewLabel("");
   };
-  const remove = (key) => { const next = fields.filter(f => f.key !== key); onChange(next); saveCustomFieldDefs(next); };
+  const remove = (key) => save(fields.filter(f => f.key !== key));
+  const onDrop = (e, idx) => {
+    e.preventDefault();
+    if (dragIdx === null || dragIdx === idx) { setDragIdx(null); setOverIdx(null); return; }
+    const next = [...fields];
+    const [moved] = next.splice(dragIdx, 1);
+    next.splice(idx, 0, moved);
+    save(next); setDragIdx(null); setOverIdx(null);
+  };
+
   return (
     <div style={{ background: "#fff8f0", border: "1px solid #fde68a", borderRadius: 10, padding: "10px 12px", marginBottom: 12 }}>
-      <p style={{ fontSize: 12, fontWeight: 600, color: C.orange, margin: "0 0 8px" }}>⚙ Custom Contact Fields</p>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-        {fields.map(f => (
-          <span key={f.key} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, padding: "3px 8px", borderRadius: 6, background: "#fff", border: "1px solid #ddd" }}>
+      <p style={{ fontSize: 12, fontWeight: 600, color: C.orange, margin: "0 0 8px" }}>⚙ Custom Contact Fields — drag ⠿ to reorder</p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 8 }}>
+        {fields.map((f, i) => (
+          <div key={f.key}
+            draggable
+            onDragStart={() => setDragIdx(i)}
+            onDragOver={e => { e.preventDefault(); setOverIdx(i); }}
+            onDrop={e => onDrop(e, i)}
+            onDragEnd={() => { setDragIdx(null); setOverIdx(null); }}
+            style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, padding: "4px 8px", borderRadius: 6, background: overIdx === i ? "#fef3c7" : dragIdx === i ? "#fffbeb" : "#fff", border: `1px solid ${overIdx === i ? C.orange : "#ddd"}`, cursor: "grab", userSelect: "none", width: "fit-content" }}>
+            <span style={{ color: "#bbb", fontSize: 14 }}>⠿</span>
             {f.label}
             <button onClick={() => remove(f.key)} style={{ border: "none", background: "none", color: C.red, cursor: "pointer", fontSize: 12, padding: 0, lineHeight: 1 }}>×</button>
-          </span>
+          </div>
         ))}
         {fields.length === 0 && <span style={{ fontSize: 12, color: "#aaa" }}>No custom fields yet</span>}
       </div>
