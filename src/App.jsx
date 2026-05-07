@@ -4036,6 +4036,7 @@ function ContactsScreen({ funnels }) {
   const selectAll = () => setSelected(new Set(filtered.map(c => c.id)));
   const clearSel = () => setSelected(new Set());
   const exitBulk = () => { setBulkMode(false); clearSel(); };
+  const [viewMode, setViewMode] = useState("card"); // "card" | "list"
 
   const loadTags = useCallback(async () => {
     const { data } = await sb.from("bullion_tags").select("name,category,color")
@@ -4107,6 +4108,7 @@ function ContactsScreen({ funnels }) {
         <Btn small color={C.blue} onClick={() => setEditing({})}>+ Add Contact</Btn>
         <Btn ghost small color={C.orange} onClick={() => setShowFieldMgr(v => !v)}>⚙ Fields</Btn>
         <Btn ghost small color={bulkMode ? C.purple : C.gray} onClick={() => bulkMode ? exitBulk() : setBulkMode(true)}>{bulkMode ? "✕ Cancel" : "☑ Bulk"}</Btn>
+        <Btn ghost small color={C.gray} onClick={() => setViewMode(v => v === "card" ? "list" : "card")}>{viewMode === "card" ? "☰ List" : "⊞ Cards"}</Btn>
         <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#666", cursor: "pointer" }}>
           <input type="checkbox" checked={showLid} onChange={(e) => setShowLid(e.target.checked)} />
           Show WA-hidden ({lidCount})
@@ -4194,29 +4196,90 @@ function ContactsScreen({ funnels }) {
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 10 }}>
-        {filtered.map((c) => (
-          <div key={c.id} style={{ position: "relative" }}>
-            {bulkMode && (
-              <input type="checkbox" checked={selected.has(c.id)} onChange={() => toggleSelect(c.id)}
-                style={{ position: "absolute", top: 10, left: 10, width: 16, height: 16, zIndex: 2, cursor: "pointer", accentColor: C.purple }} />
-            )}
-            <div onClick={bulkMode ? () => toggleSelect(c.id) : undefined}
-              style={{ cursor: bulkMode ? "pointer" : "default", opacity: bulkMode && !selected.has(c.id) ? 0.7 : 1, outline: bulkMode && selected.has(c.id) ? `2px solid ${C.purple}` : "none", borderRadius: 12 }}>
-              <ContactCard contact={c} onEdit={bulkMode ? undefined : () => setEditing(c)} onSendWA={bulkMode ? undefined : () => setSending(c)}
-                onDelete={!bulkMode && isSA ? async () => {
-                  if (!confirm(`Move ${c.name || c.phone} to Trash?`)) return;
-                  const by = loadUser()?.name || loadUser()?.username || "admin";
-                  await sb.from("bullion_leads").update({ deleted_at: new Date().toISOString(), deleted_by: by }).eq("id", c.id);
-                  load(search, filterTags, tagLogic, page);
-                } : undefined} />
+      {viewMode === "card" ? (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 10 }}>
+          {filtered.map((c) => (
+            <div key={c.id} style={{ position: "relative" }}>
+              {bulkMode && <input type="checkbox" checked={selected.has(c.id)} onChange={() => toggleSelect(c.id)}
+                style={{ position: "absolute", top: 10, left: 10, width: 16, height: 16, zIndex: 2, cursor: "pointer", accentColor: C.purple }} />}
+              <div onClick={bulkMode ? () => toggleSelect(c.id) : undefined}
+                style={{ cursor: bulkMode ? "pointer" : "default", opacity: bulkMode && !selected.has(c.id) ? 0.7 : 1, outline: bulkMode && selected.has(c.id) ? `2px solid ${C.purple}` : "none", borderRadius: 12 }}>
+                <ContactCard contact={c} onEdit={bulkMode ? undefined : () => setEditing(c)} onSendWA={bulkMode ? undefined : () => setSending(c)}
+                  onDelete={!bulkMode && isSA ? async () => {
+                    if (!confirm(`Move ${c.name || c.phone} to Trash?`)) return;
+                    const by = loadUser()?.name || loadUser()?.username || "admin";
+                    await sb.from("bullion_leads").update({ deleted_at: new Date().toISOString(), deleted_by: by }).eq("id", c.id);
+                    load(search, filterTags, tagLogic, page);
+                  } : undefined} />
+              </div>
             </div>
+          ))}
+          {!filtered.length && !loading && <div style={{ gridColumn: "1/-1", padding: 40, textAlign: "center", color: "#aaa", fontSize: 13 }}>No contacts found.</div>}
+        </div>
+      ) : (
+        <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 10, overflow: "hidden" }}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: "#f7f7f7", borderBottom: "1px solid #eee" }}>
+                  {bulkMode && <th style={{ padding: "8px 10px", width: 36 }}>
+                    <input type="checkbox" checked={selected.size === filtered.length && filtered.length > 0}
+                      onChange={() => selected.size === filtered.length ? clearSel() : selectAll()}
+                      style={{ width: 14, height: 14, cursor: "pointer", accentColor: C.purple }} />
+                  </th>}
+                  {["Name","Phone","City","Email","Birthday","Anniversary","Rating","Source","Tags","Extra Fields",""].map(h => (
+                    <th key={h} style={{ padding: "8px 10px", textAlign: "left", fontSize: 11, color: "#888", fontWeight: 600, whiteSpace: "nowrap" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((c) => {
+                  const sel = selected.has(c.id);
+                  const extraStr = Object.entries(c.extra_fields || {}).filter(([,v])=>v).map(([k,v])=>`${getCustomFields().find(f=>f.key===k)?.label||k}: ${v}`).join(" · ");
+                  return (
+                    <tr key={c.id} onClick={bulkMode ? () => toggleSelect(c.id) : undefined}
+                      style={{ borderBottom: "1px solid #f5f5f5", background: sel ? "#f5f0ff" : "transparent", cursor: bulkMode ? "pointer" : "default" }}>
+                      {bulkMode && <td style={{ padding: "6px 10px" }}>
+                        <input type="checkbox" checked={sel} onChange={() => toggleSelect(c.id)} style={{ width: 14, height: 14, cursor: "pointer", accentColor: C.purple }} />
+                      </td>}
+                      <td style={{ padding: "6px 10px", fontWeight: 500, whiteSpace: "nowrap" }}>
+                        {c.name || <span style={{ color: "#aaa" }}>(no name)</span>}
+                        {c.is_client && <span style={{ marginLeft: 4, fontSize: 10, padding: "1px 5px", borderRadius: 4, background: C.blue+"22", color: C.blue }}>Client</span>}
+                      </td>
+                      <td style={{ padding: "6px 10px", color: "#555", whiteSpace: "nowrap" }}>{c.phone}</td>
+                      <td style={{ padding: "6px 10px", color: "#555" }}>{c.city || "—"}</td>
+                      <td style={{ padding: "6px 10px", color: "#555" }}>{c.email || "—"}</td>
+                      <td style={{ padding: "6px 10px", color: "#555", whiteSpace: "nowrap" }}>{c.bday || "—"}</td>
+                      <td style={{ padding: "6px 10px", color: "#555", whiteSpace: "nowrap" }}>{c.anniversary || "—"}</td>
+                      <td style={{ padding: "6px 10px", color: "#f59e0b" }}>{c.client_rating ? "★".repeat(c.client_rating) : "—"}</td>
+                      <td style={{ padding: "6px 10px", color: "#555" }}>{c.source || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>
+                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                          {(c.tags || []).map(t => <span key={t} style={{ fontSize: 11, padding: "1px 6px", borderRadius: 10, background: "#e0e7ff", color: "#3730a3" }}>{t}</span>)}
+                        </div>
+                      </td>
+                      <td style={{ padding: "6px 10px", color: "#777", fontSize: 12, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{extraStr || "—"}</td>
+                      <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>
+                        {!bulkMode && <>
+                          <button onClick={() => setEditing(c)} style={{ fontSize: 11, border: "none", background: "none", cursor: "pointer", color: C.blue, padding: "2px 4px" }}>✏️</button>
+                          <button onClick={() => setSending(c)} style={{ fontSize: 11, border: "none", background: "none", cursor: "pointer", color: "#25d366", padding: "2px 4px" }}>📱</button>
+                          {isSA && <button onClick={async () => {
+                            if (!confirm(`Move ${c.name||c.phone} to Trash?`)) return;
+                            const by = loadUser()?.name || loadUser()?.username || "admin";
+                            await sb.from("bullion_leads").update({ deleted_at: new Date().toISOString(), deleted_by: by }).eq("id", c.id);
+                            load(search, filterTags, tagLogic, page);
+                          }} style={{ fontSize: 11, border: "none", background: "none", cursor: "pointer", color: C.red, padding: "2px 4px" }}>🗑</button>}
+                        </>}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {!filtered.length && !loading && <tr><td colSpan={bulkMode ? 12 : 11} style={{ padding: 40, textAlign: "center", color: "#aaa" }}>No contacts found.</td></tr>}
+              </tbody>
+            </table>
           </div>
-        ))}
-        {!filtered.length && !loading && (
-          <div style={{ gridColumn: "1/-1", padding: 40, textAlign: "center", color: "#aaa", fontSize: 13 }}>No contacts found.</div>
-        )}
-      </div>
+        </div>
+      )}
 
       {totalPages > 1 && (
         <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, marginTop: 16 }}>
