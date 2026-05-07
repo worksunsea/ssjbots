@@ -3948,6 +3948,8 @@ function ContactsScreen({ funnels }) {
   const [showLid, setShowLid] = useState(false); // hide WA-hidden (LID) leads by default
   const [customFields, setCustomFields] = useState(getCustomFields);
   const [showFieldMgr, setShowFieldMgr] = useState(false);
+  const [filterTags, setFilterTags] = useState([]);
+  const [tagLogic, setTagLogic] = useState("AND"); // AND = must have all, OR = any
 
   const loadTags = useCallback(async () => {
     const { data } = await sb.from("bullion_tags").select("name,category,color")
@@ -3970,16 +3972,26 @@ function ContactsScreen({ funnels }) {
 
   const filtered = useMemo(() => {
     let list = showLid ? contacts : contacts.filter((c) => !isLid(c.phone));
-    if (!search.trim()) return list;
-    const q = search.trim().toLowerCase();
-    return list.filter((c) => {
-      const extraVals = Object.values(c.extra_fields || {}).join(" ").toLowerCase();
-      const tags = (c.tags || []).join(" ").toLowerCase();
-      return [c.name, c.phone, c.email, c.city, c.source, c.bday, c.anniversary,
-              c.wedding_date, c.wedding_family_member, c.client_rating, extraVals, tags]
-        .some((v) => v && String(v).toLowerCase().includes(q));
-    });
-  }, [contacts, showLid, search]);
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      list = list.filter((c) => {
+        const extraVals = Object.values(c.extra_fields || {}).join(" ").toLowerCase();
+        const tags = (c.tags || []).join(" ").toLowerCase();
+        return [c.name, c.phone, c.email, c.city, c.source, c.bday, c.anniversary,
+                c.wedding_date, c.wedding_family_member, c.client_rating, extraVals, tags]
+          .some((v) => v && String(v).toLowerCase().includes(q));
+      });
+    }
+    if (filterTags.length > 0) {
+      list = list.filter((c) => {
+        const ct = c.tags || [];
+        return tagLogic === "AND"
+          ? filterTags.every((t) => ct.includes(t))
+          : filterTags.some((t) => ct.includes(t));
+      });
+    }
+    return list;
+  }, [contacts, showLid, search, filterTags, tagLogic]);
   const lidCount = contacts.filter((c) => isLid(c.phone)).length;
 
   // Unique WA numbers from funnels for the sender chooser
@@ -4004,6 +4016,30 @@ function ContactsScreen({ funnels }) {
       </div>
 
       {showFieldMgr && <CustomFieldsManager fields={customFields} onChange={setCustomFields} />}
+
+      {allTags.filter(t => t.category !== "source").length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10, alignItems: "center" }}>
+          <span style={{ fontSize: 11, color: "#888", marginRight: 2 }}>Filter by tag:</span>
+          {allTags.filter(t => t.category !== "source").map(t => {
+            const active = filterTags.includes(t.name);
+            return (
+              <button key={t.name} onClick={() => setFilterTags(s => active ? s.filter(x => x !== t.name) : [...s, t.name])}
+                style={{ fontSize: 11, padding: "2px 10px", borderRadius: 20, cursor: "pointer", border: `1px solid ${active ? (t.color || C.blue) : "#ddd"}`, background: active ? (t.color || C.blue) : "transparent", color: active ? "#fff" : "#555", fontWeight: active ? 600 : 400 }}>
+                {t.name}
+              </button>
+            );
+          })}
+          {filterTags.length > 1 && (
+            <button onClick={() => setTagLogic(l => l === "AND" ? "OR" : "AND")}
+              style={{ fontSize: 11, padding: "2px 10px", borderRadius: 20, border: `1px solid ${C.purple}`, background: C.purple, color: "#fff", cursor: "pointer", fontWeight: 600 }}>
+              {tagLogic}
+            </button>
+          )}
+          {filterTags.length > 0 && (
+            <button onClick={() => setFilterTags([])} style={{ fontSize: 11, color: C.red, background: "none", border: "none", cursor: "pointer" }}>✕ clear</button>
+          )}
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 10 }}>
         {filtered.map((c) => (
