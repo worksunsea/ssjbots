@@ -32,7 +32,7 @@ const FIXED_CONTACT_FIELDS = [
   { key: "email",        label: "Email",                   fixed: true },
   { key: "bday",         label: "Birthday (YYYY-MM-DD)",   fixed: true },
   { key: "anniversary",  label: "Anniversary (YYYY-MM-DD)",fixed: true },
-  { key: "client_rating",label: "Rating",                  fixed: true },
+  { key: "client_rating",label: "VIP Score",                fixed: true },
   { key: "source",       label: "Source",                  fixed: true },
 ];
 const getCustomFields = () => { try { const d = localStorage.getItem(CUSTOM_FIELDS_KEY); return d ? JSON.parse(d) : []; } catch { return []; } };
@@ -4229,7 +4229,7 @@ function ContactsScreen({ funnels }) {
                       onChange={() => selected.size === filtered.length ? clearSel() : selectAll()}
                       style={{ width: 14, height: 14, cursor: "pointer", accentColor: C.purple }} />
                   </th>}
-                  {["Name","Phone","Phone 2","Phone 3","City","Email","Birthday","Anniversary","Rating","Source","Tags","Extra Fields",""].map(h => (
+                  {["Name","Phone","Phone 2","Phone 3","City","Email","Birthday","Anniversary","VIP Score","Source","Tags","Extra Fields",""].map(h => (
                     <th key={h} style={{ padding: "8px 10px", textAlign: "left", fontSize: 11, color: "#888", fontWeight: 600, whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
