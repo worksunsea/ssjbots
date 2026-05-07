@@ -5964,6 +5964,8 @@ function VisitsSection({ leadId }) {
 function TagsScreen({ onReload }) {
   const [rows, setRows] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [dragIdx, setDragIdx] = useState(null);
+  const [overIdx, setOverIdx] = useState(null);
 
   const load = useCallback(async () => {
     const { data } = await sb.from("bullion_tags").select("*").eq("tenant_id", getTenantId()).order("category").order("sort_order");
@@ -5972,7 +5974,7 @@ function TagsScreen({ onReload }) {
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { load(); }, [load]);
 
-  const add = () => setRows((r) => [...r, { _new: true, tenant_id: getTenantId(), name: "", category: "custom", color: "#888", sort_order: 500 }]);
+  const add = () => setRows((r) => [...r, { _new: true, _dirty: true, tenant_id: getTenantId(), name: "", category: "custom", color: "#888", sort_order: (r.length + 1) * 10 }]);
   const update = (idx, k, v) => setRows((r) => r.map((row, i) => i === idx ? { ...row, [k]: v, _dirty: true } : row));
   const remove = async (idx) => {
     const row = rows[idx];
@@ -5980,6 +5982,20 @@ function TagsScreen({ onReload }) {
     if (row.id) await sb.from("bullion_tags").delete().eq("id", row.id);
     setRows((r) => r.filter((_, i) => i !== idx));
   };
+
+  const onDragStart = (idx) => setDragIdx(idx);
+  const onDragOver = (e, idx) => { e.preventDefault(); setOverIdx(idx); };
+  const onDrop = (e, idx) => {
+    e.preventDefault();
+    if (dragIdx === null || dragIdx === idx) { setDragIdx(null); setOverIdx(null); return; }
+    const next = [...rows];
+    const [moved] = next.splice(dragIdx, 1);
+    next.splice(idx, 0, moved);
+    // Reassign sort_order by position, mark all dirty
+    setRows(next.map((r, i) => ({ ...r, sort_order: (i + 1) * 10, _dirty: true })));
+    setDragIdx(null); setOverIdx(null);
+  };
+
   const saveAll = async () => {
     setSaving(true);
     for (const row of rows) {
@@ -5997,7 +6013,7 @@ function TagsScreen({ onReload }) {
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-        <div style={{ fontSize: 13, color: "#666" }}>Tags = flexible labels on leads. Flag = checkbox. Segment = audience. Source = which sheet it came from. Custom = anything you add.</div>
+        <div style={{ fontSize: 13, color: "#666" }}>Tags = flexible labels on leads. Drag ⠿ to reorder. Order shown here = order on contact form.</div>
         <div style={{ display: "flex", gap: 6 }}>
           <Btn ghost small color={C.gray} onClick={load}>↻</Btn>
           <Btn small color={C.blue} onClick={add}>+ Add</Btn>
@@ -6006,15 +6022,22 @@ function TagsScreen({ onReload }) {
       <Card style={{ padding: 0 }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead><tr style={{ background: "#f7f7f7" }}>
+            <th style={{ padding: 8, width: 28 }}></th>
             <th style={{ padding: 8, textAlign: "left", fontSize: 10, color: "#888" }}>NAME</th>
             <th style={{ padding: 8, textAlign: "left", fontSize: 10, color: "#888" }}>CATEGORY</th>
             <th style={{ padding: 8, textAlign: "left", fontSize: 10, color: "#888" }}>COLOR</th>
-            <th style={{ padding: 8, textAlign: "center", fontSize: 10, color: "#888" }}>ORDER</th>
             <th style={{ padding: 8, textAlign: "center", width: 60 }}></th>
           </tr></thead>
           <tbody>
             {rows.map((row, idx) => (
-              <tr key={row.id || `new-${idx}`} style={{ borderTop: "1px solid #f5f5f5" }}>
+              <tr key={row.id || `new-${idx}`}
+                draggable
+                onDragStart={() => onDragStart(idx)}
+                onDragOver={(e) => onDragOver(e, idx)}
+                onDrop={(e) => onDrop(e, idx)}
+                onDragEnd={() => { setDragIdx(null); setOverIdx(null); }}
+                style={{ borderTop: "1px solid #f5f5f5", background: overIdx === idx ? "#f0f7ff" : dragIdx === idx ? "#fffbeb" : "transparent", transition: "background 0.1s" }}>
+                <td style={{ padding: "6px 4px", textAlign: "center", cursor: "grab", color: "#bbb", fontSize: 16, userSelect: "none" }}>⠿</td>
                 <td style={{ padding: 6 }}><Input value={row.name || ""} onChange={(e) => update(idx, "name", e.target.value)} /></td>
                 <td style={{ padding: 6 }}>
                   <Select value={row.category} onChange={(e) => update(idx, "category", e.target.value)}>
@@ -6023,9 +6046,6 @@ function TagsScreen({ onReload }) {
                 </td>
                 <td style={{ padding: 6 }}>
                   <Input type="color" value={row.color || "#888"} onChange={(e) => update(idx, "color", e.target.value)} style={{ width: 50, padding: 2, height: 30 }} />
-                </td>
-                <td style={{ padding: 6, textAlign: "center" }}>
-                  <Input type="number" value={row.sort_order || 0} onChange={(e) => update(idx, "sort_order", Number(e.target.value))} style={{ width: 60, padding: 4 }} />
                 </td>
                 <td style={{ padding: 6, textAlign: "center" }}>
                   <Btn small ghost color={C.red} onClick={() => remove(idx)}>×</Btn>
