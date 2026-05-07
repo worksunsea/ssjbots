@@ -4056,7 +4056,7 @@ function ContactsScreen({ funnels }) {
   const [page, setPage] = useState(0);
   const [total, setTotal] = useState(0);
 
-  const load = useCallback(async (q = "", tags = [], logic = "AND", pg = 0) => {
+  const load = useCallback(async (q = "", tags = [], logic = "AND", pg = 0, cf = {}) => {
     setLoading(true);
     const from = pg * PAGE, to = from + PAGE - 1;
     let query = sb.from("bullion_leads")
@@ -4072,6 +4072,18 @@ function ContactsScreen({ funnels }) {
       if (logic === "AND") tags.forEach(t => { query = query.contains("tags", [t]); });
       else query = query.overlaps("tags", tags);
     }
+    // Server-side column filters
+    if (cf.name) query = query.ilike("name", `%${cf.name}%`);
+    if (cf.phone) query = query.or(`phone.ilike.%${cf.phone}%,mobile2.ilike.%${cf.phone}%,spouse_mobile.ilike.%${cf.phone}%`);
+    if (cf.mobile2) query = query.ilike("mobile2", `%${cf.mobile2}%`);
+    if (cf.spouse_mobile) query = query.ilike("spouse_mobile", `%${cf.spouse_mobile}%`);
+    if (cf.city) query = query.ilike("city", `%${cf.city}%`);
+    if (cf.email) query = query.ilike("email", `%${cf.email}%`);
+    if (cf.bday) query = query.ilike("bday", `%${cf.bday}%`);
+    if (cf.anniversary) query = query.ilike("anniversary", `%${cf.anniversary}%`);
+    if (cf.client_rating) query = query.eq("client_rating", Number(cf.client_rating));
+    if (cf.source) query = query.ilike("source", `%${cf.source}%`);
+    if (cf.tags) query = query.contains("tags", [cf.tags]);
     const { data, count } = await query;
     setContacts(data || []);
     setTotal(count || 0);
@@ -4080,11 +4092,11 @@ function ContactsScreen({ funnels }) {
 
   // Reload when search/tags/page change (debounce search)
   useEffect(() => { loadTags(); }, [loadTags]);
-  useEffect(() => { setPage(0); }, [search, filterTags, tagLogic]);
+  useEffect(() => { setPage(0); }, [search, filterTags, tagLogic, colFilters]);
   useEffect(() => {
-    const t = setTimeout(() => load(search, filterTags, tagLogic, page), search ? 300 : 0);
+    const t = setTimeout(() => load(search, filterTags, tagLogic, page, colFilters), search ? 300 : 0);
     return () => clearTimeout(t);
-  }, [search, filterTags, tagLogic, page, load]);
+  }, [search, filterTags, tagLogic, page, colFilters, load]);
 
   const filtered = useMemo(() => {
     // Client-side extra_fields search on top of server results
@@ -4104,17 +4116,23 @@ function ContactsScreen({ funnels }) {
   // List view: apply column filters + sort on top of page results
   const listReady = useMemo(() => {
     let list = [...filtered];
-    // Column filters
+    // Only client-side: custom field (extra_fields) filters — regular columns are server-side
     Object.entries(colFilters).forEach(([col, val]) => {
-      if (!val) return;
-      list = list.filter(c => {
-        const v = col === "client_rating" ? String(c[col] || "") : String(c[col] || "").toLowerCase();
-        return v.includes(col === "client_rating" ? val : val.toLowerCase());
-      });
+      if (!val || !col.startsWith("cf_")) return;
+      const key = col.slice(3);
+      const q = val.toLowerCase();
+      list = list.filter(c => String(c.extra_fields?.[key] || "").toLowerCase().includes(q));
     });
     // Sort
     list.sort((a, b) => {
-      let av = a[sortCol] ?? "", bv = b[sortCol] ?? "";
+      let av, bv;
+      if (sortCol.startsWith("cf_")) {
+        const k = sortCol.slice(3);
+        av = String(a.extra_fields?.[k] || "").toLowerCase();
+        bv = String(b.extra_fields?.[k] || "").toLowerCase();
+        return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+      }
+      av = a[sortCol] ?? ""; bv = b[sortCol] ?? "";
       if (sortCol === "client_rating") { av = Number(av || 0); bv = Number(bv || 0); return sortDir === "asc" ? av - bv : bv - av; }
       av = String(av).toLowerCase(); bv = String(bv).toLowerCase();
       return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
@@ -4263,9 +4281,11 @@ function ContactsScreen({ funnels }) {
                       onChange={() => selected.size === listReady.length ? clearSel() : setSelected(new Set(listReady.map(c=>c.id)))}
                       style={{ width: 14, height: 14, cursor: "pointer", accentColor: C.purple }} />
                   </th>}
-                  {[["name","Name"],["phone","Phone"],["mobile2","Phone 2"],["spouse_mobile","Phone 3"],["city","City"],["email","Email"],["bday","Birthday"],["anniversary","Anniversary"],["client_rating","VIP Score"],["source","Source"],["tags","Tags"],["extra","Extra Fields"],["",""]].map(([col,h]) => (
-                    <th key={col||"actions"} onClick={col && col!=="tags" && col!=="extra" ? ()=>toggleSort(col) : undefined}
-                      style={{ padding: "8px 10px", textAlign: "left", fontSize: 11, color: sortCol===col?"#2980b9":"#888", fontWeight: 600, whiteSpace: "nowrap", cursor: col&&col!=="tags"&&col!=="extra"?"pointer":"default", userSelect:"none" }}>
+                  {[["name","Name"],["phone","Phone"],["mobile2","Phone 2"],["spouse_mobile","Phone 3"],["city","City"],["email","Email"],["bday","Birthday"],["anniversary","Anniversary"],["client_rating","VIP Score"],["source","Source"],["tags","Tags"],
+                    ...customFields.map(f => [`cf_${f.key}`, f.label]),
+                    ["",""]].map(([col,h]) => (
+                    <th key={col||"actions"} onClick={col && col!=="tags" ? ()=>toggleSort(col) : undefined}
+                      style={{ padding: "8px 10px", textAlign: "left", fontSize: 11, color: sortCol===col?"#2980b9":"#888", fontWeight: 600, whiteSpace: "nowrap", cursor: col&&col!=="tags"?"pointer":"default", userSelect:"none" }}>
                       {h}{sortCol===col ? (sortDir==="asc"?" ▲":" ▼") : ""}
                     </th>
                   ))}
@@ -4275,8 +4295,10 @@ function ContactsScreen({ funnels }) {
                   {bulkMode && <th />}
                   {[
                     ["name","text"],["phone","text"],["mobile2","text"],["spouse_mobile","text"],
-                    ["city","distinct"],["email","text"],["bday","text"],["anniversary","text"],
-                    ["client_rating","rating"],["source","distinct"],["tags","tag"],["extra",""],["",""]
+                    ["city","text"],["email","text"],["bday","text"],["anniversary","text"],
+                    ["client_rating","rating"],["source","text"],["tags","tag"],
+                    ...customFields.map(f => [`cf_${f.key}`, "text"]),
+                    ["",""]
                   ].map(([col, type], i) => {
                     if (!col || type==="") return <th key={i} />;
                     const val = colFilters[col] || "";
@@ -4287,14 +4309,6 @@ function ContactsScreen({ funnels }) {
                         <option value="">All</option>
                         {[1,2,3,4,5].map(n=><option key={n} value={n}>{"★".repeat(n)}</option>)}
                       </select></th>;
-                    if (type==="distinct") {
-                      const opts=[...new Set(contacts.map(c=>c[col]).filter(Boolean))].sort();
-                      return <th key={col} style={{padding:"3px 6px"}}>
-                        <select value={val} onChange={e=>setColFilter(col,e.target.value)} style={{fontSize:11,width:"100%",border:"1px solid #ddd",borderRadius:4,padding:"2px 2px"}}>
-                          <option value="">All</option>
-                          {opts.map(o=><option key={o} value={o}>{o}</option>)}
-                        </select></th>;
-                    }
                     if (type==="tag") return <th key={col} style={{padding:"3px 6px"}}>
                       <select value={val} onChange={e=>setColFilter(col,e.target.value)} style={{fontSize:11,width:"100%",border:"1px solid #ddd",borderRadius:4,padding:"2px 2px"}}>
                         <option value="">All</option>
@@ -4307,7 +4321,6 @@ function ContactsScreen({ funnels }) {
               <tbody>
                 {listReady.map((c) => {
                   const sel = selected.has(c.id);
-                  const extraStr = Object.entries(c.extra_fields || {}).filter(([,v])=>v).map(([k,v])=>`${getCustomFields().find(f=>f.key===k)?.label||k}: ${v}`).join(" · ");
                   return (
                     <tr key={c.id} onClick={bulkMode ? () => toggleSelect(c.id) : undefined}
                       style={{ borderBottom: "1px solid #f5f5f5", background: sel ? "#f5f0ff" : "transparent", cursor: bulkMode ? "pointer" : "default" }}>
@@ -4332,7 +4345,11 @@ function ContactsScreen({ funnels }) {
                           {(c.tags || []).map(t => <span key={t} style={{ fontSize: 11, padding: "1px 6px", borderRadius: 10, background: "#e0e7ff", color: "#3730a3" }}>{t}</span>)}
                         </div>
                       </td>
-                      <td style={{ padding: "6px 10px", color: "#777", fontSize: 12, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{extraStr || "—"}</td>
+                      {customFields.map(f => (
+                        <td key={f.key} style={{ padding: "6px 10px", color: "#555", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {c.extra_fields?.[f.key] || "—"}
+                        </td>
+                      ))}
                       <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>
                         {!bulkMode && <>
                           <button onClick={() => setEditing(c)} style={{ fontSize: 11, border: "none", background: "none", cursor: "pointer", color: C.blue, padding: "2px 4px" }}>✏️</button>
@@ -4348,7 +4365,7 @@ function ContactsScreen({ funnels }) {
                     </tr>
                   );
                 })}
-                {!listReady.length && !loading && <tr><td colSpan={bulkMode ? 14 : 13} style={{ padding: 40, textAlign: "center", color: "#aaa" }}>No contacts found.</td></tr>}
+                {!listReady.length && !loading && <tr><td colSpan={12 + customFields.length + (bulkMode ? 2 : 1)} style={{ padding: 40, textAlign: "center", color: "#aaa" }}>No contacts found.</td></tr>}
               </tbody>
             </table>
           </div>
