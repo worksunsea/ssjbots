@@ -3957,42 +3957,53 @@ function ContactsScreen({ funnels }) {
     setAllTags(data || []);
   }, []);
 
-  const load = useCallback(async () => {
+  const PAGE = 200;
+  const [page, setPage] = useState(0);
+  const [total, setTotal] = useState(0);
+
+  const load = useCallback(async (q = "", tags = [], logic = "AND", pg = 0) => {
     setLoading(true);
-    const { data } = await sb.from("bullion_leads")
-      .select("*")
+    const from = pg * PAGE, to = from + PAGE - 1;
+    let query = sb.from("bullion_leads")
+      .select("*", { count: "exact" })
       .eq("tenant_id", getTenantId())
       .order("name", { ascending: true, nullsFirst: false })
-      .limit(2000);
+      .range(from, to);
+    if (q.trim()) {
+      query = query.or(`name.ilike.%${q}%,phone.ilike.%${q}%,email.ilike.%${q}%,city.ilike.%${q}%,source.ilike.%${q}%,wedding_family_member.ilike.%${q}%,bday.ilike.%${q}%`);
+    }
+    if (tags.length > 0) {
+      if (logic === "AND") tags.forEach(t => { query = query.contains("tags", [t]); });
+      else query = query.overlaps("tags", tags);
+    }
+    const { data, count } = await query;
     setContacts(data || []);
+    setTotal(count || 0);
     setLoading(false);
   }, []);
 
-  useEffect(() => { load(); loadTags(); }, [load, loadTags]);
+  // Reload when search/tags/page change (debounce search)
+  useEffect(() => { loadTags(); }, [loadTags]);
+  useEffect(() => { setPage(0); }, [search, filterTags, tagLogic]);
+  useEffect(() => {
+    const t = setTimeout(() => load(search, filterTags, tagLogic, page), search ? 300 : 0);
+    return () => clearTimeout(t);
+  }, [search, filterTags, tagLogic, page, load]);
 
   const filtered = useMemo(() => {
-    let list = showLid ? contacts : contacts.filter((c) => !isLid(c.phone));
-    if (search.trim()) {
-      const q = search.trim().toLowerCase();
-      list = list.filter((c) => {
-        const extraVals = Object.values(c.extra_fields || {}).join(" ").toLowerCase();
-        const tags = (c.tags || []).join(" ").toLowerCase();
-        return [c.name, c.phone, c.email, c.city, c.source, c.bday, c.anniversary,
-                c.wedding_date, c.wedding_family_member, c.client_rating, extraVals, tags]
-          .some((v) => v && String(v).toLowerCase().includes(q));
-      });
-    }
-    if (filterTags.length > 0) {
-      list = list.filter((c) => {
-        const ct = c.tags || [];
-        return tagLogic === "AND"
-          ? filterTags.every((t) => ct.includes(t))
-          : filterTags.some((t) => ct.includes(t));
-      });
-    }
-    return list;
-  }, [contacts, showLid, search, filterTags, tagLogic]);
-  const lidCount = contacts.filter((c) => isLid(c.phone)).length;
+    // Client-side extra_fields search on top of server results
+    if (!search.trim()) return showLid ? contacts : contacts.filter(c => !isLid(c.phone));
+    const q = search.trim().toLowerCase();
+    return (showLid ? contacts : contacts.filter(c => !isLid(c.phone))).filter(c => {
+      const extraVals = Object.values(c.extra_fields || {}).join(" ").toLowerCase();
+      const tgs = (c.tags || []).join(" ").toLowerCase();
+      return [c.name, c.phone, c.email, c.city, c.source, c.bday, c.anniversary,
+              c.wedding_date, c.wedding_family_member, extraVals, tgs]
+        .some(v => v && String(v).toLowerCase().includes(q));
+    });
+  }, [contacts, showLid, search]);
+  const lidCount = contacts.filter(c => isLid(c.phone)).length;
+  const totalPages = Math.ceil(total / PAGE);
 
   // Unique WA numbers from funnels for the sender chooser
   const waNumbers = useMemo(() => {
@@ -4012,7 +4023,7 @@ function ContactsScreen({ funnels }) {
           <input type="checkbox" checked={showLid} onChange={(e) => setShowLid(e.target.checked)} />
           Show WA-hidden ({lidCount})
         </label>
-        <span style={{ fontSize: 11, color: "#888" }}>{loading ? "Loading…" : `${filtered.length} contacts`}</span>
+        <span style={{ fontSize: 11, color: "#888" }}>{loading ? "Loading…" : `${total.toLocaleString()} contacts`}</span>
       </div>
 
       {showFieldMgr && <CustomFieldsManager fields={customFields} onChange={setCustomFields} />}
@@ -4046,9 +4057,17 @@ function ContactsScreen({ funnels }) {
           <ContactCard key={c.id} contact={c} onEdit={() => setEditing(c)} onSendWA={() => setSending(c)} />
         ))}
         {!filtered.length && !loading && (
-          <div style={{ gridColumn: "1/-1", padding: 40, textAlign: "center", color: "#aaa", fontSize: 13 }}>No contacts yet.</div>
+          <div style={{ gridColumn: "1/-1", padding: 40, textAlign: "center", color: "#aaa", fontSize: 13 }}>No contacts found.</div>
         )}
       </div>
+
+      {totalPages > 1 && (
+        <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, marginTop: 16 }}>
+          <Btn ghost small color={C.gray} onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}>← Prev</Btn>
+          <span style={{ fontSize: 12, color: "#888" }}>Page {page + 1} of {totalPages} · {total.toLocaleString()} total</span>
+          <Btn ghost small color={C.gray} onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}>Next →</Btn>
+        </div>
+      )}
 
       {editing !== null && (
         <ContactEditModal
