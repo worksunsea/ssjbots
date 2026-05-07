@@ -3955,33 +3955,31 @@ function ContactsScreen({ funnels }) {
     setAllTags(data || []);
   }, []);
 
-  const load = useCallback(async (q = "") => {
+  const load = useCallback(async () => {
     setLoading(true);
-    let query = sb.from("bullion_leads")
+    const { data } = await sb.from("bullion_leads")
       .select("*")
       .eq("tenant_id", getTenantId())
       .order("name", { ascending: true, nullsFirst: false })
-      .limit(200);
-    if (q) {
-      query = query.or(`name.ilike.%${q}%,phone.ilike.%${q}%,email.ilike.%${q}%,city.ilike.%${q}%`);
-    }
-    const { data } = await query;
+      .limit(2000);
     setContacts(data || []);
     setLoading(false);
   }, []);
 
   useEffect(() => { load(); loadTags(); }, [load, loadTags]);
 
-  // Debounce search → server-side query
-  useEffect(() => {
-    const t = setTimeout(() => load(search), 300);
-    return () => clearTimeout(t);
-  }, [search, load]);
-
-  const filtered = useMemo(
-    () => showLid ? contacts : contacts.filter((c) => !isLid(c.phone)),
-    [contacts, showLid]
-  );
+  const filtered = useMemo(() => {
+    let list = showLid ? contacts : contacts.filter((c) => !isLid(c.phone));
+    if (!search.trim()) return list;
+    const q = search.trim().toLowerCase();
+    return list.filter((c) => {
+      const extraVals = Object.values(c.extra_fields || {}).join(" ").toLowerCase();
+      const tags = (c.tags || []).join(" ").toLowerCase();
+      return [c.name, c.phone, c.email, c.city, c.source, c.bday, c.anniversary,
+              c.wedding_date, c.wedding_family_member, c.client_rating, extraVals, tags]
+        .some((v) => v && String(v).toLowerCase().includes(q));
+    });
+  }, [contacts, showLid, search]);
   const lidCount = contacts.filter((c) => isLid(c.phone)).length;
 
   // Unique WA numbers from funnels for the sender chooser
