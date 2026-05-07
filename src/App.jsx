@@ -3950,6 +3950,7 @@ function ContactsScreen({ funnels }) {
   const [showFieldMgr, setShowFieldMgr] = useState(false);
   const [filterTags, setFilterTags] = useState([]);
   const [tagLogic, setTagLogic] = useState("AND"); // AND = must have all, OR = any
+  const isSA = loadUser()?.role === "superadmin";
 
   const loadTags = useCallback(async () => {
     const { data } = await sb.from("bullion_tags").select("name,category,color")
@@ -4054,7 +4055,12 @@ function ContactsScreen({ funnels }) {
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 10 }}>
         {filtered.map((c) => (
-          <ContactCard key={c.id} contact={c} onEdit={() => setEditing(c)} onSendWA={() => setSending(c)} />
+          <ContactCard key={c.id} contact={c} onEdit={() => setEditing(c)} onSendWA={() => setSending(c)}
+            onDelete={isSA ? async () => {
+              if (!confirm(`Delete ${c.name || c.phone}? This cannot be undone.`)) return;
+              await sb.from("bullion_leads").delete().eq("id", c.id);
+              load(search, filterTags, tagLogic, page);
+            } : undefined} />
         ))}
         {!filtered.length && !loading && (
           <div style={{ gridColumn: "1/-1", padding: 40, textAlign: "center", color: "#aaa", fontSize: 13 }}>No contacts found.</div>
@@ -4089,7 +4095,7 @@ function ContactsScreen({ funnels }) {
   );
 }
 
-function ContactCard({ contact: c, onEdit, onSendWA }) {
+function ContactCard({ contact: c, onEdit, onSendWA, onDelete }) {
   const stars = c.client_rating ? "★".repeat(Math.min(5, c.client_rating)) + "☆".repeat(5 - Math.min(5, c.client_rating)) : null;
   return (
     <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 12, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 4 }}>
@@ -4133,6 +4139,7 @@ function ContactCard({ contact: c, onEdit, onSendWA }) {
       <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
         <Btn ghost small color={C.blue} onClick={onEdit}>✏️ Edit</Btn>
         <Btn small color="#25d366" onClick={onSendWA} style={{ color: "#fff" }}>📱 Send WA</Btn>
+        {onDelete && <Btn ghost small color={C.red} onClick={onDelete}>🗑</Btn>}
       </div>
     </div>
   );
