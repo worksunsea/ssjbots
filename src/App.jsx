@@ -3951,6 +3951,15 @@ function ContactsScreen({ funnels }) {
   const [filterTags, setFilterTags] = useState([]);
   const [tagLogic, setTagLogic] = useState("AND"); // AND = must have all, OR = any
   const isSA = loadUser()?.role === "superadmin";
+  const [bulkMode, setBulkMode] = useState(false);
+  const [selected, setSelected] = useState(new Set());
+  const [bulkTagAdd, setBulkTagAdd] = useState("");
+  const [bulkTagRemove, setBulkTagRemove] = useState("");
+  const [bulkWorking, setBulkWorking] = useState(false);
+  const toggleSelect = (id) => setSelected(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const selectAll = () => setSelected(new Set(filtered.map(c => c.id)));
+  const clearSel = () => setSelected(new Set());
+  const exitBulk = () => { setBulkMode(false); clearSel(); };
 
   const loadTags = useCallback(async () => {
     const { data } = await sb.from("bullion_tags").select("name,category,color")
@@ -4017,9 +4026,10 @@ function ContactsScreen({ funnels }) {
     <div>
       <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
         <Input placeholder="Search name / phone / email / city…" value={search} onChange={(e) => setSearch(e.target.value)} style={{ flex: "1 1 220px" }} />
-        <Btn ghost small color={C.gray} onClick={load}>↻</Btn>
+        <Btn ghost small color={C.gray} onClick={() => load(search, filterTags, tagLogic, page)}>↻</Btn>
         <Btn small color={C.blue} onClick={() => setEditing({})}>+ Add Contact</Btn>
         <Btn ghost small color={C.orange} onClick={() => setShowFieldMgr(v => !v)}>⚙ Fields</Btn>
+        <Btn ghost small color={bulkMode ? C.purple : C.gray} onClick={() => bulkMode ? exitBulk() : setBulkMode(true)}>{bulkMode ? "✕ Cancel" : "☑ Bulk"}</Btn>
         <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#666", cursor: "pointer" }}>
           <input type="checkbox" checked={showLid} onChange={(e) => setShowLid(e.target.checked)} />
           Show WA-hidden ({lidCount})
@@ -4028,6 +4038,59 @@ function ContactsScreen({ funnels }) {
       </div>
 
       {showFieldMgr && <CustomFieldsManager fields={customFields} onChange={setCustomFields} />}
+
+      {bulkMode && (
+        <div style={{ background: "#f0f0ff", border: "1px solid #c4b5fd", borderRadius: 10, padding: "10px 14px", marginBottom: 12 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: C.purple }}>{selected.size} selected</span>
+            <Btn ghost small color={C.gray} onClick={selectAll}>Select all ({filtered.length})</Btn>
+            {selected.size > 0 && <Btn ghost small color={C.gray} onClick={clearSel}>Clear</Btn>}
+            <div style={{ flex: 1 }} />
+            {/* Add tag */}
+            <select value={bulkTagAdd} onChange={e => setBulkTagAdd(e.target.value)} style={{ fontSize: 12, padding: "3px 6px", borderRadius: 6, border: "1px solid #ddd" }}>
+              <option value="">+ Add tag…</option>
+              {allTags.filter(t => t.category !== "source").map(t => <option key={t.name} value={t.name}>{t.name}</option>)}
+            </select>
+            <Btn small color={C.green} disabled={!bulkTagAdd || !selected.size || bulkWorking} onClick={async () => {
+              setBulkWorking(true);
+              const ids = [...selected];
+              const toUpdate = filtered.filter(c => ids.includes(c.id));
+              await Promise.all(toUpdate.map(c => {
+                const tags = [...new Set([...(c.tags || []), bulkTagAdd])];
+                return sb.from("bullion_leads").update({ tags }).eq("id", c.id);
+              }));
+              setBulkTagAdd(""); clearSel(); setBulkWorking(false);
+              load(search, filterTags, tagLogic, page);
+            }}>{bulkWorking ? "…" : "Apply"}</Btn>
+            {/* Remove tag */}
+            <select value={bulkTagRemove} onChange={e => setBulkTagRemove(e.target.value)} style={{ fontSize: 12, padding: "3px 6px", borderRadius: 6, border: "1px solid #ddd" }}>
+              <option value="">− Remove tag…</option>
+              {allTags.filter(t => t.category !== "source").map(t => <option key={t.name} value={t.name}>{t.name}</option>)}
+            </select>
+            <Btn small color={C.orange} disabled={!bulkTagRemove || !selected.size || bulkWorking} onClick={async () => {
+              setBulkWorking(true);
+              const ids = [...selected];
+              const toUpdate = filtered.filter(c => ids.includes(c.id));
+              await Promise.all(toUpdate.map(c => {
+                const tags = (c.tags || []).filter(t => t !== bulkTagRemove);
+                return sb.from("bullion_leads").update({ tags }).eq("id", c.id);
+              }));
+              setBulkTagRemove(""); clearSel(); setBulkWorking(false);
+              load(search, filterTags, tagLogic, page);
+            }}>{bulkWorking ? "…" : "Remove"}</Btn>
+            {/* Bulk delete — SA only */}
+            {isSA && selected.size > 0 && (
+              <Btn small color={C.red} disabled={bulkWorking} onClick={async () => {
+                if (!confirm(`Delete ${selected.size} contacts? Cannot be undone.`)) return;
+                setBulkWorking(true);
+                await sb.from("bullion_leads").delete().in("id", [...selected]);
+                clearSel(); setBulkWorking(false);
+                load(search, filterTags, tagLogic, page);
+              }}>{bulkWorking ? "…" : `🗑 Delete ${selected.size}`}</Btn>
+            )}
+          </div>
+        </div>
+      )}
 
       {allTags.filter(t => t.category !== "source").length > 0 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10, alignItems: "center" }}>
@@ -4055,12 +4118,21 @@ function ContactsScreen({ funnels }) {
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 10 }}>
         {filtered.map((c) => (
-          <ContactCard key={c.id} contact={c} onEdit={() => setEditing(c)} onSendWA={() => setSending(c)}
-            onDelete={isSA ? async () => {
-              if (!confirm(`Delete ${c.name || c.phone}? This cannot be undone.`)) return;
-              await sb.from("bullion_leads").delete().eq("id", c.id);
-              load(search, filterTags, tagLogic, page);
-            } : undefined} />
+          <div key={c.id} style={{ position: "relative" }}>
+            {bulkMode && (
+              <input type="checkbox" checked={selected.has(c.id)} onChange={() => toggleSelect(c.id)}
+                style={{ position: "absolute", top: 10, left: 10, width: 16, height: 16, zIndex: 2, cursor: "pointer", accentColor: C.purple }} />
+            )}
+            <div onClick={bulkMode ? () => toggleSelect(c.id) : undefined}
+              style={{ cursor: bulkMode ? "pointer" : "default", opacity: bulkMode && !selected.has(c.id) ? 0.7 : 1, outline: bulkMode && selected.has(c.id) ? `2px solid ${C.purple}` : "none", borderRadius: 12 }}>
+              <ContactCard contact={c} onEdit={bulkMode ? undefined : () => setEditing(c)} onSendWA={bulkMode ? undefined : () => setSending(c)}
+                onDelete={!bulkMode && isSA ? async () => {
+                  if (!confirm(`Delete ${c.name || c.phone}? This cannot be undone.`)) return;
+                  await sb.from("bullion_leads").delete().eq("id", c.id);
+                  load(search, filterTags, tagLogic, page);
+                } : undefined} />
+            </div>
+          </div>
         ))}
         {!filtered.length && !loading && (
           <div style={{ gridColumn: "1/-1", padding: 40, textAlign: "center", color: "#aaa", fontSize: 13 }}>No contacts found.</div>
