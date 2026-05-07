@@ -213,7 +213,7 @@ function LeadsScreen({ funnels, allTags, viewMode = "leads" }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    let q = sb.from("bullion_leads").select("*").eq("tenant_id", getTenantId()).order("updated_at", { ascending: false }).limit(1000);
+    let q = sb.from("bullion_leads").select("*").eq("tenant_id", getTenantId()).is("deleted_at", null).order("updated_at", { ascending: false }).limit(1000);
     if (filterFunnel) q = q.eq("funnel_id", filterFunnel);
     if (filterStatus) q = q.eq("status", filterStatus);
     // "leads" (Conversations) = only leads that have at least one demand (bot was manually activated).
@@ -1342,7 +1342,7 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
     if (!q || q.length < 2) { setSearchResults([]); return; }
     setSearching(true);
     const isPhone = /^\d+$/.test(q);
-    let query = sb.from("bullion_leads").select("id,name,phone,city,client_rating,last_msg_at").eq("tenant_id", getTenantId());
+    let query = sb.from("bullion_leads").select("id,name,phone,city,client_rating,last_msg_at").eq("tenant_id", getTenantId()).is("deleted_at", null);
     if (isPhone) {
       query = query.ilike("phone", `%${q}%`);
     } else {
@@ -3938,6 +3938,58 @@ function MediaAssetsScreen() {
 // ──────────────────────────────────────────────────────────
 // CONTACTS SCREEN — master client database
 // ──────────────────────────────────────────────────────────
+function TrashBin({ onRestore }) {
+  const [open, setOpen] = useState(false);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const load = async () => {
+    setLoading(true);
+    const { data } = await sb.from("bullion_leads").select("id,name,phone,city,deleted_at,deleted_by")
+      .eq("tenant_id", getTenantId()).not("deleted_at", "is", null).order("deleted_at", { ascending: false }).limit(200);
+    setRows(data || []);
+    setLoading(false);
+  };
+  useEffect(() => { if (open) load(); }, [open]);
+  const restore = async (id) => {
+    await sb.from("bullion_leads").update({ deleted_at: null, deleted_by: null }).eq("id", id);
+    setRows(r => r.filter(x => x.id !== id));
+    onRestore();
+  };
+  const wipe = async (id, name) => {
+    if (!confirm(`Permanently delete ${name}? Cannot be undone.`)) return;
+    await sb.from("bullion_leads").delete().eq("id", id);
+    setRows(r => r.filter(x => x.id !== id));
+  };
+  return (
+    <div style={{ marginTop: 24 }}>
+      <button onClick={() => setOpen(v => !v)} style={{ fontSize: 12, color: C.red, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+        🗑 {open ? "Hide" : "Show"} Trash {rows.length > 0 && open ? `(${rows.length})` : ""}
+      </button>
+      {open && (
+        <div style={{ marginTop: 8, background: "#fff5f5", border: `1px solid ${C.red}33`, borderRadius: 10, padding: 12 }}>
+          <p style={{ fontSize: 11, color: C.red, fontWeight: 600, margin: "0 0 10px" }}>🗑 Deleted Contacts — superadmin only</p>
+          {loading && <p style={{ fontSize: 12, color: "#aaa" }}>Loading…</p>}
+          {!loading && rows.length === 0 && <p style={{ fontSize: 12, color: "#aaa" }}>Trash is empty.</p>}
+          {rows.map(r => (
+            <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #fee2e2", gap: 8, flexWrap: "wrap" }}>
+              <div>
+                <p style={{ margin: 0, fontSize: 13, fontWeight: 500 }}>{r.name || "(no name)"} · {r.phone}</p>
+                <p style={{ margin: 0, fontSize: 11, color: "#aaa" }}>
+                  Deleted by <strong>{r.deleted_by || "unknown"}</strong> on {new Date(r.deleted_at).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                </p>
+              </div>
+              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                <Btn small color={C.green} onClick={() => restore(r.id)}>↩ Restore</Btn>
+                <Btn small ghost color={C.red} onClick={() => wipe(r.id, r.name || r.phone)}>× Wipe</Btn>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ContactsScreen({ funnels }) {
   const [contacts, setContacts] = useState([]);
   const [allTags, setAllTags] = useState([]);
@@ -3977,6 +4029,7 @@ function ContactsScreen({ funnels }) {
     let query = sb.from("bullion_leads")
       .select("*", { count: "exact" })
       .eq("tenant_id", getTenantId())
+      .is("deleted_at", null)
       .order("name", { ascending: true, nullsFirst: false })
       .range(from, to);
     if (q.trim()) {
@@ -4081,9 +4134,10 @@ function ContactsScreen({ funnels }) {
             {/* Bulk delete — SA only */}
             {isSA && selected.size > 0 && (
               <Btn small color={C.red} disabled={bulkWorking} onClick={async () => {
-                if (!confirm(`Delete ${selected.size} contacts? Cannot be undone.`)) return;
+                if (!confirm(`Move ${selected.size} contacts to Trash?`)) return;
                 setBulkWorking(true);
-                await sb.from("bullion_leads").delete().in("id", [...selected]);
+                const by = loadUser()?.name || loadUser()?.username || "admin";
+                await sb.from("bullion_leads").update({ deleted_at: new Date().toISOString(), deleted_by: by }).in("id", [...selected]);
                 clearSel(); setBulkWorking(false);
                 load(search, filterTags, tagLogic, page);
               }}>{bulkWorking ? "…" : `🗑 Delete ${selected.size}`}</Btn>
@@ -4127,8 +4181,9 @@ function ContactsScreen({ funnels }) {
               style={{ cursor: bulkMode ? "pointer" : "default", opacity: bulkMode && !selected.has(c.id) ? 0.7 : 1, outline: bulkMode && selected.has(c.id) ? `2px solid ${C.purple}` : "none", borderRadius: 12 }}>
               <ContactCard contact={c} onEdit={bulkMode ? undefined : () => setEditing(c)} onSendWA={bulkMode ? undefined : () => setSending(c)}
                 onDelete={!bulkMode && isSA ? async () => {
-                  if (!confirm(`Delete ${c.name || c.phone}? This cannot be undone.`)) return;
-                  await sb.from("bullion_leads").delete().eq("id", c.id);
+                  if (!confirm(`Move ${c.name || c.phone} to Trash?`)) return;
+                  const by = loadUser()?.name || loadUser()?.username || "admin";
+                  await sb.from("bullion_leads").update({ deleted_at: new Date().toISOString(), deleted_by: by }).eq("id", c.id);
                   load(search, filterTags, tagLogic, page);
                 } : undefined} />
             </div>
@@ -4146,6 +4201,8 @@ function ContactsScreen({ funnels }) {
           <Btn ghost small color={C.gray} onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}>Next →</Btn>
         </div>
       )}
+
+      {isSA && <TrashBin onRestore={() => load(search, filterTags, tagLogic, page)} />}
 
       {editing !== null && (
         <ContactEditModal
@@ -5166,6 +5223,7 @@ function ContactsDBScreen() {
     try {
       let q = sb.from("bullion_leads").select("*")
         .eq("tenant_id", getTenantId())
+        .is("deleted_at", null)
         .order("name", { ascending: true, nullsFirst: false })
         .limit(500);
       if (sq) q = q.or(`name.ilike.%${sq}%,phone.ilike.%${sq}%,mobile2.ilike.%${sq}%,email.ilike.%${sq}%,city.ilike.%${sq}%,client_code.ilike.%${sq}%,company.ilike.%${sq}%`);
