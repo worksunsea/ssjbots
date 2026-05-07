@@ -4045,6 +4045,7 @@ function ContactsScreen({ funnels }) {
   const setColFilter = (col, val) => setColFilters(f => ({ ...f, [col]: val }));
   const clearColFilters = () => setColFilters({});
   const toggleSort = (col) => { if (sortCol === col) setSortDir(d => d === "asc" ? "desc" : "asc"); else { setSortCol(col); setSortDir("asc"); } };
+  const [tagPopOpen, setTagPopOpen] = useState(false);
 
   const loadTags = useCallback(async () => {
     const { data } = await sb.from("bullion_tags").select("name,category,color")
@@ -4082,7 +4083,7 @@ function ContactsScreen({ funnels }) {
     if (cf.bday) query = query.ilike("bday", `%${cf.bday}%`);
     if (cf.anniversary) query = query.ilike("anniversary", `%${cf.anniversary}%`);
     if (cf.client_rating) query = query.eq("client_rating", Number(cf.client_rating));
-    if (cf.source) query = query.ilike("source", `%${cf.source}%`);
+    if (cf.source) query = query.eq("source", cf.source);
     if (cf.tags) query = query.contains("tags", [cf.tags]);
     const { data, count } = await query;
     setContacts(data || []);
@@ -4296,7 +4297,7 @@ function ContactsScreen({ funnels }) {
                   {[
                     ["name","text"],["phone","text"],["mobile2","text"],["spouse_mobile","text"],
                     ["city","text"],["email","text"],["bday","text"],["anniversary","text"],
-                    ["client_rating","rating"],["source","text"],["tags","tag"],
+                    ["client_rating","rating"],["source","source"],["tags","tagpop"],
                     ...customFields.map(f => [`cf_${f.key}`, "text"]),
                     ["",""]
                   ].map(([col, type], i) => {
@@ -4309,11 +4310,30 @@ function ContactsScreen({ funnels }) {
                         <option value="">All</option>
                         {[1,2,3,4,5].map(n=><option key={n} value={n}>{"★".repeat(n)}</option>)}
                       </select></th>;
-                    if (type==="tag") return <th key={col} style={{padding:"3px 6px"}}>
+                    if (type==="source") return <th key={col} style={{padding:"3px 6px"}}>
                       <select value={val} onChange={e=>setColFilter(col,e.target.value)} style={{fontSize:11,width:"100%",border:"1px solid #ddd",borderRadius:4,padding:"2px 2px"}}>
                         <option value="">All</option>
-                        {allTags.filter(t=>t.category!=="source").map(t=><option key={t.name} value={t.name}>{t.name}</option>)}
+                        {allTags.filter(t=>t.category==="source").map(t=><option key={t.name} value={t.name}>{t.name}</option>)}
                       </select></th>;
+                    if (type==="tagpop") return <th key={col} style={{padding:"3px 6px", position:"relative"}}>
+                      <button onClick={()=>setTagPopOpen(v=>!v)}
+                        style={{fontSize:11,width:"100%",border:`1px solid ${val?"#6366f1":"#ddd"}`,borderRadius:4,background:val?"#eef2ff":"#fff",cursor:"pointer",padding:"2px 6px",textAlign:"left",color:val?"#4338ca":"#888",fontWeight:val?600:400}}>
+                        {val || "Tag ▾"}
+                        {val && <span onClick={e=>{e.stopPropagation();setColFilter("tags","");setTagPopOpen(false);}} style={{float:"right",color:"#999",fontWeight:400}}>×</span>}
+                      </button>
+                      {tagPopOpen && (
+                        <div style={{position:"absolute",top:"100%",left:0,zIndex:200,background:"#fff",border:"1px solid #ddd",borderRadius:8,boxShadow:"0 6px 20px #0002",minWidth:180,maxHeight:260,overflowY:"auto"}}>
+                          <div onClick={()=>{setColFilter("tags","");setTagPopOpen(false);}} style={{padding:"7px 12px",fontSize:12,cursor:"pointer",color:"#888",borderBottom:"1px solid #f0f0f0"}}>— All tags</div>
+                          {allTags.filter(t=>t.category!=="source").map(t=>(
+                            <div key={t.name} onClick={()=>{setColFilter("tags",t.name);setTagPopOpen(false);}}
+                              style={{padding:"7px 12px",fontSize:12,cursor:"pointer",background:val===t.name?"#f0f0ff":"transparent",display:"flex",alignItems:"center",gap:6}}>
+                              <span style={{width:8,height:8,borderRadius:"50%",background:t.color||"#888",flexShrink:0}} />
+                              {t.name}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </th>;
                     return <th key={i} />;
                   })}
                 </tr>
