@@ -21,6 +21,9 @@ const WA_SERVICE_URL = "/api/wa-proxy?path=";
 
 // ── UI CONSTANTS ──
 const C = { green: "#27ae60", orange: "#e67e22", red: "#c0392b", blue: "#2980b9", gray: "#888", purple: "#8e44ad", pink: "#e84393", yellow: "#f39c12" };
+const CUSTOM_FIELDS_KEY = "ssj_contact_custom_fields";
+const getCustomFields = () => { try { const d = localStorage.getItem(CUSTOM_FIELDS_KEY); return d ? JSON.parse(d) : []; } catch { return []; } };
+const saveCustomFieldDefs = (list) => { try { localStorage.setItem(CUSTOM_FIELDS_KEY, JSON.stringify(list)); } catch {} };
 const STAGES = ["greeting", "qualifying", "quoted", "objection", "closing", "handoff", "converted", "dead"];
 const STAGE_C = { greeting: C.gray, qualifying: C.blue, quoted: C.purple, objection: C.orange, closing: C.yellow, handoff: C.red, converted: C.green, dead: "#999" };
 const STATUSES = ["active", "handoff", "converted", "dead", "paused"];
@@ -612,7 +615,11 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
             {lead.email && <span>✉️ {lead.email} · </span>}
             {lead.bday && <span>🎂 {lead.bday} · </span>}
             {lead.anniversary && <span>💍 {lead.anniversary}</span>}
-            {!lead.city && !lead.email && !lead.bday && !lead.anniversary && <em>(name/city/bday/anniv not captured yet)</em>}
+            {Object.entries(lead.extra_fields || {}).filter(([,v]) => v).map(([k, v]) => {
+              const label = getCustomFields().find(f => f.key === k)?.label || k;
+              return <span key={k}> · {label}: <strong>{v}</strong></span>;
+            })}
+            {!lead.city && !lead.email && !lead.bday && !lead.anniversary && !Object.values(lead.extra_fields || {}).some(Boolean) && <em>(name/city/bday/anniv not captured yet)</em>}
           </div>
           <div style={{ marginTop: 6 }}><StageBar stage={lead.stage} /></div>
           {isLid(lead.phone) && (
@@ -635,6 +642,7 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
         <ContactEditModal
           contact={lead}
           allTags={allTags || []}
+          customFields={getCustomFields()}
           onClose={() => setEditLeadOpen(false)}
           onSaved={() => { setEditLeadOpen(false); onChanged && onChanged(); }}
         />
@@ -2269,6 +2277,7 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved }) {
         <ContactEditModal
           contact={editingContact}
           allTags={allTags}
+          customFields={getCustomFields()}
           onClose={() => setEditingContact(null)}
           onSaved={async () => {
             // Refresh dup info after edit so the panel shows updated name.
@@ -3937,6 +3946,8 @@ function ContactsScreen({ funnels }) {
   const [editing, setEditing] = useState(null);
   const [sending, setSending] = useState(null);
   const [showLid, setShowLid] = useState(false); // hide WA-hidden (LID) leads by default
+  const [customFields, setCustomFields] = useState(getCustomFields);
+  const [showFieldMgr, setShowFieldMgr] = useState(false);
 
   const loadTags = useCallback(async () => {
     const { data } = await sb.from("bullion_tags").select("name,category,color")
@@ -3986,12 +3997,15 @@ function ContactsScreen({ funnels }) {
         <Input placeholder="Search name / phone / email / city…" value={search} onChange={(e) => setSearch(e.target.value)} style={{ flex: "1 1 220px" }} />
         <Btn ghost small color={C.gray} onClick={load}>↻</Btn>
         <Btn small color={C.blue} onClick={() => setEditing({})}>+ Add Contact</Btn>
+        <Btn ghost small color={C.orange} onClick={() => setShowFieldMgr(v => !v)}>⚙ Fields</Btn>
         <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#666", cursor: "pointer" }}>
           <input type="checkbox" checked={showLid} onChange={(e) => setShowLid(e.target.checked)} />
           Show WA-hidden ({lidCount})
         </label>
         <span style={{ fontSize: 11, color: "#888" }}>{loading ? "Loading…" : `${filtered.length} contacts`}</span>
       </div>
+
+      {showFieldMgr && <CustomFieldsManager fields={customFields} onChange={setCustomFields} />}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 10 }}>
         {filtered.map((c) => (
@@ -4006,6 +4020,7 @@ function ContactsScreen({ funnels }) {
         <ContactEditModal
           contact={editing}
           allTags={allTags}
+          customFields={customFields}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); load(); }}
         />
@@ -4070,7 +4085,38 @@ function ContactCard({ contact: c, onEdit, onSendWA }) {
   );
 }
 
-function ContactEditModal({ contact, allTags = [], onClose, onSaved }) {
+function CustomFieldsManager({ fields, onChange }) {
+  const [newLabel, setNewLabel] = useState("");
+  const add = () => {
+    const label = newLabel.trim();
+    if (!label) return;
+    const key = label.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
+    if (!key || fields.find(f => f.key === key)) return;
+    const next = [...fields, { key, label }];
+    onChange(next); saveCustomFieldDefs(next); setNewLabel("");
+  };
+  const remove = (key) => { const next = fields.filter(f => f.key !== key); onChange(next); saveCustomFieldDefs(next); };
+  return (
+    <div style={{ background: "#fff8f0", border: "1px solid #fde68a", borderRadius: 10, padding: "10px 12px", marginBottom: 12 }}>
+      <p style={{ fontSize: 12, fontWeight: 600, color: C.orange, margin: "0 0 8px" }}>⚙ Custom Contact Fields</p>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+        {fields.map(f => (
+          <span key={f.key} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, padding: "3px 8px", borderRadius: 6, background: "#fff", border: "1px solid #ddd" }}>
+            {f.label}
+            <button onClick={() => remove(f.key)} style={{ border: "none", background: "none", color: C.red, cursor: "pointer", fontSize: 12, padding: 0, lineHeight: 1 }}>×</button>
+          </span>
+        ))}
+        {fields.length === 0 && <span style={{ fontSize: 12, color: "#aaa" }}>No custom fields yet</span>}
+      </div>
+      <div style={{ display: "flex", gap: 6 }}>
+        <input value={newLabel} onChange={e => setNewLabel(e.target.value)} onKeyDown={e => e.key === "Enter" && add()} placeholder="Field name (e.g. GST No, Occupation)…" style={{ flex: 1, fontSize: 12, padding: "5px 8px", borderRadius: 6, border: "1px solid #ddd" }} />
+        <button onClick={add} style={{ fontSize: 12, padding: "5px 12px", borderRadius: 6, border: "1px dashed #ddd", background: "transparent", color: "#555", cursor: "pointer" }}>+ Add</button>
+      </div>
+    </div>
+  );
+}
+
+function ContactEditModal({ contact, allTags = [], customFields = [], onClose, onSaved }) {
   const isNew = !contact.id;
   const sourceTags = allTags.filter((t) => t.category === "source").map((t) => t.name);
   const otherTags = allTags.filter((t) => t.category !== "source").map((t) => t.name);
@@ -4089,6 +4135,7 @@ function ContactEditModal({ contact, allTags = [], onClose, onSaved }) {
     source: contact.source || "",
     tags: Array.isArray(contact.tags) ? contact.tags : [],
     partner_lead_id: contact.partner_lead_id || null,
+    extra_fields: contact.extra_fields || {},
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
@@ -4146,6 +4193,7 @@ function ContactEditModal({ contact, allTags = [], onClose, onSaved }) {
       source: form.source || null,
       tags: form.tags,
       partner_lead_id: form.partner_lead_id || null,
+      extra_fields: form.extra_fields || {},
       updated_at: new Date().toISOString(),
     };
     let error;
@@ -4212,6 +4260,19 @@ function ContactEditModal({ contact, allTags = [], onClose, onSaved }) {
           {otherTags.length === 0 && <span style={{ fontSize: 12, color: "#aaa" }}>No tags configured yet</span>}
         </div>
       </Field>
+
+      {customFields.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <p style={{ fontSize: 11, color: "#888", fontWeight: 600, margin: "0 0 8px", textTransform: "uppercase", letterSpacing: "0.05em" }}>Additional Info</p>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            {customFields.map(f => (
+              <Field key={f.key} label={f.label}>
+                <Input value={form.extra_fields[f.key] || ""} onChange={e => set("extra_fields", { ...form.extra_fields, [f.key]: e.target.value })} placeholder={f.label} />
+              </Field>
+            ))}
+          </div>
+        </div>
+      )}
 
       <Field label="🔗 Linked partner / spouse / family member" style={{ marginTop: 10 }}>
         {partnerInfo ? (
