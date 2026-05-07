@@ -22,8 +22,34 @@ const WA_SERVICE_URL = "/api/wa-proxy?path=";
 // ── UI CONSTANTS ──
 const C = { green: "#27ae60", orange: "#e67e22", red: "#c0392b", blue: "#2980b9", gray: "#888", purple: "#8e44ad", pink: "#e84393", yellow: "#f39c12" };
 const CUSTOM_FIELDS_KEY = "ssj_contact_custom_fields";
+const FIELD_ORDER_KEY = "ssj_contact_field_order";
+const FIXED_CONTACT_FIELDS = [
+  { key: "name",                  label: "Name",                    fixed: true },
+  { key: "phone",                 label: "Phone",                   fixed: true, required: true },
+  { key: "city",                  label: "City",                    fixed: true },
+  { key: "email",                 label: "Email",                   fixed: true },
+  { key: "bday",                  label: "Birthday (YYYY-MM-DD)",   fixed: true },
+  { key: "anniversary",           label: "Anniversary (YYYY-MM-DD)",fixed: true },
+  { key: "client_rating",         label: "Rating",                  fixed: true },
+  { key: "source",                label: "Source",                  fixed: true },
+  { key: "wedding_date",          label: "Wedding Date",            fixed: true },
+  { key: "wedding_family_member", label: "Wedding (family member)", fixed: true },
+];
 const getCustomFields = () => { try { const d = localStorage.getItem(CUSTOM_FIELDS_KEY); return d ? JSON.parse(d) : []; } catch { return []; } };
 const saveCustomFieldDefs = (list) => { try { localStorage.setItem(CUSTOM_FIELDS_KEY, JSON.stringify(list)); } catch {} };
+const getFieldOrder = () => { try { const d = localStorage.getItem(FIELD_ORDER_KEY); return d ? JSON.parse(d) : null; } catch { return null; } };
+const saveFieldOrder = (order) => { try { localStorage.setItem(FIELD_ORDER_KEY, JSON.stringify(order)); } catch {} };
+// Merge fixed + custom fields in stored order (or default order if none saved)
+const getAllFieldsOrdered = (customFields) => {
+  const all = [...FIXED_CONTACT_FIELDS, ...customFields.map(f => ({ ...f, fixed: false }))];
+  const saved = getFieldOrder();
+  if (!saved) return all;
+  const map = Object.fromEntries(all.map(f => [f.key, f]));
+  const ordered = saved.map(k => map[k]).filter(Boolean);
+  // Append any new fields not yet in saved order
+  all.forEach(f => { if (!saved.includes(f.key)) ordered.push(f); });
+  return ordered;
+};
 const STAGES = ["greeting", "qualifying", "quoted", "objection", "closing", "handoff", "converted", "dead"];
 const STAGE_C = { greeting: C.gray, qualifying: C.blue, quoted: C.purple, objection: C.orange, closing: C.yellow, handoff: C.red, converted: C.green, dead: "#999" };
 const STATUSES = ["active", "handoff", "converted", "dead", "paused"];
@@ -4278,46 +4304,62 @@ function CustomFieldsManager({ fields, onChange }) {
   const [newLabel, setNewLabel] = useState("");
   const [dragIdx, setDragIdx] = useState(null);
   const [overIdx, setOverIdx] = useState(null);
+  const allFields = getAllFieldsOrdered(fields);
 
-  const save = (next) => { onChange(next); saveCustomFieldDefs(next); };
+  const saveCustom = (next) => { onChange(next); saveCustomFieldDefs(next); };
   const add = () => {
     const label = newLabel.trim();
     if (!label) return;
     const key = label.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
-    if (!key || fields.find(f => f.key === key)) return;
-    save([...fields, { key, label }]); setNewLabel("");
+    if (!key || allFields.find(f => f.key === key)) return;
+    const nextCustom = [...fields, { key, label }];
+    const nextAll = [...allFields, { key, label, fixed: false }];
+    saveCustom(nextCustom);
+    saveFieldOrder(nextAll.map(f => f.key));
+    setNewLabel("");
   };
-  const remove = (key) => save(fields.filter(f => f.key !== key));
+  const remove = (key) => {
+    const nextCustom = fields.filter(f => f.key !== key);
+    const nextAll = allFields.filter(f => f.key !== key);
+    saveCustom(nextCustom);
+    saveFieldOrder(nextAll.map(f => f.key));
+  };
   const onDrop = (e, idx) => {
     e.preventDefault();
     if (dragIdx === null || dragIdx === idx) { setDragIdx(null); setOverIdx(null); return; }
-    const next = [...fields];
+    const next = [...allFields];
     const [moved] = next.splice(dragIdx, 1);
     next.splice(idx, 0, moved);
-    save(next); setDragIdx(null); setOverIdx(null);
+    saveFieldOrder(next.map(f => f.key));
+    // Force re-render by touching customFields order too
+    const nextCustom = next.filter(f => !f.fixed);
+    saveCustom(nextCustom);
+    setDragIdx(null); setOverIdx(null);
   };
 
   return (
     <div style={{ background: "#fff8f0", border: "1px solid #fde68a", borderRadius: 10, padding: "10px 12px", marginBottom: 12 }}>
-      <p style={{ fontSize: 12, fontWeight: 600, color: C.orange, margin: "0 0 8px" }}>⚙ Custom Contact Fields — drag ⠿ to reorder</p>
-      <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 8 }}>
-        {fields.map((f, i) => (
+      <p style={{ fontSize: 12, fontWeight: 600, color: C.orange, margin: "0 0 8px" }}>⚙ Form Fields — drag ⠿ to reorder · 🔒 = built-in (can move, can't delete)</p>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 4, marginBottom: 10 }}>
+        {allFields.map((f, i) => (
           <div key={f.key}
             draggable
             onDragStart={() => setDragIdx(i)}
             onDragOver={e => { e.preventDefault(); setOverIdx(i); }}
             onDrop={e => onDrop(e, i)}
             onDragEnd={() => { setDragIdx(null); setOverIdx(null); }}
-            style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, padding: "4px 8px", borderRadius: 6, background: overIdx === i ? "#fef3c7" : dragIdx === i ? "#fffbeb" : "#fff", border: `1px solid ${overIdx === i ? C.orange : "#ddd"}`, cursor: "grab", userSelect: "none", width: "fit-content" }}>
-            <span style={{ color: "#bbb", fontSize: 14 }}>⠿</span>
-            {f.label}
-            <button onClick={() => remove(f.key)} style={{ border: "none", background: "none", color: C.red, cursor: "pointer", fontSize: 12, padding: 0, lineHeight: 1 }}>×</button>
+            style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, padding: "5px 8px", borderRadius: 6, background: overIdx === i ? "#fef3c7" : dragIdx === i ? "#fffbeb" : f.fixed ? "#f0f9ff" : "#fff", border: `1px solid ${overIdx === i ? C.orange : f.fixed ? "#bae6fd" : "#ddd"}`, cursor: "grab", userSelect: "none" }}>
+            <span style={{ color: "#bbb", fontSize: 14, flexShrink: 0 }}>⠿</span>
+            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.label}</span>
+            {f.fixed
+              ? <span style={{ fontSize: 10, color: "#93c5fd", flexShrink: 0 }}>🔒</span>
+              : <button onClick={() => remove(f.key)} style={{ border: "none", background: "none", color: C.red, cursor: "pointer", fontSize: 12, padding: 0, lineHeight: 1, flexShrink: 0 }}>×</button>
+            }
           </div>
         ))}
-        {fields.length === 0 && <span style={{ fontSize: 12, color: "#aaa" }}>No custom fields yet</span>}
       </div>
       <div style={{ display: "flex", gap: 6 }}>
-        <input value={newLabel} onChange={e => setNewLabel(e.target.value)} onKeyDown={e => e.key === "Enter" && add()} placeholder="Field name (e.g. GST No, Occupation)…" style={{ flex: 1, fontSize: 12, padding: "5px 8px", borderRadius: 6, border: "1px solid #ddd" }} />
+        <input value={newLabel} onChange={e => setNewLabel(e.target.value)} onKeyDown={e => e.key === "Enter" && add()} placeholder="Add new field (e.g. GST No, Pincode)…" style={{ flex: 1, fontSize: 12, padding: "5px 8px", borderRadius: 6, border: "1px solid #ddd" }} />
         <button onClick={add} style={{ fontSize: 12, padding: "5px 12px", borderRadius: 6, border: "1px dashed #ddd", background: "transparent", color: "#555", cursor: "pointer" }}>+ Add</button>
       </div>
     </div>
@@ -4429,29 +4471,43 @@ function ContactEditModal({ contact, allTags = [], customFields = [], onClose, o
     onSaved();
   };
 
+  const orderedFields = getAllFieldsOrdered(customFields);
+  const renderFormField = (f) => {
+    if (f.key === "client_rating") return (
+      <Field key={f.key} label={f.label}>
+        <Select value={form.client_rating} onChange={e => set("client_rating", e.target.value)}>
+          <option value="">—</option>
+          {[1,2,3,4,5].map(n => <option key={n} value={n}>{"★".repeat(n)} {n} star{n>1?"s":""}</option>)}
+        </Select>
+      </Field>
+    );
+    if (f.key === "source") return (
+      <Field key={f.key} label={f.label}>
+        <Select value={form.source} onChange={e => set("source", e.target.value)}>
+          <option value="">— select source —</option>
+          {sourceTags.map(s => <option key={s} value={s}>{s}</option>)}
+        </Select>
+      </Field>
+    );
+    if (f.fixed) {
+      const placeholders = { name:"Full name", phone:"9876543210", city:"Delhi", email:"email@example.com", bday:"1985-03-15", anniversary:"2010-11-20", wedding_date:"2025-11-15", wedding_family_member:"daughter Priya" };
+      return (
+        <Field key={f.key} label={f.label} required={f.required}>
+          <Input value={form[f.key] || ""} onChange={e => set(f.key, e.target.value)} placeholder={placeholders[f.key] || ""} />
+        </Field>
+      );
+    }
+    return (
+      <Field key={f.key} label={f.label}>
+        <Input value={form.extra_fields[f.key] || ""} onChange={e => set("extra_fields", { ...form.extra_fields, [f.key]: e.target.value })} placeholder={f.label} />
+      </Field>
+    );
+  };
+
   return (
     <Modal title={isNew ? "Add Contact" : `Edit — ${contact.name || contact.phone}`} onClose={onClose} width={540}>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-        <Field label="Name"><Input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Full name" /></Field>
-        <Field label="Phone" required><Input value={form.phone} onChange={(e) => set("phone", e.target.value)} placeholder="9876543210" /></Field>
-        <Field label="City"><Input value={form.city} onChange={(e) => set("city", e.target.value)} placeholder="Delhi" /></Field>
-        <Field label="Email"><Input value={form.email} onChange={(e) => set("email", e.target.value)} placeholder="email@example.com" /></Field>
-        <Field label="Birthday (YYYY-MM-DD)"><Input value={form.bday} onChange={(e) => set("bday", e.target.value)} placeholder="1985-03-15" /></Field>
-        <Field label="Anniversary (YYYY-MM-DD)"><Input value={form.anniversary} onChange={(e) => set("anniversary", e.target.value)} placeholder="2010-11-20" /></Field>
-        <Field label="Rating">
-          <Select value={form.client_rating} onChange={(e) => set("client_rating", e.target.value)}>
-            <option value="">—</option>
-            {[1,2,3,4,5].map((n) => <option key={n} value={n}>{"★".repeat(n)} {n} star{n > 1 ? "s" : ""}</option>)}
-          </Select>
-        </Field>
-        <Field label="Source">
-          <Select value={form.source} onChange={(e) => set("source", e.target.value)}>
-            <option value="">— select source —</option>
-            {sourceTags.map((s) => <option key={s} value={s}>{s}</option>)}
-          </Select>
-        </Field>
-        <Field label="Wedding date"><Input value={form.wedding_date} onChange={(e) => set("wedding_date", e.target.value)} placeholder="2025-11-15" /></Field>
-        <Field label="Wedding (family member)"><Input value={form.wedding_family_member} onChange={(e) => set("wedding_family_member", e.target.value)} placeholder="daughter Priya" /></Field>
+        {orderedFields.map(f => renderFormField(f))}
       </div>
 
       <Field label="Tags" style={{ marginTop: 10 }}>
@@ -4468,19 +4524,6 @@ function ContactEditModal({ contact, allTags = [], customFields = [], onClose, o
           {otherTags.length === 0 && <span style={{ fontSize: 12, color: "#aaa" }}>No tags configured yet</span>}
         </div>
       </Field>
-
-      {customFields.length > 0 && (
-        <div style={{ marginTop: 10 }}>
-          <p style={{ fontSize: 11, color: "#888", fontWeight: 600, margin: "0 0 8px", textTransform: "uppercase", letterSpacing: "0.05em" }}>Additional Info</p>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            {customFields.map(f => (
-              <Field key={f.key} label={f.label}>
-                <Input value={form.extra_fields[f.key] || ""} onChange={e => set("extra_fields", { ...form.extra_fields, [f.key]: e.target.value })} placeholder={f.label} />
-              </Field>
-            ))}
-          </div>
-        </div>
-      )}
 
       <Field label="🔗 Linked partner / spouse / family member" style={{ marginTop: 10 }}>
         {partnerInfo ? (
