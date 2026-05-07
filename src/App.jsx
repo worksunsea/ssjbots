@@ -4046,6 +4046,7 @@ function ContactsScreen({ funnels }) {
   const clearColFilters = () => setColFilters({});
   const toggleSort = (col) => { if (sortCol === col) setSortDir(d => d === "asc" ? "desc" : "asc"); else { setSortCol(col); setSortDir("asc"); } };
   const [tagPopOpen, setTagPopOpen] = useState(false);
+  const [showTagFilter, setShowTagFilter] = useState(false);
 
   const loadTags = useCallback(async () => {
     const { data } = await sb.from("bullion_tags").select("name,category,color")
@@ -4221,25 +4222,32 @@ function ContactsScreen({ funnels }) {
       )}
 
       {allTags.filter(t => t.category !== "source").length > 0 && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10, alignItems: "center" }}>
-          <span style={{ fontSize: 11, color: "#888", marginRight: 2 }}>Filter by tag:</span>
-          {allTags.filter(t => t.category !== "source").map(t => {
-            const active = filterTags.includes(t.name);
-            return (
-              <button key={t.name} onClick={() => setFilterTags(s => active ? s.filter(x => x !== t.name) : [...s, t.name])}
-                style={{ fontSize: 11, padding: "2px 10px", borderRadius: 20, cursor: "pointer", border: `1px solid ${active ? (t.color || C.blue) : "#ddd"}`, background: active ? (t.color || C.blue) : "transparent", color: active ? "#fff" : "#555", fontWeight: active ? 600 : 400 }}>
-                {t.name}
-              </button>
-            );
-          })}
-          {filterTags.length > 1 && (
-            <button onClick={() => setTagLogic(l => l === "AND" ? "OR" : "AND")}
-              style={{ fontSize: 11, padding: "2px 10px", borderRadius: 20, border: `1px solid ${C.purple}`, background: C.purple, color: "#fff", cursor: "pointer", fontWeight: 600 }}>
-              {tagLogic}
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button onClick={() => setShowTagFilter(v => !v)}
+              style={{ fontSize: 11, padding: "3px 10px", borderRadius: 20, cursor: "pointer", border: `1px solid ${filterTags.length ? C.purple : "#ddd"}`, background: filterTags.length ? C.purple+"22" : "transparent", color: filterTags.length ? C.purple : "#888", fontWeight: filterTags.length ? 600 : 400 }}>
+              🏷 Tags {filterTags.length ? `(${filterTags.length} active)` : ""} {showTagFilter ? "▲" : "▼"}
             </button>
-          )}
-          {filterTags.length > 0 && (
-            <button onClick={() => setFilterTags([])} style={{ fontSize: 11, color: C.red, background: "none", border: "none", cursor: "pointer" }}>✕ clear</button>
+            {filterTags.length > 0 && <button onClick={() => setFilterTags([])} style={{ fontSize: 11, color: C.red, background: "none", border: "none", cursor: "pointer" }}>✕ clear</button>}
+          </div>
+          {showTagFilter && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8, padding: "10px 12px", background: "#fafafa", borderRadius: 8, border: "1px solid #eee" }}>
+              {allTags.filter(t => t.category !== "source").map(t => {
+                const active = filterTags.includes(t.name);
+                return (
+                  <button key={t.name} onClick={() => setFilterTags(s => active ? s.filter(x => x !== t.name) : [...s, t.name])}
+                    style={{ fontSize: 11, padding: "2px 10px", borderRadius: 20, cursor: "pointer", border: `1px solid ${active ? (t.color || C.blue) : "#ddd"}`, background: active ? (t.color || C.blue) : "#fff", color: active ? "#fff" : "#555", fontWeight: active ? 600 : 400 }}>
+                    {t.name}
+                  </button>
+                );
+              })}
+              {filterTags.length > 1 && (
+                <button onClick={() => setTagLogic(l => l === "AND" ? "OR" : "AND")}
+                  style={{ fontSize: 11, padding: "2px 10px", borderRadius: 20, border: `1px solid ${C.purple}`, background: C.purple, color: "#fff", cursor: "pointer", fontWeight: 600 }}>
+                  {tagLogic}
+                </button>
+              )}
+            </div>
           )}
         </div>
       )}
