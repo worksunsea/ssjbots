@@ -4038,7 +4038,13 @@ function ContactsScreen({ funnels }) {
   const selectAll = () => setSelected(new Set(filtered.map(c => c.id)));
   const clearSel = () => setSelected(new Set());
   const exitBulk = () => { setBulkMode(false); clearSel(); };
-  const [viewMode, setViewMode] = useState("card"); // "card" | "list"
+  const [viewMode, setViewMode] = useState("list"); // "card" | "list"
+  const [sortCol, setSortCol] = useState("name");
+  const [sortDir, setSortDir] = useState("asc");
+  const [colFilters, setColFilters] = useState({});
+  const setColFilter = (col, val) => setColFilters(f => ({ ...f, [col]: val }));
+  const clearColFilters = () => setColFilters({});
+  const toggleSort = (col) => { if (sortCol === col) setSortDir(d => d === "asc" ? "desc" : "asc"); else { setSortCol(col); setSortDir("asc"); } };
 
   const loadTags = useCallback(async () => {
     const { data } = await sb.from("bullion_tags").select("name,category,color")
@@ -4094,6 +4100,27 @@ function ContactsScreen({ funnels }) {
   }, [contacts, showLid, search]);
   const lidCount = contacts.filter(c => isLid(c.phone)).length;
   const totalPages = Math.ceil(total / PAGE);
+
+  // List view: apply column filters + sort on top of page results
+  const listReady = useMemo(() => {
+    let list = [...filtered];
+    // Column filters
+    Object.entries(colFilters).forEach(([col, val]) => {
+      if (!val) return;
+      list = list.filter(c => {
+        const v = col === "client_rating" ? String(c[col] || "") : String(c[col] || "").toLowerCase();
+        return v.includes(col === "client_rating" ? val : val.toLowerCase());
+      });
+    });
+    // Sort
+    list.sort((a, b) => {
+      let av = a[sortCol] ?? "", bv = b[sortCol] ?? "";
+      if (sortCol === "client_rating") { av = Number(av || 0); bv = Number(bv || 0); return sortDir === "asc" ? av - bv : bv - av; }
+      av = String(av).toLowerCase(); bv = String(bv).toLowerCase();
+      return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+    });
+    return list;
+  }, [filtered, colFilters, sortCol, sortDir]);
 
   // Unique WA numbers from funnels for the sender chooser
   const waNumbers = useMemo(() => {
@@ -4220,22 +4247,65 @@ function ContactsScreen({ funnels }) {
         </div>
       ) : (
         <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 10, overflow: "hidden" }}>
+          {Object.values(colFilters).some(Boolean) && (
+            <div style={{ padding: "6px 12px", background: "#fffbeb", borderBottom: "1px solid #fde68a", display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 11, color: C.orange }}>Column filters active</span>
+              <button onClick={clearColFilters} style={{ fontSize: 11, color: C.red, background: "none", border: "none", cursor: "pointer" }}>✕ Clear all</button>
+            </div>
+          )}
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead>
+                {/* Sort row */}
                 <tr style={{ background: "#f7f7f7", borderBottom: "1px solid #eee" }}>
                   {bulkMode && <th style={{ padding: "8px 10px", width: 36 }}>
-                    <input type="checkbox" checked={selected.size === filtered.length && filtered.length > 0}
-                      onChange={() => selected.size === filtered.length ? clearSel() : selectAll()}
+                    <input type="checkbox" checked={selected.size === listReady.length && listReady.length > 0}
+                      onChange={() => selected.size === listReady.length ? clearSel() : setSelected(new Set(listReady.map(c=>c.id)))}
                       style={{ width: 14, height: 14, cursor: "pointer", accentColor: C.purple }} />
                   </th>}
-                  {["Name","Phone","Phone 2","Phone 3","City","Email","Birthday","Anniversary","VIP Score","Source","Tags","Extra Fields",""].map(h => (
-                    <th key={h} style={{ padding: "8px 10px", textAlign: "left", fontSize: 11, color: "#888", fontWeight: 600, whiteSpace: "nowrap" }}>{h}</th>
+                  {[["name","Name"],["phone","Phone"],["mobile2","Phone 2"],["spouse_mobile","Phone 3"],["city","City"],["email","Email"],["bday","Birthday"],["anniversary","Anniversary"],["client_rating","VIP Score"],["source","Source"],["tags","Tags"],["extra","Extra Fields"],["",""]].map(([col,h]) => (
+                    <th key={col||"actions"} onClick={col && col!=="tags" && col!=="extra" ? ()=>toggleSort(col) : undefined}
+                      style={{ padding: "8px 10px", textAlign: "left", fontSize: 11, color: sortCol===col?"#2980b9":"#888", fontWeight: 600, whiteSpace: "nowrap", cursor: col&&col!=="tags"&&col!=="extra"?"pointer":"default", userSelect:"none" }}>
+                      {h}{sortCol===col ? (sortDir==="asc"?" ▲":" ▼") : ""}
+                    </th>
                   ))}
+                </tr>
+                {/* Filter row */}
+                <tr style={{ background: "#fafafa", borderBottom: "2px solid #eee" }}>
+                  {bulkMode && <th />}
+                  {[
+                    ["name","text"],["phone","text"],["mobile2","text"],["spouse_mobile","text"],
+                    ["city","distinct"],["email","text"],["bday","text"],["anniversary","text"],
+                    ["client_rating","rating"],["source","distinct"],["tags","tag"],["extra",""],["",""]
+                  ].map(([col, type], i) => {
+                    if (!col || type==="") return <th key={i} />;
+                    const val = colFilters[col] || "";
+                    const inp = (style={}) => <input value={val} onChange={e=>setColFilter(col,e.target.value)} placeholder="Filter…" style={{ width:"100%",fontSize:11,padding:"2px 4px",border:"1px solid #ddd",borderRadius:4,boxSizing:"border-box",...style }}/>;
+                    if (type==="text") return <th key={col} style={{padding:"3px 6px"}}>{inp()}</th>;
+                    if (type==="rating") return <th key={col} style={{padding:"3px 6px"}}>
+                      <select value={val} onChange={e=>setColFilter(col,e.target.value)} style={{fontSize:11,width:"100%",border:"1px solid #ddd",borderRadius:4,padding:"2px 2px"}}>
+                        <option value="">All</option>
+                        {[1,2,3,4,5].map(n=><option key={n} value={n}>{"★".repeat(n)}</option>)}
+                      </select></th>;
+                    if (type==="distinct") {
+                      const opts=[...new Set(contacts.map(c=>c[col]).filter(Boolean))].sort();
+                      return <th key={col} style={{padding:"3px 6px"}}>
+                        <select value={val} onChange={e=>setColFilter(col,e.target.value)} style={{fontSize:11,width:"100%",border:"1px solid #ddd",borderRadius:4,padding:"2px 2px"}}>
+                          <option value="">All</option>
+                          {opts.map(o=><option key={o} value={o}>{o}</option>)}
+                        </select></th>;
+                    }
+                    if (type==="tag") return <th key={col} style={{padding:"3px 6px"}}>
+                      <select value={val} onChange={e=>setColFilter(col,e.target.value)} style={{fontSize:11,width:"100%",border:"1px solid #ddd",borderRadius:4,padding:"2px 2px"}}>
+                        <option value="">All</option>
+                        {allTags.filter(t=>t.category!=="source").map(t=><option key={t.name} value={t.name}>{t.name}</option>)}
+                      </select></th>;
+                    return <th key={i} />;
+                  })}
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((c) => {
+                {listReady.map((c) => {
                   const sel = selected.has(c.id);
                   const extraStr = Object.entries(c.extra_fields || {}).filter(([,v])=>v).map(([k,v])=>`${getCustomFields().find(f=>f.key===k)?.label||k}: ${v}`).join(" · ");
                   return (
@@ -4278,7 +4348,7 @@ function ContactsScreen({ funnels }) {
                     </tr>
                   );
                 })}
-                {!filtered.length && !loading && <tr><td colSpan={bulkMode ? 14 : 13} style={{ padding: 40, textAlign: "center", color: "#aaa" }}>No contacts found.</td></tr>}
+                {!listReady.length && !loading && <tr><td colSpan={bulkMode ? 14 : 13} style={{ padding: 40, textAlign: "center", color: "#aaa" }}>No contacts found.</td></tr>}
               </tbody>
             </table>
           </div>
