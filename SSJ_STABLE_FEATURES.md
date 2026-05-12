@@ -1,6 +1,6 @@
 # SSJ Stable Features — Do Not Break
 **App:** ssjbot.gemtre.in · Supabase + Vercel + React/Vite  
-**Last updated:** 2026-05-12  
+**Last updated:** 2026-05-13  
 **Owner:** Saurav, Sun Sea Jewellers, Karol Bagh  
 **Super Admin email:** work.sunsea@gmail.com
 
@@ -82,15 +82,22 @@ Before any message is sent, Saurav must review and approve it in the **Approvals
 ## 3. BIRTHDAY / ANNIVERSARY CALENDAR FUNNELS
 
 **Flow:**
-1. Cron runs daily → finds contacts with `bday`/`anniversary` in current month
-2. Enrolls them into `birthday` or `anniversary` funnel via `drip.js`
+1. cron-job.org fires the cron **once daily in the morning** (not every minute — the daily schedule is set in cron-job.org, not in code)
+2. Cron finds contacts with `bday`/`anniversary` within the next **40 days** and enrolls them
 3. Steps use `trigger_type = 'calendar_event'` with signed `delay_minutes` offsets
    - Negative = before event, zero = on day, positive = after
-4. All calendar messages go through Approval workflow (§2) before sending
+4. Enrollment is idempotent — skips leads already enrolled in the last 11 months
+5. After enrollment, cron AI preview fills `edited_body` (also fires on the same daily run)
+6. Messages appear in Approvals tab the morning after enrollment
+7. All calendar messages must be approved by Saurav before cron will send them (§2)
+
+**Important:** The cron code has NO daily time gate — the once-per-day behaviour comes entirely from the cron-job.org schedule. If the schedule is changed to every minute, enrollment would still only happen once (idempotent) but the code comment "daily-ish" would be misleading. Do not add a time gate to the code without explicit instruction.
+
+**Enrollment window:** 40 days ahead (so the −20d step fires in time)
 
 **Current step offsets (migration 0035 — fixed 2026-05-12):**
-- Birthday: -28800 (20d before), -10080 (7d before), 0 (day of), +4320 (3d after)
-- Anniversary: -28800 (20d before), 0 (day of), +4320 (3d after)
+- Birthday: -28800 min (20d before), -10080 min (7d before), 0 (day of), +4320 min (3d after)
+- Anniversary: -28800 min (20d before), 0 (day of), +4320 min (3d after)
 
 **Migration:** `0035_fix_calendar_funnel_steps.sql` — corrected to `calendar_event`; all bad pending messages cancelled.
 
