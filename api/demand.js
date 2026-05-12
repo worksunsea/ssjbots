@@ -290,7 +290,7 @@ export default async function handler(req, res) {
             tenant_id: tenantId, lead_id: lead.id, funnel_id: funnelId,
             send_at: new Date(d1ts).toISOString(),
             body: `Hi ${vName}, just confirming your visit to Sun Sea Jewellers tomorrow (${visitDateStr}) at ${visitTime}. Looking forward to meeting you! Please reply YES to confirm. 🙏`,
-            status: "pending", message_type: "visit_reminder",
+            status: "pending", message_type: "visit_reminder", approved: true,
           });
           if (e1) console.error("visit_reminder insert", e1);
         }
@@ -301,7 +301,7 @@ export default async function handler(req, res) {
             tenant_id: tenantId, lead_id: lead.id, funnel_id: funnelId,
             send_at: visitDay9am.toISOString(),
             body: `Good morning ${vName}! 🙏 A warm reminder — your visit to Sun Sea Jewellers is today at ${visitTime}, Karol Bagh. We look forward to welcoming you!`,
-            status: "pending", message_type: "visit_day",
+            status: "pending", message_type: "visit_day", approved: true,
           });
           if (e2) console.error("visit_day insert", e2);
         }
