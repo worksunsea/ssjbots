@@ -235,6 +235,25 @@ Gamified MCQ quiz for staff jewellery knowledge. Separate from main CRM. Not yet
 
 ---
 
+## MIGRATION STATUS (confirmed run in Supabase)
+
+| Migration | Date run | What it does |
+|-----------|----------|-------------|
+| 0001–0011 | Apr 2026 | Initial schema, lead fields, contact CRM |
+| 0012–0026 | Apr 2026 | Demands, visits, media, call logs, telecaller |
+| 0027 | May 1 2026 | Telecaller enhancements (priority, lag, crm_source) |
+| 0028 | May 1 2026 | Jewelry fields + exchange on demands |
+| 0029 | May 1 2026 | staff_targets + dead_archive funnel |
+| 0030 | May 1 2026 | temperature_override on demands |
+| 0031 | May 2 2026 | design_notes on demands |
+| 0032–0033 | May 4 2026 | Gullak FAQs + training resources |
+| 0034 | May 4 2026 | Inbox lead index |
+| 0035 | May 12 2026 | Fix calendar funnel step offsets (calendar_event) |
+| 0036 | May 13 2026 | deleted_at, deleted_by, extra_fields on bullion_leads ✅ |
+| 0037 | May 13 2026 | approved, edited_body, approved_at, approved_by, media_url, media_type on bullion_scheduled_messages ✅ |
+
+---
+
 ## DEPLOY CHECKLIST
 
 1. **Run migration in Supabase SQL Editor first**
