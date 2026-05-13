@@ -1,6 +1,6 @@
 # SSJ Stable Features — Do Not Break
 **App:** ssjbot.gemtre.in · Supabase + Vercel + React/Vite  
-**Last updated:** 2026-05-13  
+**Last updated:** 2026-05-14  
 **Owner:** Saurav, Sun Sea Jewellers, Karol Bagh  
 **Super Admin email:** work.sunsea@gmail.com
 
@@ -251,6 +251,35 @@ Gamified MCQ quiz for staff jewellery knowledge. Separate from main CRM. Not yet
 | 0035 | May 12 2026 | Fix calendar funnel step offsets (calendar_event) |
 | 0036 | May 13 2026 | deleted_at, deleted_by, extra_fields on bullion_leads ✅ |
 | 0037 | May 13 2026 | approved, edited_body, approved_at, approved_by, media_url, media_type on bullion_scheduled_messages ✅ |
+| 0038 | May 14 2026 | Security hardening — RLS enabled on all 18 bot tables, tenant-scoped policies, search_path on SECURITY DEFINER fn, view operator-precedence bug fix ✅ |
+| 0039 | May 14 2026 | Fix SECURITY DEFINER views — bullion_active_leads_view + bullion_funnel_metrics → security_invoker=true ✅ |
+| 0040 | May 14 2026 | Drop leftover open anon_all_* policies; fix role_permissions + score_commitments; HR app tables ✅ |
+| 0041 | May 14 2026 | Type cast fix (::text) for HR tables with text tenant_id — rolled back, superseded by 0042 |
+| 0042 | May 14 2026 | Final HR RLS policies — all tables with tenant_id scoped; petty_cash_txns via runner_id, training_progress via staff_id subquery ✅ |
+| 0043 | May 14 2026 | Remove SECURITY DEFINER from bullion_upsert_lead; drop rls_auto_enable() + ensure_rls event trigger ✅ |
+
+---
+
+## 11. SUPABASE SECURITY HARDENING (2026-05-14)
+
+**All Supabase Security Advisor warnings cleared (migrations 0038–0043).**
+
+**What was done:**
+- RLS enabled on all 18 bot tables (previously had no row-level security)
+- All `USING (true)` open policies replaced with tenant-scoped policies (`tenant_id = ssj_tenant_id()`)
+- HR app tables (salary, staff, attendance, leaves, etc.) locked to SSJ tenant
+- `bullion_active_leads_view` + `bullion_funnel_metrics` converted to `security_invoker=true`
+- `bullion_upsert_lead` `SECURITY DEFINER` removed — now `SECURITY INVOKER`
+- `rls_auto_enable()` function + `ensure_rls` event trigger dropped
+- `bullion_active_leads_view` AND/OR operator precedence bug fixed
+
+**ssj_tenant_id() helper function:**
+```sql
+SELECT 'a1b2c3d4-0000-0000-0000-000000000001'::uuid
+```
+Used in all RLS policies. Do not change the tenant UUID.
+
+**Do NOT create new tables without enabling RLS and adding a tenant-scoped policy.**
 
 ---
 
