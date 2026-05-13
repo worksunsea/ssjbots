@@ -72,5 +72,7 @@ BEGIN
 END;
 $$;
 
--- 2. Drop rls_auto_enable — one-time utility, no longer needed
+-- 2. Drop rls_auto_enable — one-time utility, no longer needed.
+--    Must drop the dependent event trigger first.
+DROP EVENT TRIGGER IF EXISTS ensure_rls;
 DROP FUNCTION IF EXISTS public.rls_auto_enable();
