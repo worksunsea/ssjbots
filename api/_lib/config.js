@@ -8,6 +8,9 @@ export const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL || "https://script.go
 export const TENANT_ID = process.env.TENANT_ID || "a1b2c3d4-0000-0000-0000-000000000001";
 export const CLAUDE_MODEL = process.env.CLAUDE_MODEL || "claude-haiku-4-5-20251001";
 export const CLAUDE_MODEL_ESCALATION = process.env.CLAUDE_MODEL_ESCALATION || "claude-haiku-4-5-20251001";
+
+// WbizTool — used for all outbound messages except bot replies (which use Baileys).
+export const WBIZTOOL_API_KEY = process.env.WBIZTOOL_API_KEY || "";
 // Safety cap — bot is paused only if this many exchanges happen with no manual pause.
 // Set high since we no longer have escalation; staff monitor and pause manually.
 export const HARD_EXCHANGE_CAP = Number(process.env.HARD_EXCHANGE_CAP || 100);

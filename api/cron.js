@@ -8,7 +8,7 @@
 // Protected by CRON_SECRET. Idempotent.
 
 import { supa } from "./_lib/supabase.js";
-import { sendWhatsApp, sendWhatsAppMedia } from "./_lib/wa.js";
+import { sendWhatsApp, sendWhatsAppWbiz, sendWhatsAppMediaWbiz } from "./_lib/wa.js";
 import { transitionLeadToFunnel, enrollLeadInDrip } from "./_lib/drip.js";
 import { askClaude } from "./_lib/claude.js";
 import { getFaqs, faqsForPrompt } from "./_lib/faqs.js";
@@ -178,14 +178,12 @@ export default async function handler(req, res) {
 
     let wa;
     if (mediaUrl) {
-      // Send media (image/video/document) with caption = msgBody
-      wa = await sendWhatsAppMedia({ phone: lead.phone, mediaUrl, mediaType, caption: msgBody, client: waClient });
-      // If media fails, fall back to text-only
+      wa = await sendWhatsAppMediaWbiz({ phone: lead.phone, mediaUrl, mediaType, caption: msgBody, whatsappClient: waClient });
       if (wa.status !== 1) {
-        wa = await sendWhatsApp({ phone: lead.phone, msg: msgBody, client: waClient });
+        wa = await sendWhatsAppWbiz({ phone: lead.phone, msg: msgBody, whatsappClient: waClient });
       }
     } else {
-      wa = await sendWhatsApp({ phone: lead.phone, msg: msgBody, client: waClient });
+      wa = await sendWhatsAppWbiz({ phone: lead.phone, msg: msgBody, whatsappClient: waClient });
     }
 
     if (wa.status !== 1) {

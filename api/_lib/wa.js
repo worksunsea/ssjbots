@@ -1,8 +1,76 @@
-// Thin wrapper around the self-hosted wa-service running on Synology.
-// Replaces the old WbizTool sendWhatsApp now that we handle the WA channel
-// ourselves via Baileys.
+// WA send layer.
+//
+// Two channels:
+//   Baileys (wa-service on Synology) — used by webhook.js for bot replies only.
+//   WbizTool — used for ALL outbound lead messages (drip, demand opening,
+//               authority assets, visit reminders, broadcasts).
+//
+// sendWhatsApp / sendWhatsAppMedia  → Baileys (bot reply channel)
+// sendWhatsAppWbiz / sendWhatsAppMediaWbiz → WbizTool (lead outreach channel)
 
-import { normalizePhone } from "./config.js";
+import { normalizePhone, WBIZTOOL_API_KEY } from "./config.js";
+
+const WBIZTOOL_URL = "https://wbiztool.com/api/v1/send_msg/";
+
+// Send a text message via WbizTool.
+// whatsappClient = funnel.wbiztool_client (e.g. "7560").
+// Returns WbizTool-compatible shape: { status: 1|0, msg_id, message }
+export async function sendWhatsAppWbiz({ phone, msg, whatsappClient }) {
+  if (!WBIZTOOL_API_KEY) return { status: 0, message: "WBIZTOOL_API_KEY not configured" };
+  if (!phone || !msg || !whatsappClient) return { status: 0, message: "missing phone, msg, or whatsappClient" };
+  const cleanPhone = normalizePhone(phone);
+  if (!cleanPhone) return { status: 0, message: "invalid phone" };
+  try {
+    const res = await fetch(WBIZTOOL_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        api_key: WBIZTOOL_API_KEY,
+        whatsapp_client: String(whatsappClient),
+        msg_type: 0,
+        phone: cleanPhone,
+        country_code: "91",
+        msg,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data.status === 1) return { status: 1, msg_id: String(data.msg_id || ""), message: "sent" };
+    return { status: 0, message: data.message || `http_${res.status}` };
+  } catch (err) {
+    return { status: 0, message: String(err.message || err) };
+  }
+}
+
+// Send a media message via WbizTool (image/video/document).
+export async function sendWhatsAppMediaWbiz({ phone, mediaUrl, mediaType = "image", caption = "", whatsappClient }) {
+  if (!WBIZTOOL_API_KEY) return { status: 0, message: "WBIZTOOL_API_KEY not configured" };
+  if (!phone || !mediaUrl || !whatsappClient) return { status: 0, message: "missing phone, mediaUrl, or whatsappClient" };
+  const cleanPhone = normalizePhone(phone);
+  if (!cleanPhone) return { status: 0, message: "invalid phone" };
+  // msg_type: 1 = image, 2 = video, 3 = document
+  const msgTypeMap = { image: 1, video: 2, document: 3 };
+  const msgType = msgTypeMap[mediaType] || 1;
+  try {
+    const res = await fetch(WBIZTOOL_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        api_key: WBIZTOOL_API_KEY,
+        whatsapp_client: String(whatsappClient),
+        msg_type: msgType,
+        phone: cleanPhone,
+        country_code: "91",
+        media_url: mediaUrl,
+        msg: caption,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data.status === 1) return { status: 1, msg_id: String(data.msg_id || ""), message: "sent" };
+    return { status: 0, message: data.message || `http_${res.status}` };
+  } catch (err) {
+    return { status: 0, message: String(err.message || err) };
+  }
+}
 
 const WA_SERVICE_URL = process.env.WA_SERVICE_URL || "";
 const WA_SERVICE_SECRET = process.env.WA_SERVICE_SECRET || "";

@@ -9,7 +9,7 @@
 // }
 
 import { supa } from "./_lib/supabase.js";
-import { sendWhatsApp } from "./_lib/wa.js";
+import { sendWhatsAppWbiz } from "./_lib/wa.js";
 import { askClaude } from "./_lib/claude.js";
 import { assignNextTelecaller } from "./_lib/assign.js";
 import { normalizePhone, SUPABASE_SERVICE_KEY, ANTHROPIC_API_KEY, CLAUDE_MODEL_ESCALATION } from "./_lib/config.js";
@@ -259,7 +259,7 @@ export default async function handler(req, res) {
     if (!skipBot) {
       // 6. Send opening message via WhatsApp (use funnel's WA session)
       const waClient = activeFunnel?.wbiztool_client || null;
-      const wa = await sendWhatsApp({ phone, msg: openingMsg, client: waClient });
+      const wa = await sendWhatsAppWbiz({ phone, msg: openingMsg, whatsappClient: waClient });
       sent = wa.status === 1;
       if (!sent) { waLastErr = wa.message || "unknown"; console.error("WA send failed", { phone, client: waClient, waResponse: wa }); }
       openingMsgSent = openingMsg;
@@ -320,7 +320,7 @@ export default async function handler(req, res) {
         const assetMsg = [asset.caption || "", asset.url].filter(Boolean).join("\n");
         if (assetMsg.trim()) {
           await new Promise((r) => setTimeout(r, 2000));
-          try { await sendWhatsApp({ phone, msg: assetMsg }); } catch {}
+          try { await sendWhatsAppWbiz({ phone, msg: assetMsg, whatsappClient: waClient }); } catch {}
           await sb.from("bullion_messages").insert({
             tenant_id: tenantId, lead_id: lead.id, phone, funnel_id: funnelId,
             direction: "out", body: assetMsg,
