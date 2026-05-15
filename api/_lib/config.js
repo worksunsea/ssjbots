@@ -11,6 +11,8 @@ export const CLAUDE_MODEL_ESCALATION = process.env.CLAUDE_MODEL_ESCALATION || "c
 
 // WbizTool — used for all outbound messages except bot replies (which use Baileys).
 export const WBIZTOOL_API_KEY = process.env.WBIZTOOL_API_KEY || "";
+// Default WbizTool client = 7560 (8860866000 production number).
+export const WBIZTOOL_DEFAULT_CLIENT = process.env.WBIZTOOL_DEFAULT_CLIENT || "7560";
 // Safety cap — bot is paused only if this many exchanges happen with no manual pause.
 // Set high since we no longer have escalation; staff monitor and pause manually.
 export const HARD_EXCHANGE_CAP = Number(process.env.HARD_EXCHANGE_CAP || 100);

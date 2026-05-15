@@ -8,7 +8,7 @@
 // sendWhatsApp / sendWhatsAppMedia  → Baileys (bot reply channel)
 // sendWhatsAppWbiz / sendWhatsAppMediaWbiz → WbizTool (lead outreach channel)
 
-import { normalizePhone, WBIZTOOL_API_KEY } from "./config.js";
+import { normalizePhone, WBIZTOOL_API_KEY, WBIZTOOL_DEFAULT_CLIENT } from "./config.js";
 
 const WBIZTOOL_URL = "https://wbiztool.com/api/v1/send_msg/";
 
@@ -17,7 +17,9 @@ const WBIZTOOL_URL = "https://wbiztool.com/api/v1/send_msg/";
 // Returns WbizTool-compatible shape: { status: 1|0, msg_id, message }
 export async function sendWhatsAppWbiz({ phone, msg, whatsappClient }) {
   if (!WBIZTOOL_API_KEY) return { status: 0, message: "WBIZTOOL_API_KEY not configured" };
-  if (!phone || !msg || !whatsappClient) return { status: 0, message: "missing phone, msg, or whatsappClient" };
+  const client = whatsappClient || WBIZTOOL_DEFAULT_CLIENT;
+  if (!phone || !msg) return { status: 0, message: "missing phone or msg" };
+  whatsappClient = client;
   const cleanPhone = normalizePhone(phone);
   if (!cleanPhone) return { status: 0, message: "invalid phone" };
   try {
@@ -44,7 +46,8 @@ export async function sendWhatsAppWbiz({ phone, msg, whatsappClient }) {
 // Send a media message via WbizTool (image/video/document).
 export async function sendWhatsAppMediaWbiz({ phone, mediaUrl, mediaType = "image", caption = "", whatsappClient }) {
   if (!WBIZTOOL_API_KEY) return { status: 0, message: "WBIZTOOL_API_KEY not configured" };
-  if (!phone || !mediaUrl || !whatsappClient) return { status: 0, message: "missing phone, mediaUrl, or whatsappClient" };
+  whatsappClient = whatsappClient || WBIZTOOL_DEFAULT_CLIENT;
+  if (!phone || !mediaUrl) return { status: 0, message: "missing phone or mediaUrl" };
   const cleanPhone = normalizePhone(phone);
   if (!cleanPhone) return { status: 0, message: "invalid phone" };
   // msg_type: 1 = image, 2 = video, 3 = document
