@@ -6726,7 +6726,7 @@ function ReferralSection({ leadId, leadName, token, phone }) {
       <div style={{ textAlign: "center", marginBottom: 12 }}>
         <div style={{ fontSize: 24 }}>🎁</div>
         <p style={{ fontSize: 14, fontWeight: 600, color: "#78350f", margin: "6px 0 2px" }}>Gift a Friend 50mg Free Gold</p>
-        <p style={{ fontSize: 12, color: "#92400e", margin: 0 }}>Enter their number — we'll WhatsApp them your gift. Redeemable after 6 months of app usage.</p>
+        <p style={{ fontSize: 12, color: "#92400e", margin: 0 }}>Enter their number — we'll WhatsApp them your gift. You get 50mg gold for every friend who joins! 🥇</p>
       </div>
       {refs.map((r, i) => (
         <div key={i} style={{ display: "flex", gap: 6, alignItems: "flex-end", marginBottom: 8 }}>
@@ -6891,7 +6891,7 @@ function ContactUpdateForm({ token }) {
       {/* Refer a friend */}
       <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 12, padding: 16, marginTop: 14 }}>
         <h3 style={{ fontSize: 14, margin: "0 0 4px", color: "#78350f" }}>🎁 Refer a Friend — Gift Them 50mg Free Gold</h3>
-        <p style={{ fontSize: 12, color: "#92400e", margin: "0 0 12px" }}>Enter your friend or family member's mobile number. We'll WhatsApp them a free gold gift on your behalf! Redeemable after 6 months of app usage.</p>
+        <p style={{ fontSize: 12, color: "#92400e", margin: "0 0 12px" }}>Enter your friend or family member's number. We'll WhatsApp them your gift. You earn *50mg gold for every friend who joins!* 🥇</p>
         {refs.map((r, i) => (
           <div key={i} style={{ display: "flex", gap: 6, alignItems: "flex-end", marginBottom: 8 }}>
             <div style={{ flex: 1 }}>
@@ -6924,6 +6924,7 @@ function GenericProfileForm() {
   const input = { width: "100%", fontSize: 14, padding: "8px 10px", border: "1px solid #ddd", borderRadius: 8, boxSizing: "border-box", outline: "none" };
   const btn = { width: "100%", padding: "12px", fontSize: 15, fontWeight: 600, border: "none", borderRadius: 10, background: "#1a1a1a", color: "#fff", cursor: "pointer", marginTop: 20 };
 
+  const referralId = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("ref") : null;
   const [step, setStep] = useState("phone"); // "phone" | "form" | "done"
   const [rawPhone, setRawPhone] = useState("");
   const [lead, setLead] = useState(null);
@@ -6967,7 +6968,7 @@ function GenericProfileForm() {
       const r = await fetch("/api/contact-update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone: normalised, ...form, family, deletedFamilyIds: deletedIds, referrals: validRefs }),
+        body: JSON.stringify({ phone: normalised, ...form, family, deletedFamilyIds: deletedIds, referrals: validRefs, ...(referralId ? { referralId } : {}) }),
       });
       const d = await r.json();
       if (d.ok) { setStep("done"); }
@@ -7083,7 +7084,7 @@ function GenericProfileForm() {
       {/* Refer a friend */}
       <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 12, padding: 16, marginTop: 14 }}>
         <h3 style={{ fontSize: 14, margin: "0 0 4px", color: "#78350f" }}>🎁 Refer a Friend — Gift Them 50mg Free Gold</h3>
-        <p style={{ fontSize: 12, color: "#92400e", margin: "0 0 12px" }}>Enter your friend's mobile number below. We'll WhatsApp them a free gold gift on your behalf! Gift redeemable after 6 months of app usage.</p>
+        <p style={{ fontSize: 12, color: "#92400e", margin: "0 0 12px" }}>Enter your friend or family member's number. We'll WhatsApp them your gift. You earn *50mg gold for every friend who joins!* 🥇</p>
         {refs.map((r, i) => (
           <div key={i} style={{ display: "flex", gap: 6, alignItems: "flex-end", marginBottom: 8 }}>
             <div style={{ flex: 1 }}>

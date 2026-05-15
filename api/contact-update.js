@@ -29,34 +29,39 @@ async function sendReferralMessages(sb, lead, referrals) {
       .maybeSingle();
     if (existing) { results.push({ phone: refPhone, status: "already_referred" }); continue; }
 
-    // Insert referral record
-    await sb.from("bullion_referrals").insert({
+    // Insert referral record — get the new UUID so we can embed it in the link
+    const { data: newRef } = await sb.from("bullion_referrals").insert({
       tenant_id: lead.tenant_id,
       referrer_lead_id: lead.id,
       referred_phone: refPhone,
       status: "pending",
-    });
+    }).select("id").single();
+
+    const refId = newRef?.id || "";
+    const profileLink = `https://ssjbot.gemtre.in/profile${refId ? `?ref=${refId}` : ""}`;
 
     // Send WA to friend
     const friendName = ref.name ? `${ref.name.trim()}, ` : "";
     const msg = [
       `🎁 ${friendName}${referrerName} has gifted you *50mg FREE gold* from Sun Sea Jewellers, Karol Bagh!`,
       ``,
-      `Download the Sun Sea Jewellers app and register to claim your gift:`,
+      `To claim your gift, fill in your details here:`,
+      `👉 ${profileLink}`,
+      ``,
+      `Also download the Sun Sea Jewellers app:`,
       `📱 Android: ${APP_ANDROID}`,
       `🍎 iOS: ${APP_IOS}`,
-      ``,
-      `T&C: Gift redeemable after 6 months of app usage. Valid at Sun Sea Jewellers, Karol Bagh.`,
       ``,
       `- Sun Sea Jewellers, Karol Bagh`,
     ].join("\n");
 
     const wa = await sendWhatsAppWbiz({ phone: refPhone, msg, whatsappClient: null });
-    const status = wa.status === 1 ? "wa_sent" : "pending";
-    await sb.from("bullion_referrals").update({
-      status,
-      ...(wa.status === 1 ? { wa_sent_at: new Date().toISOString() } : {}),
-    }).eq("referrer_lead_id", lead.id).eq("referred_phone", refPhone);
+    if (refId) {
+      await sb.from("bullion_referrals").update({
+        status: wa.status === 1 ? "wa_sent" : "pending",
+        ...(wa.status === 1 ? { wa_sent_at: new Date().toISOString() } : {}),
+      }).eq("id", refId);
+    }
 
     results.push({ phone: refPhone, status });
   }
@@ -146,6 +151,16 @@ export default async function handler(req, res) {
       lead = newLead;
     }
     if (!lead) return res.status(500).json({ ok: false, error: "lead_save_failed" });
+
+    // ── Track referral: if friend came via a referral link, mark them as registered ──
+    const referralId = body.referralId;
+    if (referralId && /^[0-9a-f-]{36}$/.test(referralId)) {
+      await sb.from("bullion_referrals").update({
+        referred_lead_id: lead.id,
+        status: "registered",
+        registered_at: new Date().toISOString(),
+      }).eq("id", referralId).is("referred_lead_id", null); // only if not already linked
+    }
   }
 
   // ── POST: update by token ──────────────────────────────────────
