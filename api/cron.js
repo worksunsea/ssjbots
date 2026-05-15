@@ -398,6 +398,7 @@ export default async function handler(req, res) {
         `City: ${lead.city || ""}`,
         "Always end with '- Sun Sea Jewellers, Karol Bagh' on a new line.",
         ...(isBirthdayFunnel ? [`OFFER: ${funnel.goal || "Free gift on store visit + up to 70% off making charges for 25 days."}`, "Mention only in pre/post event messages. Wish warmly on the actual day."] : []),
+        ...(isBirthdayFunnel && isLastStep ? ["BIRTHDAY GIFT CTA: Naturally mention they can claim a FREE 0.050mg gold gift by downloading the Sun Sea Jewellers app. Include both links on separate lines: Android: https://ssjbot.gemtre.in/app  iOS: https://ssjbot.gemtre.in/ios"] : []),
         ...(resolvedLink ? [`Include naturally — ${resolvedLink.label}: ${resolvedLink.url}`] : []),
         `Context: ${funnel.goal || "Stay in touch."}`,
         faqs?.length ? `Store info:\n${faqsForPrompt(faqs)}` : "",

@@ -6654,6 +6654,103 @@ function ImportsScreen() {
 }
 
 // ──────────────────────────────────────────────────────────
+// SHARED: App store links + referral section (used by profile forms)
+// ──────────────────────────────────────────────────────────
+
+const APP_ANDROID_URL = "https://ssjbot.gemtre.in/app";
+const APP_IOS_URL     = "https://ssjbot.gemtre.in/ios";
+
+function AppDownloadLinks() {
+  const S = { fontFamily: "system-ui, sans-serif" };
+  return (
+    <div style={{ ...S, background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 12, padding: 16, marginTop: 20, textAlign: "center" }}>
+      <div style={{ fontSize: 24, marginBottom: 8 }}>🥇</div>
+      <p style={{ fontSize: 14, fontWeight: 600, margin: "0 0 4px", color: "#14532d" }}>Download Sun Sea Jewellers App</p>
+      <p style={{ fontSize: 12, color: "#166534", margin: "0 0 12px" }}>Track your gold, access exclusive offers, and claim your birthday gift!</p>
+      <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+        <a href={APP_ANDROID_URL} target="_blank" rel="noreferrer"
+          style={{ display: "inline-block", padding: "8px 18px", background: "#16a34a", color: "#fff", borderRadius: 8, fontSize: 13, fontWeight: 600, textDecoration: "none" }}>
+          📱 Android
+        </a>
+        <a href={APP_IOS_URL} target="_blank" rel="noreferrer"
+          style={{ display: "inline-block", padding: "8px 18px", background: "#1d4ed8", color: "#fff", borderRadius: 8, fontSize: 13, fontWeight: 600, textDecoration: "none" }}>
+          🍎 iOS
+        </a>
+      </div>
+    </div>
+  );
+}
+
+function ReferralSection({ leadId, leadName, token, phone }) {
+  const S = { fontFamily: "system-ui, sans-serif" };
+  const input = { width: "100%", fontSize: 14, padding: "8px 10px", border: "1px solid #ddd", borderRadius: 8, boxSizing: "border-box", outline: "none" };
+  const label = { fontSize: 12, color: "#666", display: "block", marginBottom: 4, marginTop: 10 };
+  const [refs, setRefs] = useState([{ phone: "", name: "" }]);
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [err, setErr] = useState("");
+
+  const addRef = () => setRefs((r) => [...r, { phone: "", name: "" }]);
+  const setRef = (i, k, v) => setRefs((r) => r.map((x, idx) => idx === i ? { ...x, [k]: v } : x));
+  const removeRef = (i) => setRefs((r) => r.filter((_, idx) => idx !== i));
+
+  const send = async () => {
+    const valid = refs.filter((r) => r.phone.replace(/\D/g, "").length >= 10);
+    if (!valid.length) { setErr("Enter at least one valid phone number."); return; }
+    setSending(true); setErr("");
+    try {
+      const url = token ? `/api/contact-update?t=${token}` : "/api/contact-update";
+      const body = token ? { referrals: valid } : { phone, referrals: valid };
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const d = await r.json();
+      if (d.ok) { setSent(true); }
+      else { setErr("Failed to send. Please try again."); }
+    } catch { setErr("Network error. Please try again."); }
+    setSending(false);
+  };
+
+  if (sent) return (
+    <div style={{ ...S, background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 12, padding: 16, marginTop: 20, textAlign: "center" }}>
+      <div style={{ fontSize: 28 }}>🎁</div>
+      <p style={{ fontSize: 14, fontWeight: 600, color: "#78350f", margin: "8px 0 4px" }}>Gift messages sent!</p>
+      <p style={{ fontSize: 12, color: "#92400e", margin: 0 }}>Your friends will receive a WhatsApp message with their 50mg gold gift from you.</p>
+    </div>
+  );
+
+  return (
+    <div style={{ ...S, background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 12, padding: 16, marginTop: 20 }}>
+      <div style={{ textAlign: "center", marginBottom: 12 }}>
+        <div style={{ fontSize: 24 }}>🎁</div>
+        <p style={{ fontSize: 14, fontWeight: 600, color: "#78350f", margin: "6px 0 2px" }}>Gift a Friend 50mg Free Gold</p>
+        <p style={{ fontSize: 12, color: "#92400e", margin: 0 }}>Enter their number — we'll WhatsApp them your gift. Redeemable after 6 months of app usage.</p>
+      </div>
+      {refs.map((r, i) => (
+        <div key={i} style={{ display: "flex", gap: 6, alignItems: "flex-end", marginBottom: 8 }}>
+          <div style={{ flex: 1 }}>
+            <span style={label}>Friend's Mobile</span>
+            <input style={input} value={r.phone} onChange={(e) => setRef(i, "phone", e.target.value)} placeholder="9810XXXXXX" type="tel" />
+          </div>
+          <div style={{ flex: 1 }}>
+            <span style={label}>Friend's Name (optional)</span>
+            <input style={input} value={r.name} onChange={(e) => setRef(i, "name", e.target.value)} placeholder="Rahul" />
+          </div>
+          {refs.length > 1 && <button onClick={() => removeRef(i)} style={{ fontSize: 18, color: "#dc2626", border: "none", background: "none", cursor: "pointer", paddingBottom: 8 }}>×</button>}
+        </div>
+      ))}
+      <button onClick={addRef} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 8, border: "1px solid #d97706", background: "#fff", color: "#92400e", cursor: "pointer", marginBottom: 12 }}>+ Add another friend</button>
+      {err && <p style={{ color: "#dc2626", fontSize: 12, margin: "0 0 8px" }}>{err}</p>}
+      <button onClick={send} disabled={sending} style={{ width: "100%", padding: "10px", fontSize: 14, fontWeight: 600, border: "none", borderRadius: 10, background: "#d97706", color: "#fff", cursor: sending ? "not-allowed" : "pointer" }}>
+        {sending ? "Sending gifts…" : "🎁 Send Gold Gift to Friends"}
+      </button>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
 // CUSTOMER PROFILE UPDATE FORM — /update?t=TOKEN (no login)
 // ──────────────────────────────────────────────────────────
 function ContactUpdateForm({ token }) {
@@ -6710,10 +6807,14 @@ function ContactUpdateForm({ token }) {
   if (err && !lead) return <div style={S}><p style={{ color: "#dc2626", textAlign: "center", marginTop: 60 }}>{err}</p></div>;
 
   if (done) return (
-    <div style={{ ...S, textAlign: "center", paddingTop: 60 }}>
-      <div style={{ fontSize: 48 }}>🙏</div>
-      <h2 style={{ fontSize: 20, margin: "16px 0 8px" }}>Thank you, {lead?.name?.split(" ")[0] || ""}!</h2>
-      <p style={{ color: "#555", fontSize: 14 }}>Your details have been updated. We look forward to seeing you at Sun Sea Jewellers!</p>
+    <div style={S}>
+      <div style={{ textAlign: "center", paddingTop: 40 }}>
+        <div style={{ fontSize: 48 }}>🙏</div>
+        <h2 style={{ fontSize: 20, margin: "16px 0 8px" }}>Thank you, {lead?.name?.split(" ")[0] || ""}!</h2>
+        <p style={{ color: "#555", fontSize: 14 }}>Your details have been updated. We look forward to seeing you at Sun Sea Jewellers!</p>
+      </div>
+      <ReferralSection leadId={lead?.id} leadName={lead?.name} token={token} />
+      <AppDownloadLinks />
     </div>
   );
 
@@ -6775,6 +6876,153 @@ function ContactUpdateForm({ token }) {
 }
 
 // ──────────────────────────────────────────────────────────
+// GENERIC PROFILE PAGE — /profile (no token, phone-based)
+// ──────────────────────────────────────────────────────────
+function GenericProfileForm() {
+  const S = { fontFamily: "system-ui, sans-serif", maxWidth: 480, margin: "0 auto", padding: "24px 16px", color: "#1a1a1a" };
+  const label = { fontSize: 12, color: "#666", display: "block", marginBottom: 4, marginTop: 12 };
+  const input = { width: "100%", fontSize: 14, padding: "8px 10px", border: "1px solid #ddd", borderRadius: 8, boxSizing: "border-box", outline: "none" };
+  const btn = { width: "100%", padding: "12px", fontSize: 15, fontWeight: 600, border: "none", borderRadius: 10, background: "#1a1a1a", color: "#fff", cursor: "pointer", marginTop: 20 };
+
+  const [step, setStep] = useState("phone"); // "phone" | "form" | "done"
+  const [rawPhone, setRawPhone] = useState("");
+  const [lead, setLead] = useState(null);
+  const [family, setFamily] = useState([]);
+  const [form, setForm] = useState({ name: "", email: "", city: "", bday: "", anniversary: "" });
+  const [deletedIds, setDeletedIds] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  const normalised = rawPhone.replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, "");
+
+  const lookup = async () => {
+    if (normalised.length < 10) { setErr("Enter a valid 10-digit mobile number."); return; }
+    setErr(""); setLoading(true);
+    try {
+      const r = await fetch(`/api/contact-update?phone=${normalised}`);
+      const d = await r.json();
+      if (d.ok) {
+        setLead(d.lead || null);
+        setFamily(d.family || []);
+        if (d.lead) {
+          setForm({ name: d.lead.name || "", email: d.lead.email || "", city: d.lead.city || "", bday: d.lead.bday || "", anniversary: d.lead.anniversary || "" });
+        }
+        setStep("form");
+      } else { setErr("Something went wrong. Try again."); }
+    } catch { setErr("Network error. Try again."); }
+    setLoading(false);
+  };
+
+  const setF = (k, v) => setForm((p) => ({ ...p, [k]: v }));
+  const setMember = (i, k, v) => setFamily((p) => p.map((m, idx) => idx === i ? { ...m, [k]: v } : m));
+  const addMember = () => setFamily((p) => [...p, { relationship: "spouse", name: "", dob: "", mobile: "" }]);
+  const removeMember = (i) => { const m = family[i]; if (m.id) setDeletedIds((p) => [...p, m.id]); setFamily((p) => p.filter((_, idx) => idx !== i)); };
+
+  const save = async () => {
+    setSaving(true); setErr("");
+    try {
+      const r = await fetch("/api/contact-update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: normalised, ...form, family, deletedFamilyIds: deletedIds }),
+      });
+      const d = await r.json();
+      if (d.ok) { setStep("done"); }
+      else { setErr("Failed to save. Try again."); }
+    } catch { setErr("Network error. Try again."); }
+    setSaving(false);
+  };
+
+  if (step === "phone") return (
+    <div style={S}>
+      <div style={{ textAlign: "center", marginBottom: 28 }}>
+        <div style={{ fontSize: 36 }}>💎</div>
+        <h2 style={{ fontSize: 20, margin: "10px 0 4px" }}>Sun Sea Jewellers</h2>
+        <p style={{ fontSize: 13, color: "#666" }}>Enter your mobile number to update your details or register as a new client</p>
+      </div>
+      <span style={label}>Mobile Number</span>
+      <input style={input} value={rawPhone} onChange={(e) => setRawPhone(e.target.value)}
+        placeholder="9810XXXXXX" type="tel" autoFocus
+        onKeyDown={(e) => e.key === "Enter" && lookup()} />
+      {err && <p style={{ color: "#dc2626", fontSize: 13, marginTop: 6 }}>{err}</p>}
+      <button style={btn} onClick={lookup} disabled={loading}>{loading ? "Looking up…" : "Continue →"}</button>
+      <p style={{ fontSize: 11, color: "#aaa", textAlign: "center", marginTop: 14 }}>Sun Sea Jewellers · Karol Bagh, New Delhi</p>
+    </div>
+  );
+
+  if (step === "done") return (
+    <div style={S}>
+      <div style={{ textAlign: "center", paddingTop: 32 }}>
+        <div style={{ fontSize: 48 }}>🙏</div>
+        <h2 style={{ fontSize: 20, margin: "16px 0 8px" }}>Thank you, {form.name?.split(" ")[0] || ""}!</h2>
+        <p style={{ color: "#555", fontSize: 14 }}>{lead ? "Your details have been updated." : "You've been registered!"} We look forward to seeing you at Sun Sea Jewellers!</p>
+      </div>
+      <ReferralSection phone={normalised} />
+      <AppDownloadLinks />
+    </div>
+  );
+
+  // step === "form"
+  return (
+    <div style={S}>
+      <div style={{ textAlign: "center", marginBottom: 20 }}>
+        <div style={{ fontSize: 32 }}>💎</div>
+        <h2 style={{ fontSize: 18, margin: "8px 0 4px" }}>Sun Sea Jewellers</h2>
+        <p style={{ fontSize: 13, color: lead ? "#16a34a" : "#666", margin: 0 }}>
+          {lead ? `Welcome back! Updating details for ${rawPhone}` : `Registering new client: ${rawPhone}`}
+        </p>
+      </div>
+
+      <div style={{ background: "#f9fafb", borderRadius: 12, padding: 16 }}>
+        <h3 style={{ fontSize: 14, margin: "0 0 12px", color: "#374151" }}>Your Details</h3>
+        <span style={label}>Name *</span>
+        <input style={input} value={form.name} onChange={(e) => setF("name", e.target.value)} placeholder="Your full name" />
+        <span style={label}>Phone</span>
+        <input style={{ ...input, background: "#f3f4f6", color: "#888" }} value={rawPhone} disabled />
+        <span style={label}>Email</span>
+        <input style={input} value={form.email} onChange={(e) => setF("email", e.target.value)} placeholder="your@email.com" type="email" />
+        <span style={label}>City</span>
+        <input style={input} value={form.city} onChange={(e) => setF("city", e.target.value)} placeholder="Delhi" />
+        <span style={label}>Your Birthday (DD-MM or YYYY-MM-DD)</span>
+        <input style={input} value={form.bday} onChange={(e) => setF("bday", e.target.value)} placeholder="25-04 or 1985-04-25" />
+        <span style={label}>Your Anniversary (DD-MM or YYYY-MM-DD)</span>
+        <input style={input} value={form.anniversary} onChange={(e) => setF("anniversary", e.target.value)} placeholder="15-11 or 2005-11-15" />
+      </div>
+
+      <div style={{ background: "#f9fafb", borderRadius: 12, padding: 16, marginTop: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <h3 style={{ fontSize: 14, margin: 0, color: "#374151" }}>Family Members</h3>
+          <button onClick={addMember} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 8, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>+ Add</button>
+        </div>
+        <p style={{ fontSize: 12, color: "#888", margin: "0 0 12px" }}>Help us wish your family on their special days too 🎂</p>
+        {family.length === 0 && <p style={{ fontSize: 13, color: "#aaa", textAlign: "center" }}>No family members yet</p>}
+        {family.map((m, i) => (
+          <div key={i} style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 10, padding: 12, marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+              <select value={m.relationship} onChange={(e) => setMember(i, "relationship", e.target.value)}
+                style={{ fontSize: 13, border: "1px solid #ddd", borderRadius: 6, padding: "4px 8px" }}>
+                {["spouse","son","daughter","mother","father","brother","sister","other"].map((r) => <option key={r}>{r}</option>)}
+              </select>
+              <button onClick={() => removeMember(i)} style={{ fontSize: 12, color: "#dc2626", border: "none", background: "none", cursor: "pointer" }}>Remove</button>
+            </div>
+            <span style={label}>Name</span>
+            <input style={input} value={m.name || ""} onChange={(e) => setMember(i, "name", e.target.value)} placeholder="Name" />
+            <span style={label}>Birthday (DD-MM or YYYY-MM-DD)</span>
+            <input style={input} value={m.dob || ""} onChange={(e) => setMember(i, "dob", e.target.value)} placeholder="25-04" />
+            <span style={label}>Mobile (optional)</span>
+            <input style={input} value={m.mobile || ""} onChange={(e) => setMember(i, "mobile", e.target.value)} placeholder="9810XXXXXX" />
+          </div>
+        ))}
+      </div>
+
+      {err && <p style={{ color: "#dc2626", fontSize: 13, marginTop: 8 }}>{err}</p>}
+      <button style={btn} onClick={save} disabled={saving}>{saving ? "Saving…" : "Save My Details ✓"}</button>
+      <p style={{ fontSize: 11, color: "#aaa", textAlign: "center", marginTop: 12 }}>Sun Sea Jewellers · Karol Bagh, New Delhi</p>
+    </div>
+  );
+}
+
 // ──────────────────────────────────────────────────────────
 // BROADCASTS SCREEN — festival / occasion bulk messages
 // Write one message → pick audience → schedule → cron sends all.
@@ -7583,9 +7831,11 @@ function TelecallerQueueScreen({ funnels }) {
 // ──────────────────────────────────────────────────────────
 
 export default function App() {
-  // Customer profile update form — no login needed
+  // Customer-facing pages — no login needed
   const profileToken = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("t") : null;
   if (profileToken) return <ContactUpdateForm token={profileToken} />;
+  const isProfilePage = typeof window !== "undefined" && window.location.pathname === "/profile";
+  if (isProfilePage) return <GenericProfileForm />;
 
   const [user, setUser] = useState(loadUser);
   const isTelecallerUser = (() => {
