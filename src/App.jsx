@@ -3423,6 +3423,9 @@ function ConnectionsScreen() {
   const [pairing, setPairing] = useState(null); // client_id being paired, null | string
   const [adding, setAdding] = useState(false);
   const [newId, setNewId] = useState("");
+  const [testPhone, setTestPhone] = useState({}); // clientId → phone
+  const [testing, setTesting] = useState(new Set());
+  const [testResult, setTestResult] = useState({}); // clientId → { ok, msg }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -3493,6 +3496,25 @@ function ConnectionsScreen() {
       await sb.from("funnels").update({ wbiztool_client: null }).in("id", linked.map((f) => f.id));
     }
     load();
+  };
+
+  const sendTest = async (clientId) => {
+    const phone = (testPhone[clientId] || "").replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, "");
+    if (!phone) return;
+    setTesting((s) => { const n = new Set(s); n.add(clientId); return n; });
+    setTestResult((x) => ({ ...x, [clientId]: null }));
+    try {
+      const r = await fetch(`${WA_SERVICE_URL}/clients/${encodeURIComponent(clientId)}/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone, message: `✅ Test from Sun Sea Jewellers CRM — session: ${clientId} — ${new Date().toLocaleTimeString("en-IN")}` }),
+      });
+      const data = await r.json().catch(() => ({}));
+      setTestResult((x) => ({ ...x, [clientId]: data.ok ? { ok: true, msg: "Sent!" } : { ok: false, msg: data.error || "Failed" } }));
+    } catch (e) {
+      setTestResult((x) => ({ ...x, [clientId]: { ok: false, msg: String(e.message) } }));
+    }
+    setTesting((s) => { const n = new Set(s); n.delete(clientId); return n; });
   };
 
   const moveFunnels = async (fromClientId, toClientId) => {
@@ -3573,6 +3595,27 @@ function ConnectionsScreen() {
               {/* Delete disconnected session */}
               {!c.connected && <Btn small ghost color={C.red} onClick={() => deleteSession(c.client_id)}>🗑 Delete</Btn>}
             </div>
+            {c.connected && (
+              <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #f0f0f0" }}>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <input
+                    value={testPhone[c.client_id] || ""}
+                    onChange={(e) => setTestPhone((x) => ({ ...x, [c.client_id]: e.target.value }))}
+                    placeholder="Phone to test (10 digits)"
+                    style={{ fontSize: 12, flex: 1, border: "1px solid #ddd", borderRadius: 6, padding: "4px 8px" }}
+                    onKeyDown={(e) => e.key === "Enter" && sendTest(c.client_id)}
+                  />
+                  <Btn small color={C.blue} disabled={testing.has(c.client_id)} onClick={() => sendTest(c.client_id)}>
+                    {testing.has(c.client_id) ? "…" : "Send Test"}
+                  </Btn>
+                </div>
+                {testResult[c.client_id] && (
+                  <div style={{ fontSize: 11, marginTop: 4, color: testResult[c.client_id].ok ? "#16a34a" : "#dc2626" }}>
+                    {testResult[c.client_id].ok ? "✅ " : "❌ "}{testResult[c.client_id].msg}
+                  </div>
+                )}
+              </div>
+            )}
           </Card>
           );
         })}
