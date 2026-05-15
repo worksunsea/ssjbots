@@ -31,6 +31,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ ok: false, error: "unauthorized" });
   }
 
+  try {
   const sb = supa();
   const nowIso = new Date().toISOString();
   const stats = { considered: 0, sent: 0, canceled: 0, failed: 0, transitioned: 0, calendarEnrolled: 0 };
@@ -408,4 +409,8 @@ export default async function handler(req, res) {
   }
 
   return res.status(200).json({ ok: true, ts: nowIso, stats });
+  } catch (err) {
+    console.error("cron top-level error", err);
+    return res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
 }
