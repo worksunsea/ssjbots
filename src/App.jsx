@@ -13,7 +13,7 @@ const getTenantId = () => loadUser()?.tenant_id || DEFAULT_TENANT_ID;
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxGazdRhKxkjOLkqxN4kPoInDuBnlWy5Azmzq-FX9mt5OIfZLbhqfFEO0AufrOWE6n49Q/exec";
 
 // ── Internal API secret (set VITE_CRM_SECRET in Vercel env) ──
-const CRM_SECRET = import.meta.env.VITE_CRM_SECRET || "";
+const CRM_SECRET = (import.meta.env.VITE_CRM_SECRET || "").trim();
 
 // ── WA Service (Baileys on Synology) — public URL for QR iframes ──
 // wa-service calls are proxied through /api/wa-proxy to avoid mixed-content issues
