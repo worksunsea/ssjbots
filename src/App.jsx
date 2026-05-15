@@ -3499,8 +3499,9 @@ function ConnectionsScreen() {
   };
 
   const sendTest = async (clientId) => {
-    const phone = (testPhone[clientId] || "").replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, "");
-    if (!phone) return;
+    const raw = testPhone[clientId] ?? "8860866000";
+    const phone = raw.replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, "");
+    if (!phone) { alert("Enter a phone number to test"); return; }
     setTesting((s) => { const n = new Set(s); n.add(clientId); return n; });
     setTestResult((x) => ({ ...x, [clientId]: null }));
     try {
@@ -3599,7 +3600,7 @@ function ConnectionsScreen() {
               <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #f0f0f0" }}>
                 <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                   <input
-                    value={testPhone[c.client_id] || ""}
+                    value={testPhone[c.client_id] ?? "8860866000"}
                     onChange={(e) => setTestPhone((x) => ({ ...x, [c.client_id]: e.target.value }))}
                     placeholder="Phone to test (10 digits)"
                     style={{ fontSize: 12, flex: 1, border: "1px solid #ddd", borderRadius: 6, padding: "4px 8px" }}
@@ -5137,6 +5138,27 @@ function ApprovalsScreen({ funnels }) {
 
   return (
     <div>
+      {/* Generate Previews — top banner */}
+      <div style={{ background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: 10, padding: "12px 16px", marginBottom: 16, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 13, color: "#3730a3", flex: 1 }}>
+          ⚡ <strong>Generate Previews</strong> — runs the cron now to create AI message previews for pending birthday/anniversary messages.
+        </span>
+        <button
+          onClick={runCron}
+          disabled={cronRunning}
+          style={{ fontSize: 13, padding: "7px 18px", borderRadius: 8, border: "none", background: cronRunning ? "#a5b4fc" : "#4f46e5", color: "#fff", cursor: cronRunning ? "not-allowed" : "pointer", fontWeight: 600, whiteSpace: "nowrap" }}
+        >
+          {cronRunning ? "⏳ Running…" : "⚡ Run Now"}
+        </button>
+        {cronResult && (
+          <span style={{ fontSize: 12, color: cronResult.ok ? "#166534" : "#dc2626", fontWeight: 500 }}>
+            {cronResult.ok
+              ? `✅ Done — sent: ${cronResult.stats?.sent || 0}, enrolled: ${cronResult.stats?.calendarEnrolled || 0}, previewed: ${cronResult.stats?.previewsGenerated || 0}`
+              : `❌ ${cronResult.error}`}
+          </span>
+        )}
+      </div>
+
       {/* Tab switcher — Birthday/Anniversary vs regular drip */}
       <div style={{ display: "flex", gap: 0, marginBottom: 14, borderBottom: "2px solid #e5e7eb" }}>
         {[
