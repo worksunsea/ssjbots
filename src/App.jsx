@@ -4936,6 +4936,25 @@ function ApprovalsScreen({ funnels }) {
   const [editingName, setEditingName] = useState({});
   const [saving, setSaving] = useState(new Set());
   const [expanded, setExpanded] = useState(new Set()); // expanded person/date groups
+  const [cronRunning, setCronRunning] = useState(false);
+  const [cronResult, setCronResult] = useState(null);
+
+  const runCron = async () => {
+    setCronRunning(true);
+    setCronResult(null);
+    try {
+      const r = await fetch("/api/run-cron", {
+        method: "POST",
+        headers: { "x-crm-secret": CRM_SECRET },
+      });
+      const data = await r.json();
+      setCronResult(data);
+      if (data.ok) await load(); // reload approvals after cron
+    } catch (e) {
+      setCronResult({ ok: false, error: String(e) });
+    }
+    setCronRunning(false);
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -5102,6 +5121,14 @@ function ApprovalsScreen({ funnels }) {
         <span style={{ fontSize: 12, padding: "3px 10px", borderRadius: 10, background: "#fef9c3", color: "#713f12" }}>⏳ {pendingCount} pending</span>
         <span style={{ fontSize: 12, padding: "3px 10px", borderRadius: 10, background: "#dcfce7", color: "#166534" }}>✅ {approvedCount} approved</span>
         <button onClick={load} style={{ fontSize: 12, padding: "5px 10px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>↻ Refresh</button>
+        <button onClick={runCron} disabled={cronRunning} style={{ fontSize: 12, padding: "5px 12px", borderRadius: 6, border: "1px solid #6366f1", background: cronRunning ? "#e0e7ff" : "#6366f1", color: cronRunning ? "#6366f1" : "#fff", cursor: cronRunning ? "not-allowed" : "pointer", fontWeight: 600 }}>
+          {cronRunning ? "⏳ Running…" : "⚡ Generate Previews"}
+        </button>
+        {cronResult && (
+          <span style={{ fontSize: 11, color: cronResult.ok ? "#166534" : "#dc2626" }}>
+            {cronResult.ok ? `✅ Done — sent:${cronResult.stats?.sent||0} enrolled:${cronResult.stats?.calendarEnrolled||0}` : `❌ ${cronResult.error}`}
+          </span>
+        )}
       </div>
 
       {loading && <div style={{ padding: 32, textAlign: "center", color: "#888" }}>Loading…</div>}

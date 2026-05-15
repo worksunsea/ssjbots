@@ -17,7 +17,8 @@ import { OWNER_ALERT_PHONE, CLAUDE_MODEL } from "./_lib/config.js";
 export const config = { maxDuration: 60 };
 
 const CRON_SECRET = process.env.CRON_SECRET || "";
-const BATCH = 20;
+const BATCH = 5; // send max 5 per cron tick — anti-ban, each has a delay below
+const SEND_DELAY_MS = 4000; // 4s gap between sends (~15/min max)
 
 export default async function handler(req, res) {
   const header = req.headers["x-vercel-cron"] || req.headers["x-cron-secret"] || "";
@@ -199,6 +200,7 @@ export default async function handler(req, res) {
     await sb.from("bullion_scheduled_messages").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", row.id);
     await sb.from("bullion_leads").update({ last_msg: msgBody, last_msg_at: new Date().toISOString() }).eq("id", lead.id);
     stats.sent++;
+    await new Promise((r) => setTimeout(r, SEND_DELAY_MS)); // anti-ban gap
   }
 
   // ── 2. On-exhaust transitions ──────────────────────────────────
