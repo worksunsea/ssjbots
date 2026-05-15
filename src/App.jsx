@@ -4987,8 +4987,7 @@ function ApprovalsScreen({ funnels }) {
     setCronRunning(true);
     setCronResult(null);
     try {
-      const r = await fetch("/api/run-cron", {
-        method: "POST",
+      const r = await fetch("/api/cron", {
         headers: { "x-crm-secret": CRM_SECRET },
       });
       const data = await r.json();

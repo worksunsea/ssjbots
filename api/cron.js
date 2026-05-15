@@ -17,6 +17,7 @@ import { OWNER_ALERT_PHONE, CLAUDE_MODEL } from "./_lib/config.js";
 export const config = { maxDuration: 60 };
 
 const CRON_SECRET = process.env.CRON_SECRET || "";
+const CRM_SECRET_ENV = process.env.CRM_SECRET || "";
 const BATCH = 5; // send max 5 per cron tick — anti-ban, each has a delay below
 const SEND_DELAY_MS = 4000; // 4s gap between sends (~15/min max)
 
@@ -24,7 +25,8 @@ export default async function handler(req, res) {
   const header = req.headers["x-vercel-cron"] || req.headers["x-cron-secret"] || "";
   const queryToken = (req.query && req.query.secret) || "";
   const hasVercelSignature = Boolean(req.headers["x-vercel-cron"]);
-  if (CRON_SECRET && !hasVercelSignature && header !== CRON_SECRET && queryToken !== CRON_SECRET) {
+  const hasCrmSecret = CRM_SECRET_ENV && req.headers["x-crm-secret"] === CRM_SECRET_ENV;
+  if (CRON_SECRET && !hasVercelSignature && header !== CRON_SECRET && queryToken !== CRON_SECRET && !hasCrmSecret) {
     return res.status(401).json({ ok: false, error: "unauthorized" });
   }
 
