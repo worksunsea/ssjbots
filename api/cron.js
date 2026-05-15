@@ -41,7 +41,7 @@ export default async function handler(req, res) {
     .from("bullion_scheduled_messages")
     .select(`
       id, lead_id, funnel_id, body, edited_body, send_at, tenant_id, is_reminder, reminder_phone,
-      step:bullion_funnel_steps(id,use_ai_message,message_template,step_type,link_type,link_url,link_label),
+      step:bullion_funnel_steps(id,use_ai_message,message_template,step_type,link_type,link_url,link_label,name),
       lead:bullion_leads!inner(id,phone,name,status,bot_paused,dnd,last_msg_at,funnel_id,funnel_history,tenant_id,city),
       funnel:funnels!inner(id,name,active,wbiztool_client,next_on_convert,next_on_exhaust,tenant_id,goal,kind)
     `)
@@ -140,6 +140,8 @@ export default async function handler(req, res) {
         const faqs = await getFaqs(row.tenant_id);
         const isBirthdayFunnel = ["birthday", "anniversary"].includes(funnel.kind);
         const eventLabel = funnel.kind === "anniversary" ? "anniversary" : "birthday";
+        const stepName = (row.step?.name || "").toLowerCase();
+        const isBirthdayWishStep = isBirthdayFunnel && stepName.includes("wish");
         const aiSystem = [
           "You are a warm WhatsApp assistant for Sun Sea Jewellers, Karol Bagh.",
           "Write a short, personalized WhatsApp message. 2–4 lines max.",
@@ -155,6 +157,8 @@ export default async function handler(req, res) {
             `OFFER TO MENTION: ${funnel.goal || "Free gift on store visit this special month + up to 70% off on making charges for next 25 days."}`,
             "Mention the offer ONLY in pre-event and post-event messages. For the actual wish: just wish warmly, no selling.",
           ] : []),
+          ...(isBirthdayWishStep ? [`BIRTHDAY/ANNIVERSARY WISH INSTRUCTION: Just wish them warmly and genuinely on their special day. Naturally mention that a special surprise free gift awaits them when they visit Sun Sea Jewellers this week. Keep it warm and exciting — no hard sell.`] : []),
+          ...(isBirthdayFunnel && isLastStep ? [`POST-EVENT GIFT CTA (7 days after): Tell them to fill their profile form and download the Sun Sea Jewellers app to claim their FREE gift of 50mg gold worth ₹1,500. Profile form: https://ssjbot.gemtre.in/profile  App Android: https://ssjbot.gemtre.in/app  App iOS: https://ssjbot.gemtre.in/ios  Make it sound warm and exciting.`] : []),
           ...(resolvedLink ? [
             `Include this link naturally — ${resolvedLink.label}: ${resolvedLink.url}`,
             "Do not alter the URL. Place it at the end before the signature.",
@@ -367,7 +371,7 @@ export default async function handler(req, res) {
   const { data: previewPool } = await sb
     .from("bullion_scheduled_messages")
     .select(`id, lead_id, funnel_id, body, tenant_id,
-      step:bullion_funnel_steps(id,use_ai_message,link_type,link_url,link_label),
+      step:bullion_funnel_steps(id,use_ai_message,link_type,link_url,link_label,name),
       lead:bullion_leads(id,name,city),
       funnel:funnels(id,name,goal,kind)`)
     .eq("status", "pending").eq("approved", false).is("edited_body", null)
@@ -391,14 +395,27 @@ export default async function handler(req, res) {
     try {
       const faqs = await getFaqs(row.tenant_id);
       const isBirthdayFunnel = ["birthday","anniversary"].includes(funnel.kind);
+      const eventLabel = funnel.kind === "anniversary" ? "anniversary" : "birthday";
+      const stepName = (row.step?.name || "").toLowerCase();
+      const isBirthdayWishStep = isBirthdayFunnel && stepName.includes("wish");
+      const { count: remainingAfterPreview } = await sb.from("bullion_scheduled_messages")
+        .select("*", { count: "exact", head: true })
+        .eq("lead_id", lead.id).eq("funnel_id", row.funnel_id).eq("status", "pending")
+        .gt("send_at", row.send_at);
+      const isLastStep = remainingAfterPreview === 0;
       const aiSystem = [
         "You are a warm WhatsApp assistant for Sun Sea Jewellers, Karol Bagh.",
         "Write a short, personalized WhatsApp message. 2–4 lines max. Warm and genuine. No markdown. Plain text only.",
         lead.name ? `Customer first name: ${lead.name.trim().split(/\s+/)[0]}` : "Name unknown — do NOT use Sir/Madam. Start naturally.",
         `City: ${lead.city || ""}`,
         "Always end with '- Sun Sea Jewellers, Karol Bagh' on a new line.",
-        ...(isBirthdayFunnel ? [`OFFER: ${funnel.goal || "Free gift on store visit + up to 70% off making charges for 25 days."}`, "Mention only in pre/post event messages. Wish warmly on the actual day."] : []),
-        ...(isBirthdayFunnel && isLastStep ? [`BIRTHDAY GIFT CTA (include in this post-birthday message): Tell them to fill our profile form and download the Sun Sea Jewellers app to claim their FREE birthday gift of 50mg gold worth ₹1,500. Profile form: https://ssjbot.gemtre.in/profile  App Android: https://ssjbot.gemtre.in/app  App iOS: https://ssjbot.gemtre.in/ios  Make this sound exciting but warm — it's a real gift from Sun Sea Jewellers.`] : []),
+        ...(isBirthdayFunnel ? [
+          `Event type: ${eventLabel}`,
+          `OFFER: ${funnel.goal || "Free gift on store visit + up to 70% off making charges for 25 days."}`,
+          "Mention offer ONLY in pre/post event messages. For the actual wish: just wish warmly, no selling.",
+        ] : []),
+        ...(isBirthdayWishStep ? [`BIRTHDAY/ANNIVERSARY WISH INSTRUCTION: Just wish them warmly and genuinely on their special day. Naturally mention that a special surprise free gift awaits them when they visit Sun Sea Jewellers this week. Keep it warm and exciting — no hard sell.`] : []),
+        ...(isBirthdayFunnel && isLastStep ? [`POST-EVENT GIFT CTA (7 days after): Tell them to fill their profile form and download the Sun Sea Jewellers app to claim their FREE birthday gift of 50mg gold worth ₹1,500. Profile form: https://ssjbot.gemtre.in/profile  App Android: https://ssjbot.gemtre.in/app  App iOS: https://ssjbot.gemtre.in/ios  Make it sound warm and exciting.`] : []),
         ...(resolvedLink ? [`Include naturally — ${resolvedLink.label}: ${resolvedLink.url}`] : []),
         `Context: ${funnel.goal || "Stay in touch."}`,
         faqs?.length ? `Store info:\n${faqsForPrompt(faqs)}` : "",
