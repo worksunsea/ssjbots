@@ -6757,6 +6757,7 @@ function ContactUpdateForm({ token }) {
   const [lead, setLead] = useState(null);
   const [family, setFamily] = useState([]);
   const [form, setForm] = useState({});
+  const [refs, setRefs] = useState([{ phone: "", name: "" }]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [done, setDone] = useState(false);
@@ -6769,7 +6770,7 @@ function ContactUpdateForm({ token }) {
       .then((d) => {
         if (!d.ok) { setErr("This link is invalid or expired."); setLoading(false); return; }
         setLead(d.lead);
-        setForm({ name: d.lead.name || "", email: d.lead.email || "", city: d.lead.city || "", bday: d.lead.bday || "", anniversary: d.lead.anniversary || "" });
+        setForm({ name: d.lead.name || "", email: d.lead.email || "", city: d.lead.city || "", address_house: d.lead.address_house || "", address_locality: d.lead.address_locality || "", address_state: d.lead.address_state || "", address_pincode: d.lead.address_pincode || "", address_country: d.lead.address_country || "India", bday: d.lead.bday || "", anniversary: d.lead.anniversary || "" });
         setFamily(d.family || []);
         setLoading(false);
       })
@@ -6787,10 +6788,11 @@ function ContactUpdateForm({ token }) {
 
   const save = async () => {
     setSaving(true); setErr("");
+    const validRefs = refs.filter((r) => r.phone.replace(/\D/g, "").length >= 10);
     const r = await fetch(`/api/contact-update?t=${token}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...form, family, deletedFamilyIds: deletedIds }),
+      body: JSON.stringify({ ...form, family, deletedFamilyIds: deletedIds, referrals: validRefs }),
     });
     const d = await r.json();
     setSaving(false);
@@ -6826,29 +6828,47 @@ function ContactUpdateForm({ token }) {
         <p style={{ fontSize: 13, color: "#666", margin: 0 }}>Please confirm your details so we can serve you better</p>
       </div>
 
+      {/* Personal details */}
       <div style={{ background: "#f9fafb", borderRadius: 12, padding: 16 }}>
         <h3 style={{ fontSize: 14, margin: "0 0 12px", color: "#374151" }}>Your Details</h3>
         <span style={label}>Name</span>
         <input style={input} value={form.name} onChange={(e) => setF("name", e.target.value)} placeholder="Your full name" />
         <span style={label}>Phone</span>
         <input style={{ ...input, background: "#f3f4f6", color: "#888" }} value={lead?.phone || ""} disabled />
-        <span style={label}>Email</span>
+        <span style={label}>Email Address</span>
         <input style={input} value={form.email} onChange={(e) => setF("email", e.target.value)} placeholder="your@email.com" type="email" />
-        <span style={label}>City</span>
-        <input style={input} value={form.city} onChange={(e) => setF("city", e.target.value)} placeholder="Delhi" />
         <span style={label}>Your Birthday (DD-MM or YYYY-MM-DD)</span>
         <input style={input} value={form.bday} onChange={(e) => setF("bday", e.target.value)} placeholder="25-04 or 1985-04-25" />
         <span style={label}>Your Anniversary (DD-MM or YYYY-MM-DD)</span>
         <input style={input} value={form.anniversary} onChange={(e) => setF("anniversary", e.target.value)} placeholder="15-11 or 2005-11-15" />
       </div>
 
-      <div style={{ background: "#f9fafb", borderRadius: 12, padding: 16, marginTop: 16 }}>
+      {/* Full postal address */}
+      <div style={{ background: "#fff9f0", border: "1px solid #fed7aa", borderRadius: 12, padding: 16, marginTop: 14 }}>
+        <h3 style={{ fontSize: 14, margin: "0 0 6px", color: "#92400e" }}>📦 Complete Postal Address</h3>
+        <p style={{ fontSize: 12, color: "#78350f", margin: "0 0 12px" }}>Please provide your complete and correct postal address so that our gifts and deliveries can reach you.</p>
+        <span style={label}>House / Flat / Shop No. &amp; Street</span>
+        <input style={input} value={form.address_house || ""} onChange={(e) => setF("address_house", e.target.value)} placeholder="B-12, Sector 5 / Flat 304, XYZ Apartments" />
+        <span style={label}>Area / Locality / Colony</span>
+        <input style={input} value={form.address_locality || ""} onChange={(e) => setF("address_locality", e.target.value)} placeholder="Karol Bagh / Lajpat Nagar" />
+        <span style={label}>City</span>
+        <input style={input} value={form.city} onChange={(e) => setF("city", e.target.value)} placeholder="New Delhi" />
+        <span style={label}>State</span>
+        <input style={input} value={form.address_state || ""} onChange={(e) => setF("address_state", e.target.value)} placeholder="Delhi" />
+        <span style={label}>Pincode</span>
+        <input style={input} value={form.address_pincode || ""} onChange={(e) => setF("address_pincode", e.target.value)} placeholder="110005" type="tel" maxLength={6} />
+        <span style={label}>Country</span>
+        <input style={input} value={form.address_country || "India"} onChange={(e) => setF("address_country", e.target.value)} placeholder="India" />
+      </div>
+
+      {/* Family members */}
+      <div style={{ background: "#f9fafb", borderRadius: 12, padding: 16, marginTop: 14 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-          <h3 style={{ fontSize: 14, margin: 0, color: "#374151" }}>Family Members</h3>
+          <h3 style={{ fontSize: 14, margin: 0, color: "#374151" }}>👨‍👩‍👧 Family Members</h3>
           <button onClick={addMember} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 8, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>+ Add</button>
         </div>
         <p style={{ fontSize: 12, color: "#888", margin: "0 0 12px" }}>Help us wish your family on their special days too 🎂</p>
-        {family.length === 0 && <p style={{ fontSize: 13, color: "#aaa", textAlign: "center" }}>No family members added yet</p>}
+        {family.length === 0 && <p style={{ fontSize: 13, color: "#aaa", textAlign: "center" }}>Add your spouse, kids, parents</p>}
         {family.map((m, i) => (
           <div key={i} style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 10, padding: 12, marginBottom: 10 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
@@ -6868,8 +6888,28 @@ function ContactUpdateForm({ token }) {
         ))}
       </div>
 
+      {/* Refer a friend */}
+      <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 12, padding: 16, marginTop: 14 }}>
+        <h3 style={{ fontSize: 14, margin: "0 0 4px", color: "#78350f" }}>🎁 Refer a Friend — Gift Them 50mg Free Gold</h3>
+        <p style={{ fontSize: 12, color: "#92400e", margin: "0 0 12px" }}>Enter your friend or family member's mobile number. We'll WhatsApp them a free gold gift on your behalf! Redeemable after 6 months of app usage.</p>
+        {refs.map((r, i) => (
+          <div key={i} style={{ display: "flex", gap: 6, alignItems: "flex-end", marginBottom: 8 }}>
+            <div style={{ flex: 1 }}>
+              <span style={label}>Mobile</span>
+              <input style={input} value={r.phone} onChange={(e) => setRefs((p) => p.map((x, idx) => idx === i ? { ...x, phone: e.target.value } : x))} placeholder="9810XXXXXX" type="tel" />
+            </div>
+            <div style={{ flex: 1 }}>
+              <span style={label}>Name (optional)</span>
+              <input style={input} value={r.name} onChange={(e) => setRefs((p) => p.map((x, idx) => idx === i ? { ...x, name: e.target.value } : x))} placeholder="Rahul" />
+            </div>
+            {refs.length > 1 && <button onClick={() => setRefs((p) => p.filter((_, idx) => idx !== i))} style={{ fontSize: 20, color: "#dc2626", border: "none", background: "none", cursor: "pointer", paddingBottom: 6 }}>×</button>}
+          </div>
+        ))}
+        <button onClick={() => setRefs((p) => [...p, { phone: "", name: "" }])} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 8, border: "1px solid #d97706", background: "#fff", color: "#92400e", cursor: "pointer" }}>+ Add another</button>
+      </div>
+
       {err && <p style={{ color: "#dc2626", fontSize: 13, marginTop: 8 }}>{err}</p>}
-      <button style={btn} onClick={save} disabled={saving}>{saving ? "Saving…" : "Save My Details ✓"}</button>
+      <button style={btn} onClick={save} disabled={saving}>{saving ? "Saving…" : "Save Details & Send Gifts ✓"}</button>
       <p style={{ fontSize: 11, color: "#aaa", textAlign: "center", marginTop: 12 }}>Sun Sea Jewellers · Karol Bagh, New Delhi</p>
     </div>
   );
@@ -6888,7 +6928,8 @@ function GenericProfileForm() {
   const [rawPhone, setRawPhone] = useState("");
   const [lead, setLead] = useState(null);
   const [family, setFamily] = useState([]);
-  const [form, setForm] = useState({ name: "", email: "", city: "", bday: "", anniversary: "" });
+  const [refs, setRefs] = useState([{ phone: "", name: "" }]);
+  const [form, setForm] = useState({ name: "", email: "", city: "", address_house: "", address_locality: "", address_state: "", address_pincode: "", address_country: "India", bday: "", anniversary: "" });
   const [deletedIds, setDeletedIds] = useState([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -6906,7 +6947,7 @@ function GenericProfileForm() {
         setLead(d.lead || null);
         setFamily(d.family || []);
         if (d.lead) {
-          setForm({ name: d.lead.name || "", email: d.lead.email || "", city: d.lead.city || "", bday: d.lead.bday || "", anniversary: d.lead.anniversary || "" });
+          setForm({ name: d.lead.name || "", email: d.lead.email || "", city: d.lead.city || "", address_house: d.lead.address_house || "", address_locality: d.lead.address_locality || "", address_state: d.lead.address_state || "", address_pincode: d.lead.address_pincode || "", address_country: d.lead.address_country || "India", bday: d.lead.bday || "", anniversary: d.lead.anniversary || "" });
         }
         setStep("form");
       } else { setErr("Something went wrong. Try again."); }
@@ -6922,10 +6963,11 @@ function GenericProfileForm() {
   const save = async () => {
     setSaving(true); setErr("");
     try {
+      const validRefs = refs.filter((r) => r.phone.replace(/\D/g, "").length >= 10);
       const r = await fetch("/api/contact-update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone: normalised, ...form, family, deletedFamilyIds: deletedIds }),
+        body: JSON.stringify({ phone: normalised, ...form, family, deletedFamilyIds: deletedIds, referrals: validRefs }),
       });
       const d = await r.json();
       if (d.ok) { setStep("done"); }
@@ -6964,6 +7006,10 @@ function GenericProfileForm() {
   );
 
   // step === "form"
+  const addRef = () => setRefs((r) => [...r, { phone: "", name: "" }]);
+  const setRef = (i, k, v) => setRefs((r) => r.map((x, idx) => idx === i ? { ...x, [k]: v } : x));
+  const removeRef = (i) => setRefs((r) => r.filter((_, idx) => idx !== i));
+
   return (
     <div style={S}>
       <div style={{ textAlign: "center", marginBottom: 20 }}>
@@ -6974,29 +7020,47 @@ function GenericProfileForm() {
         </p>
       </div>
 
+      {/* Personal details */}
       <div style={{ background: "#f9fafb", borderRadius: 12, padding: 16 }}>
         <h3 style={{ fontSize: 14, margin: "0 0 12px", color: "#374151" }}>Your Details</h3>
         <span style={label}>Name *</span>
         <input style={input} value={form.name} onChange={(e) => setF("name", e.target.value)} placeholder="Your full name" />
         <span style={label}>Phone</span>
         <input style={{ ...input, background: "#f3f4f6", color: "#888" }} value={rawPhone} disabled />
-        <span style={label}>Email</span>
+        <span style={label}>Email Address</span>
         <input style={input} value={form.email} onChange={(e) => setF("email", e.target.value)} placeholder="your@email.com" type="email" />
-        <span style={label}>City</span>
-        <input style={input} value={form.city} onChange={(e) => setF("city", e.target.value)} placeholder="Delhi" />
         <span style={label}>Your Birthday (DD-MM or YYYY-MM-DD)</span>
         <input style={input} value={form.bday} onChange={(e) => setF("bday", e.target.value)} placeholder="25-04 or 1985-04-25" />
         <span style={label}>Your Anniversary (DD-MM or YYYY-MM-DD)</span>
         <input style={input} value={form.anniversary} onChange={(e) => setF("anniversary", e.target.value)} placeholder="15-11 or 2005-11-15" />
       </div>
 
-      <div style={{ background: "#f9fafb", borderRadius: 12, padding: 16, marginTop: 16 }}>
+      {/* Full postal address */}
+      <div style={{ background: "#fff9f0", border: "1px solid #fed7aa", borderRadius: 12, padding: 16, marginTop: 14 }}>
+        <h3 style={{ fontSize: 14, margin: "0 0 6px", color: "#92400e" }}>📦 Complete Postal Address</h3>
+        <p style={{ fontSize: 12, color: "#78350f", margin: "0 0 12px" }}>Please provide your complete and correct postal address so that our gifts and deliveries can reach you.</p>
+        <span style={label}>House / Flat / Shop No. &amp; Street</span>
+        <input style={input} value={form.address_house} onChange={(e) => setF("address_house", e.target.value)} placeholder="B-12, Sector 5 / Flat 304, XYZ Apartments" />
+        <span style={label}>Area / Locality / Colony</span>
+        <input style={input} value={form.address_locality} onChange={(e) => setF("address_locality", e.target.value)} placeholder="Karol Bagh / Lajpat Nagar / Dwarka" />
+        <span style={label}>City</span>
+        <input style={input} value={form.city} onChange={(e) => setF("city", e.target.value)} placeholder="New Delhi" />
+        <span style={label}>State</span>
+        <input style={input} value={form.address_state} onChange={(e) => setF("address_state", e.target.value)} placeholder="Delhi" />
+        <span style={label}>Pincode</span>
+        <input style={input} value={form.address_pincode} onChange={(e) => setF("address_pincode", e.target.value)} placeholder="110005" type="tel" maxLength={6} />
+        <span style={label}>Country</span>
+        <input style={input} value={form.address_country} onChange={(e) => setF("address_country", e.target.value)} placeholder="India" />
+      </div>
+
+      {/* Family members */}
+      <div style={{ background: "#f9fafb", borderRadius: 12, padding: 16, marginTop: 14 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-          <h3 style={{ fontSize: 14, margin: 0, color: "#374151" }}>Family Members</h3>
+          <h3 style={{ fontSize: 14, margin: 0, color: "#374151" }}>👨‍👩‍👧 Family Members</h3>
           <button onClick={addMember} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 8, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>+ Add</button>
         </div>
         <p style={{ fontSize: 12, color: "#888", margin: "0 0 12px" }}>Help us wish your family on their special days too 🎂</p>
-        {family.length === 0 && <p style={{ fontSize: 13, color: "#aaa", textAlign: "center" }}>No family members yet</p>}
+        {family.length === 0 && <p style={{ fontSize: 13, color: "#aaa", textAlign: "center" }}>No family members yet — add your spouse, kids, parents</p>}
         {family.map((m, i) => (
           <div key={i} style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 10, padding: 12, marginBottom: 10 }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
@@ -7016,8 +7080,28 @@ function GenericProfileForm() {
         ))}
       </div>
 
+      {/* Refer a friend */}
+      <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 12, padding: 16, marginTop: 14 }}>
+        <h3 style={{ fontSize: 14, margin: "0 0 4px", color: "#78350f" }}>🎁 Refer a Friend — Gift Them 50mg Free Gold</h3>
+        <p style={{ fontSize: 12, color: "#92400e", margin: "0 0 12px" }}>Enter your friend's mobile number below. We'll WhatsApp them a free gold gift on your behalf! Gift redeemable after 6 months of app usage.</p>
+        {refs.map((r, i) => (
+          <div key={i} style={{ display: "flex", gap: 6, alignItems: "flex-end", marginBottom: 8 }}>
+            <div style={{ flex: 1 }}>
+              <span style={label}>Friend's Mobile</span>
+              <input style={input} value={r.phone} onChange={(e) => setRef(i, "phone", e.target.value)} placeholder="9810XXXXXX" type="tel" />
+            </div>
+            <div style={{ flex: 1 }}>
+              <span style={label}>Friend's Name</span>
+              <input style={input} value={r.name} onChange={(e) => setRef(i, "name", e.target.value)} placeholder="Rahul (optional)" />
+            </div>
+            {refs.length > 1 && <button onClick={() => removeRef(i)} style={{ fontSize: 20, color: "#dc2626", border: "none", background: "none", cursor: "pointer", paddingBottom: 6 }}>×</button>}
+          </div>
+        ))}
+        <button onClick={addRef} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 8, border: "1px solid #d97706", background: "#fff", color: "#92400e", cursor: "pointer" }}>+ Add another friend</button>
+      </div>
+
       {err && <p style={{ color: "#dc2626", fontSize: 13, marginTop: 8 }}>{err}</p>}
-      <button style={btn} onClick={save} disabled={saving}>{saving ? "Saving…" : "Save My Details ✓"}</button>
+      <button style={btn} onClick={save} disabled={saving}>{saving ? "Saving…" : "Save Details & Send Gifts ✓"}</button>
       <p style={{ fontSize: 11, color: "#aaa", textAlign: "center", marginTop: 12 }}>Sun Sea Jewellers · Karol Bagh, New Delhi</p>
     </div>
   );

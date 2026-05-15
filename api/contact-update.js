@@ -79,7 +79,7 @@ export default async function handler(req, res) {
     if (!phone) return res.status(400).json({ ok: false, error: "invalid_phone" });
     const { data: lead } = await sb
       .from("bullion_leads")
-      .select("id, name, phone, email, city, bday, anniversary, form_token")
+      .select("id, name, phone, email, city, address_house, address_locality, address_state, address_pincode, address_country, bday, anniversary, form_token")
       .eq("phone", phone)
       .eq("tenant_id", TENANT_ID)
       .maybeSingle();
@@ -99,7 +99,7 @@ export default async function handler(req, res) {
     }
     const { data: lead, error } = await sb
       .from("bullion_leads")
-      .select("id, name, phone, email, city, bday, anniversary, wa_display_name")
+      .select("id, name, phone, email, city, address_house, address_locality, address_state, address_pincode, address_country, bday, anniversary, wa_display_name")
       .eq("form_token", token)
       .maybeSingle();
     if (error || !lead) return res.status(404).json({ ok: false, error: "not_found" });
@@ -165,11 +165,16 @@ export default async function handler(req, res) {
 
   // ── Update lead fields ─────────────────────────────────────────
   const update = {};
-  if (body.name)        update.name        = String(body.name).slice(0, 100);
-  if (body.email)       update.email       = String(body.email).slice(0, 200);
-  if (body.city)        update.city        = String(body.city).slice(0, 100);
-  if (body.bday)        update.bday        = String(body.bday).slice(0, 20);
-  if (body.anniversary) update.anniversary = String(body.anniversary).slice(0, 20);
+  if (body.name)             update.name             = String(body.name).slice(0, 100);
+  if (body.email)            update.email            = String(body.email).slice(0, 200);
+  if (body.city)             update.city             = String(body.city).slice(0, 100);
+  if (body.address_house)    update.address_house    = String(body.address_house).slice(0, 300);
+  if (body.address_locality) update.address_locality = String(body.address_locality).slice(0, 200);
+  if (body.address_state)    update.address_state    = String(body.address_state).slice(0, 100);
+  if (body.address_pincode)  update.address_pincode  = String(body.address_pincode).slice(0, 10);
+  if (body.address_country)  update.address_country  = String(body.address_country).slice(0, 100);
+  if (body.bday)             update.bday             = String(body.bday).slice(0, 20);
+  if (body.anniversary)      update.anniversary      = String(body.anniversary).slice(0, 20);
   if (Object.keys(update).length) {
     await sb.from("bullion_leads").update(update).eq("id", lead.id);
     if (update.name) lead.name = update.name;
