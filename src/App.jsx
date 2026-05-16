@@ -4112,7 +4112,7 @@ function ContactsScreen({ funnels }) {
       .order("name", { ascending: true, nullsFirst: false })
       .range(from, to);
     if (q.trim()) {
-      query = query.or(`name.ilike.%${q}%,phone.ilike.%${q}%,mobile2.ilike.%${q}%,spouse_mobile.ilike.%${q}%,email.ilike.%${q}%,city.ilike.%${q}%,source.ilike.%${q}%,bday.ilike.%${q}%,company.ilike.%${q}%,client_code.ilike.%${q}%,extra_fields::text.ilike.%${q}%`);
+      query = query.or(`name.ilike.%${q}%,phone.ilike.%${q}%,mobile2.ilike.%${q}%,spouse_mobile.ilike.%${q}%,email.ilike.%${q}%,city.ilike.%${q}%,source.ilike.%${q}%,bday.ilike.%${q}%,company.ilike.%${q}%,client_code.ilike.%${q}%`);
     }
     if (tags.length > 0) {
       if (logic === "AND") tags.forEach(t => { query = query.contains("tags", [t]); });
@@ -4131,8 +4131,22 @@ function ContactsScreen({ funnels }) {
     if (cf.source) query = query.eq("source", cf.source);
     if (cf.tags) query = query.contains("tags", [cf.tags]);
     const { data, count } = await query;
-    setContacts(data || []);
-    setTotal(count || 0);
+    let results = data || [];
+    // Second query: find records whose custom fields (extra_fields JSONB) match the search term
+    if (q.trim()) {
+      const { data: efData } = await sb.from("bullion_leads")
+        .select("*")
+        .eq("tenant_id", getTenantId())
+        .is("deleted_at", null)
+        .filter("extra_fields::text", "ilike", `%${q.trim()}%`)
+        .limit(200);
+      if (efData?.length) {
+        const existingIds = new Set(results.map(r => r.id));
+        results = [...results, ...efData.filter(r => !existingIds.has(r.id))];
+      }
+    }
+    setContacts(results);
+    setTotal(q.trim() ? results.length : (count || 0));
     setLoading(false);
   }, []);
 
@@ -5579,7 +5593,7 @@ function ContactsDBScreen() {
         .is("deleted_at", null)
         .order("name", { ascending: true, nullsFirst: false })
         .limit(500);
-      if (sq) q = q.or(`name.ilike.%${sq}%,phone.ilike.%${sq}%,mobile2.ilike.%${sq}%,email.ilike.%${sq}%,city.ilike.%${sq}%,client_code.ilike.%${sq}%,company.ilike.%${sq}%,extra_fields::text.ilike.%${sq}%`);
+      if (sq) q = q.or(`name.ilike.%${sq}%,phone.ilike.%${sq}%,mobile2.ilike.%${sq}%,email.ilike.%${sq}%,city.ilike.%${sq}%,client_code.ilike.%${sq}%,company.ilike.%${sq}%`);
       // Source: check both the source column (manually set) AND tags array (set by import script).
       // Imported contacts store source in tags (e.g. "sanjeevji"), not in the source column.
       if (src) q = q.or(`source.ilike.${src},tags.cs.{"${src}"}`);
