@@ -8042,9 +8042,11 @@ export default function App() {
   };
 
   const crmPerms = user?.app_permissions?.crm;
+  const roleDefault = ROLE_DEFAULT_TABS[user?.role] || ["demands"];
+  // Role defaults are always the MINIMUM — app_permissions can only add tabs, never restrict.
   const allowedKeys = crmPerms
-    ? (crmPerms.includes("all") ? ALL_TABS.map((t) => t.k) : crmPerms)
-    : (ROLE_DEFAULT_TABS[user?.role] || ["demands"]);
+    ? (crmPerms.includes("all") ? ALL_TABS.map((t) => t.k) : [...new Set([...roleDefault, ...crmPerms])])
+    : roleDefault;
 
   const tabs = ALL_TABS.filter((t) => allowedKeys.includes(t.k));
   // If current screen was removed from permissions (e.g. after re-login as different role),
