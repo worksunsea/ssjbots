@@ -4112,7 +4112,7 @@ function ContactsScreen({ funnels }) {
       .order("name", { ascending: true, nullsFirst: false })
       .range(from, to);
     if (q.trim()) {
-      query = query.or(`name.ilike.%${q}%,phone.ilike.%${q}%,mobile2.ilike.%${q}%,spouse_mobile.ilike.%${q}%,email.ilike.%${q}%,city.ilike.%${q}%,source.ilike.%${q}%,bday.ilike.%${q}%,company.ilike.%${q}%,client_code.ilike.%${q}%`);
+      query = query.or(`name.ilike.%${q}%,phone.ilike.%${q}%,mobile2.ilike.%${q}%,spouse_mobile.ilike.%${q}%,email.ilike.%${q}%,city.ilike.%${q}%,source.ilike.%${q}%,bday.ilike.%${q}%,company.ilike.%${q}%,client_code.ilike.%${q}%,extra_fields::text.ilike.%${q}%`);
     }
     if (tags.length > 0) {
       if (logic === "AND") tags.forEach(t => { query = query.contains("tags", [t]); });
@@ -5579,7 +5579,7 @@ function ContactsDBScreen() {
         .is("deleted_at", null)
         .order("name", { ascending: true, nullsFirst: false })
         .limit(500);
-      if (sq) q = q.or(`name.ilike.%${sq}%,phone.ilike.%${sq}%,mobile2.ilike.%${sq}%,email.ilike.%${sq}%,city.ilike.%${sq}%,client_code.ilike.%${sq}%,company.ilike.%${sq}%`);
+      if (sq) q = q.or(`name.ilike.%${sq}%,phone.ilike.%${sq}%,mobile2.ilike.%${sq}%,email.ilike.%${sq}%,city.ilike.%${sq}%,client_code.ilike.%${sq}%,company.ilike.%${sq}%,extra_fields::text.ilike.%${sq}%`);
       // Source: check both the source column (manually set) AND tags array (set by import script).
       // Imported contacts store source in tags (e.g. "sanjeevji"), not in the source column.
       if (src) q = q.or(`source.ilike.${src},tags.cs.{"${src}"}`);
