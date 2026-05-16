@@ -4112,7 +4112,7 @@ function ContactsScreen({ funnels }) {
       .order("name", { ascending: true, nullsFirst: false })
       .range(from, to);
     if (q.trim()) {
-      query = query.or(`name.ilike.%${q}%,phone.ilike.%${q}%,mobile2.ilike.%${q}%,spouse_mobile.ilike.%${q}%,email.ilike.%${q}%,city.ilike.%${q}%,source.ilike.%${q}%,bday.ilike.%${q}%`);
+      query = query.or(`name.ilike.%${q}%,phone.ilike.%${q}%,mobile2.ilike.%${q}%,spouse_mobile.ilike.%${q}%,email.ilike.%${q}%,city.ilike.%${q}%,source.ilike.%${q}%,bday.ilike.%${q}%,company.ilike.%${q}%,client_code.ilike.%${q}%`);
     }
     if (tags.length > 0) {
       if (logic === "AND") tags.forEach(t => { query = query.contains("tags", [t]); });
