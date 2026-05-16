@@ -4112,7 +4112,18 @@ function ContactsScreen({ funnels }) {
       .order("name", { ascending: true, nullsFirst: false })
       .range(from, to);
     if (q.trim()) {
-      query = query.or(`name.ilike.%${q}%,phone.ilike.%${q}%,mobile2.ilike.%${q}%,spouse_mobile.ilike.%${q}%,email.ilike.%${q}%,city.ilike.%${q}%,source.ilike.%${q}%,bday.ilike.%${q}%,company.ilike.%${q}%,client_code.ilike.%${q}%`);
+      // Use RPC function that searches extra_fields JSONB too
+      const { data: rpcData } = await sb.rpc("search_leads", { p_tenant_id: getTenantId(), p_term: q.trim() });
+      let results = rpcData || [];
+      // Apply tag filters client-side on RPC results
+      if (tags.length > 0) {
+        if (logic === "AND") results = results.filter(r => tags.every(t => (r.tags || []).includes(t)));
+        else results = results.filter(r => tags.some(t => (r.tags || []).includes(t)));
+      }
+      setContacts(results);
+      setTotal(results.length);
+      setLoading(false);
+      return;
     }
     if (tags.length > 0) {
       if (logic === "AND") tags.forEach(t => { query = query.contains("tags", [t]); });
@@ -4131,22 +4142,8 @@ function ContactsScreen({ funnels }) {
     if (cf.source) query = query.eq("source", cf.source);
     if (cf.tags) query = query.contains("tags", [cf.tags]);
     const { data, count } = await query;
-    let results = data || [];
-    // Second query: find records whose custom fields (extra_fields JSONB) match the search term
-    if (q.trim()) {
-      const { data: efData } = await sb.from("bullion_leads")
-        .select("*")
-        .eq("tenant_id", getTenantId())
-        .is("deleted_at", null)
-        .filter("extra_fields::text", "ilike", `%${q.trim()}%`)
-        .limit(200);
-      if (efData?.length) {
-        const existingIds = new Set(results.map(r => r.id));
-        results = [...results, ...efData.filter(r => !existingIds.has(r.id))];
-      }
-    }
-    setContacts(results);
-    setTotal(q.trim() ? results.length : (count || 0));
+    setContacts(data || []);
+    setTotal(count || 0);
     setLoading(false);
   }, []);
 
