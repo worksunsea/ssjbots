@@ -7951,8 +7951,8 @@ export default function App() {
   // second login (mobile browsers partition iframe localStorage by parent).
   useEffect(() => {
     const handler = (e) => {
-      const allowed = ["https://fms.gemtre.in", "https://fms-tracker.vercel.app"];
-      if (!allowed.includes(e.origin) && !/^https:\/\/fms-tracker-.*\.vercel\.app$/.test(e.origin)) return;
+      const allowed = ["https://fms.gemtre.in", "https://fms-tracker.vercel.app", "https://jewelbos.vercel.app", "https://jewelbos.com"];
+      if (!allowed.includes(e.origin) && !/^https:\/\/(fms-tracker|jewelbos)-.*\.vercel\.app$/.test(e.origin)) return;
       if (e.data?.type === "sso-login" && e.data.user) {
         saveUser(e.data.user);
         setUser(e.data.user);
