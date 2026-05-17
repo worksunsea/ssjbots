@@ -11,7 +11,7 @@
     {
       "source": "/(.*)",
       "headers": [
-        { "key": "Content-Security-Policy", "value": "frame-ancestors 'self' https://fms.gemtre.in https://*.vercel.app" }
+        { "key": "Content-Security-Policy", "value": "frame-ancestors 'self' https://fms.gemtre.in https://*.vercel.app https://jewelbos.com" }
       ]
     }
   ]
