@@ -1027,9 +1027,6 @@ function DemandsScreen({ funnels, allTags }) {
       const ta = tempRank(demandTemperature(a));
       const tb = tempRank(demandTemperature(b));
       if (ta !== tb) return ta - tb;
-      const da = a.occasion_date ? new Date(a.occasion_date) - new Date() : Infinity;
-      const db = b.occasion_date ? new Date(b.occasion_date) - new Date() : Infinity;
-      if (da !== db) return da - db;
       return new Date(b.updated_at) - new Date(a.updated_at);
     });
     setDemands(sorted);
