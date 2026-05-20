@@ -161,7 +161,6 @@ function LoginScreen({ onLogin }) {
 
   return (
     <div style={{ maxWidth: 360, margin: "4rem auto", padding: "2rem", background: "#fff", border: "1px solid #e0e0e0", borderRadius: 16 }}>
-      <h2 style={{ fontSize: 18, fontWeight: 600, margin: "0 0 4px" }}>SSJ Jew CRM</h2>
       <p style={{ fontSize: 13, color: "#888", margin: "0 0 24px" }}>Leads · Funnels · Approvals · Analytics</p>
       <label style={{ fontSize: 11, color: "#888", display: "block", marginBottom: 4 }}>USERNAME</label>
       <input value={u} onChange={(e) => setU(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} style={{ width: "100%", fontSize: 14, marginBottom: 12, padding: 8, borderRadius: 8, border: "1px solid #ddd" }} />
@@ -169,7 +168,6 @@ function LoginScreen({ onLogin }) {
       <input type="password" value={p} onChange={(e) => setP(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} style={{ width: "100%", fontSize: 14, marginBottom: 16, padding: 8, borderRadius: 8, border: "1px solid #ddd" }} />
       {err && <p style={{ fontSize: 12, color: C.red, margin: "0 0 12px" }}>{err}</p>}
       <button onClick={submit} disabled={loading} style={{ width: "100%", padding: 10, borderRadius: 8, border: "none", background: C.blue, color: "#fff", fontSize: 14, cursor: "pointer", fontWeight: 500 }}>{loading ? "Logging in..." : "Login"}</button>
-      <p style={{ fontSize: 11, color: "#aaa", margin: "16px 0 0", textAlign: "center" }}>Uses your Sun Sea staff account.</p>
     </div>
   );
 }
