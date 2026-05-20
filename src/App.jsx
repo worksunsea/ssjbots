@@ -6830,7 +6830,6 @@ function ContactUpdateForm({ token }) {
     <div style={S}>
       <div style={{ textAlign: "center", marginBottom: 24 }}>
         <div style={{ fontSize: 32 }}>💎</div>
-        <h2 style={{ fontSize: 18, margin: "8px 0 4px" }}>Sun Sea Jewellers</h2>
         <p style={{ fontSize: 13, color: "#666", margin: 0 }}>Please confirm your details so we can serve you better</p>
       </div>
 
@@ -6987,7 +6986,6 @@ function GenericProfileForm() {
     <div style={S}>
       <div style={{ textAlign: "center", marginBottom: 28 }}>
         <div style={{ fontSize: 36 }}>💎</div>
-        <h2 style={{ fontSize: 20, margin: "10px 0 4px" }}>Sun Sea Jewellers</h2>
         <p style={{ fontSize: 13, color: "#666" }}>Enter your mobile number to update your details or register as a new client</p>
       </div>
       <span style={label}>Mobile Number</span>
@@ -7021,7 +7019,6 @@ function GenericProfileForm() {
     <div style={S}>
       <div style={{ textAlign: "center", marginBottom: 20 }}>
         <div style={{ fontSize: 32 }}>💎</div>
-        <h2 style={{ fontSize: 18, margin: "8px 0 4px" }}>Sun Sea Jewellers</h2>
         <p style={{ fontSize: 13, color: lead ? "#16a34a" : "#666", margin: 0 }}>
           {lead ? `Welcome back! Updating details for ${rawPhone}` : `Registering new client: ${rawPhone}`}
         </p>
@@ -8010,7 +8007,6 @@ export default function App() {
   const header = (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
       <div>
-        <h2 style={{ fontSize: 18, fontWeight: 600, margin: "0 0 2px" }}>SSJ Jew CRM</h2>
         <p style={{ fontSize: 12, color: "#888", margin: 0 }}>{ROLES[user.role] || user.role} · {user.name}</p>
       </div>
       <button onClick={logout} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 7, border: "1px solid #ddd", background: "transparent", cursor: "pointer" }}>Logout</button>
