@@ -11,14 +11,140 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Push CRMApp.jsx to jewelbos
+      - name: Transform and push CRMApp.jsx to jewelbos
         env:
           JEWELBOS_PAT: ${{ secrets.JEWELBOS_PAT }}
         run: |
           git config --global user.email "sync-bot@jewelbos.com"
           git config --global user.name "JewelBos Sync Bot"
           git clone https://x-access-token:${JEWELBOS_PAT}@github.com/worksunsea/jewelbos.git jewelbos
-          cp src/App.jsx jewelbos/modules/CRMApp.jsx
+
+          python3 - << 'PYEOF'
+          import re
+          with open("src/App.jsx", "r", encoding="utf-8") as f:
+              src = f.read()
+          lines = src.split("\n")
+          out = []
+          i = 0
+
+          app_start = next(j for j,l in enumerate(lines) if "export default function App()" in l)
+
+          HEADER = [
+              'import { sb } from "../lib/supabase";',
+              '// getTenantId() supplied via tenantId prop; sb imported from shared client.',
+              'let _tenantId = "";',
+              'const getTenantId = () => _tenantId;',
+              '',
+          ]
+
+          # Phase 1: process lines before App() — strip supabase setup, inject header
+          while i < app_start:
+              line = lines[i]
+              stripped = line.strip()
+              # Drop createClient import
+              if stripped == 'import { createClient } from "@supabase/supabase-js";':
+                  i += 1; continue
+              # At SUPABASE_URL, inject header and skip setup block
+              if stripped.startswith('const SUPABASE_URL'):
+                  out.extend(HEADER)
+                  while i < app_start and any(lines[i].strip().startswith(p) for p in [
+                      'const SUPABASE_URL', 'const SUPABASE_ANON', 'const sb ',
+                      'const DEFAULT_TENANT_ID', 'const getTenantId',
+                      '// ── SUPABASE', '// Default tenant',
+                  ]):
+                      i += 1
+                  continue
+              out.append(line)
+              i += 1
+
+          # Phase 2: App() function — replace signature and strip auth boilerplate
+          out.append('export default function CRMApp({tenantId, user:userProp, onLogout, hideHeader, perms:permsProp}) {')
+          out.append('  _tenantId = userProp?.tenant_id || tenantId;')
+          i += 1  # skip original App() line
+
+          # Skip customer-facing page checks (profileToken + isProfilePage blocks)
+          skip_customer = 0
+          while i < len(lines) and skip_customer < 4:
+              line = lines[i]
+              stripped = line.strip()
+              if any(p in stripped for p in ['profileToken', 'isProfilePage', 'ContactUpdateForm', 'GenericProfileForm']):
+                  i += 1; skip_customer += 1; continue
+              break
+
+          # Now process until end
+          while i < len(lines):
+              line = lines[i]
+              stripped = line.strip()
+
+              # Replace useState(loadUser) with useState(userProp)
+              if 'useState(loadUser)' in line:
+                  out.append(line.replace('useState(loadUser)', 'useState(userProp)'))
+                  i += 1; continue
+
+              # When we hit "const login", replace with logout shim and skip through SSO/perms blocks
+              if stripped.startswith('const login = (u)') or stripped.startswith('const login=(u)'):
+                  out.append('  const logout = () => onLogout?.();')
+                  # Skip login, logout lines
+                  while i < len(lines):
+                      if lines[i].strip().startswith('const login') or lines[i].strip().startswith('const logout'):
+                          i += 1; continue
+                      break
+                  # Skip SSO useEffect and perms refresh useEffect (two consecutive useEffects)
+                  effects_skipped = 0
+                  while i < len(lines) and effects_skipped < 2:
+                      stripped_i = lines[i].strip()
+                      if stripped_i == '' or stripped_i.startswith('//'):
+                          i += 1; continue
+                      if stripped_i.startswith('useEffect('):
+                          depth = 0
+                          while i < len(lines):
+                              for ch in lines[i]:
+                                  if ch == '{': depth += 1
+                                  elif ch == '}': depth -= 1
+                              i += 1
+                              if depth == 0 and lines[i-1].strip().startswith('}'):
+                                  break
+                          effects_skipped += 1
+                          continue
+                      break
+                  continue
+
+              # Replace LoginScreen with null return
+              if 'return <LoginScreen' in line or 'return<LoginScreen' in line:
+                  out.append('  if (!user) return null;')
+                  i += 1; continue
+
+              # Wrap {header} with hideHeader check
+              if stripped == '{header}':
+                  out.append(line.replace('{header}', '{!hideHeader && header}'))
+                  i += 1; continue
+
+              out.append(line)
+              i += 1
+
+          result = "\n".join(out)
+
+          # Push notification: reassign — after setReassignOpen(false)
+          old_reassign = 'setReassignOpen(false);\n    // Optimistic update'
+          new_reassign = 'setReassignOpen(false);\n    if (staffId) fetch(\'/api/push/send\',{method:\'POST\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({tenant_id:getTenantId(),staff_id:staffId,title:\'Lead Assigned to You\',body:(demand?.lead?.name||demand?.lead?.phone||\'New lead\')+\' has been assigned to you\',url:window.location.pathname,tag:\'lead\'})}).catch(()=>{});\n    // Optimistic update'
+          if old_reassign in result:
+              result = result.replace(old_reassign, new_reassign, 1)
+          else:
+              print("WARNING: reassign push insertion point not found")
+
+          # Push notification: walkin demand — before setTimeout onSaved
+          old_walkin = "setTimeout(() => { onSaved(); }, 3000);"
+          new_walkin = "if (form.assignedStaffId) fetch('/api/push/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tenant_id:getTenantId(),staff_id:form.assignedStaffId,title:'New Lead Assigned',body:(form.name||'New client')+' walk-in assigned to you',url:window.location.pathname,tag:'lead'})}).catch(()=>{});\n      setTimeout(() => { onSaved(); }, 3000);"
+          if old_walkin in result:
+              result = result.replace(old_walkin, new_walkin, 1)
+          else:
+              print("WARNING: walkin push insertion point not found")
+
+          with open("jewelbos/modules/CRMApp.jsx", "w", encoding="utf-8") as f:
+              f.write(result)
+          print("CRMApp transformed, lines:", result.count("\n"))
+          PYEOF
+
           cd jewelbos
           git add modules/CRMApp.jsx
           if ! git diff --staged --quiet; then
