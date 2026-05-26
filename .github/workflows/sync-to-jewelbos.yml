@@ -1,0 +1,27 @@
+name: Sync CRMApp to JewelBos
+
+on:
+  push:
+    branches: [main]
+    paths: ["src/App.jsx"]
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Push CRMApp.jsx to jewelbos
+        env:
+          JEWELBOS_PAT: ${{ secrets.JEWELBOS_PAT }}
+        run: |
+          git config --global user.email "sync-bot@jewelbos.com"
+          git config --global user.name "JewelBos Sync Bot"
+          git clone https://x-access-token:${JEWELBOS_PAT}@github.com/worksunsea/jewelbos.git jewelbos
+          cp src/App.jsx jewelbos/modules/CRMApp.jsx
+          cd jewelbos
+          git add modules/CRMApp.jsx
+          if ! git diff --staged --quiet; then
+            git commit -m "sync: update CRMApp from ssjbots"
+            git push
+          fi
