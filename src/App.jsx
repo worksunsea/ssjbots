@@ -5095,8 +5095,6 @@ function ApprovalsScreen({ funnels }) {
   const [saving, setSaving] = useState(new Set());
   const [editContact, setEditContact] = useState(null); // full lead object for ContactEditModal
   const [editContactTags, setEditContactTags] = useState([]);
-  const [editingNameId, setEditingNameId] = useState(null); // leadId being inline-name-edited
-  const [editingNameVal, setEditingNameVal] = useState("");
   const [expanded, setExpanded] = useState(new Set()); // expanded person/date groups
   const [cronRunning, setCronRunning] = useState(false);
   const [cronResult, setCronResult] = useState(null);
@@ -5208,17 +5206,7 @@ function ApprovalsScreen({ funnels }) {
     }
   };
 
-  const saveInlineName = async (leadId) => {
-    const name = editingNameVal.trim();
-    if (!name) return;
-    await sb.from("bullion_leads").update({ name }).eq("id", leadId);
-    const patch = (arr) => arr.map((m) => m.lead_id === leadId ? { ...m, lead: { ...m.lead, name } } : m);
-    setCalRows(patch);
-    setRows(patch);
-    setEditingNameId(null);
-  };
-
-  const activeRows = tab === "calendar" ? calRows : rows;
+const activeRows = tab === "calendar" ? calRows : rows;
 
   const grouped = useMemo(() => {
     const map = new Map();
@@ -5256,18 +5244,10 @@ function ApprovalsScreen({ funnels }) {
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
           {groupBy === "date" && (
             <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-              {editingNameId === r.lead_id ? (
-                <>
-                  <input autoFocus value={editingNameVal} onChange={(e) => setEditingNameVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveInlineName(r.lead_id); if (e.key === "Escape") setEditingNameId(null); }} style={{ fontSize: 13, padding: "1px 6px", borderRadius: 4, border: "1px solid #6366f1", width: 130 }} />
-                  <button onClick={() => saveInlineName(r.lead_id)} style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, border: "1px solid #16a34a", background: "#f0fdf4", color: "#166534", cursor: "pointer" }}>✓</button>
-                  <button onClick={() => setEditingNameId(null)} style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, border: "1px solid #ddd", background: "#f9fafb", cursor: "pointer" }}>✗</button>
-                </>
-              ) : (
-                <>
+              <>
                   <span style={{ fontWeight: 600, fontSize: 13 }}>{r.lead?.name || r.lead?.phone}</span>
-                  <button onClick={() => { setEditingNameId(r.lead_id); setEditingNameVal(r.lead?.name || ""); }} title="Edit name" style={{ fontSize: 11, padding: "1px 5px", borderRadius: 4, border: "1px solid #ddd", background: "#f9fafb", cursor: "pointer" }}>✏️</button>
+                  <button onClick={() => openContactEdit(r.lead_id)} title="Edit contact" style={{ fontSize: 11, padding: "1px 5px", borderRadius: 4, border: "1px solid #ddd", background: "#f9fafb", cursor: "pointer" }}>✏️</button>
                 </>
-              )}
               <span style={{ fontSize: 11, color: "#888" }}>{r.lead?.phone}</span>
             </div>
           )}
@@ -5397,18 +5377,10 @@ function ApprovalsScreen({ funnels }) {
                 <span style={{ fontSize: 14 }}>{isOpen ? "▼" : "▶"}</span>
                 {groupBy === "person" && (
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }} onClick={(e) => e.stopPropagation()}>
-                    {editingNameId === g.leadId ? (
-                      <>
-                        <input autoFocus value={editingNameVal} onChange={(e) => setEditingNameVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveInlineName(g.leadId); if (e.key === "Escape") setEditingNameId(null); }} style={{ fontSize: 13, padding: "1px 6px", borderRadius: 4, border: "1px solid #6366f1", width: 140 }} />
-                        <button onClick={() => saveInlineName(g.leadId)} style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, border: "1px solid #16a34a", background: "#f0fdf4", color: "#166534", cursor: "pointer" }}>✓</button>
-                        <button onClick={() => setEditingNameId(null)} style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, border: "1px solid #ddd", background: "#f9fafb", cursor: "pointer" }}>✗</button>
-                      </>
-                    ) : (
-                      <>
+                    <>
                         <span style={{ fontSize: 14, fontWeight: 600 }}>{g.label}</span>
-                        <button onClick={() => { setEditingNameId(g.leadId); setEditingNameVal(g.label || ""); }} title="Edit name" style={{ fontSize: 11, padding: "1px 5px", borderRadius: 4, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>✏️ Edit</button>
+                        <button onClick={() => openContactEdit(g.leadId)} title="Edit contact" style={{ fontSize: 11, padding: "1px 5px", borderRadius: 4, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>✏️ Edit</button>
                       </>
-                    )}
                     <span style={{ fontSize: 12, color: "#888" }}>{g.phone}</span>
                   </div>
                 )}
