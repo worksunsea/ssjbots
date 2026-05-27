@@ -171,10 +171,11 @@ export function ratesForPrompt(parsed) {
   }
 
   if (parsed.silverCoins.length) {
-    lines.push("Silver coins — GST 3% included. **Quote the MMTC column for silver coin enquiries.**");
-    lines.push("  Weight │   Sun Sea   │   MMTC (preferred)");
+    lines.push("Silver coins — prices are PER COIN (not per gram). GST 3% included.");
+    lines.push("**Quote the MMTC column for silver coin enquiries. Always say 'per coin', never 'per gram'.**");
+    lines.push("  Weight │   Sun Sea (per coin)   │   MMTC (per coin, preferred)");
     for (const c of parsed.silverCoins) {
-      lines.push(`   ${String(c.weight_g).padStart(4, " ")}g │  ${fmt(c.sunSea).padStart(10, " ")}  │  ${fmt(c.mmtc)}`);
+      lines.push(`   ${String(c.weight_g).padStart(4, " ")}g coin │  ${fmt(c.sunSea).padStart(10, " ")}  │  ${fmt(c.mmtc)}`);
     }
     lines.push("");
   }
