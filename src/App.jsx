@@ -7729,25 +7729,28 @@ const SSJ_FORM_DEFS = [
           ["Name","name","text",null,true],
           ["Requirement *","description","textarea",null,true],
           ["Product Category","productCategory","select",["gold","silver","diamond","polki","kundan","gemstone","solitaire","lab_diamond","other"],true],
+          ["Product Types (multi)","productTypes","multiselect",["Chain","Earrings","Danglers","Nosepin","Necklace set","Pendant","P Set","Bangles","Bracelets","Gents Jew","Engagement ring","Solitaires","Wedding Accessories","Gemstones","Others"],true],
           ["Occasion","occasion","select",["wedding","anniversary","birthday","Diwali gifting","corporate gift","self purchase","other"],true],
+          ["Occasion Date","occasionDate","date",null,true],
           ["For Whom","forWhom","select",["self","daughter","son","wife","husband","mother","father","sister","brother","other"],true],
-          ["Budget (₹)","estimate","currency",null,true],
-          ["Visit Date","visitScheduledAt","date",null,true],
+          ["Estimate (₹)","estimate","number",null,true],
+          ["Visit Date/Time","visitScheduledAt","datetime",null,true],
           ["Attended by","assignedStaffId","select",null,true],
-          ["CRM Source","crmSource","select",["walkin","referral","old_client","online_google","online_instagram","exhibition","other"],true],
+          ["CRM Source","crmSource","select",["walkin","referral","old_client","online_google","online_instagram","online_other","exhibition","broadcast","other"],true],
+          ["Design Notes","designNotes","textarea",null,true],
         ],
         jewelry: [
-          ["Metal","metal","text",null,true],
-          ["Purity","purity","text",null,true],
-          ["Item Category","itemCategory","text",null,true],
-          ["Stone","stone","text",null,true],
+          ["Metal","metal","select",["gold_22k","gold_18k","gold_14k","white_gold","platinum","silver","other"],true],
+          ["Stone","stone","select",["none","diamond","ruby","emerald","sapphire","pearl","kundan","polki","other"],true],
+          ["Item Category","itemCategory","select",["ring","necklace","earrings","bangles","bracelet","pendant","set","anklet","other"],true],
+          ["Purity","purity","select",["916 (22k)","750 (18k)","585 (14k)","925 (Silver)","999 (Fine)","other"],true],
+          ["Hallmark Pref","hallmarkPref","select",["bis_hallmark","none","client_choice"],true],
           ["Ring Size","ringSize","text",null,true],
-          ["Hallmark Pref","hallmarkPref","text",null,true],
         ],
         exchange: [
           ["Has Exchange Item","hasExchange","checkbox",null,true],
-          ["Exchange Description","exchangeDesc","text",null,true],
-          ["Exchange Value (₹)","exchangeValue","currency",null,true],
+          ["Exchange Description","exchangeDesc","textarea",null,true],
+          ["Exchange Value (₹)","exchangeValue","number",null,true],
         ]
       }
     }
@@ -7803,7 +7806,7 @@ const SSJ_FORM_DEFS = [
 
 const SSJ_FIELD_TYPES = [
   ["text","Text"],["tel","Phone"],["email","Email"],["number","Number"],
-  ["currency","Currency (₹)"],["date","Date"],["textarea","Long Text"],
+  ["currency","Currency (₹)"],["date","Date"],["datetime","Date + Time"],["textarea","Long Text"],
   ["checkbox","Checkbox"],["select","Dropdown"],["multiselect","Multi-Select"],
 ];
 
