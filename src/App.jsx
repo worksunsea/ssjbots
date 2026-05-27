@@ -591,6 +591,12 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
   const setStatus = async (status, extra = {}) => {
     setBusy(true);
     await sb.from("bullion_leads").update({ status, ...extra }).eq("id", lead.id);
+    if ((status === "converted" || status === "dead") && demand?.id) {
+      await sb.from("bullion_demands")
+        .update({ outcome: status === "converted" ? "converted" : "lost", bot_active: false, updated_at: new Date().toISOString() })
+        .eq("id", demand.id)
+        .is("outcome", null);
+    }
     setBusy(false);
     onChanged && onChanged();
   };
@@ -1003,6 +1009,7 @@ function DemandsScreen({ funnels, allTags }) {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkStaff, setBulkStaff] = useState([]);
   const [mergeModal, setMergeModal] = useState(null); // { primaryId, secondaryId }
+  const [showClosed, setShowClosed] = useState(false);
   useEffect(() => {
     sb.from("staff").select("id,name,username,role,app_permissions").eq("tenant_id", getTenantId()).neq("type", "artisan").order("name")
       .then(({ data }) => setBulkStaff(data || []));
@@ -1064,6 +1071,24 @@ function DemandsScreen({ funnels, allTags }) {
       (d.occasion || "").toLowerCase().includes(s)
     );
   }, [demands, search, filterSource, filterTemp]);
+
+  const closedFiltered = useMemo(() => {
+    const SUPPLIER_SOURCES = new Set(["seller_enquiry", "supplier", "vendor", "karigar", "wholesale", "kariger"]);
+    let rows = demands.filter((d) => !SUPPLIER_SOURCES.has(d.lead?.source));
+    rows = rows.filter((d) =>
+      ["converted", "lost", "junk"].includes(d.outcome) ||
+      ["converted", "dead"].includes(d.lead?.status)
+    );
+    if (filterSource === "walk_in") rows = rows.filter((d) => d.lead?.source === "walk_in");
+    else if (filterSource === "wa_bot") rows = rows.filter((d) => d.lead?.source !== "walk_in");
+    if (!search) return rows;
+    const s = search.toLowerCase();
+    return rows.filter((d) =>
+      (d.lead?.name || "").toLowerCase().includes(s) ||
+      (d.lead?.phone || "").includes(s) ||
+      (d.description || "").toLowerCase().includes(s)
+    );
+  }, [demands, search, filterSource]);
 
   const selectedLead = selectedLeadId ? demands.find((d) => d.lead?.id === selectedLeadId)?.lead : null;
   const selectedFunnel = selectedLead ? funnels.find((f) => f.id === selectedLead.funnel_id) : null;
@@ -1311,6 +1336,63 @@ function DemandsScreen({ funnels, allTags }) {
               No active demands. Click "+ New Demand" to add one.
             </div>
           )}
+
+          {/* ── Closed / Converted section ── */}
+          {closedFiltered.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <button
+                onClick={() => setShowClosed((v) => !v)}
+                style={{ width: "100%", padding: "8px 14px", background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 8, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 13, color: "#6b7280", fontWeight: 600 }}>
+                <span>✅ Closed / Converted ({closedFiltered.length})</span>
+                <span>{showClosed ? "▲ hide" : "▼ show"}</span>
+              </button>
+              {showClosed && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 6 }}>
+                  {closedFiltered.map((d) => {
+                    const sel = d.lead?.id === selectedLeadId;
+                    const outcome = d.outcome || (d.lead?.status === "dead" ? "lost" : "converted");
+                    const outcomeColor = outcome === "converted" ? "#16a085" : "#6b7280";
+                    const outcomeLabel = outcome === "converted" ? "✅ Converted" : outcome === "lost" ? "❌ Lost" : outcome === "junk" ? "🗑 Junk" : "💀 Dead";
+                    return (
+                      <React.Fragment key={d.id}>
+                        <div
+                          onClick={() => {
+                            if (sel) { setSelectedLeadId(null); setSelectedDemand(null); }
+                            else { setSelectedLeadId(d.lead?.id || null); setSelectedDemand(d); }
+                          }}
+                          style={{ padding: "8px 12px", background: sel ? "#f0fdf4" : "#fafafa", border: `1px solid ${sel ? "#86efac" : "#e5e7eb"}`, borderRadius: 8, cursor: "pointer", opacity: 0.85 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <strong style={{ fontSize: 13, color: "#374151" }}>{d.lead?.name || d.lead?.phone || "Unknown"}</strong>
+                            <div style={{ display: "flex", gap: 4 }}>
+                              <Pill color={outcomeColor} solid>{outcomeLabel}</Pill>
+                              {d.lead?.phone && <span style={{ fontSize: 11, color: "#9ca3af" }}>{d.lead.phone}</span>}
+                            </div>
+                          </div>
+                          <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 2, display: "flex", justifyContent: "space-between" }}>
+                            <span>{d.description || "(no description)"}</span>
+                            <span>{fmtDT(d.updated_at)}</span>
+                          </div>
+                        </div>
+                        {sel && selectedLead && selectedDemand?.id === d.id && (
+                          <ConversationPane
+                            lead={selectedLead}
+                            funnel={selectedFunnel}
+                            onClose={() => { setSelectedLeadId(null); setSelectedDemand(null); }}
+                            onChanged={load}
+                            allTags={allTags}
+                            demand={selectedDemand}
+                            onAdvanceStep={null}
+                            onRollbackStep={null}
+                            onMergeDuplicate={null}
+                          />
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -1395,11 +1477,27 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
       || "";
   };
 
+  const [funnelFirstStep, setFunnelFirstStep] = useState(null);
+
   // Pre-select walk-in funnel as soon as funnels load
   useEffect(() => {
     if (!form.funnelId && funnels.length) set("funnelId", autoFunnel());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [funnels.length]);
+
+  // Fetch first step of selected funnel to show preview
+  useEffect(() => {
+    const fid = form.funnelId;
+    if (!fid) { setFunnelFirstStep(null); return; }
+    sb.from("bullion_funnel_steps")
+      .select("id,name,step_type,delay_minutes,message_template")
+      .eq("funnel_id", fid)
+      .eq("tenant_id", getTenantId())
+      .eq("active", true)
+      .order("step_order", { ascending: true })
+      .limit(1)
+      .then(({ data }) => setFunnelFirstStep(data?.[0] || null));
+  }, [form.funnelId]);
 
   const handleCatChange = (cat) => {
     set("productCategory", cat);
@@ -1681,6 +1779,13 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
                 const f = funnels.find((x) => x.id === fid);
                 return f?.wa_number ? <div style={{ fontSize: 11, color: "#555", marginTop: 3 }}>📱 Sends from: <strong>{f.wa_number}</strong></div> : null;
               })()}
+              {funnelFirstStep && (
+                <div style={{ marginTop: 5, background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 6, padding: "5px 8px", fontSize: 11, color: "#15803d" }}>
+                  <strong>First action:</strong> {funnelFirstStep.step_type === "call" ? "📞 Call" : "💬 WA message"} · {funnelFirstStep.name}
+                  {funnelFirstStep.delay_minutes > 0 && <span style={{ color: "#16a34a" }}> · in {funnelFirstStep.delay_minutes < 60 ? `${funnelFirstStep.delay_minutes}m` : `${Math.round(funnelFirstStep.delay_minutes / 60)}h`}</span>}
+                  {funnelFirstStep.delay_minutes === 0 && <span style={{ color: "#dc2626" }}> · immediately</span>}
+                </div>
+              )}
             </Field>
           </div>
 
@@ -3483,6 +3588,10 @@ function ConnectionsScreen() {
       ? `Delete session "${clientId}"? It is linked to ${linked.length} funnel(s): ${linked.map((f) => f.name).join(", ")}.\n\nThose funnels will be unlinked (no WA session) — reassign them after.`
       : `Delete session "${clientId}"? This cannot be undone.`;
     if (!confirm(msg)) return;
+    // Kill QR modal if open for this session — its status poll recreates the session
+    setPairing((p) => p === clientId ? null : p);
+    // Optimistically remove from UI immediately so card disappears at once
+    setClients((prev) => prev.filter((c) => c.client_id !== clientId));
     // Remove from wa-service
     try { await fetch(`${WA_SERVICE_URL}/clients/${clientId}/logout`, { method: "POST" }); } catch { /* ignore */ }
     try { await fetch(`${WA_SERVICE_URL}/clients/${clientId}`, { method: "DELETE" }); } catch { /* ignore */ }
@@ -3588,8 +3697,8 @@ function ConnectionsScreen() {
                   </select>
                 );
               })()}
-              {/* Delete disconnected session */}
-              {!c.connected && <Btn small ghost color={C.red} onClick={() => deleteSession(c.client_id)}>🗑 Delete</Btn>}
+              {/* Delete session — always visible so zombie sessions can be cleared */}
+              <Btn small ghost color={C.red} onClick={() => deleteSession(c.client_id)}>🗑 Delete</Btn>
             </div>
             {c.connected && (
               <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #f0f0f0" }}>
@@ -4983,11 +5092,28 @@ function ApprovalsScreen({ funnels }) {
   const [tab, setTab] = useState("calendar"); // "calendar" | "drip"
   const [groupBy, setGroupBy] = useState("person"); // "person" | "date"
   const [editing, setEditing] = useState({});
-  const [editingName, setEditingName] = useState({});
   const [saving, setSaving] = useState(new Set());
+  const [editContact, setEditContact] = useState(null); // full lead object for ContactEditModal
+  const [editContactTags, setEditContactTags] = useState([]);
+  const [editingNameId, setEditingNameId] = useState(null); // leadId being inline-name-edited
+  const [editingNameVal, setEditingNameVal] = useState("");
   const [expanded, setExpanded] = useState(new Set()); // expanded person/date groups
   const [cronRunning, setCronRunning] = useState(false);
   const [cronResult, setCronResult] = useState(null);
+  const [genningIds, setGenningIds] = useState(new Set());
+
+  const regenOne = async (id) => {
+    setGenningIds((s) => new Set([...s, id]));
+    try {
+      await fetch(`/api/cron?gen_id=${id}`, { headers: { "x-crm-secret": CRM_SECRET } });
+      const { data } = await sb.from("bullion_scheduled_messages").select("edited_body").eq("id", id).maybeSingle();
+      if (data?.edited_body) {
+        setCalRows((r) => r.map((m) => m.id === id ? { ...m, edited_body: data.edited_body } : m));
+        setRows((r) => r.map((m) => m.id === id ? { ...m, edited_body: data.edited_body } : m));
+      }
+    } catch {}
+    setGenningIds((s) => { const n = new Set(s); n.delete(id); return n; });
+  };
 
   const runCron = async () => {
     setCronRunning(true);
@@ -5010,7 +5136,7 @@ function ApprovalsScreen({ funnels }) {
     // Calendar messages: always load 40 days ahead (birthday/anniversary funnels)
     const calUntil = new Date(Date.now() + 40 * 86400000).toISOString();
     const { data: calData } = await sb.from("bullion_scheduled_messages")
-      .select("id,lead_id,funnel_id,body,edited_body,send_at,approved,approved_at,status,step:bullion_funnel_steps(id,name,step_order,use_ai_message),lead:bullion_leads(id,name,phone),funnel:funnels(id,name,kind)")
+      .select("id,lead_id,funnel_id,body,edited_body,media_url,media_type,send_at,approved,approved_at,status,step:bullion_funnel_steps(id,name,step_order,use_ai_message),lead:bullion_leads(id,name,phone),funnel:funnels(id,name,kind)")
       .eq("tenant_id", getTenantId())
       .eq("status", "pending")
       .lte("send_at", calUntil)
@@ -5023,7 +5149,7 @@ function ApprovalsScreen({ funnels }) {
     const until = new Date(Date.now() + days * 86400000).toISOString();
     const calIds = funnels.filter((f) => f.kind === "birthday" || f.kind === "anniversary").map((f) => f.id);
     let dripQuery = sb.from("bullion_scheduled_messages")
-      .select("id,lead_id,funnel_id,body,edited_body,send_at,approved,approved_at,status,step:bullion_funnel_steps(id,name,step_order,use_ai_message),lead:bullion_leads(id,name,phone),funnel:funnels(id,name,kind)")
+      .select("id,lead_id,funnel_id,body,edited_body,media_url,media_type,send_at,approved,approved_at,status,step:bullion_funnel_steps(id,name,step_order,use_ai_message),lead:bullion_leads(id,name,phone),funnel:funnels(id,name,kind)")
       .eq("tenant_id", getTenantId())
       .eq("status", "pending")
       .lte("send_at", until)
@@ -5062,14 +5188,35 @@ function ApprovalsScreen({ funnels }) {
     for (const id of ids) await approve(id);
   }
 
-  async function saveName(leadId, name) {
-    if (!name?.trim()) return;
-    setSav(leadId, true);
-    await sb.from("bullion_leads").update({ name: name.trim() }).eq("id", leadId);
-    setRows((r) => r.map((m) => m.lead_id === leadId ? { ...m, lead: { ...m.lead, name: name.trim() } } : m));
-    setEditingName((e) => { const n = { ...e }; delete n[leadId]; return n; });
-    setSav(leadId, false);
-  }
+  const openContactEdit = async (leadId) => {
+    const [{ data: lead }, { data: tags }] = await Promise.all([
+      sb.from("bullion_leads").select("*").eq("id", leadId).maybeSingle(),
+      sb.from("bullion_tags").select("name,category,color").eq("tenant_id", getTenantId()).order("sort_order"),
+    ]);
+    if (lead) { setEditContact(lead); setEditContactTags(tags || []); }
+  };
+
+  const onContactSaved = async () => {
+    const leadId = editContact?.id;
+    setEditContact(null);
+    if (!leadId) return;
+    const { data } = await sb.from("bullion_leads").select("id,name,phone").eq("id", leadId).maybeSingle();
+    if (data) {
+      const patch = (arr) => arr.map((m) => m.lead_id === leadId ? { ...m, lead: { ...m.lead, name: data.name, phone: data.phone } } : m);
+      setCalRows(patch);
+      setRows(patch);
+    }
+  };
+
+  const saveInlineName = async (leadId) => {
+    const name = editingNameVal.trim();
+    if (!name) return;
+    await sb.from("bullion_leads").update({ name }).eq("id", leadId);
+    const patch = (arr) => arr.map((m) => m.lead_id === leadId ? { ...m, lead: { ...m.lead, name } } : m);
+    setCalRows(patch);
+    setRows(patch);
+    setEditingNameId(null);
+  };
 
   const activeRows = tab === "calendar" ? calRows : rows;
 
@@ -5097,20 +5244,30 @@ function ApprovalsScreen({ funnels }) {
 
   const MessageCard = ({ r }) => {
     const body = editing[r.id] ?? (r.edited_body || r.body || "");
-    const nameVal = editingName[r.lead_id] ?? r.lead?.name ?? "";
     const isSav = saving.has(r.id) || saving.has(r.lead_id);
+    const isGenning = genningIds.has(r.id);
     const funnelName = funnels.find((f) => f.id === r.funnel_id)?.name || r.funnel?.name || r.funnel_id;
     const stepName = r.step?.name || `Step ${r.step?.step_order || ""}`;
+    const stepMedia = r.media_url || null;
+    const stepMediaType = r.media_type || "image";
 
     return (
       <div style={{ background: r.approved ? "#f0fdf4" : "#fff", border: `1px solid ${r.approved ? "#86efac" : "#e5e7eb"}`, borderRadius: 10, padding: "12px 14px", marginBottom: 6 }}>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
           {groupBy === "date" && (
             <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-              {editingName[r.lead_id] !== undefined
-                ? <input value={nameVal} onChange={(e) => setEditingName((x) => ({ ...x, [r.lead_id]: e.target.value }))} onBlur={() => saveName(r.lead_id, nameVal)} onKeyDown={(e) => e.key === "Enter" && saveName(r.lead_id, nameVal)} autoFocus style={{ fontSize: 13, fontWeight: 600, border: "1px solid #3b82f6", borderRadius: 5, padding: "2px 6px", width: 150 }} />
-                : <span style={{ fontWeight: 600, fontSize: 13 }}>{r.lead?.name || r.lead?.phone}</span>}
-              <button onClick={() => setEditingName((x) => x[r.lead_id] !== undefined ? (({ [r.lead_id]: _, ...rest }) => rest)(x) : { ...x, [r.lead_id]: r.lead?.name || "" })} style={{ fontSize: 11, padding: "1px 5px", borderRadius: 4, border: "1px solid #ddd", background: "#f9fafb", cursor: "pointer" }}>✏️</button>
+              {editingNameId === r.lead_id ? (
+                <>
+                  <input autoFocus value={editingNameVal} onChange={(e) => setEditingNameVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveInlineName(r.lead_id); if (e.key === "Escape") setEditingNameId(null); }} style={{ fontSize: 13, padding: "1px 6px", borderRadius: 4, border: "1px solid #6366f1", width: 130 }} />
+                  <button onClick={() => saveInlineName(r.lead_id)} style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, border: "1px solid #16a34a", background: "#f0fdf4", color: "#166534", cursor: "pointer" }}>✓</button>
+                  <button onClick={() => setEditingNameId(null)} style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, border: "1px solid #ddd", background: "#f9fafb", cursor: "pointer" }}>✗</button>
+                </>
+              ) : (
+                <>
+                  <span style={{ fontWeight: 600, fontSize: 13 }}>{r.lead?.name || r.lead?.phone}</span>
+                  <button onClick={() => { setEditingNameId(r.lead_id); setEditingNameVal(r.lead?.name || ""); }} title="Edit name" style={{ fontSize: 11, padding: "1px 5px", borderRadius: 4, border: "1px solid #ddd", background: "#f9fafb", cursor: "pointer" }}>✏️</button>
+                </>
+              )}
               <span style={{ fontSize: 11, color: "#888" }}>{r.lead?.phone}</span>
             </div>
           )}
@@ -5118,17 +5275,30 @@ function ApprovalsScreen({ funnels }) {
           <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 8, background: "#ede9fe", color: "#5b21b6", fontWeight: 600 }}>{stepName}</span>
           <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 8, background: "#fef9c3", color: "#713f12" }}>📅 {fmtSendAt(r.send_at)}</span>
           {r.approved && <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 8, background: "#dcfce7", color: "#166534", fontWeight: 600 }}>✅ Approved</span>}
-          {r.step?.use_ai_message && <span style={{ fontSize: 10, color: r.edited_body ? "#6d28d9" : "#9ca3af" }}>{r.edited_body ? "🤖 AI" : "⏳ generating…"}</span>}
+          {r.step?.use_ai_message && r.edited_body && <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 6, background: "#ede9fe", color: "#6d28d9" }}>🤖 AI</span>}
         </div>
 
         <textarea value={body} onChange={(e) => setEditing((x) => ({ ...x, [r.id]: e.target.value }))}
           rows={Math.max(3, Math.min(8, (body.match(/\n/g) || []).length + 2))}
-          style={{ width: "100%", fontSize: 13, lineHeight: 1.5, border: "1px solid #e5e7eb", borderRadius: 7, padding: "8px 10px", resize: "vertical", boxSizing: "border-box", background: r.approved ? "#f0fdf4" : "#fafafa", fontFamily: "inherit" }} />
+          style={{ width: "100%", fontSize: 13, lineHeight: 1.5, border: `1px solid ${r.step?.use_ai_message && !r.edited_body ? "#fbbf24" : "#e5e7eb"}`, borderRadius: 7, padding: "8px 10px", resize: "vertical", boxSizing: "border-box", background: r.approved ? "#f0fdf4" : "#fafafa", fontFamily: "inherit" }} />
+
+        {stepMedia && (
+          <div style={{ marginTop: 6, padding: "7px 10px", background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 7, display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 12 }}>{stepMediaType === "image" ? "🖼️" : stepMediaType === "video" ? "🎥" : "📄"}</span>
+            <span style={{ fontSize: 12, color: "#0369a1", flex: 1 }}>Attachment: {stepMediaType}</span>
+            <a href={stepMedia} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: "#0284c7", textDecoration: "none" }}>View ↗</a>
+          </div>
+        )}
 
         {!r.approved && (
-          <div style={{ display: "flex", gap: 6, marginTop: 7 }}>
-            <button onClick={() => approve(r.id)} disabled={isSav} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 6, border: "none", background: "#16a34a", color: "#fff", cursor: "pointer", fontWeight: 600 }}>{isSav ? "…" : "✅ Approve"}</button>
-            <button onClick={() => reject(r.id)} disabled={isSav} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 6, border: "1px solid #f87171", background: "#fff", color: "#dc2626", cursor: "pointer" }}>❌ Reject</button>
+          <div style={{ display: "flex", gap: 6, marginTop: 7, alignItems: "center", flexWrap: "wrap" }}>
+            <button onClick={() => approve(r.id)} disabled={isSav || isGenning} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 6, border: "none", background: "#16a34a", color: "#fff", cursor: "pointer", fontWeight: 600 }}>{isSav ? "…" : "✅ Approve"}</button>
+            <button onClick={() => reject(r.id)} disabled={isSav || isGenning} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 6, border: "1px solid #f87171", background: "#fff", color: "#dc2626", cursor: "pointer" }}>❌ Reject</button>
+            {r.step?.use_ai_message && (
+              <button onClick={() => regenOne(r.id)} disabled={isGenning} title="Re-generate AI message" style={{ fontSize: 12, padding: "4px 10px", borderRadius: 6, border: "1px solid #8b5cf6", background: isGenning ? "#ede9fe" : "#fff", color: "#7c3aed", cursor: isGenning ? "not-allowed" : "pointer" }}>
+                {isGenning ? "⏳ Generating…" : r.edited_body ? "🔄 Regen AI" : "🤖 Generate AI"}
+              </button>
+            )}
           </div>
         )}
         {r.approved && (
@@ -5143,6 +5313,15 @@ function ApprovalsScreen({ funnels }) {
 
   return (
     <div>
+      {editContact && (
+        <ContactEditModal
+          contact={editContact}
+          allTags={editContactTags}
+          customFields={getCustomFields()}
+          onClose={() => setEditContact(null)}
+          onSaved={() => onContactSaved(editContact.id, editContact.name)}
+        />
+      )}
       {/* Generate Previews — top banner */}
       <div style={{ background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: 10, padding: "12px 16px", marginBottom: 16, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <span style={{ fontSize: 13, color: "#3730a3", flex: 1 }}>
@@ -5217,11 +5396,19 @@ function ApprovalsScreen({ funnels }) {
               <div onClick={() => toggleExpand(key)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: allApproved ? "#f0fdf4" : "#f9fafb", cursor: "pointer", userSelect: "none" }}>
                 <span style={{ fontSize: 14 }}>{isOpen ? "▼" : "▶"}</span>
                 {groupBy === "person" && (
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    {editingName[g.leadId] !== undefined
-                      ? <input value={editingName[g.leadId]} onChange={(e) => setEditingName((x) => ({ ...x, [g.leadId]: e.target.value }))} onBlur={() => saveName(g.leadId, editingName[g.leadId])} onKeyDown={(e) => e.key === "Enter" && saveName(g.leadId, editingName[g.leadId])} onClick={(e) => e.stopPropagation()} autoFocus style={{ fontSize: 14, fontWeight: 600, border: "1px solid #3b82f6", borderRadius: 5, padding: "2px 6px", width: 160 }} />
-                      : <span style={{ fontSize: 14, fontWeight: 600 }}>{g.label}</span>}
-                    <button onClick={(e) => { e.stopPropagation(); setEditingName((x) => x[g.leadId] !== undefined ? (({ [g.leadId]: _, ...rest }) => rest)(x) : { ...x, [g.leadId]: g.label }); }} style={{ fontSize: 11, padding: "1px 5px", borderRadius: 4, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>✏️ name</button>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }} onClick={(e) => e.stopPropagation()}>
+                    {editingNameId === g.leadId ? (
+                      <>
+                        <input autoFocus value={editingNameVal} onChange={(e) => setEditingNameVal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveInlineName(g.leadId); if (e.key === "Escape") setEditingNameId(null); }} style={{ fontSize: 13, padding: "1px 6px", borderRadius: 4, border: "1px solid #6366f1", width: 140 }} />
+                        <button onClick={() => saveInlineName(g.leadId)} style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, border: "1px solid #16a34a", background: "#f0fdf4", color: "#166534", cursor: "pointer" }}>✓</button>
+                        <button onClick={() => setEditingNameId(null)} style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, border: "1px solid #ddd", background: "#f9fafb", cursor: "pointer" }}>✗</button>
+                      </>
+                    ) : (
+                      <>
+                        <span style={{ fontSize: 14, fontWeight: 600 }}>{g.label}</span>
+                        <button onClick={() => { setEditingNameId(g.leadId); setEditingNameVal(g.label || ""); }} title="Edit name" style={{ fontSize: 11, padding: "1px 5px", borderRadius: 4, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>✏️ Edit</button>
+                      </>
+                    )}
                     <span style={{ fontSize: 12, color: "#888" }}>{g.phone}</span>
                   </div>
                 )}
@@ -5539,6 +5726,435 @@ function UpcomingEventsScreen() {
 }
 
 // ──────────────────────────────────────────────────────────
+// BULK IMPORT — helpers + modal
+// ──────────────────────────────────────────────────────────
+
+function normPhoneJS(raw) {
+  if (raw == null) return null;
+  if (typeof raw === "number") raw = String(Math.round(raw));
+  let s = String(raw).trim();
+  if (!s || s.toLowerCase() === "nan" || s.toLowerCase() === "none") return null;
+  if (s.endsWith(".0")) s = s.slice(0, -2);
+  let d = s.replace(/\D/g, "").replace(/^0+/, "");
+  if (d.length >= 12 && d.startsWith("91")) d = d.slice(2);
+  if (d.length === 10 && "6789".includes(d[0])) return d;
+  return null;
+}
+
+function cleanNameJS(raw) {
+  if (!raw) return null;
+  const SALUTS = new Set(["mr","mrs","ms","miss","dr","sh","shri","smt","sri","ji","bhai","sir","mam"]);
+  const s = String(raw).trim();
+  const filtered = s.split(/[\s,]+/).filter(t => !SALUTS.has(t.toLowerCase().replace(/\.$/, "")));
+  const name = filtered.join(" ").trim().replace(/\s+/g, " ");
+  return name.length >= 2 ? name : null;
+}
+
+function parseDateJS(v) {
+  if (!v) return null;
+  if (v instanceof Date) return isNaN(v) ? null : v.toISOString().slice(0, 10);
+  const s = String(v).trim();
+  if (!s) return null;
+  const m1 = s.match(/^(\d{1,2})[/\-](\d{1,2})[/\-](\d{2,4})/);
+  if (m1) {
+    let [, d, mo, y] = m1;
+    if (y.length === 2) y = parseInt(y) > 30 ? "19" + y : "20" + y;
+    return `${y.padStart(4, "0")}-${mo.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  }
+  const m2 = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m2) return `${m2[1]}-${m2[2].padStart(2, "0")}-${m2[3].padStart(2, "0")}`;
+  return null;
+}
+
+const IMPORT_DB_FIELDS = [
+  { key: "skip", label: "— skip column —" },
+  { key: "phone", label: "Phone (required)" },
+  { key: "name", label: "Name" },
+  { key: "email", label: "Email" },
+  { key: "mobile2", label: "Phone 2 / Alt" },
+  { key: "salutation", label: "Salutation" },
+  { key: "bday", label: "Birthday" },
+  { key: "anniversary", label: "Anniversary" },
+  { key: "address_house", label: "Address / House No" },
+  { key: "address_locality", label: "Locality / Society" },
+  { key: "city", label: "City" },
+  { key: "address_state", label: "State" },
+  { key: "address_pincode", label: "PIN Code" },
+  { key: "profession", label: "Profession" },
+  { key: "company", label: "Company" },
+  { key: "client_code", label: "Client Code" },
+  { key: "client_rating", label: "Rating (1–5)" },
+  { key: "tags", label: "Tags (comma-separated)" },
+  { key: "source", label: "Source" },
+];
+
+const HEADER_DETECT_RULES = [
+  [/^(phone|mobile|mob|number|contact|ph|cell)[\s_-]*(1|no\.?)?$/i, "phone"],
+  [/^(name|full.?name|client.?name|customer.?name|proper.?name)$/i, "name"],
+  [/^(email|e-?mail|mail|email.?id|mail.?id)$/i, "email"],
+  [/^(mobile2?|alt(ernate)?[\s_]*(mobile|phone|no)?|number[\s_]*2|contact[\s_]*2|mob2|ph2)$/i, "mobile2"],
+  [/^(salutation|sal|title|prefix|des\.?)$/i, "salutation"],
+  [/^(bday|birthday|birth[\s_]?date|dob|date[\s_]of[\s_]birth|b\.day)$/i, "bday"],
+  [/^(anniversary|anniv|ann|wedding[\s_]?date|wed)$/i, "anniversary"],
+  [/^(address[\s_]house|house[\s_]no|hno|flat|door|h\.no|address1?|add1?)$/i, "address_house"],
+  [/^(locality|society|colony|area|sector|street|add2|address[\s_]2)$/i, "address_locality"],
+  [/^(city|location|town)$/i, "city"],
+  [/^(state|province)$/i, "address_state"],
+  [/^(pin|pin[\s_]?code|postal|zipcode|zip)$/i, "address_pincode"],
+  [/^(profession|job|occupation|business)$/i, "profession"],
+  [/^(company|firm|organization|org|organisation|employer|company[\s_]name)$/i, "company"],
+  [/^(client[\s_]code|code|cust[\s_]id|acc(ount)?)$/i, "client_code"],
+  [/^(rating|client[\s_]rating|stars?)$/i, "client_rating"],
+  [/^(tags?|label|segment|category)$/i, "tags"],
+  [/^(source)$/i, "source"],
+  // Google Contacts format
+  [/^first[\s_]name$/i, "name"],
+  [/^phone[\s_]\d+[\s_]-[\s_]value$/i, "phone"],
+  [/^e-?mail[\s_]\d+[\s_]-[\s_]value$/i, "email"],
+  [/^address[\s_]\d+[\s_]-[\s_]city$/i, "city"],
+  [/^address[\s_]\d+[\s_]-[\s_]region$/i, "address_state"],
+  [/^address[\s_]\d+[\s_]-[\s_]postal[\s_]code$/i, "address_pincode"],
+  [/^birthday$/i, "bday"],
+  [/^organization[\s_]name$/i, "company"],
+];
+
+function autoDetectMapping(headers) {
+  const map = {};
+  const used = new Set();
+  for (const h of headers) {
+    for (const [pat, field] of HEADER_DETECT_RULES) {
+      if (pat.test(h.trim()) && !used.has(field)) {
+        map[h] = field;
+        used.add(field);
+        break;
+      }
+    }
+  }
+  return map;
+}
+
+function BulkImportModal({ onClose, onDone }) {
+  const [step, setStep] = useState(1);
+  const [rawRows, setRawRows] = useState([]);
+  const [headers, setHeaders] = useState([]);
+  const [mapping, setMapping] = useState({});
+  const [fileName, setFileName] = useState("");
+  const [parseError, setParseError] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [result, setResult] = useState(null);
+  const fileRef = useRef(null);
+
+  const isGoogleContacts = headers.some(h => /^first[\s_]name$/i.test(h)) &&
+    headers.some(h => /^phone[\s_]\d+[\s_]-[\s_]value$/i.test(h));
+
+  function getMappedRow(raw) {
+    const out = {};
+    for (const [hdr, field] of Object.entries(mapping)) {
+      if (!field || field === "skip") continue;
+      const val = raw[hdr];
+      if (val == null || val === "") continue;
+      if (out[field]) continue;
+      out[field] = val;
+    }
+    if (isGoogleContacts && !out.name) {
+      const parts = ["First Name", "Middle Name", "Last Name"].map(k => raw[k] || "").filter(Boolean);
+      if (parts.length) out.name = parts.join(" ").trim();
+    }
+    return out;
+  }
+
+  async function handleFile(file) {
+    setFileName(file.name);
+    setParseError("");
+    const ext = file.name.split(".").pop().toLowerCase();
+    try {
+      let rows = [], hdrs = [];
+      if (ext === "csv") {
+        const Papa = (await import("papaparse")).default;
+        const text = await file.text();
+        const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
+        if (parsed.errors.length && !parsed.data.length) throw new Error(parsed.errors[0].message);
+        hdrs = parsed.meta.fields || [];
+        rows = parsed.data;
+      } else {
+        const XLSX = await import("xlsx");
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, { type: "array", cellDates: true });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+        hdrs = rows.length ? Object.keys(rows[0]) : [];
+      }
+      setHeaders(hdrs);
+      setRawRows(rows);
+      setMapping(autoDetectMapping(hdrs));
+      setStep(2);
+    } catch (e) {
+      setParseError("Could not parse file: " + e.message);
+    }
+  }
+
+  const previewRows = rawRows.slice(0, 10).map(getMappedRow);
+  const hasPhoneMapped = Object.values(mapping).includes("phone");
+  const eligibleCount = rawRows.filter(r => normPhoneJS(getMappedRow(r).phone)).length;
+
+  async function runImport() {
+    setImporting(true);
+    setStep(4);
+    const tenantId = getTenantId();
+    const BATCH = 50;
+    let created = 0;
+    const errors = [];
+    const eligible = rawRows.filter(r => normPhoneJS(getMappedRow(r).phone));
+    setProgress({ done: 0, total: eligible.length });
+
+    for (let i = 0; i < eligible.length; i += BATCH) {
+      const batch = eligible.slice(i, i + BATCH);
+      const records = batch.map(r => {
+        const m = getMappedRow(r);
+        const phone = normPhoneJS(m.phone);
+        if (!phone) return null;
+        const rec = {
+          tenant_id: tenantId,
+          phone,
+          name: cleanNameJS(m.name) || null,
+          email: m.email ? String(m.email).trim() : null,
+          mobile2: normPhoneJS(m.mobile2) || null,
+          salutation: m.salutation ? String(m.salutation).trim() : null,
+          bday: parseDateJS(m.bday) || null,
+          anniversary: parseDateJS(m.anniversary) || null,
+          address_house: m.address_house ? String(m.address_house).trim() : null,
+          address_locality: m.address_locality ? String(m.address_locality).trim() : null,
+          city: m.city ? String(m.city).trim() : null,
+          address_state: m.address_state ? String(m.address_state).trim() : null,
+          address_pincode: m.address_pincode ? String(m.address_pincode).trim() : null,
+          profession: m.profession ? String(m.profession).trim() : null,
+          company: m.company ? String(m.company).trim() : null,
+          client_code: m.client_code ? String(m.client_code).trim() : null,
+          client_rating: m.client_rating ? parseInt(m.client_rating) || null : null,
+          source: m.source ? String(m.source).trim() : null,
+          tags: m.tags ? String(m.tags).split(/[,;]+/).map(t => t.trim()).filter(Boolean) : null,
+        };
+        return Object.fromEntries(Object.entries(rec).filter(([, v]) => v != null));
+      }).filter(Boolean);
+
+      if (!records.length) continue;
+      const { error } = await sb.from("bullion_leads")
+        .upsert(records, { onConflict: "tenant_id,phone", ignoreDuplicates: false });
+      if (error) errors.push(error.message);
+      else created += records.length;
+      setProgress(p => ({ ...p, done: Math.min(i + BATCH, eligible.length) }));
+    }
+
+    const skipped = rawRows.length - eligible.length;
+    await sb.from("bullion_imports").insert({
+      tenant_id: tenantId,
+      finished_at: new Date().toISOString(),
+      file: fileName,
+      rows_in: rawRows.length,
+      rows_created: created,
+      rows_merged: 0,
+      rows_skipped: skipped,
+      errors,
+      summary: { source: "bulk_upload_ui" },
+    });
+
+    setResult({ created, skipped, errors, total: rawRows.length });
+    setImporting(false);
+    if (typeof onDone === "function") onDone();
+  }
+
+  const STEP_LABELS = ["Upload file", "Map columns", "Preview", "Import"];
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ background: "#fff", borderRadius: 12, width: 700, maxWidth: "95vw", maxHeight: "92vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,.25)" }}>
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 20px", borderBottom: "1px solid #e5e7eb" }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 17, fontWeight: 700 }}>⬆ Bulk Import Contacts</div>
+            <div style={{ fontSize: 12, color: "#888", marginTop: 1 }}>{STEP_LABELS[step - 1]}</div>
+          </div>
+          <div style={{ display: "flex", gap: 5 }}>
+            {[1,2,3,4].map(s => (
+              <div key={s} style={{ width: 28, height: 5, borderRadius: 3, background: s <= step ? "#3b82f6" : "#e5e7eb", transition: "background 0.3s" }} />
+            ))}
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 22, cursor: "pointer", color: "#9ca3af", lineHeight: 1 }}>×</button>
+        </div>
+
+        <div style={{ padding: 20 }}>
+          {/* Step 1 — Upload */}
+          {step === 1 && (
+            <div>
+              <div
+                onDragOver={e => e.preventDefault()}
+                onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) handleFile(f); }}
+                onClick={() => fileRef.current?.click()}
+                style={{ border: "2px dashed #cbd5e1", borderRadius: 10, padding: "44px 20px", textAlign: "center", cursor: "pointer", background: "#f8fafc" }}>
+                <div style={{ fontSize: 44, marginBottom: 10 }}>📂</div>
+                <div style={{ fontSize: 15, fontWeight: 600, color: "#334155" }}>Drop file here or click to browse</div>
+                <div style={{ fontSize: 13, color: "#94a3b8", marginTop: 4 }}>Accepts .csv · .xlsx · .xls</div>
+                <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" style={{ display: "none" }}
+                  onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
+              </div>
+              {parseError && <div style={{ marginTop: 10, color: "#dc2626", fontSize: 13 }}>⚠ {parseError}</div>}
+              <div style={{ marginTop: 14, background: "#f0f9ff", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#0369a1" }}>
+                <strong>Google Contacts?</strong> Open contacts.google.com → Export → Google CSV → upload here. Columns auto-mapped.
+              </div>
+            </div>
+          )}
+
+          {/* Step 2 — Map columns */}
+          {step === 2 && (
+            <div>
+              <div style={{ fontSize: 13, color: "#555", marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>
+                <span><strong>{fileName}</strong> · {rawRows.length} rows · {headers.length} columns</span>
+                {isGoogleContacts && <span style={{ background: "#dcfce7", color: "#166534", padding: "2px 8px", borderRadius: 10, fontSize: 11 }}>✓ Google Contacts detected</span>}
+              </div>
+              <div style={{ fontSize: 12, color: "#888", marginBottom: 8 }}>Green rows = auto-detected. Adjust if wrong.</div>
+              <div style={{ maxHeight: 360, overflowY: "auto", border: "1px solid #e5e7eb", borderRadius: 8 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: "#f9fafb", borderBottom: "1px solid #e5e7eb", position: "sticky", top: 0 }}>
+                      {["Column in file", "Sample value", "Map to field"].map(h => (
+                        <th key={h} style={{ padding: "8px 12px", textAlign: "left", fontWeight: 600 }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {headers.map(h => {
+                      const autoMap = autoDetectMapping([h])[h];
+                      const isAuto = autoMap && autoMap === mapping[h] && autoMap !== "skip";
+                      const sample = rawRows[0]?.[h];
+                      return (
+                        <tr key={h} style={{ borderBottom: "1px solid #f3f4f6", background: isAuto ? "#f0fdf4" : "transparent" }}>
+                          <td style={{ padding: "6px 12px", fontWeight: 500 }}>{h}</td>
+                          <td style={{ padding: "6px 12px", color: "#888", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {sample != null && sample !== "" ? String(sample).slice(0, 50) : <em style={{ color: "#ccc" }}>—</em>}
+                          </td>
+                          <td style={{ padding: "6px 12px" }}>
+                            <select value={mapping[h] || "skip"}
+                              onChange={e => setMapping(m => ({ ...m, [h]: e.target.value }))}
+                              style={{ fontSize: 12, border: `1px solid ${isAuto ? "#86efac" : "#d1d5db"}`, borderRadius: 5, padding: "3px 6px", background: isAuto ? "#f0fdf4" : "#fff" }}>
+                              {IMPORT_DB_FIELDS.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
+                            </select>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              {!hasPhoneMapped && (
+                <div style={{ marginTop: 10, color: "#dc2626", fontSize: 13 }}>⚠ Map at least one column to <strong>Phone (required)</strong></div>
+              )}
+              <div style={{ marginTop: 14, display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                <button onClick={() => setStep(1)} style={{ padding: "8px 16px", borderRadius: 7, border: "1px solid #d1d5db", background: "#fff", cursor: "pointer", fontSize: 13 }}>← Back</button>
+                <button onClick={() => setStep(3)} disabled={!hasPhoneMapped}
+                  style={{ padding: "8px 18px", borderRadius: 7, border: "none", background: hasPhoneMapped ? "#3b82f6" : "#e5e7eb", color: "#fff", cursor: hasPhoneMapped ? "pointer" : "default", fontSize: 13, fontWeight: 600 }}>
+                  Preview →
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Step 3 — Preview */}
+          {step === 3 && (
+            <div>
+              <div style={{ fontSize: 13, color: "#555", marginBottom: 10 }}>
+                Showing first {previewRows.length} rows · <strong style={{ color: "#16a34a" }}>{eligibleCount} have valid phone numbers</strong> and will be imported
+              </div>
+              <div style={{ overflowX: "auto", border: "1px solid #e5e7eb", borderRadius: 8, maxHeight: 300, overflowY: "auto" }}>
+                <table style={{ borderCollapse: "collapse", fontSize: 12, minWidth: 500, width: "100%" }}>
+                  <thead>
+                    <tr style={{ background: "#f9fafb", borderBottom: "1px solid #e5e7eb" }}>
+                      {["Phone","Name","Email","City","Birthday","Tags"].map(h => (
+                        <th key={h} style={{ padding: "7px 10px", textAlign: "left", fontWeight: 600, whiteSpace: "nowrap", position: "sticky", top: 0, background: "#f9fafb" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {previewRows.map((r, i) => {
+                      const phone = normPhoneJS(r.phone);
+                      return (
+                        <tr key={i} style={{ borderBottom: "1px solid #f3f4f6", background: !phone ? "#fff7f7" : "transparent" }}>
+                          <td style={{ padding: "5px 10px", color: phone ? "#059669" : "#dc2626", fontWeight: 500 }}>{phone || r.phone || <em style={{ color: "#ccc" }}>—</em>}</td>
+                          <td style={{ padding: "5px 10px" }}>{cleanNameJS(r.name) || <em style={{ color: "#ccc" }}>—</em>}</td>
+                          <td style={{ padding: "5px 10px", color: "#666" }}>{r.email || "—"}</td>
+                          <td style={{ padding: "5px 10px", color: "#666" }}>{r.city || "—"}</td>
+                          <td style={{ padding: "5px 10px", color: "#666" }}>{parseDateJS(r.bday) || "—"}</td>
+                          <td style={{ padding: "5px 10px", color: "#666" }}>{r.tags || "—"}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ marginTop: 12, background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "10px 14px", fontSize: 13 }}>
+                ⚡ Contacts are <strong>upserted by phone number</strong> — existing contacts updated, new ones created. No duplicates.
+              </div>
+              <div style={{ marginTop: 14, display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                <button onClick={() => setStep(2)} style={{ padding: "8px 16px", borderRadius: 7, border: "1px solid #d1d5db", background: "#fff", cursor: "pointer", fontSize: 13 }}>← Back</button>
+                <button onClick={runImport}
+                  style={{ padding: "8px 22px", borderRadius: 7, border: "none", background: "#16a34a", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
+                  Import {eligibleCount} contacts →
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Step 4 — Progress / Done */}
+          {step === 4 && (
+            <div style={{ textAlign: "center", padding: "24px 0" }}>
+              {importing ? (
+                <>
+                  <div style={{ fontSize: 44, marginBottom: 12 }}>⏳</div>
+                  <div style={{ fontSize: 16, fontWeight: 600 }}>Importing contacts…</div>
+                  <div style={{ fontSize: 13, color: "#888", marginTop: 4 }}>{progress.done} / {progress.total}</div>
+                  <div style={{ width: "100%", height: 8, background: "#e5e7eb", borderRadius: 4, marginTop: 16 }}>
+                    <div style={{ height: 8, background: "#3b82f6", borderRadius: 4, transition: "width 0.3s", width: `${progress.total ? (progress.done / progress.total * 100) : 0}%` }} />
+                  </div>
+                </>
+              ) : result && (
+                <>
+                  <div style={{ fontSize: 50, marginBottom: 12 }}>✅</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: "#15803d" }}>Import Complete!</div>
+                  <div style={{ display: "flex", gap: 14, justifyContent: "center", marginTop: 16 }}>
+                    <div style={{ background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 8, padding: "12px 22px", minWidth: 90 }}>
+                      <div style={{ fontSize: 30, fontWeight: 700, color: "#15803d" }}>{result.created}</div>
+                      <div style={{ fontSize: 12, color: "#555", marginTop: 2 }}>contacts saved</div>
+                    </div>
+                    <div style={{ background: "#fefce8", border: "1px solid #fde68a", borderRadius: 8, padding: "12px 22px", minWidth: 90 }}>
+                      <div style={{ fontSize: 30, fontWeight: 700, color: "#a16207" }}>{result.skipped}</div>
+                      <div style={{ fontSize: 12, color: "#555", marginTop: 2 }}>skipped (no phone)</div>
+                    </div>
+                    {result.errors.length > 0 && (
+                      <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 8, padding: "12px 22px", minWidth: 90 }}>
+                        <div style={{ fontSize: 30, fontWeight: 700, color: "#dc2626" }}>{result.errors.length}</div>
+                        <div style={{ fontSize: 12, color: "#555", marginTop: 2 }}>errors</div>
+                      </div>
+                    )}
+                  </div>
+                  {result.errors.length > 0 && (
+                    <div style={{ marginTop: 12, background: "#fef2f2", borderRadius: 8, padding: 10, textAlign: "left", fontSize: 12, color: "#dc2626", maxHeight: 100, overflowY: "auto" }}>
+                      {result.errors.slice(0, 5).map((e, i) => <div key={i}>• {e}</div>)}
+                    </div>
+                  )}
+                  <button onClick={onClose} style={{ marginTop: 20, padding: "10px 30px", borderRadius: 8, border: "none", background: "#3b82f6", color: "#fff", cursor: "pointer", fontSize: 14, fontWeight: 600 }}>
+                    Done
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
 // CONTACTS DB SCREEN — spreadsheet view with inline editing
 // ──────────────────────────────────────────────────────────
 function ContactsDBScreen() {
@@ -5554,6 +6170,7 @@ function ContactsDBScreen() {
   const [bulkTag, setBulkTag] = useState("");
   const [editingTagsFor, setEditingTagsFor] = useState(null); // contact id
   const [saving, setSaving] = useState(null);
+  const [showBulkImport, setShowBulkImport] = useState(false);
 
   const [allLeadTags, setAllLeadTags] = useState([]); // distinct tags actually used on leads
 
@@ -5712,7 +6329,16 @@ function ContactsDBScreen() {
         <button onClick={exportCSV} style={{ fontSize: 12, padding: "5px 12px", borderRadius: 7, border: "1px solid #16a34a", background: "#f0fdf4", color: "#166534", cursor: "pointer" }}>
           ⬇ Export CSV {selected.size > 0 ? `(${selected.size})` : ""}
         </button>
+        <button onClick={() => setShowBulkImport(true)} style={{ fontSize: 12, padding: "5px 12px", borderRadius: 7, border: "1px solid #7c3aed", background: "#f5f3ff", color: "#6d28d9", cursor: "pointer", fontWeight: 600 }}>
+          ⬆ Bulk Upload
+        </button>
       </div>
+      {showBulkImport && (
+        <BulkImportModal
+          onClose={() => setShowBulkImport(false)}
+          onDone={() => { setShowBulkImport(false); load(search, filterSource, filterCity, filterRating, filterTags); }}
+        />
+      )}
 
       {/* Bulk actions */}
       {selected.size > 0 && (
@@ -5875,12 +6501,20 @@ function AnalyticsScreen({ funnels }) {
       sb.from("bullion_call_logs").select("staff_id,disposition,duration_sec").eq("tenant_id", tid).gte("called_at", monthStart.toISOString()),
       sb.from("staff").select("id,name,username").eq("tenant_id", tid).neq("type", "artisan"),
       sb.from("staff_targets").select("*").eq("tenant_id", tid).eq("month", monthStart.toISOString().slice(0, 10)),
-      sb.from("bullion_dropdowns").select("id,field,value").eq("tenant_id", tid).in("field", ["google_review_link","post_sale_day3","post_sale_day7","post_sale_day30","missed_call_auto_reply"]).eq("active", true).order("sort_order"),
+      sb.from("bullion_dropdowns").select("id,field,value").eq("tenant_id", tid).in("field", ["google_review_link","post_sale_day3","post_sale_day7","post_sale_day30","missed_call_auto_reply","bot_numbers"]).eq("active", true).order("sort_order"),
     ]);
 
     if (m.data) setMetrics(m.data);
-    if (configData.data) setConfigRows(configData.data);
     if (staffData.data) setStaffList(staffData.data);
+    let cfgRows = configData.data || [];
+    // Auto-create bot_numbers row if it doesn't exist yet
+    if (!cfgRows.find((r) => r.field === "bot_numbers")) {
+      const { data: inserted } = await sb.from("bullion_dropdowns").insert({
+        tenant_id: tid, field: "bot_numbers", value: "8860866000", active: true, sort_order: 0,
+      }).select("id,field,value").single();
+      if (inserted) cfgRows = [...cfgRows, inserted];
+    }
+    setConfigRows(cfgRows);
 
     if (leads.data) {
       const counts = {};
@@ -6195,6 +6829,7 @@ function TargetCell({ staffId, field, value, onSave }) {
 }
 
 const CONFIG_LABELS = {
+  bot_numbers: "🤖 Bot Numbers (auto-reply) — comma separated, no country code",
   google_review_link: "Google Review Link",
   post_sale_day3: "Post-Sale Day 3 WA",
   post_sale_day7: "Post-Sale Day 7 WA (Review)",
@@ -6655,6 +7290,299 @@ function ImportsScreen() {
           </tbody>
         </table>
       </Card>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// LEAD SOURCES — webhook-based auto-import from portals
+// IndiaMART, JustDial, 99acres, Facebook Lead Ads, etc.
+// Each source gets a unique token → POST /api/inbound?token=XXX
+// ──────────────────────────────────────────────────────────
+
+const SOURCE_TYPES = [
+  { k: "indiamart",   l: "IndiaMART",              defaultMap: { SENDER_MOBILE: "phone", SENDER_NAME: "name", SENDER_EMAIL: "email", SENDER_CITY: "city" } },
+  { k: "justdial",    l: "JustDial",                defaultMap: { phone: "phone", name: "name", city: "city", email: "email" } },
+  { k: "99acres",     l: "99acres",                 defaultMap: { mobile: "phone", name: "name", city: "city", email: "email" } },
+  { k: "housing",     l: "Housing.com",             defaultMap: { mobile: "phone", name: "name", city: "city", email: "email" } },
+  { k: "sulekha",     l: "Sulekha",                 defaultMap: { mobile: "phone", name: "name", city: "city", email: "email" } },
+  { k: "magicbricks", l: "MagicBricks",             defaultMap: { mobile: "phone", name: "name", city: "city", email: "email" } },
+  { k: "facebook",    l: "Facebook Lead Ads",       defaultMap: {} },
+  { k: "instagram",   l: "Instagram Lead Ads",      defaultMap: {} },
+  { k: "googleads",   l: "Google Ads Lead Form",    defaultMap: {} },
+  { k: "generic",     l: "Generic / Zapier / Make", defaultMap: {} },
+];
+
+const OUR_LEAD_FIELDS = ["phone", "name", "email", "city", "bday", "anniversary", "source", "notes"];
+
+const INBOUND_BASE = "https://ssjbot.gemtre.in/api/lead";
+
+function genToken() {
+  return (crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "")).slice(0, 32);
+}
+
+function LeadSourcesScreen({ funnels }) {
+  const [sources, setSources] = useState([]);
+  const [editing, setEditing] = useState(null); // null=closed, {}=new, obj=edit
+
+  const load = useCallback(async () => {
+    const { data } = await sb.from("bullion_lead_sources").select("*").eq("tenant_id", getTenantId()).order("created_at", { ascending: false });
+    setSources(data || []);
+  }, []);
+
+  useEffect(() => { load(); }, [load]); // eslint-disable-line
+
+  const toggleActive = async (src) => {
+    await sb.from("bullion_lead_sources").update({ active: !src.active, updated_at: new Date().toISOString() }).eq("id", src.id);
+    load();
+  };
+
+  const del = async (src) => {
+    if (!confirm(`Delete "${src.name}"? This will break any active webhook pointing to it.`)) return;
+    await sb.from("bullion_lead_sources").delete().eq("id", src.id);
+    load();
+  };
+
+  const typeLabel = (k) => SOURCE_TYPES.find((t) => t.k === k)?.l || k;
+  const typeBadgeColor = (k) => ({
+    facebook: "#1877f2", indiamart: "#e37222", justdial: "#ff6600",
+    "99acres": "#c00", housing: "#f57c00", sulekha: "#009933",
+    magicbricks: "#e52d27", generic: "#6b7280",
+  }[k] || "#6b7280");
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ fontSize: 13, color: "#666" }}>Auto-import leads from portals via webhook. Each source gets a unique URL to paste into the portal&apos;s webhook settings.</div>
+        <Btn small color={C.blue} onClick={() => setEditing({})}>+ Add Source</Btn>
+      </div>
+
+      {sources.length === 0 && (
+        <Card style={{ padding: 32, textAlign: "center", color: "#aaa", fontSize: 14 }}>
+          No lead sources configured yet. Add one to start auto-importing leads.
+        </Card>
+      )}
+
+      {sources.map((src) => {
+        const webhookUrl = `${INBOUND_BASE}?token=${src.webhook_token}`;
+        return (
+          <Card key={src.id} style={{ marginBottom: 10, padding: "12px 16px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  <span style={{ fontWeight: 600, fontSize: 14 }}>{src.name}</span>
+                  <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 10, background: typeBadgeColor(src.source_type), color: "#fff" }}>{typeLabel(src.source_type)}</span>
+                  {!src.active && <span style={{ fontSize: 11, color: "#999", border: "1px solid #ddd", borderRadius: 10, padding: "1px 7px" }}>inactive</span>}
+                </div>
+                <div style={{ fontSize: 12, color: "#555", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  <code style={{ background: "#f3f4f6", padding: "2px 6px", borderRadius: 4, fontSize: 11, wordBreak: "break-all" }}>{webhookUrl}</code>
+                  <button onClick={() => { navigator.clipboard?.writeText(webhookUrl); }} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 5, border: "1px solid #ddd", background: "transparent", cursor: "pointer" }}>Copy</button>
+                </div>
+                {src.default_funnel_id && (
+                  <div style={{ fontSize: 11, color: "#888", marginTop: 3 }}>
+                    Funnel: {funnels.find((f) => f.id === src.default_funnel_id)?.name || src.default_funnel_id}
+                    {src.enroll_drip ? " · auto-enroll ✓" : ""}
+                  </div>
+                )}
+              </div>
+              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                <Btn ghost small color={src.active ? C.green : C.gray} onClick={() => toggleActive(src)}>{src.active ? "Active" : "Off"}</Btn>
+                <Btn ghost small color={C.blue} onClick={() => setEditing(src)}>Edit</Btn>
+                <Btn ghost small color={C.red} onClick={() => del(src)}>✕</Btn>
+              </div>
+            </div>
+          </Card>
+        );
+      })}
+
+      {editing !== null && (
+        <LeadSourceModal
+          source={editing?.id ? editing : null}
+          funnels={funnels}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function LeadSourceModal({ source, funnels, onClose, onSaved }) {
+  const isNew = !source?.id;
+  const initialToken = source?.webhook_token || genToken();
+  const initialType = source?.source_type || "generic";
+  const getDefaultMap = (type) => SOURCE_TYPES.find((t) => t.k === type)?.defaultMap || {};
+
+  const [form, setForm] = useState({
+    name: source?.name || "",
+    source_type: initialType,
+    default_funnel_id: source?.default_funnel_id || "",
+    enroll_drip: source?.enroll_drip ?? true,
+    active: source?.active ?? true,
+    webhook_token: initialToken,
+    field_map: source?.field_map && Object.keys(source.field_map).length ? source.field_map : getDefaultMap(initialType),
+  });
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(!isNew);
+  const [err, setErr] = useState("");
+
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  const onTypeChange = (type) => {
+    setForm((f) => ({ ...f, source_type: type, field_map: getDefaultMap(type) }));
+  };
+
+  // Field map editing (array of [theirKey, ourKey] pairs)
+  const mapRows = Object.entries(form.field_map);
+  const setMapRow = (i, theirKey, ourKey) => {
+    const rows = [...mapRows];
+    rows[i] = [theirKey, ourKey];
+    set("field_map", Object.fromEntries(rows.filter(([k]) => k.trim())));
+  };
+  const addMapRow = () => {
+    const rows = [...mapRows, ["", "phone"]];
+    set("field_map", Object.fromEntries(rows.filter(([k]) => k.trim())));
+  };
+  const removeMapRow = (i) => {
+    const rows = mapRows.filter((_, idx) => idx !== i);
+    set("field_map", Object.fromEntries(rows.filter(([k]) => k.trim())));
+  };
+
+  const save = async () => {
+    if (!form.name.trim()) { setErr("Name is required"); return; }
+    if (!form.source_type) { setErr("Source type is required"); return; }
+    setSaving(true); setErr("");
+    const payload = {
+      tenant_id: getTenantId(),
+      name: form.name.trim(),
+      source_type: form.source_type,
+      webhook_token: form.webhook_token,
+      field_map: form.field_map,
+      default_funnel_id: form.default_funnel_id || null,
+      enroll_drip: form.enroll_drip,
+      active: form.active,
+      updated_at: new Date().toISOString(),
+    };
+    let error;
+    if (isNew) {
+      ({ error } = await sb.from("bullion_lead_sources").insert(payload));
+    } else {
+      ({ error } = await sb.from("bullion_lead_sources").update(payload).eq("id", source.id));
+    }
+    setSaving(false);
+    if (error) { setErr(error.message); return; }
+    setSaved(true);
+    onSaved();
+  };
+
+  const webhookUrl = `${INBOUND_BASE}?token=${form.webhook_token}`;
+  const noFieldMap = ["facebook", "instagram", "googleads"].includes(form.source_type);
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div style={{ background: "#fff", borderRadius: 14, padding: 24, width: "100%", maxWidth: 540, maxHeight: "90vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+          <h3 style={{ margin: 0, fontSize: 16 }}>{isNew ? "Add Lead Source" : "Edit Lead Source"}</h3>
+          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", color: "#888" }}>✕</button>
+        </div>
+
+        <label style={{ display: "block", fontSize: 12, color: "#666", marginBottom: 4 }}>Source Name</label>
+        <input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="e.g. IndiaMART Portal, FB Jewellery Ads" style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #ddd", fontSize: 14, marginBottom: 12, boxSizing: "border-box" }} />
+
+        <label style={{ display: "block", fontSize: 12, color: "#666", marginBottom: 4 }}>Source Type</label>
+        <select value={form.source_type} onChange={(e) => onTypeChange(e.target.value)} style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #ddd", fontSize: 14, marginBottom: 12 }}>
+          {SOURCE_TYPES.map((t) => <option key={t.k} value={t.k}>{t.l}</option>)}
+        </select>
+
+        <label style={{ display: "block", fontSize: 12, color: "#666", marginBottom: 4 }}>Default Funnel (optional)</label>
+        <select value={form.default_funnel_id} onChange={(e) => set("default_funnel_id", e.target.value)} style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #ddd", fontSize: 14, marginBottom: 8 }}>
+          <option value="">— No funnel —</option>
+          {funnels.filter((f) => f.active).map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+        </select>
+
+        {form.default_funnel_id && (
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 12, cursor: "pointer" }}>
+            <input type="checkbox" checked={form.enroll_drip} onChange={(e) => set("enroll_drip", e.target.checked)} />
+            Auto-enroll lead in funnel drip
+          </label>
+        )}
+
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 16, cursor: "pointer" }}>
+          <input type="checkbox" checked={form.active} onChange={(e) => set("active", e.target.checked)} />
+          Active (accept webhook calls)
+        </label>
+
+        {!noFieldMap && (
+          <>
+            <div style={{ fontSize: 12, color: "#666", marginBottom: 6 }}>Field Mapping <span style={{ color: "#aaa" }}>(portal field → our field)</span></div>
+            <div style={{ border: "1px solid #eee", borderRadius: 8, overflow: "hidden", marginBottom: 12 }}>
+              {mapRows.map(([theirKey, ourKey], i) => (
+                <div key={i} style={{ display: "flex", gap: 6, padding: "6px 8px", borderBottom: i < mapRows.length - 1 ? "1px solid #f5f5f5" : "none", alignItems: "center" }}>
+                  <input value={theirKey} onChange={(e) => setMapRow(i, e.target.value, ourKey)} placeholder="their field name" style={{ flex: 1, padding: "4px 8px", borderRadius: 6, border: "1px solid #e5e7eb", fontSize: 12 }} />
+                  <span style={{ color: "#aaa", fontSize: 12 }}>→</span>
+                  <select value={ourKey} onChange={(e) => setMapRow(i, theirKey, e.target.value)} style={{ flex: 1, padding: "4px 8px", borderRadius: 6, border: "1px solid #e5e7eb", fontSize: 12 }}>
+                    {OUR_LEAD_FIELDS.map((f) => <option key={f} value={f}>{f}</option>)}
+                  </select>
+                  <button onClick={() => removeMapRow(i)} style={{ background: "none", border: "none", color: "#dc2626", cursor: "pointer", fontSize: 14, padding: "0 4px" }}>✕</button>
+                </div>
+              ))}
+              <div style={{ padding: "6px 8px" }}>
+                <button onClick={addMapRow} style={{ fontSize: 12, color: C.blue, background: "none", border: "none", cursor: "pointer" }}>+ Add row</button>
+              </div>
+            </div>
+          </>
+        )}
+
+        {err && <p style={{ color: "#dc2626", fontSize: 12, margin: "0 0 10px" }}>{err}</p>}
+
+        <Btn color={C.blue} onClick={save} disabled={saving} style={{ width: "100%" }}>{saving ? "Saving…" : isNew ? "Create Source" : "Save Changes"}</Btn>
+
+        {saved && (
+          <div style={{ marginTop: 16 }}>
+            {/* Webhook URL */}
+            <div style={{ background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 10, padding: 14, marginBottom: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "#166534", marginBottom: 6 }}>Webhook URL</div>
+              <div style={{ display: "flex", gap: 6, alignItems: "flex-start" }}>
+                <code style={{ flex: 1, fontSize: 11, wordBreak: "break-all", background: "#dcfce7", padding: "6px 8px", borderRadius: 6, color: "#166534", display: "block" }}>{webhookUrl}</code>
+                <button onClick={() => navigator.clipboard?.writeText(webhookUrl)} style={{ flexShrink: 0, padding: "6px 12px", borderRadius: 7, border: "1px solid #86efac", background: "#fff", fontSize: 12, cursor: "pointer", color: "#166534" }}>Copy</button>
+              </div>
+              {(form.source_type === "facebook" || form.source_type === "instagram") && (
+                <div style={{ fontSize: 11, color: "#166534", marginTop: 8 }}>
+                  <strong>Meta Developer Portal</strong> → Your App → Webhooks → Subscribe to <em>leadgen</em> field on your Page.<br />
+                  Set <strong>Callback URL</strong> to the above and <strong>Verify Token</strong> to <code style={{ background: "#bbf7d0", padding: "1px 4px", borderRadius: 3 }}>{form.webhook_token}</code>.<br />
+                  Instagram Lead Ads use the same Meta webhook — one setup covers both.
+                </div>
+              )}
+              {form.source_type === "googleads" && (
+                <div style={{ fontSize: 11, color: "#166534", marginTop: 8 }}>
+                  <strong>Google Ads</strong> → Assets → Lead forms → select form → <em>Webhook delivery</em> → paste URL above. No GET verification needed.
+                </div>
+              )}
+              {!["facebook","instagram","googleads"].includes(form.source_type) && (
+                <div style={{ fontSize: 11, color: "#166534", marginTop: 6 }}>
+                  Paste into {SOURCE_TYPES.find((t) => t.k === form.source_type)?.l || "the portal"}&apos;s webhook settings.
+                </div>
+              )}
+            </div>
+
+            {/* Embed snippet */}
+            {(() => {
+              const embedSnippet = `<script src="https://ssjbot.gemtre.in/embed.js?token=${form.webhook_token}&label=Enquire+Now" defer></script>`;
+              return (
+                <div style={{ background: "#eff6ff", border: "1px solid #93c5fd", borderRadius: 10, padding: 14 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "#1e40af", marginBottom: 4 }}>Embed on any website</div>
+                  <div style={{ fontSize: 11, color: "#1e40af", marginBottom: 8 }}>Paste this one tag into Wix / WordPress / Shopify — adds a floating enquiry button.</div>
+                  <div style={{ display: "flex", gap: 6, alignItems: "flex-start" }}>
+                    <code style={{ flex: 1, fontSize: 10, wordBreak: "break-all", background: "#dbeafe", padding: "6px 8px", borderRadius: 6, color: "#1e3a8a", display: "block" }}>{embedSnippet}</code>
+                    <button onClick={() => navigator.clipboard?.writeText(embedSnippet)} style={{ flexShrink: 0, padding: "6px 12px", borderRadius: 7, border: "1px solid #93c5fd", background: "#fff", fontSize: 12, cursor: "pointer", color: "#1e40af" }}>Copy</button>
+                  </div>
+                  <div style={{ fontSize: 10, color: "#3b82f6", marginTop: 6 }}>Tip: change <code>label=</code> to customise the button text, e.g. <code>label=Book+Appointment</code></div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -8032,6 +8960,7 @@ export default function App() {
     { k: "media",      l: "Media",       icon: "📎" },
     { k: "rates",      l: "Rates",       icon: "📈" },
     { k: "analytics",  l: "Analytics",   icon: "📊" },
+    { k: "leadsources",l: "Lead Sources", icon: "🌐" },
   ];
 
   // Role-based defaults when app_permissions.crm is not set
@@ -8099,6 +9028,7 @@ export default function App() {
       {activeScreen === "rates" && <RatesScreen />}
       {activeScreen === "broadcasts" && <BroadcastsScreen allTags={allTags} />}
       {activeScreen === "analytics" && <AnalyticsScreen funnels={funnels} />}
+      {activeScreen === "leadsources" && <LeadSourcesScreen funnels={funnels} />}
     </div>
   );
 }
