@@ -7711,6 +7711,332 @@ function LeadSourceModal({ source, funnels, onClose, onSaved }) {
 }
 
 // ──────────────────────────────────────────────────────────
+// FORM BUILDER — configure fields for CRM / HR forms
+// ──────────────────────────────────────────────────────────
+
+const SSJ_FORM_DEFS = [
+  {
+    id: "walkin",
+    label: "Walk-in / New Demand",
+    icon: "🏪",
+    desc: "Fields on the New Demand form (walk-in and phone enquiries).",
+    defaultSpec: {
+      tabs: [{k:"basic",l:"Basic Info"},{k:"jewelry",l:"Jewellery"},{k:"exchange",l:"Exchange"}],
+      required: ["phone","description"],
+      fields: {
+        basic: [
+          ["Phone *","phone","tel",null,true],
+          ["Name","name","text",null,true],
+          ["Requirement *","description","textarea",null,true],
+          ["Product Category","productCategory","select",["gold","silver","diamond","polki","kundan","gemstone","solitaire","lab_diamond","other"],true],
+          ["Occasion","occasion","select",["wedding","anniversary","birthday","Diwali gifting","corporate gift","self purchase","other"],true],
+          ["For Whom","forWhom","select",["self","daughter","son","wife","husband","mother","father","sister","brother","other"],true],
+          ["Budget (₹)","estimate","currency",null,true],
+          ["Visit Date","visitScheduledAt","date",null,true],
+          ["Attended by","assignedStaffId","select",null,true],
+          ["CRM Source","crmSource","select",["walkin","referral","old_client","online_google","online_instagram","exhibition","other"],true],
+        ],
+        jewelry: [
+          ["Metal","metal","text",null,true],
+          ["Purity","purity","text",null,true],
+          ["Item Category","itemCategory","text",null,true],
+          ["Stone","stone","text",null,true],
+          ["Ring Size","ringSize","text",null,true],
+          ["Hallmark Pref","hallmarkPref","text",null,true],
+        ],
+        exchange: [
+          ["Has Exchange Item","hasExchange","checkbox",null,true],
+          ["Exchange Description","exchangeDesc","text",null,true],
+          ["Exchange Value (₹)","exchangeValue","currency",null,true],
+        ]
+      }
+    }
+  },
+  {
+    id: "lead_entry",
+    label: "Lead / Contact Entry",
+    icon: "👤",
+    desc: "Fields on the manual lead entry and contact edit forms.",
+    defaultSpec: {
+      tabs: [{k:"basic",l:"Basic Info"},{k:"extra",l:"Extra Fields"}],
+      required: ["phone"],
+      fields: {
+        basic: [
+          ["Phone *","phone","tel",null,true],
+          ["Name","name","text",null,true],
+          ["Phone 2","mobile2","tel",null,true],
+          ["City","city","text",null,true],
+          ["Email","email","email",null,true],
+          ["Birthday","bday","date",null,true],
+          ["Anniversary","anniversary","date",null,true],
+          ["Source","source","text",null,true],
+          ["Tags","tags","text",null,true],
+        ],
+        extra: []
+      }
+    }
+  },
+  {
+    id: "lead_import",
+    label: "Lead CSV / Excel Import",
+    icon: "📥",
+    desc: "Column mappings and extra fields for the bulk CSV/Excel import flow.",
+    defaultSpec: {
+      tabs: [{k:"columns",l:"Column Names"},{k:"extra",l:"Extra Fields"}],
+      required: ["phone"],
+      fields: {
+        columns: [
+          ["Phone column","phone","text",null,true],
+          ["Name column","name","text",null,true],
+          ["City column","city","text",null,true],
+          ["Email column","email","text",null,true],
+          ["Birthday column","bday","text",null,true],
+          ["Anniversary column","anniversary","text",null,true],
+          ["Source column","source","text",null,true],
+          ["Tags column","tags","text",null,true],
+        ],
+        extra: []
+      }
+    }
+  }
+];
+
+const SSJ_FIELD_TYPES = [
+  ["text","Text"],["tel","Phone"],["email","Email"],["number","Number"],
+  ["currency","Currency (₹)"],["date","Date"],["textarea","Long Text"],
+  ["checkbox","Checkbox"],["select","Dropdown"],["multiselect","Multi-Select"],
+];
+
+function SsjFormFieldEditor({ spec, onChange, onReset }) {
+  const tabs = spec?.tabs || [];
+  const fields = spec?.fields || {};
+  const required = spec?.required || [];
+
+  const update = (updater) => onChange(updater(JSON.parse(JSON.stringify(spec || {tabs:[],fields:{},required:[]}))));
+
+  const addTab = () => {
+    const k = prompt("Tab key (e.g. 'shipping')");
+    if (!k?.trim()) return;
+    const l = prompt("Tab label", k) || k;
+    update(s => {
+      if ((s.tabs||[]).some(t => t.k === k.trim())) return s;
+      s.tabs = [...(s.tabs||[]), {k:k.trim(),l}];
+      s.fields = {...(s.fields||{}), [k.trim()]:[]};
+      return s;
+    });
+  };
+  const renameTab = (k,nl) => update(s => { s.tabs=s.tabs.map(t=>t.k===k?{...t,l:nl}:t); return s; });
+  const deleteTab = (k) => {
+    if (!confirm(`Delete tab "${k}" and all its fields?`)) return;
+    update(s => { s.tabs=s.tabs.filter(t=>t.k!==k); const nf={...s.fields}; delete nf[k]; s.fields=nf; return s; });
+  };
+  const moveTab = (idx,d) => update(s => {
+    const a=[...s.tabs]; if(idx+d<0||idx+d>=a.length) return s;
+    [a[idx],a[idx+d]]=[a[idx+d],a[idx]]; s.tabs=a; return s;
+  });
+  const addField = (tabK) => update(s => {
+    const arr=[...(s.fields[tabK]||[])];
+    arr.push(["New field","field_"+Date.now().toString(36),"text",null,false]);
+    s.fields={...s.fields,[tabK]:arr}; return s;
+  });
+  const updateField = (tabK,idx,patch) => update(s => {
+    const arr=[...(s.fields[tabK]||[])];
+    const cur=arr[idx]||["","","text",null,false];
+    arr[idx]=[
+      patch.label!==undefined?patch.label:cur[0],
+      patch.key!==undefined?patch.key:cur[1],
+      patch.type!==undefined?patch.type:cur[2],
+      patch.optsKey!==undefined?patch.optsKey:cur[3],
+      cur[4],
+    ];
+    s.fields={...s.fields,[tabK]:arr}; return s;
+  });
+  const deleteField = (tabK,idx) => update(s => {
+    const arr=[...(s.fields[tabK]||[])];
+    const[,key]=arr[idx]||[];
+    arr.splice(idx,1);
+    s.fields={...s.fields,[tabK]:arr};
+    if(key) s.required=(s.required||[]).filter(r=>r!==key);
+    return s;
+  });
+  const moveField = (tabK,idx,d) => update(s => {
+    const arr=[...(s.fields[tabK]||[])];
+    if(idx+d<0||idx+d>=arr.length) return s;
+    [arr[idx],arr[idx+d]]=[arr[idx+d],arr[idx]];
+    s.fields={...s.fields,[tabK]:arr}; return s;
+  });
+  const toggleRequired = (key,on) => update(s => {
+    const r=new Set(s.required||[]);
+    if(on) r.add(key); else r.delete(key);
+    s.required=[...r]; return s;
+  });
+  const setOpts = (tabK,idx,opts) => update(s => {
+    const arr=[...(s.fields[tabK]||[])];
+    if(arr[idx]) arr[idx]=[arr[idx][0],arr[idx][1],arr[idx][2],opts.length?opts:null,arr[idx][4]];
+    s.fields={...s.fields,[tabK]:arr}; return s;
+  });
+
+  return (
+    <div style={{background:"#f8f9fa",borderRadius:10,padding:14}}>
+      <p style={{fontSize:12,color:"#888",margin:"0 0 10px"}}>⚙ = system field (maps to a DB column, key/type locked). Custom fields you add will appear in the form as extra inputs.</p>
+      {tabs.map((t,ti) => {
+        const arr=fields[t.k]||[];
+        return (
+          <div key={t.k} style={{background:"#fff",border:"1px solid #e5e7eb",borderRadius:10,marginBottom:10,padding:"10px 12px"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8,flexWrap:"wrap"}}>
+              <span style={{fontSize:11,color:"#888",fontWeight:500}}>TAB:</span>
+              <input value={t.l} onChange={e=>renameTab(t.k,e.target.value)} style={{fontSize:13,fontWeight:500,padding:"3px 8px",borderRadius:6,border:"1px solid #e5e7eb",flex:1,minWidth:120}}/>
+              <span style={{fontSize:10,padding:"1px 6px",borderRadius:4,background:"#f3f4f6",color:"#888",fontFamily:"monospace"}}>{t.k}</span>
+              <button onClick={()=>moveTab(ti,-1)} disabled={ti===0} style={{border:"none",background:"none",cursor:ti===0?"default":"pointer",color:ti===0?"#ddd":"#555",fontSize:14}}>↑</button>
+              <button onClick={()=>moveTab(ti,1)} disabled={ti===tabs.length-1} style={{border:"none",background:"none",cursor:ti===tabs.length-1?"default":"pointer",color:ti===tabs.length-1?"#ddd":"#555",fontSize:14}}>↓</button>
+              <button onClick={()=>deleteTab(t.k)} style={{border:"none",background:"none",cursor:"pointer",color:C.red,fontSize:12,padding:"2px 6px"}}>Delete tab</button>
+            </div>
+            {arr.length===0&&<p style={{fontSize:12,color:"#aaa",margin:"4px 0 8px",textAlign:"center",fontStyle:"italic"}}>No fields yet.</p>}
+            {arr.map((f,fi) => {
+              const[lbl,key,ftype,optsKey,isFixed]=f;
+              const req=required.includes(key);
+              const hasOpts=["select","multiselect"].includes(ftype);
+              return (
+                <div key={fi} style={{padding:"8px 0",borderTop:fi>0?"1px dashed #f0f0f0":"none"}}>
+                  <div style={{display:"grid",gridTemplateColumns:"2fr 1.5fr 1fr auto",gap:6,alignItems:"center"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:4}}>
+                      {isFixed&&<span title="System field" style={{fontSize:10,color:"#aaa",flexShrink:0}}>⚙</span>}
+                      <input value={lbl} onChange={e=>!isFixed&&updateField(t.k,fi,{label:e.target.value})} placeholder="Label" readOnly={isFixed} style={{flex:1,fontSize:12,padding:"4px 6px",borderRadius:5,border:"1px solid #e5e7eb",opacity:isFixed?0.6:1,background:isFixed?"#fafafa":"#fff"}}/>
+                    </div>
+                    <input value={key} onChange={e=>!isFixed&&updateField(t.k,fi,{key:e.target.value})} placeholder="field_key" readOnly={isFixed} style={{fontSize:12,padding:"4px 6px",borderRadius:5,border:"1px solid #e5e7eb",fontFamily:"monospace",opacity:isFixed?0.6:1,background:isFixed?"#fafafa":"#fff"}}/>
+                    <select value={ftype||"text"} onChange={e=>!isFixed&&updateField(t.k,fi,{type:e.target.value})} disabled={isFixed} style={{fontSize:12,padding:"3px 6px",borderRadius:5,opacity:isFixed?0.6:1}}>
+                      {SSJ_FIELD_TYPES.map(([v,l])=><option key={v} value={v}>{l}</option>)}
+                    </select>
+                    <div style={{display:"flex",gap:2,alignItems:"center"}}>
+                      <label title="Required" style={{display:"flex",alignItems:"center",gap:2,fontSize:11,color:req?C.red:"#aaa",cursor:"pointer",padding:"2px 4px",borderRadius:4,background:req?"#c0392b11":"transparent"}}>
+                        <input type="checkbox" checked={req} onChange={e=>toggleRequired(key,e.target.checked)} style={{width:12,height:12}}/>req
+                      </label>
+                      <button onClick={()=>moveField(t.k,fi,-1)} disabled={fi===0} style={{border:"none",background:"none",cursor:fi===0?"default":"pointer",color:fi===0?"#ddd":"#555",fontSize:13,padding:"0 2px"}}>↑</button>
+                      <button onClick={()=>moveField(t.k,fi,1)} disabled={fi===arr.length-1} style={{border:"none",background:"none",cursor:fi===arr.length-1?"default":"pointer",color:fi===arr.length-1?"#ddd":"#555",fontSize:13,padding:"0 2px"}}>↓</button>
+                      {!isFixed&&<button onClick={()=>deleteField(t.k,fi)} style={{border:"none",background:"none",cursor:"pointer",color:C.red,fontSize:13,padding:"0 2px"}}>✕</button>}
+                    </div>
+                  </div>
+                  {hasOpts&&!isFixed&&(
+                    <div style={{background:"#f8fafc",border:"1px solid #e5e7eb",borderRadius:7,padding:"8px 10px",marginTop:4}}>
+                      <div style={{fontSize:10,color:"#888",fontWeight:500,marginBottom:6}}>OPTIONS</div>
+                      {(Array.isArray(optsKey)?optsKey:[]).map((opt,oi)=>{
+                        const optArr=Array.isArray(optsKey)?optsKey:[];
+                        return (
+                          <div key={oi} style={{display:"flex",gap:4,marginBottom:4,alignItems:"center"}}>
+                            <input value={opt} onChange={e=>{const n=[...optArr];n[oi]=e.target.value;setOpts(t.k,fi,n);}} placeholder={`Option ${oi+1}`} style={{flex:1,fontSize:12,padding:"4px 6px",borderRadius:5,border:"1px solid #e5e7eb"}}/>
+                            <button onClick={()=>{const n=optArr.filter((_,i)=>i!==oi);setOpts(t.k,fi,n);}} style={{border:"none",background:"none",cursor:"pointer",color:C.red,fontSize:13}}>✕</button>
+                          </div>
+                        );
+                      })}
+                      <button onClick={()=>{const n=[...(Array.isArray(optsKey)?optsKey:[]),""];setOpts(t.k,fi,n);}} style={{fontSize:11,padding:"3px 10px",borderRadius:5,border:"1px dashed #e5e7eb",background:"transparent",color:"#888",cursor:"pointer"}}>+ Add option</button>
+                    </div>
+                  )}
+                  {hasOpts&&isFixed&&optsKey&&<div style={{marginTop:3,fontSize:11,color:"#aaa"}}>Options: {Array.isArray(optsKey)?optsKey.join(", "):"(built-in)"}</div>}
+                </div>
+              );
+            })}
+            <button onClick={()=>addField(t.k)} style={{fontSize:12,padding:"4px 12px",borderRadius:7,border:"1px dashed #e5e7eb",background:"transparent",color:"#888",cursor:"pointer",marginTop:6}}>+ Add custom field to "{t.l}"</button>
+          </div>
+        );
+      })}
+      <div style={{display:"flex",gap:8,marginTop:8}}>
+        <button onClick={addTab} style={{fontSize:12,padding:"5px 14px",borderRadius:8,border:"1px dashed #e5e7eb",background:"transparent",color:"#888",cursor:"pointer"}}>+ Add tab</button>
+        <button onClick={onReset} style={{fontSize:12,padding:"5px 14px",borderRadius:8,border:`1px solid ${C.orange}`,background:"transparent",color:C.orange,cursor:"pointer"}}>Reset to defaults</button>
+      </div>
+    </div>
+  );
+}
+
+function FormBuilderScreen() {
+  const [selected, setSelected] = useState(SSJ_FORM_DEFS[0]?.id || "");
+  const [specs, setSpecs] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    const tid = getTenantId();
+    sb.from("bullion_dropdowns")
+      .select("field,value")
+      .eq("tenant_id", tid)
+      .like("field", "form_spec_%")
+      .then(({ data }) => {
+        const loaded = {};
+        (data||[]).forEach(r => {
+          try { loaded[r.field.replace("form_spec_","")] = JSON.parse(r.value); } catch {}
+        });
+        setSpecs(loaded);
+        setLoading(false);
+      });
+  }, []);
+
+  const currentDef = SSJ_FORM_DEFS.find(d => d.id === selected);
+  const currentSpec = specs[selected] || currentDef?.defaultSpec;
+
+  const handleChange = (next) => setSpecs(s => ({...s,[selected]:next}));
+
+  const handleReset = () => {
+    if (!confirm(`Reset "${currentDef?.label}" to defaults? Custom changes will be discarded.`)) return;
+    setSpecs(s => { const n={...s}; delete n[selected]; return n; });
+  };
+
+  const handleSave = async () => {
+    setSaving(true); setSaved(false);
+    const tid = getTenantId();
+    const field = `form_spec_${selected}`;
+    const value = JSON.stringify(specs[selected] || currentDef?.defaultSpec || {});
+    const { data: existing } = await sb.from("bullion_dropdowns")
+      .select("id").eq("tenant_id", tid).eq("field", field).maybeSingle();
+    if (existing?.id) {
+      await sb.from("bullion_dropdowns").update({ value, active: true }).eq("id", existing.id);
+    } else {
+      await sb.from("bullion_dropdowns").insert({ tenant_id: tid, field, value, active: true, sort_order: 0 });
+    }
+    setSaving(false); setSaved(true);
+    setTimeout(() => setSaved(false), 2500);
+  };
+
+  if (loading) return <div style={{padding:30,textAlign:"center",color:"#888"}}>Loading…</div>;
+
+  return (
+    <div style={{display:"grid",gridTemplateColumns:"220px 1fr",gap:0,minHeight:"60vh",border:"1px solid #e5e7eb",borderRadius:12,overflow:"hidden"}}>
+      <div style={{borderRight:"1px solid #e5e7eb",background:"#f9fafb"}}>
+        <div style={{padding:"10px 12px",borderBottom:"1px solid #f0f0f0"}}>
+          <p style={{fontSize:13,fontWeight:600,margin:0}}>Form Templates</p>
+          <p style={{fontSize:11,color:"#888",margin:"2px 0 0"}}>Select a form to configure</p>
+        </div>
+        {SSJ_FORM_DEFS.map(def => (
+          <button key={def.id} onClick={()=>setSelected(def.id)} style={{width:"100%",textAlign:"left",padding:"10px 12px",border:"none",borderBottom:"1px solid #f0f0f0",background:selected===def.id?"#fff":"transparent",cursor:"pointer",borderLeft:`3px solid ${selected===def.id?C.blue:"transparent"}`}}>
+            <div style={{fontSize:16}}>{def.icon}</div>
+            <div style={{fontSize:13,fontWeight:selected===def.id?600:400,marginTop:2}}>{def.label}</div>
+            {specs[def.id]&&<div style={{fontSize:10,color:C.purple,marginTop:1}}>● customised</div>}
+          </button>
+        ))}
+      </div>
+      {currentDef ? (
+        <div style={{padding:16,overflowY:"auto"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:14}}>
+            <div>
+              <h3 style={{margin:0,fontSize:15,fontWeight:600}}>{currentDef.icon} {currentDef.label}</h3>
+              <p style={{margin:"3px 0 0",fontSize:12,color:"#888"}}>{currentDef.desc}</p>
+              {!specs[selected]&&<p style={{margin:"4px 0 0",fontSize:11,color:C.orange}}>Showing defaults — add custom fields or edit to create a custom version.</p>}
+            </div>
+            <div style={{display:"flex",gap:8,alignItems:"center",flexShrink:0}}>
+              {saved&&<span style={{fontSize:12,color:C.green}}>✓ Saved</span>}
+              <button onClick={handleSave} disabled={saving} style={{padding:"7px 18px",borderRadius:8,border:"none",background:saving?"#aaa":C.blue,color:"#fff",fontWeight:600,fontSize:13,cursor:"pointer"}}>{saving?"Saving…":"Save changes"}</button>
+            </div>
+          </div>
+          <SsjFormFieldEditor spec={currentSpec||currentDef.defaultSpec} onChange={handleChange} onReset={handleReset}/>
+          <p style={{fontSize:11,color:"#aaa",marginTop:10}}>Hit "Save changes" to persist. Custom fields (non-⚙) added here will appear as extra inputs in the corresponding form.</p>
+        </div>
+      ) : (
+        <div style={{display:"flex",alignItems:"center",justifyContent:"center",color:"#aaa",fontSize:13}}>Select a form on the left.</div>
+      )}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
 // SHARED: App store links + referral section (used by profile forms)
 // ──────────────────────────────────────────────────────────
 
@@ -9084,13 +9410,14 @@ export default function App() {
     { k: "rates",      l: "Rates",       icon: "📈" },
     { k: "analytics",  l: "Analytics",   icon: "📊" },
     { k: "leadsources",l: "Lead Sources", icon: "🌐" },
+    { k: "formbuilder",l: "Form Builder", icon: "🛠️" },
   ];
 
   // Role-based defaults when app_permissions.crm is not set
   const ROLE_DEFAULT_TABS = {
     superadmin: ALL_TABS.map((t) => t.k),
     admin:      ALL_TABS.map((t) => t.k),
-    manager:    ["demands", "contacts", "contactsdb", "upcoming", "analytics"],
+    manager:    ["demands", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder"],
     staff:      ["demands", "contacts", "upcoming"],
     telecaller: ["queue", "demands"],
   };
@@ -9152,6 +9479,7 @@ export default function App() {
       {activeScreen === "broadcasts" && <BroadcastsScreen allTags={allTags} />}
       {activeScreen === "analytics" && <AnalyticsScreen funnels={funnels} />}
       {activeScreen === "leadsources" && <LeadSourcesScreen funnels={funnels} />}
+      {activeScreen === "formbuilder" && <FormBuilderScreen />}
     </div>
   );
 }

@@ -329,3 +329,33 @@ After success, the event row refreshes and shows "📅 queued" instead of "⚠�
 - Selecting an extra name sets `assigned_to = <name>` and `assigned_staff_id = null` (no staff record needed).
 - Select option value format: `"extra:<Name>"` — stripped to name on form submission.
 - Do NOT remove the `"extra:"` prefix handling in form submission code.
+
+---
+
+## 15. FORM BUILDER SCREEN
+
+**Location:** 🛠️ Form Builder tab — visible to manager / admin / superadmin.
+
+**What it does:**
+- Configure which fields appear in CRM forms: Walk-in/New Demand, Lead/Contact Entry, Lead CSV Import.
+- Left panel: form template list. Right panel: field editor (tabs + fields).
+- ⚙ fields = system fields (map to real DB columns, key/type locked, cannot be deleted).
+- Custom fields (non-⚙) can be added, reordered, deleted, marked required.
+- Select / Multi-Select field types support inline options list.
+
+**Storage:** `bullion_dropdowns` table — `field='form_spec_walkin'` / `'form_spec_lead_entry'` / `'form_spec_lead_import'`, `value` = JSON.stringify(spec).
+
+**Spec format:**
+```json
+{
+  "tabs": [{"k": "basic", "l": "Basic Info"}],
+  "required": ["phone"],
+  "fields": {
+    "basic": [["Label","key","type",null|["opt1"],isFixed]]
+  }
+}
+```
+
+**Key components:** `FormBuilderScreen`, `SsjFormFieldEditor`, `SSJ_FORM_DEFS` (default specs).
+
+**Do NOT make fields with `isFixed=true` editable** — those are DB column mappings.
