@@ -1,7 +1,6 @@
 // GET /api/claude-test?secret=... — diagnostic endpoint to check Claude API health
 // Remove after debugging.
 
-import { ANTHROPIC_API_KEY, CLAUDE_MODEL, WEBHOOK_SECRET_CHECK } from "./_lib/config.js";
 
 const SECRET = process.env.WEBHOOK_SECRET || "";
 
