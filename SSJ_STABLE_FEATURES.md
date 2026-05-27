@@ -301,3 +301,31 @@ Works in both "group by person" header and "group by date" card.
 After save, local state (name/phone) refreshes via `onContactSaved`.
 
 **Do NOT replace with inline name input for the edit button in ApprovalsScreen.**
+
+---
+
+## 13. UPCOMING EVENTS — ENROLL BUTTON
+
+**"🎯 Enroll" button appears on "⚠️ not enrolled" contacts in the Upcoming Events (🎂) screen.**
+
+Click Enroll → calls `POST /api/cron?action=enroll_calendar` with `{ leadId, funnelType: 'birthday'|'anniversary' }`.
+Computes next occurrence of the event date and calls `enrollLeadInDrip`.
+After success, the event row refreshes and shows "📅 queued" instead of "⚠️ not enrolled".
+
+**Do NOT auto-enroll in bulk from this screen — enrollment is always one contact at a time by manual action.**
+
+---
+
+## 14. ROTATION POOL + EXTRA SALESPERSON NAMES (Analytics screen)
+
+**Rotation Pool** (Analytics → "📞 Telecaller Rotation Pool" section):
+- Shows all staff. Toggle "Add to pool / Remove" updates `staff.app_permissions.fms` to include/exclude `"telecaller"`.
+- `assign.js` uses `isTelecallerStaff()` to pick from the pool for new demands.
+- Do NOT change the pool logic in `assign.js` without updating the UI toggle too.
+
+**Extra Salesperson Names** (Analytics → "🧑‍💼 Extra Salesperson Names" section):
+- Stored in `bullion_dropdowns` where `field='extra_salesperson'`, `active=true`.
+- Names appear in "Attended by" dropdown on demand forms (DemandEntryModal + WalkInModal).
+- Selecting an extra name sets `assigned_to = <name>` and `assigned_staff_id = null` (no staff record needed).
+- Select option value format: `"extra:<Name>"` — stripped to name on form submission.
+- Do NOT remove the `"extra:"` prefix handling in form submission code.

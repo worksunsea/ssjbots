@@ -56,6 +56,14 @@ const STATUSES = ["active", "handoff", "converted", "dead", "paused"];
 const STATUS_C = { active: C.blue, handoff: C.red, converted: C.green, dead: "#999", paused: C.gray };
 const PRODUCT_FOCUS = ["gold_bullion", "silver_coin", "coin_bar", "all"];
 const ROLES = { superadmin: "Super Admin", admin: "Admin", manager: "Manager", staff: "Staff" };
+// Returns true if a staff row is in the telecaller rotation pool
+const isTelecallerStaff = (s) => {
+  if (!s) return false;
+  if (s.role === "telecaller") return true;
+  const p = s.app_permissions;
+  if (!p || typeof p !== "object") return false;
+  return Object.values(p).some((v) => Array.isArray(v) && v.includes("telecaller"));
+};
 const PRODUCT_CATEGORIES = ["gold", "silver", "diamond", "polki", "kundan", "gemstone", "solitaire", "lab_diamond", "other"];
 const PRODUCT_TYPES = ["Chain", "Earrings", "Danglers", "Nosepin", "Necklace set", "Pendant", "P Set", "Bangles", "Bracelets", "Gents Jew", "Engagement ring", "Solitaires", "Wedding Accessories", "Gemstones", "Others"];
 const DISCOVERY_SOURCES = ["Google search", "Instagram", "Facebook ad", "WhatsApp", "Walk past store", "Friend referral", "Family referral", "Existing customer", "Newspaper", "Hoarding / banner", "Website", "Other"];
@@ -1413,11 +1421,16 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
   const [err, setErr] = useState("");
   const [toast, setToast] = useState("");
   const [staff, setStaff] = useState([]);
+  const [extraSalesNames, setExtraSalesNames] = useState([]);
   useEffect(() => {
-    sb.from("staff").select("id,name,username,role")
-      .eq("tenant_id", getTenantId()).neq("type", "artisan")
-      .order("name")
-      .then(({ data }) => setStaff(data || []));
+    const tid = getTenantId();
+    Promise.all([
+      sb.from("staff").select("id,name,username,role").eq("tenant_id", tid).neq("type", "artisan").order("name"),
+      sb.from("bullion_dropdowns").select("value").eq("tenant_id", tid).eq("field", "extra_salesperson").eq("active", true).order("sort_order"),
+    ]).then(([s, e]) => {
+      setStaff(s.data || []);
+      setExtraSalesNames((e.data || []).map((r) => r.value));
+    });
   }, []);
 
   const [jewExpanded, setJewExpanded] = useState(false);
@@ -1526,10 +1539,10 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
           visitScheduledAt: form.visitScheduledAt ? new Date(form.visitScheduledAt).toISOString() : null,
           funnelId: form.funnelId || autoFunnel(form.productCategory),
           leadId: selectedContact?.id || null,
-          assignedStaffId: form.assignedStaffId || null,
-          assignedTo: form.assignedStaffId
-            ? (staff.find((s) => s.id === form.assignedStaffId)?.name || null)
-            : null,
+          assignedStaffId: form.assignedStaffId?.startsWith("extra:") ? null : (form.assignedStaffId || null),
+          assignedTo: form.assignedStaffId?.startsWith("extra:")
+            ? form.assignedStaffId.slice(6)
+            : (form.assignedStaffId ? (staff.find((s) => s.id === form.assignedStaffId)?.name || null) : null),
           crmSource: form.crmSource || null,
           createdBy: loadUser()?.name || loadUser()?.username || null,
           tenantId: getTenantId(),
@@ -1794,6 +1807,9 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
               <Select value={form.assignedStaffId} onChange={(e) => set("assignedStaffId", e.target.value)}>
                 <option value="">— select salesperson —</option>
                 {staff.map((s) => <option key={s.id} value={s.id}>{s.name || s.username} · @{s.username}</option>)}
+                {extraSalesNames.length > 0 && <optgroup label="Part-time / Extra">
+                  {extraSalesNames.map((n) => <option key={`extra:${n}`} value={`extra:${n}`}>{n}</option>)}
+                </optgroup>}
               </Select>
             </Field>
             <Field label="CRM source (how did they find us?)">
@@ -1866,14 +1882,19 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved }) {
   const walkinFunnel = funnels.find((f) => f.active && (/walk[\s_-]?in/i.test(f.id) || /walk[\s_-]?in/i.test(f.name || "")));
 
   const [staff, setStaff] = useState([]);
+  const [extraSalesNames, setExtraSalesNames] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [refImageUrl, setRefImageUrl] = useState("");
 
   useEffect(() => {
-    sb.from("staff").select("id,name,username,role")
-      .eq("tenant_id", getTenantId()).neq("type", "artisan")
-      .order("name")
-      .then(({ data }) => setStaff(data || []));
+    const tid = getTenantId();
+    Promise.all([
+      sb.from("staff").select("id,name,username,role").eq("tenant_id", tid).neq("type", "artisan").order("name"),
+      sb.from("bullion_dropdowns").select("value").eq("tenant_id", tid).eq("field", "extra_salesperson").eq("active", true).order("sort_order"),
+    ]).then(([s, e]) => {
+      setStaff(s.data || []);
+      setExtraSalesNames((e.data || []).map((r) => r.value));
+    });
   }, []);
 
   const [form, setForm] = useState({
@@ -2017,10 +2038,10 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved }) {
             visitScheduledAt: form.visitScheduledAt ? new Date(form.visitScheduledAt).toISOString() : null,
             funnelId: form.funnelId || walkinFunnel?.id,
             leadId,
-            assignedStaffId: form.assignedStaffId || null,
-            assignedTo: form.assignedStaffId
-              ? (staff.find((s) => s.id === form.assignedStaffId)?.name || null)
-              : null,
+            assignedStaffId: form.assignedStaffId?.startsWith("extra:") ? null : (form.assignedStaffId || null),
+            assignedTo: form.assignedStaffId?.startsWith("extra:")
+              ? form.assignedStaffId.slice(6)
+              : (form.assignedStaffId ? (staff.find((s) => s.id === form.assignedStaffId)?.name || null) : null),
             imageUrls: refImageUrl ? [refImageUrl] : [],
             discoverySource: form.discoverySource || null,
             partySize: form.partySize ? Number(form.partySize) : null,
@@ -2280,6 +2301,9 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved }) {
                   <Select value={form.assignedStaffId} onChange={(e) => set("assignedStaffId", e.target.value)}>
                     <option value="">— select salesperson —</option>
                     {staff.map((s) => <option key={s.id} value={s.id}>{s.name || s.username} · @{s.username}</option>)}
+                    {extraSalesNames.length > 0 && <optgroup label="Part-time / Extra">
+                      {extraSalesNames.map((n) => <option key={`extra:${n}`} value={`extra:${n}`}>{n}</option>)}
+                    </optgroup>}
                   </Select>
                 </Field>
                 <Field label="Where did you find us?">
@@ -5540,6 +5564,8 @@ function UpcomingEventsScreen() {
   const [days, setDays] = useState(7);
   const [err, setErr] = useState(null);
   const [sendTarget, setSendTarget] = useState(null); // { contact, msgType }
+  const [enrolling, setEnrolling] = useState(new Set()); // "leadId-funnelType" keys
+  const [enrolled, setEnrolled] = useState(new Set()); // successfully enrolled this session
 
   useEffect(() => {
     load();
@@ -5640,6 +5666,26 @@ function UpcomingEventsScreen() {
     setLoading(false);
   }
 
+  const enrollInFunnel = async (leadId, funnelType) => {
+    const key = `${leadId}-${funnelType}`;
+    setEnrolling((s) => new Set([...s, key]));
+    try {
+      const res = await fetch(`/api/cron?action=enroll_calendar`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
+        body: JSON.stringify({ leadId, funnelType }),
+      });
+      const j = await res.json();
+      if (j.ok) {
+        setEnrolled((s) => new Set([...s, key]));
+        await load();
+      } else {
+        alert(`Enroll failed: ${j.error || "unknown error"}`);
+      }
+    } catch (e) { alert(`Enroll error: ${e.message}`); }
+    setEnrolling((s) => { const n = new Set(s); n.delete(key); return n; });
+  };
+
   const urgencyColor = (d) => d < 0 ? "#9333ea" : d === 0 ? "#dc2626" : d <= 7 ? "#ea580c" : d <= 14 ? "#d97706" : "#555";
   const urgencyBg = (d) => d < 0 ? "#faf5ff" : d === 0 ? "#fef2f2" : d <= 7 ? "#fff7ed" : d <= 14 ? "#fffbeb" : "#fff";
   const daysLabel = (d) => d < 0 ? `${Math.abs(d)}d ago` : d === 0 ? "Today! 🎉" : d === 1 ? "Tomorrow" : `${d} days`;
@@ -5671,7 +5717,17 @@ function UpcomingEventsScreen() {
               <div style={{ marginTop: 3, display: "flex", gap: 5, flexWrap: "wrap" }}>
                 {ev.sentCount > 0 && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#dcfce7", color: "#166534" }}>✅ {ev.sentCount} sent</span>}
                 {ev.pendingCount > 0 && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#dbeafe", color: "#1d4ed8" }}>📅 {ev.pendingCount} queued{ev.nextSend ? ` · next ${ev.nextSend.toLocaleDateString("en-IN", { day:"numeric", month:"short" })} ${ev.nextSend.toLocaleTimeString("en-IN", { hour:"2-digit", minute:"2-digit" })}` : ""}</span>}
-                {ev.sentCount === 0 && ev.pendingCount === 0 && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#fef9c3", color: "#713f12" }}>⚠️ not enrolled</span>}
+                {ev.sentCount === 0 && ev.pendingCount === 0 && (
+                  <>
+                    <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#fef9c3", color: "#713f12" }}>⚠️ not enrolled</span>
+                    <button
+                      disabled={enrolling.has(`${ev.contact.id}-${ev.msgType === "bday" ? "birthday" : "anniversary"}`)}
+                      onClick={() => enrollInFunnel(ev.contact.id, ev.msgType === "bday" ? "birthday" : "anniversary")}
+                      style={{ fontSize: 10, padding: "1px 8px", borderRadius: 8, border: "1px solid #6366f1", background: "#eef2ff", color: "#3730a3", cursor: "pointer" }}>
+                      {enrolling.has(`${ev.contact.id}-${ev.msgType === "bday" ? "birthday" : "anniversary"}`) ? "Enrolling…" : "🎯 Enroll"}
+                    </button>
+                  </>
+                )}
               </div>
             </div>
             <div style={{ textAlign: "right", minWidth: 90 }}>
@@ -6459,25 +6515,36 @@ function AnalyticsScreen({ funnels }) {
   const [configRows, setConfigRows] = useState([]);
   const [configSaving, setConfigSaving] = useState({});
 
+  // Rotation pool + extra salesperson names
+  const [rotationStaff, setRotationStaff] = useState([]);
+  const [rotationSaving, setRotationSaving] = useState(new Set());
+  const [extraSalesRows, setExtraSalesRows] = useState([]); // bullion_dropdowns rows field='extra_salesperson'
+  const [newSalesName, setNewSalesName] = useState("");
+  const [salesNameSaving, setSalesNameSaving] = useState(false);
+
   const load = useCallback(async () => {
     setLoading(true);
     const tid = getTenantId();
     const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
     const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
 
-    const [m, leads, demands, callsToday, callsMonth, staffData, targetsData, configData] = await Promise.all([
+    const [m, leads, demands, callsToday, callsMonth, staffData, targetsData, configData, rotData, extraSalesData] = await Promise.all([
       sb.from("bullion_funnel_metrics").select("*").eq("tenant_id", tid),
       sb.from("bullion_leads").select("funnel_id,stage,status,created_at").eq("tenant_id", tid).gte("created_at", fromDate).lte("created_at", toDate + "T23:59:59"),
       sb.from("bullion_demands").select("id,budget,outcome,created_at,next_call_at,occasion_date,visit_scheduled_at,is_callback_promised,lead:bullion_leads(status,last_msg_at)").eq("tenant_id", tid).is("outcome", null).limit(500),
       sb.from("bullion_call_logs").select("staff_id,disposition,lag_bucket,talk_bucket,is_suspicious,duration_sec").eq("tenant_id", tid).gte("called_at", todayStart.toISOString()),
       sb.from("bullion_call_logs").select("staff_id,disposition,duration_sec").eq("tenant_id", tid).gte("called_at", monthStart.toISOString()),
-      sb.from("staff").select("id,name,username").eq("tenant_id", tid).neq("type", "artisan"),
+      sb.from("staff").select("id,name,username,role,app_permissions").eq("tenant_id", tid).neq("type", "artisan").order("name"),
       sb.from("staff_targets").select("*").eq("tenant_id", tid).eq("month", monthStart.toISOString().slice(0, 10)),
       sb.from("bullion_dropdowns").select("id,field,value").eq("tenant_id", tid).in("field", ["google_review_link","post_sale_day3","post_sale_day7","post_sale_day30","missed_call_auto_reply","bot_numbers"]).eq("active", true).order("sort_order"),
+      sb.from("staff").select("id,name,username,role,app_permissions").eq("tenant_id", tid).neq("type", "artisan").order("name"),
+      sb.from("bullion_dropdowns").select("id,value,sort_order").eq("tenant_id", tid).eq("field", "extra_salesperson").eq("active", true).order("sort_order"),
     ]);
 
     if (m.data) setMetrics(m.data);
     if (staffData.data) setStaffList(staffData.data);
+    if (rotData.data) setRotationStaff(rotData.data);
+    if (extraSalesData.data) setExtraSalesRows(extraSalesData.data);
     let cfgRows = configData.data || [];
     // Auto-create bot_numbers row if it doesn't exist yet
     if (!cfgRows.find((r) => r.field === "bot_numbers")) {
@@ -6585,6 +6652,42 @@ function AnalyticsScreen({ funnels }) {
     await sb.from("bullion_dropdowns").update({ value: newVal }).eq("id", row.id);
     setConfigRows((rows) => rows.map((r) => r.id === row.id ? { ...r, value: newVal } : r));
     setConfigSaving((s) => ({ ...s, [row.id]: false }));
+  };
+
+  // Toggle a staff member in/out of the telecaller rotation pool
+  const toggleRotation = async (s) => {
+    const inPool = isTelecallerStaff(s);
+    setRotationSaving((prev) => new Set([...prev, s.id]));
+    const perms = s.app_permissions || {};
+    const fms = Array.isArray(perms.fms) ? [...perms.fms] : [];
+    let newFms;
+    if (inPool) {
+      newFms = fms.filter((v) => v !== "telecaller");
+    } else {
+      newFms = [...fms, "telecaller"];
+    }
+    const newPerms = { ...perms, fms: newFms };
+    await sb.from("staff").update({ app_permissions: newPerms }).eq("id", s.id);
+    setRotationStaff((prev) => prev.map((r) => r.id === s.id ? { ...r, app_permissions: newPerms } : r));
+    setRotationSaving((prev) => { const n = new Set(prev); n.delete(s.id); return n; });
+  };
+
+  const addExtraSalesName = async () => {
+    const name = newSalesName.trim();
+    if (!name) return;
+    setSalesNameSaving(true);
+    const tid = getTenantId();
+    const { data } = await sb.from("bullion_dropdowns").insert({
+      tenant_id: tid, field: "extra_salesperson", value: name, active: true, sort_order: extraSalesRows.length,
+    }).select("id,value,sort_order").single();
+    if (data) setExtraSalesRows((r) => [...r, data]);
+    setNewSalesName("");
+    setSalesNameSaving(false);
+  };
+
+  const removeExtraSalesName = async (id) => {
+    await sb.from("bullion_dropdowns").update({ active: false }).eq("id", id);
+    setExtraSalesRows((r) => r.filter((x) => x.id !== id));
   };
 
   const fmtLakh = (n) => {
@@ -6763,6 +6866,54 @@ function AnalyticsScreen({ funnels }) {
           </div>
         </Card>
       )}
+
+      {/* Rotation Pool */}
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 10 }}>📞 Telecaller Rotation Pool</div>
+        <div style={{ fontSize: 12, color: "#666", marginBottom: 10 }}>Toggle who is in the auto-assignment round-robin pool. New demands are assigned to the person with lowest open-demand load from this pool.</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {rotationStaff.map((s) => {
+            const inPool = isTelecallerStaff(s);
+            const busy = rotationSaving.has(s.id);
+            return (
+              <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 10px", borderRadius: 8, background: inPool ? "#f0fdf4" : "#f9fafb", border: `1px solid ${inPool ? "#86efac" : "#e5e7eb"}` }}>
+                <span style={{ flex: 1, fontSize: 13, fontWeight: inPool ? 600 : 400 }}>{s.name || s.username}</span>
+                {inPool && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#dcfce7", color: "#166534" }}>📞 In pool</span>}
+                <button disabled={busy} onClick={() => toggleRotation(s)}
+                  style={{ fontSize: 11, padding: "3px 10px", borderRadius: 6, border: `1px solid ${inPool ? "#fca5a5" : "#86efac"}`, background: inPool ? "#fef2f2" : "#f0fdf4", color: inPool ? "#991b1b" : "#166534", cursor: busy ? "default" : "pointer" }}>
+                  {busy ? "…" : inPool ? "Remove" : "Add to pool"}
+                </button>
+              </div>
+            );
+          })}
+          {!rotationStaff.length && <div style={{ color: "#aaa", fontSize: 12 }}>No staff found.</div>}
+        </div>
+      </Card>
+
+      {/* Extra Salesperson Names */}
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 6 }}>🧑‍💼 Extra Salesperson Names</div>
+        <div style={{ fontSize: 12, color: "#666", marginBottom: 10 }}>Names added here appear in the "Attended by" dropdown on demand forms. Use for part-time or occasional salespeople not in the staff list.</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
+          {extraSalesRows.map((r) => (
+            <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 10px", borderRadius: 6, background: "#f9fafb", border: "1px solid #e5e7eb" }}>
+              <span style={{ flex: 1, fontSize: 13 }}>{r.value}</span>
+              <button onClick={() => removeExtraSalesName(r.id)} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 5, border: "1px solid #fca5a5", background: "#fef2f2", color: "#991b1b", cursor: "pointer" }}>Remove</button>
+            </div>
+          ))}
+          {!extraSalesRows.length && <div style={{ color: "#aaa", fontSize: 12 }}>No extra names added yet.</div>}
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input value={newSalesName} onChange={(e) => setNewSalesName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") addExtraSalesName(); }}
+            placeholder="Enter name (e.g. Nitin, Kavya…)"
+            style={{ flex: 1, fontSize: 13, padding: "5px 10px", border: "1px solid #ddd", borderRadius: 6 }} />
+          <button disabled={salesNameSaving || !newSalesName.trim()} onClick={addExtraSalesName}
+            style={{ fontSize: 12, padding: "5px 14px", borderRadius: 6, border: "1px solid #6366f1", background: "#eef2ff", color: "#3730a3", cursor: "pointer" }}>
+            {salesNameSaving ? "Adding…" : "Add"}
+          </button>
+        </div>
+      </Card>
 
       {/* Config editor */}
       {configRows.length > 0 && (

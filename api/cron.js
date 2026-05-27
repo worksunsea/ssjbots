@@ -20,6 +20,57 @@ const CRON_SECRET = process.env.CRON_SECRET || "";
 const BATCH = 5; // send max 5 per cron tick — anti-ban, each has a delay below
 const SEND_DELAY_MS = 4000; // 4s gap between sends (~15/min max)
 
+const PREVIEW_SELECT = `id, lead_id, funnel_id, body, tenant_id,
+  step:bullion_funnel_steps(id,use_ai_message,link_type,link_url,link_label,name),
+  lead:bullion_leads(id,name,city),
+  funnel:funnels(id,name,goal,kind)`;
+
+async function generatePreview(sb, row) {
+  if (!row?.step?.use_ai_message || !row.lead || !row.funnel) return false;
+  const { lead, funnel } = row;
+  let resolvedLink = null;
+  if (row.step?.link_type && row.step.link_type !== "none") {
+    if (row.step.link_type === "profile_update") {
+      const { data: lf } = await sb.from("bullion_leads").select("form_token").eq("id", lead.id).maybeSingle();
+      if (lf?.form_token) resolvedLink = { url: `https://ssjbot.gemtre.in/update?t=${lf.form_token}`, label: row.step.link_label || "update your details" };
+    } else if (row.step.link_url) { resolvedLink = { url: row.step.link_url, label: row.step.link_label || row.step.link_type }; }
+  }
+  const faqs = await getFaqs(row.tenant_id);
+  const isBirthdayFunnel = ["birthday","anniversary"].includes(funnel.kind);
+  const eventLabel = funnel.kind === "anniversary" ? "anniversary" : "birthday";
+  const stepName = (row.step?.name || "").toLowerCase();
+  const isBirthdayWishStep = isBirthdayFunnel && stepName.includes("wish");
+  const { count: remainingAfterPreview } = await sb.from("bullion_scheduled_messages")
+    .select("*", { count: "exact", head: true })
+    .eq("lead_id", lead.id).eq("funnel_id", row.funnel_id).eq("status", "pending")
+    .gt("send_at", row.send_at);
+  const isLastStep = remainingAfterPreview === 0;
+  const aiSystem = [
+    "You are a warm WhatsApp assistant for Sun Sea Jewellers, Karol Bagh.",
+    "Write a short, personalized WhatsApp message. 2–4 lines max. Warm and genuine. No markdown. Plain text only.",
+    lead.name ? `Customer first name: ${lead.name.trim().split(/\s+/)[0]}` : "Name unknown — do NOT use Sir/Madam. Start naturally.",
+    `City: ${lead.city || ""}`,
+    "Always end with '- Sun Sea Jewellers, Karol Bagh' on a new line.",
+    ...(isBirthdayFunnel ? [
+      `Event type: ${eventLabel}`,
+      `OFFER: ${funnel.goal || "Free gift on store visit + up to 70% off making charges for 25 days."}`,
+      "Mention offer ONLY in pre/post event messages. For the actual wish: just wish warmly, no selling.",
+    ] : []),
+    ...(isBirthdayWishStep ? [`BIRTHDAY/ANNIVERSARY WISH INSTRUCTION: Just wish them warmly and genuinely on their special day. Naturally mention that a special surprise free gift awaits them when they visit Sun Sea Jewellers this week. Keep it warm and exciting — no hard sell.`] : []),
+    ...(isBirthdayFunnel && isLastStep ? [`POST-EVENT GIFT CTA (7 days after): Tell them to fill their profile form and download the Sun Sea Jewellers app to claim their FREE birthday gift of 50mg gold worth ₹1,500. Profile form: https://ssjbot.gemtre.in/profile  App Android: https://ssjbot.gemtre.in/app  App iOS: https://ssjbot.gemtre.in/ios  Make it sound warm and exciting.`] : []),
+    ...(resolvedLink ? [`Include naturally — ${resolvedLink.label}: ${resolvedLink.url}`] : []),
+    `Context: ${funnel.goal || "Stay in touch."}`,
+    faqs?.length ? `Store info:\n${faqsForPrompt(faqs)}` : "",
+    "Template hint (do NOT copy verbatim):", row.body,
+  ].filter(Boolean).join("\n");
+  const claude = await askClaude({ system: aiSystem, messages: [{ role: "user", content: "Write the message now." }], maxTokens: 200, model: CLAUDE_MODEL });
+  if (claude?.text?.trim()) {
+    await sb.from("bullion_scheduled_messages").update({ edited_body: claude.text.trim() }).eq("id", row.id);
+    return true;
+  }
+  return false;
+}
+
 export default async function handler(req, res) {
   const header = req.headers["x-vercel-cron"] || req.headers["x-cron-secret"] || "";
   const queryToken = (req.query && req.query.secret) || "";
@@ -31,10 +82,60 @@ export default async function handler(req, res) {
     return res.status(401).json({ ok: false, error: "unauthorized" });
   }
 
+  // Fast path: generate preview for a single message (called from approvals card)
+  if (req.query?.gen_id) {
+    try {
+      const sb = supa();
+      const { data: row } = await sb.from("bullion_scheduled_messages")
+        .select(PREVIEW_SELECT).eq("id", req.query.gen_id).is("edited_body", null).maybeSingle();
+      const generated = await generatePreview(sb, row).catch(() => false);
+      return res.status(200).json({ ok: true, generated: generated ? 1 : 0 });
+    } catch (e) { return res.status(200).json({ ok: false, error: e.message }); }
+  }
+
+  // Manual calendar enrollment from Upcoming Events screen
+  if (req.query?.action === "enroll_calendar") {
+    try {
+      const { leadId, funnelType } = req.body || {};
+      if (!leadId || !funnelType) return res.status(400).json({ ok: false, error: "leadId and funnelType required" });
+      const sb = supa();
+      const tid = process.env.TENANT_ID;
+      const { data: lead } = await sb.from("bullion_leads").select("*").eq("id", leadId).maybeSingle();
+      if (!lead) return res.status(404).json({ ok: false, error: "lead not found" });
+      const { data: funnel } = await sb.from("funnels").select("*").eq("tenant_id", tid).eq("id", funnelType).maybeSingle();
+      if (!funnel) return res.status(404).json({ ok: false, error: `funnel '${funnelType}' not found` });
+      // Compute next occurrence of the event
+      const raw = funnelType === "birthday" ? lead.bday : lead.anniversary;
+      let eventDateMs = null;
+      if (raw) {
+        const p = raw.split("-").map(Number);
+        let mo, dy;
+        if (p.length === 3) {
+          if (p[0] > 31) { mo = p[1] - 1; dy = p[2]; }
+          else if (p[0] >= 1 && p[0] <= 12) { mo = p[0] - 1; dy = p[1]; }
+          else { mo = p[1] - 1; dy = p[0]; }
+        } else if (p.length === 2) {
+          if (p[0] >= 1 && p[0] <= 12) { mo = p[0] - 1; dy = p[1]; }
+          else { mo = p[1] - 1; dy = p[0]; }
+        }
+        if (mo != null && dy != null && !isNaN(mo) && !isNaN(dy)) {
+          const today = new Date(); today.setHours(0,0,0,0);
+          let ev = new Date(today.getFullYear(), mo, dy);
+          if (ev.getTime() < today.getTime()) ev = new Date(today.getFullYear() + 1, mo, dy);
+          eventDateMs = ev.getTime();
+        }
+      }
+      const result = await enrollLeadInDrip({ lead, funnel, eventDateMs });
+      return res.status(200).json({ ok: true, ...result });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   try {
   const sb = supa();
   const nowIso = new Date().toISOString();
-  const stats = { considered: 0, sent: 0, canceled: 0, failed: 0, transitioned: 0, calendarEnrolled: 0 };
+  const stats = { considered: 0, sent: 0, canceled: 0, failed: 0, transitioned: 0, calendarEnrolled: 0, previewsGenerated: 0 };
 
   // ── 1. Flush due drip messages ──────────────────────────────────
   const { data: due } = await sb
@@ -92,7 +193,7 @@ export default async function handler(req, res) {
       if (OWNER_ALERT_PHONE) {
         await sendWhatsApp({
           phone: OWNER_ALERT_PHONE,
-          msg: `🔔 Lead replied during drip — ${lead.name || lead.phone} on ${funnel.name}. Pending follow-ups canceled. Open CRM: https://ssjbots.vercel.app`,
+          msg: `🔔 Lead replied during drip — ${lead.name || lead.phone} on ${funnel.name}. Pending follow-ups canceled. Open CRM: https://ssjbot.gemtre.in`,
         }).catch(() => {});
       }
       stats.canceled++; continue;
@@ -113,7 +214,7 @@ export default async function handler(req, res) {
     if (row.step?.link_type && row.step.link_type !== "none") {
       if (row.step.link_type === "profile_update") {
         const { data: lf } = await sb.from("bullion_leads").select("form_token").eq("id", lead.id).maybeSingle();
-        if (lf?.form_token) resolvedLink = { url: `https://ssjbots.vercel.app/update?t=${lf.form_token}`, label: row.step.link_label || "update your details" };
+        if (lf?.form_token) resolvedLink = { url: `https://ssjbot.gemtre.in/update?t=${lf.form_token}`, label: row.step.link_label || "update your details" };
       } else if (row.step.link_type === "save_contact") {
         resolvedLink = { url: "https://ssjbot.gemtre.in/contact.vcf", label: row.step.link_label || "tap to save our number in your contacts" };
       } else if (row.step.link_url) {
@@ -382,51 +483,13 @@ export default async function handler(req, res) {
   const needsPreview = [...calendarRows.slice(0, 10), ...dripRows.slice(0, 3)];
 
   for (const row of needsPreview || []) {
-    if (!row.step?.use_ai_message) continue;
-    const lead = row.lead; const funnel = row.funnel;
-    if (!lead || !funnel) continue;
-    let resolvedLink = null;
-    if (row.step?.link_type && row.step.link_type !== "none") {
-      if (row.step.link_type === "profile_update") {
-        const { data: lf } = await sb.from("bullion_leads").select("form_token").eq("id", lead.id).maybeSingle();
-        if (lf?.form_token) resolvedLink = { url: `https://ssjbots.vercel.app/update?t=${lf.form_token}`, label: row.step.link_label || "update your details" };
-      } else if (row.step.link_url) { resolvedLink = { url: row.step.link_url, label: row.step.link_label || row.step.link_type }; }
-    }
     try {
-      const faqs = await getFaqs(row.tenant_id);
-      const isBirthdayFunnel = ["birthday","anniversary"].includes(funnel.kind);
-      const eventLabel = funnel.kind === "anniversary" ? "anniversary" : "birthday";
-      const stepName = (row.step?.name || "").toLowerCase();
-      const isBirthdayWishStep = isBirthdayFunnel && stepName.includes("wish");
-      const { count: remainingAfterPreview } = await sb.from("bullion_scheduled_messages")
-        .select("*", { count: "exact", head: true })
-        .eq("lead_id", lead.id).eq("funnel_id", row.funnel_id).eq("status", "pending")
-        .gt("send_at", row.send_at);
-      const isLastStep = remainingAfterPreview === 0;
-      const aiSystem = [
-        "You are a warm WhatsApp assistant for Sun Sea Jewellers, Karol Bagh.",
-        "Write a short, personalized WhatsApp message. 2–4 lines max. Warm and genuine. No markdown. Plain text only.",
-        lead.name ? `Customer first name: ${lead.name.trim().split(/\s+/)[0]}` : "Name unknown — do NOT use Sir/Madam. Start naturally.",
-        `City: ${lead.city || ""}`,
-        "Always end with '- Sun Sea Jewellers, Karol Bagh' on a new line.",
-        ...(isBirthdayFunnel ? [
-          `Event type: ${eventLabel}`,
-          `OFFER: ${funnel.goal || "Free gift on store visit + up to 70% off making charges for 25 days."}`,
-          "Mention offer ONLY in pre/post event messages. For the actual wish: just wish warmly, no selling.",
-        ] : []),
-        ...(isBirthdayWishStep ? [`BIRTHDAY/ANNIVERSARY WISH INSTRUCTION: Just wish them warmly and genuinely on their special day. Naturally mention that a special surprise free gift awaits them when they visit Sun Sea Jewellers this week. Keep it warm and exciting — no hard sell.`] : []),
-        ...(isBirthdayFunnel && isLastStep ? [`POST-EVENT GIFT CTA (7 days after): Tell them to fill their profile form and download the Sun Sea Jewellers app to claim their FREE birthday gift of 50mg gold worth ₹1,500. Profile form: https://ssjbot.gemtre.in/profile  App Android: https://ssjbot.gemtre.in/app  App iOS: https://ssjbot.gemtre.in/ios  Make it sound warm and exciting.`] : []),
-        ...(resolvedLink ? [`Include naturally — ${resolvedLink.label}: ${resolvedLink.url}`] : []),
-        `Context: ${funnel.goal || "Stay in touch."}`,
-        faqs?.length ? `Store info:\n${faqsForPrompt(faqs)}` : "",
-        "Template hint (do NOT copy verbatim):", row.body,
-      ].filter(Boolean).join("\n");
-      const claude = await askClaude({ system: aiSystem, messages: [{ role: "user", content: "Write the message now." }], maxTokens: 200, model: CLAUDE_MODEL });
-      if (claude?.text?.trim()) await sb.from("bullion_scheduled_messages").update({ edited_body: claude.text.trim() }).eq("id", row.id);
+      const ok = await generatePreview(sb, row);
+      if (ok) stats.previewsGenerated++;
     } catch (e) { console.error("preview_gen failed", row.id, e.message); }
   }
 
-  return res.status(200).json({ ok: true, ts: nowIso, stats });
+  return res.status(200).json({ ok: true, ts: nowIso, stats: { ...stats } });
   } catch (err) {
     console.error("cron top-level error", err);
     return res.status(500).json({ ok: false, error: String(err.message || err) });
