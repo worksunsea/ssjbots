@@ -7927,6 +7927,8 @@ function SsjFormFieldEditor({ spec, onChange, onReset }) {
                         return (
                           <div key={oi} style={{display:"flex",gap:4,marginBottom:4,alignItems:"center"}}>
                             <input value={opt} onChange={e=>{const n=[...optArr];n[oi]=e.target.value;setOpts(t.k,fi,n);}} placeholder={`Option ${oi+1}`} style={{flex:1,fontSize:12,padding:"4px 6px",borderRadius:5,border:"1px solid #e5e7eb"}}/>
+                            <button onClick={()=>{if(oi===0)return;const n=[...optArr];[n[oi],n[oi-1]]=[n[oi-1],n[oi]];setOpts(t.k,fi,n);}} disabled={oi===0} style={{border:"none",background:"none",cursor:oi===0?"default":"pointer",color:oi===0?"#ddd":"#555",fontSize:13,padding:"0 2px"}}>↑</button>
+                            <button onClick={()=>{if(oi>=optArr.length-1)return;const n=[...optArr];[n[oi],n[oi+1]]=[n[oi+1],n[oi]];setOpts(t.k,fi,n);}} disabled={oi>=optArr.length-1} style={{border:"none",background:"none",cursor:oi>=optArr.length-1?"default":"pointer",color:oi>=optArr.length-1?"#ddd":"#555",fontSize:13,padding:"0 2px"}}>↓</button>
                             <button onClick={()=>{const n=optArr.filter((_,i)=>i!==oi);setOpts(t.k,fi,n);}} style={{border:"none",background:"none",cursor:"pointer",color:C.red,fontSize:13}}>✕</button>
                           </div>
                         );
