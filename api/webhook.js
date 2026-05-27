@@ -90,27 +90,39 @@ export default async function handler(req, res) {
   const sb = supa();
 
   try {
-    // ── Gate 1: only reply on sessions whose phone is in BOT_NUMBERS ──────────
-    // Load funnels purely to resolve waClient → phone mapping.
-    if (waClient) {
-      const { data: sessionFunnels } = await sb.from("funnels").select("wa_number,wbiztool_client").eq("active", true);
-      const matched = (sessionFunnels || []).find((f) => String(f.wbiztool_client) === String(waClient));
+    // ── Resolve effective bot numbers: DB config first, env var fallback ────────
+    const { data: botNumCfg } = await sb.from("bullion_dropdowns")
+      .select("value").eq("tenant_id", TENANT_ID).eq("field", "bot_numbers").eq("active", true).maybeSingle();
+    const effectiveBotNumbers = botNumCfg?.value
+      ? botNumCfg.value.split(",").map((n) => normalizePhone(n.trim())).filter(Boolean)
+      : BOT_NUMBERS;
 
-      if (!matched) {
-        // Try self-healing via session_phone header
-        if (body.session_phone) {
-          const sp = normalizePhone(String(body.session_phone).replace(/[:@].*/, ""));
-          if (!BOT_NUMBERS.includes(sp)) {
-            console.log("webhook:gate1:dropped non-bot session_phone", sp);
-            return res.status(200).json({ ok: true, skipped: "non_bot_session" });
-          }
-        } else {
+    // ── Gate 1: only reply on sessions whose ACTUAL phone is in bot numbers ─────
+    // session_phone is the real connected phone sent by wa-service — use it as
+    // the authoritative check so secondary sessions (skg, etc.) never bot-reply
+    // even if they're assigned as wbiztool_client on a funnel.
+    if (waClient) {
+      const sessionPhone = body.session_phone
+        ? normalizePhone(String(body.session_phone).replace(/[:@].*/, ""))
+        : null;
+
+      if (sessionPhone) {
+        if (!effectiveBotNumbers.includes(sessionPhone)) {
+          console.log("webhook:gate1:dropped non-bot session_phone", sessionPhone, "client", waClient);
+          return res.status(200).json({ ok: true, skipped: "non_bot_session" });
+        }
+      } else {
+        // No session_phone — fall back to funnel wa_number lookup
+        const { data: sessionFunnels } = await sb.from("funnels").select("wa_number,wbiztool_client").eq("active", true);
+        const matched = (sessionFunnels || []).find((f) => String(f.wbiztool_client) === String(waClient));
+        if (!matched) {
           console.log("webhook:gate1:dropped unknown session", waClient);
           return res.status(200).json({ ok: true, skipped: "unknown_session" });
         }
-      } else if (!BOT_NUMBERS.includes(normalizePhone(matched.wa_number || ""))) {
-        console.log("webhook:gate1:dropped non-bot number", matched.wa_number, "session", waClient);
-        return res.status(200).json({ ok: true, skipped: "non_bot_number" });
+        if (!effectiveBotNumbers.includes(normalizePhone(matched.wa_number || ""))) {
+          console.log("webhook:gate1:dropped non-bot number", matched.wa_number, "session", waClient);
+          return res.status(200).json({ ok: true, skipped: "non_bot_number" });
+        }
       }
     }
 
@@ -209,7 +221,7 @@ export default async function handler(req, res) {
       const claude = await askClaude({ system, messages, model: CLAUDE_MODEL });
       parsed = parseBotJson(claude.text) || { reply: claude.text.slice(0, 300) || "Thanks! Will get back shortly.", action: "CONTINUE" };
     } catch (err) {
-      console.error("Claude call failed", err);
+      console.error("Claude call failed", String(err?.message || err));
       parsed = { reply: "Thanks for your message! Our team will get back to you shortly. 🙏", action: "CONTINUE" };
     }
 
