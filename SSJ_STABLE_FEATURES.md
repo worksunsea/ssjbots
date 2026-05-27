@@ -290,3 +290,14 @@ Used in all RLS policies. Do not change the tenant UUID.
 3. Verify the affected feature on ssjbot.gemtre.in
 
 **Vercel env vars:** `SUPABASE_SERVICE_KEY`, `ANTHROPIC_API_KEY`, `WEBHOOK_SECRET`, `WA_SERVICE_URL`, `WA_SERVICE_SECRET`, `CRM_SECRET`, `TENANT_ID`, `BOT_NUMBERS`, `CLAUDE_MODEL`, `OWNER_ALERT_PHONE`
+
+
+## 12. APPROVALS SCREEN — INLINE NAME EDIT
+
+**Edit name in Approvals tab is INLINE — not a full ContactEditModal.**
+
+Click ✏️ Edit next to a person's name → input appears in place → Enter or ✓ saves → Escape or ✗ cancels.
+Saves to `bullion_leads.name` and updates local state immediately.
+Both "group by person" header and "group by date" card have this inline edit.
+
+**Do NOT replace with openContactEdit / ContactEditModal for the name button in ApprovalsScreen.**
