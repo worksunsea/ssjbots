@@ -7900,11 +7900,11 @@ function SsjFormFieldEditor({ spec, onChange, onReset }) {
                 <div key={fi} style={{padding:"8px 0",borderTop:fi>0?"1px dashed #f0f0f0":"none"}}>
                   <div style={{display:"grid",gridTemplateColumns:"2fr 1.5fr 1fr auto",gap:6,alignItems:"center"}}>
                     <div style={{display:"flex",alignItems:"center",gap:4}}>
-                      {isFixed&&<span title="System field" style={{fontSize:10,color:"#aaa",flexShrink:0}}>⚙</span>}
-                      <input value={lbl} onChange={e=>!isFixed&&updateField(t.k,fi,{label:e.target.value})} placeholder="Label" readOnly={isFixed} style={{flex:1,fontSize:12,padding:"4px 6px",borderRadius:5,border:"1px solid #e5e7eb",opacity:isFixed?0.6:1,background:isFixed?"#fafafa":"#fff"}}/>
+                      {isFixed&&<span title="System field — key is locked" style={{fontSize:10,color:"#aaa",flexShrink:0}}>⚙</span>}
+                      <input value={lbl} onChange={e=>updateField(t.k,fi,{label:e.target.value})} placeholder="Label" style={{flex:1,fontSize:12,padding:"4px 6px",borderRadius:5,border:"1px solid #e5e7eb"}}/>
                     </div>
-                    <input value={key} onChange={e=>!isFixed&&updateField(t.k,fi,{key:e.target.value})} placeholder="field_key" readOnly={isFixed} style={{fontSize:12,padding:"4px 6px",borderRadius:5,border:"1px solid #e5e7eb",fontFamily:"monospace",opacity:isFixed?0.6:1,background:isFixed?"#fafafa":"#fff"}}/>
-                    <select value={ftype||"text"} onChange={e=>!isFixed&&updateField(t.k,fi,{type:e.target.value})} disabled={isFixed} style={{fontSize:12,padding:"3px 6px",borderRadius:5,opacity:isFixed?0.6:1}}>
+                    <input value={key} onChange={e=>!isFixed&&updateField(t.k,fi,{key:e.target.value})} placeholder="field_key" readOnly={isFixed} style={{fontSize:12,padding:"4px 6px",borderRadius:5,border:"1px solid #e5e7eb",fontFamily:"monospace",opacity:isFixed?0.5:1,background:isFixed?"#f3f4f6":"#fff"}}/>
+                    <select value={ftype||"text"} onChange={e=>updateField(t.k,fi,{type:e.target.value})} style={{fontSize:12,padding:"3px 6px",borderRadius:5}}>
                       {SSJ_FIELD_TYPES.map(([v,l])=><option key={v} value={v}>{l}</option>)}
                     </select>
                     <div style={{display:"flex",gap:2,alignItems:"center"}}>
@@ -7916,7 +7916,7 @@ function SsjFormFieldEditor({ spec, onChange, onReset }) {
                       {!isFixed&&<button onClick={()=>deleteField(t.k,fi)} style={{border:"none",background:"none",cursor:"pointer",color:C.red,fontSize:13,padding:"0 2px"}}>✕</button>}
                     </div>
                   </div>
-                  {hasOpts&&!isFixed&&(
+                  {hasOpts&&(
                     <div style={{background:"#f8fafc",border:"1px solid #e5e7eb",borderRadius:7,padding:"8px 10px",marginTop:4}}>
                       <div style={{fontSize:10,color:"#888",fontWeight:500,marginBottom:6}}>OPTIONS</div>
                       {(Array.isArray(optsKey)?optsKey:[]).map((opt,oi)=>{
@@ -7931,7 +7931,6 @@ function SsjFormFieldEditor({ spec, onChange, onReset }) {
                       <button onClick={()=>{const n=[...(Array.isArray(optsKey)?optsKey:[]),""];setOpts(t.k,fi,n);}} style={{fontSize:11,padding:"3px 10px",borderRadius:5,border:"1px dashed #e5e7eb",background:"transparent",color:"#888",cursor:"pointer"}}>+ Add option</button>
                     </div>
                   )}
-                  {hasOpts&&isFixed&&optsKey&&<div style={{marginTop:3,fontSize:11,color:"#aaa"}}>Options: {Array.isArray(optsKey)?optsKey.join(", "):"(built-in)"}</div>}
                 </div>
               );
             })}
