@@ -216,12 +216,13 @@ export default async function handler(req, res) {
     const system = buildSystemPrompt({ ratesText: ratesForPrompt(rates), faqsText: faqsForPrompt(faqs), lead: leadRow });
     const messages = buildMessages({ history: priorMessages, inboundBody: msg });
 
+    console.log("webhook:claude_model", CLAUDE_MODEL);
     let parsed;
     try {
       const claude = await askClaude({ system, messages, model: CLAUDE_MODEL });
       parsed = parseBotJson(claude.text) || { reply: claude.text.slice(0, 300) || "Thanks! Will get back shortly.", action: "CONTINUE" };
     } catch (err) {
-      console.error("Claude call failed", String(err?.message || err));
+      console.error("webhook:claude_err", String(err?.message || err));
       parsed = { reply: "Thanks for your message! Our team will get back to you shortly. 🙏", action: "CONTINUE" };
     }
 
