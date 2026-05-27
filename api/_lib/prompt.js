@@ -30,6 +30,7 @@ export function buildSystemPrompt({ ratesText, faqsText, lead }) {
     // ── Reply format ──────────────────────────────────────────────────────────
     "# Reply structure",
     "Answer the question first. Then ONE short follow-up if needed. Max 3 short lines total.",
+    "NEVER end with 'How can I help you?', 'Anything else?', 'Is there anything else I can assist you with?' or similar generic closers.",
     "",
 
     // ── Address ───────────────────────────────────────────────────────────────

@@ -153,10 +153,11 @@ export function ratesForPrompt(parsed) {
   lines.push("");
 
   if (parsed.goldCoins.length) {
-    lines.push("Gold coins — GST 3% included. **Quote the MMTC 9999 column for coin enquiries.**");
-    lines.push("  Weight │  Sun Sea 995  │  MMTC 9999 (preferred)");
+    lines.push("Gold coins — prices are PER COIN (not per gram). GST 3% included.");
+    lines.push("**Quote the MMTC 9999 column for coin enquiries. Always say 'per coin', never 'per gram'.**");
+    lines.push("  Weight │  Sun Sea 995 (per coin)  │  MMTC 9999 (per coin, preferred)");
     for (const c of parsed.goldCoins) {
-      lines.push(`   ${String(c.weight_g).padStart(4, " ")}g │  ${fmt(c.sunSea995).padStart(12, " ")}  │  ${fmt(c.mmtc9999)}`);
+      lines.push(`   ${String(c.weight_g).padStart(4, " ")}g coin │  ${fmt(c.sunSea995).padStart(12, " ")}  │  ${fmt(c.mmtc9999)}`);
     }
     lines.push("");
   }
