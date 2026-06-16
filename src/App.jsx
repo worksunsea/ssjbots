@@ -9285,6 +9285,7 @@ function StaffAccessScreen() {
     const next = current === "none" ? "write" : current === "write" ? "read" : "none";
 
     const perms = s.app_permissions || {};
+    const roleDefaults = CRM_ROLE_DEFAULT_TABS[s.role] || ["demands"];
     // Expand to explicit lists so we can mutate safely
     let crm = Array.isArray(perms.crm) && !perms.crm.includes("all") ? [...perms.crm] : [...roleDefaults];
     const curVisibleKeys = Array.isArray(perms.crm) && perms.crm.includes("all")
