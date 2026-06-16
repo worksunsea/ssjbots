@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
+import { secureImageUpload, secureNonImageUpload } from "./utils/imageUpload";
 
 // ── SUPABASE (shared Sun Sea project — same as ssj-hr / fms-tracker) ──
 const SUPABASE_URL = "https://uppyxzellmuissdlxsmy.supabase.co";
@@ -21,33 +22,71 @@ const WA_SERVICE_URL = "/api/wa-proxy?path=";
 
 // ── UI CONSTANTS ──
 const C = { green: "#27ae60", orange: "#e67e22", red: "#c0392b", blue: "#2980b9", gray: "#888", purple: "#8e44ad", pink: "#e84393", yellow: "#f39c12" };
-const CUSTOM_FIELDS_KEY = "ssj_contact_custom_fields";
-const FIELD_ORDER_KEY = "ssj_contact_field_order";
+const CF_DB_FIELD = "contact_custom_fields";
+const FO_DB_FIELD = "contact_field_order";
 const FIXED_CONTACT_FIELDS = [
-  { key: "name",         label: "Name",                    fixed: true },
-  { key: "phone",        label: "Phone",                   fixed: true, required: true },
-  { key: "mobile2",      label: "Phone 2",                 fixed: true },
-  { key: "spouse_mobile",label: "Phone 3 / Spouse",        fixed: true },
-  { key: "city",         label: "City",                    fixed: true },
-  { key: "email",        label: "Email",                   fixed: true },
-  { key: "bday",         label: "Birthday (YYYY-MM-DD)",   fixed: true },
-  { key: "anniversary",  label: "Anniversary (YYYY-MM-DD)",fixed: true },
-  { key: "client_rating",label: "VIP Score",                fixed: true },
-  { key: "source",       label: "Source",                  fixed: true },
+  { key: "name",                 label: "Name",                     fixed: true },
+  { key: "phone",                label: "Phone",                    fixed: true, required: true },
+  { key: "mobile2",              label: "Phone 2",                  fixed: true },
+  { key: "spouse_mobile",        label: "Phone 3 / Spouse",         fixed: true },
+  { key: "salutation",           label: "Salutation",               fixed: true },
+  { key: "city",                 label: "City",                     fixed: true },
+  { key: "address_house",        label: "House / Flat No.",         fixed: true },
+  { key: "address_locality",     label: "Locality / Society",       fixed: true },
+  { key: "address_state",        label: "State",                    fixed: true },
+  { key: "address_pincode",      label: "PIN Code",                 fixed: true },
+  { key: "address_country",      label: "Country",                  fixed: true },
+  { key: "email",                label: "Email",                    fixed: true },
+  { key: "profession",           label: "Profession",               fixed: true },
+  { key: "industry",             label: "Industry",                 fixed: true },
+  { key: "company",              label: "Company / Firm",           fixed: true },
+  { key: "client_code",          label: "Client Code / Ref",        fixed: true },
+  { key: "bday",                 label: "Birthday (YYYY-MM-DD)",    fixed: true },
+  { key: "anniversary",          label: "Anniversary (YYYY-MM-DD)", fixed: true },
+  { key: "spouse_name",          label: "Spouse Name",              fixed: true },
+  { key: "spouse_dob",           label: "Spouse Birthday (YYYY-MM-DD)", fixed: true },
+  { key: "wedding_date",         label: "Wedding Date (YYYY-MM-DD)",fixed: true },
+  { key: "wedding_family_member",label: "Wedding (family member)",  fixed: true },
+  { key: "client_rating",        label: "VIP Score",                fixed: true },
+  { key: "source",               label: "Source",                   fixed: true },
 ];
-const getCustomFields = () => { try { const d = localStorage.getItem(CUSTOM_FIELDS_KEY); return d ? JSON.parse(d) : []; } catch { return []; } };
-const saveCustomFieldDefs = (list) => { try { localStorage.setItem(CUSTOM_FIELDS_KEY, JSON.stringify(list)); } catch {} };
-const getFieldOrder = () => { try { const d = localStorage.getItem(FIELD_ORDER_KEY); return d ? JSON.parse(d) : null; } catch { return null; } };
-const saveFieldOrder = (order) => { try { localStorage.setItem(FIELD_ORDER_KEY, JSON.stringify(order)); } catch {} };
+const _upsertDropdown = async (field, value) => {
+  const tid = getTenantId();
+  const { data: ex } = await sb.from("bullion_dropdowns").select("id").eq("tenant_id", tid).eq("field", field).maybeSingle();
+  if (ex?.id) await sb.from("bullion_dropdowns").update({ value, active: true }).eq("id", ex.id);
+  else await sb.from("bullion_dropdowns").insert({ tenant_id: tid, field, value, active: true, sort_order: 0 });
+};
+
+// Fetch field defs from DB. Returns { customFields, fieldOrder }.
+const fetchContactFieldDefs = async () => {
+  try {
+    const tid = getTenantId();
+    const { data } = await sb.from("bullion_dropdowns")
+      .select("field,value").eq("tenant_id", tid).in("field", [CF_DB_FIELD, FO_DB_FIELD]);
+    let customFields = [], fieldOrder = null;
+    (data || []).forEach(r => {
+      try {
+        if (r.field === CF_DB_FIELD) customFields = JSON.parse(r.value);
+        else fieldOrder = JSON.parse(r.value);
+      } catch {}
+    });
+    return { customFields, fieldOrder };
+  } catch { return { customFields: [], fieldOrder: null }; }
+};
+
+const saveCustomFieldDefs = (list) => _upsertDropdown(CF_DB_FIELD, JSON.stringify(list)).catch(() => {});
+const saveFieldOrder = (order) => _upsertDropdown(FO_DB_FIELD, JSON.stringify(order)).catch(() => {});
+
+// React context — source of truth for custom field definitions across the whole app.
+const ContactFieldsContext = React.createContext({ customFields: [], fieldOrder: null, setCustomFields: () => {}, setFieldOrder: () => {}, reload: async () => {} });
+
 // Merge fixed + custom fields in stored order (or default order if none saved)
-const getAllFieldsOrdered = (customFields) => {
+const getAllFieldsOrdered = (customFields, fieldOrder) => {
   const all = [...FIXED_CONTACT_FIELDS, ...customFields.map(f => ({ ...f, fixed: false }))];
-  const saved = getFieldOrder();
-  if (!saved) return all;
+  if (!fieldOrder) return all;
   const map = Object.fromEntries(all.map(f => [f.key, f]));
-  const ordered = saved.map(k => map[k]).filter(Boolean);
-  // Append any new fields not yet in saved order
-  all.forEach(f => { if (!saved.includes(f.key)) ordered.push(f); });
+  const ordered = fieldOrder.map(k => map[k]).filter(Boolean);
+  all.forEach(f => { if (!fieldOrder.includes(f.key)) ordered.push(f); });
   return ordered;
 };
 const STAGES = ["greeting", "qualifying", "quoted", "objection", "closing", "handoff", "converted", "dead"];
@@ -71,6 +110,34 @@ const NOT_BOUGHT_REASONS = ["Bought ✓", "Product not available", "Variety less
 const OCCASION_TYPES = ["wedding", "anniversary", "birthday", "Diwali gifting", "corporate gift", "self purchase", "other"];
 const FOR_WHOM_OPTIONS = ["self", "daughter", "son", "wife", "husband", "mother", "father", "sister", "brother", "other"];
 const FMS_STEP_COLORS = { new: C.gray, bot_activated: C.blue, qualifying: C.purple, catalog_sent: C.orange, call_needed: C.red, quoted: C.yellow, negotiating: C.orange, order_confirmed: C.green, delivered: C.green, closed: "#999" };
+const CRM_ALL_TABS = [
+  { k: "queue",       l: "My Queue",    icon: "📞" },
+  { k: "approvals",   l: "Approvals",   icon: "✅" },
+  { k: "demands",     l: "Demands",     icon: "🎯" },
+  { k: "contacts",    l: "Contacts",    icon: "📇" },
+  { k: "contactsdb",  l: "DB",          icon: "📋" },
+  { k: "upcoming",    l: "Upcoming",    icon: "🎂" },
+  { k: "messages",    l: "Messages",    icon: "💬" },
+  { k: "funnels",     l: "Funnels",     icon: "🔀" },
+  { k: "personas",    l: "Personas",    icon: "🎭" },
+  { k: "faqs",        l: "FAQs",        icon: "❓" },
+  { k: "tags",        l: "Tags",        icon: "🏷️" },
+  { k: "imports",     l: "Imports",     icon: "📥" },
+  { k: "broadcasts",  l: "Broadcasts",  icon: "📢" },
+  { k: "connections", l: "Connections", icon: "📱" },
+  { k: "media",       l: "Media",       icon: "📎" },
+  { k: "rates",       l: "Rates",       icon: "📈" },
+  { k: "analytics",   l: "Analytics",   icon: "📊" },
+  { k: "leadsources", l: "Lead Sources",icon: "🌐" },
+  { k: "formbuilder", l: "Form Builder",icon: "🛠️" },
+];
+const CRM_ROLE_DEFAULT_TABS = {
+  superadmin: CRM_ALL_TABS.map((t) => t.k),
+  admin:      CRM_ALL_TABS.map((t) => t.k),
+  manager:    ["demands", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder"],
+  staff:      ["demands", "contacts", "upcoming"],
+  telecaller: ["queue", "demands"],
+};
 
 // ── HELPERS ──
 // WA JID localparts look like "918860866000:19" — strip the device-index suffix before normalizing.
@@ -403,6 +470,7 @@ function VisitRescheduleButton({ demandId, onRescheduled }) {
 }
 
 function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, onAdvanceStep, onRollbackStep, onMergeDuplicate }) {
+  const { customFields, fieldOrder } = React.useContext(ContactFieldsContext);
   const [messages, setMessages] = useState([]);
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
@@ -654,7 +722,7 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
             {lead.bday && <span>🎂 {lead.bday} · </span>}
             {lead.anniversary && <span>💍 {lead.anniversary}</span>}
             {Object.entries(lead.extra_fields || {}).filter(([,v]) => v).map(([k, v]) => {
-              const label = getCustomFields().find(f => f.key === k)?.label || k;
+              const label = customFields.find(f => f.key === k)?.label || k;
               return <span key={k}> · {label}: <strong>{v}</strong></span>;
             })}
             {!lead.city && !lead.email && !lead.bday && !lead.anniversary && !Object.values(lead.extra_fields || {}).some(Boolean) && <em>(name/city/bday/anniv not captured yet)</em>}
@@ -680,7 +748,7 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
         <ContactEditModal
           contact={lead}
           allTags={allTags || []}
-          customFields={getCustomFields()}
+          customFields={customFields}
           onClose={() => setEditLeadOpen(false)}
           onSaved={() => { setEditLeadOpen(false); onChanged && onChanged(); }}
         />
@@ -1864,6 +1932,7 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
 // then optionally records a demand. Bot is OFF by default (client is in store).
 // ──────────────────────────────────────────────────────────
 function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved }) {
+  const { customFields } = React.useContext(ContactFieldsContext);
   const sourceTags = allTags.filter((t) => t.category === "source").map((t) => t.name);
   const otherTags = allTags.filter((t) => t.category !== "source").map((t) => t.name);
 
@@ -1928,11 +1997,10 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved }) {
     if (!file) return;
     setUploading(true);
     try {
-      const path = `walkin-refs/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-      const { error } = await sb.storage.from("media").upload(path, file, { upsert: true });
-      if (error) { alert(`Upload failed: ${error.message}`); setUploading(false); return; }
-      const { data: pub } = sb.storage.from("media").getPublicUrl(path);
-      setRefImageUrl(pub.publicUrl);
+      const { publicUrl } = await secureImageUpload(file, sb, "walkin-refs", { maxDim: 1200 });
+      setRefImageUrl(publicUrl);
+    } catch (e) {
+      alert(e.message);
     } finally {
       setUploading(false);
     }
@@ -2427,7 +2495,7 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved }) {
         <ContactEditModal
           contact={editingContact}
           allTags={allTags}
-          customFields={getCustomFields()}
+          customFields={customFields}
           onClose={() => setEditingContact(null)}
           onSaved={async () => {
             // Refresh dup info after edit so the panel shows updated name.
@@ -4003,13 +4071,26 @@ function MediaAssetsScreen() {
   const uploadFile = async (file) => {
     if (!file) return;
     setUploading(true); setErr("");
-    const type = file.type.startsWith("video") ? "video" : file.type === "application/pdf" ? "pdf" : "image";
-    const path = `media-assets/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-    const { error: upErr } = await sb.storage.from("media").upload(path, file, { upsert: true });
-    if (upErr) { setErr(`Upload failed: ${upErr.message}`); setUploading(false); return; }
-    const { data: pub } = sb.storage.from("media").getPublicUrl(path);
-    setForm((s) => ({ ...s, url: pub.publicUrl, asset_type: type }));
-    setUploading(false);
+    try {
+      const isImage = file.type.startsWith("image/");
+      const isVideo = file.type.startsWith("video/");
+      const isPdf = file.type === "application/pdf";
+      let publicUrl;
+      if (isImage) {
+        ({ publicUrl } = await secureImageUpload(file, sb, "media-assets"));
+      } else if (isVideo || isPdf) {
+        const allowed = ["application/pdf", "video/mp4", "video/quicktime", "video/webm", "video/3gpp"];
+        ({ publicUrl } = await secureNonImageUpload(file, sb, "media-assets", allowed, 100));
+      } else {
+        throw new Error("Only images, videos, and PDFs are allowed.");
+      }
+      const type = isVideo ? "video" : isPdf ? "pdf" : "image";
+      setForm((s) => ({ ...s, url: publicUrl, asset_type: type }));
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setUploading(false);
+    }
   };
 
   const save = async () => {
@@ -4196,7 +4277,7 @@ function ContactsScreen({ funnels }) {
   const [editing, setEditing] = useState(null);
   const [sending, setSending] = useState(null);
   const [showLid, setShowLid] = useState(false); // hide WA-hidden (LID) leads by default
-  const [customFields, setCustomFields] = useState(getCustomFields);
+  const { customFields, fieldOrder, setCustomFields, setFieldOrder } = React.useContext(ContactFieldsContext);
   const [showFieldMgr, setShowFieldMgr] = useState(false);
   const [filterTags, setFilterTags] = useState([]);
   const [tagLogic, setTagLogic] = useState("AND"); // AND = must have all, OR = any
@@ -4348,7 +4429,7 @@ function ContactsScreen({ funnels }) {
         <span style={{ fontSize: 11, color: "#888" }}>{loading ? "Loading…" : `${total.toLocaleString()} contacts`}</span>
       </div>
 
-      {showFieldMgr && <CustomFieldsManager fields={customFields} onChange={setCustomFields} />}
+      {showFieldMgr && <CustomFieldsManager fields={customFields} />}
 
       {bulkMode && (
         <div style={{ background: "#f0f0ff", border: "1px solid #c4b5fd", borderRadius: 10, padding: "10px 14px", marginBottom: 12 }}>
@@ -4663,15 +4744,18 @@ function ContactCard({ contact: c, onEdit, onSendWA, onDelete }) {
   );
 }
 
-function CustomFieldsManager({ fields, onChange }) {
+function CustomFieldsManager({ fields }) {
+  const { setCustomFields, setFieldOrder: setCtxFieldOrder } = React.useContext(ContactFieldsContext);
   const [newLabel, setNewLabel] = useState("");
   const [dragIdx, setDragIdx] = useState(null);
   const [overIdx, setOverIdx] = useState(null);
   const [editingKey, setEditingKey] = useState(null);
   const [editingLabel, setEditingLabel] = useState("");
-  const allFields = getAllFieldsOrdered(fields);
+  const { fieldOrder } = React.useContext(ContactFieldsContext);
+  const allFields = getAllFieldsOrdered(fields, fieldOrder);
 
-  const saveCustom = (next) => { onChange(next); saveCustomFieldDefs(next); };
+  const persistCustom = (next) => { setCustomFields(next); saveCustomFieldDefs(next); };
+  const persistOrder = (nextAll) => { const order = nextAll.map(f => f.key); setCtxFieldOrder(order); saveFieldOrder(order); };
   const add = () => {
     const label = newLabel.trim();
     if (!label) return;
@@ -4679,21 +4763,21 @@ function CustomFieldsManager({ fields, onChange }) {
     if (!key || allFields.find(f => f.key === key)) return;
     const nextCustom = [...fields, { key, label }];
     const nextAll = [...allFields, { key, label, fixed: false }];
-    saveCustom(nextCustom);
-    saveFieldOrder(nextAll.map(f => f.key));
+    persistCustom(nextCustom);
+    persistOrder(nextAll);
     setNewLabel("");
   };
   const remove = (key) => {
     const nextCustom = fields.filter(f => f.key !== key);
     const nextAll = allFields.filter(f => f.key !== key);
-    saveCustom(nextCustom);
-    saveFieldOrder(nextAll.map(f => f.key));
+    persistCustom(nextCustom);
+    persistOrder(nextAll);
   };
   const rename = (key) => {
     const label = editingLabel.trim();
     if (!label) { setEditingKey(null); return; }
     const nextCustom = fields.map(f => f.key === key ? { ...f, label } : f);
-    saveCustom(nextCustom);
+    persistCustom(nextCustom);
     setEditingKey(null);
   };
   const onDrop = (e, idx) => {
@@ -4702,10 +4786,9 @@ function CustomFieldsManager({ fields, onChange }) {
     const next = [...allFields];
     const [moved] = next.splice(dragIdx, 1);
     next.splice(idx, 0, moved);
-    saveFieldOrder(next.map(f => f.key));
-    // Force re-render by touching customFields order too
     const nextCustom = next.filter(f => !f.fixed);
-    saveCustom(nextCustom);
+    persistCustom(nextCustom);
+    persistOrder(next);
     setDragIdx(null); setOverIdx(null);
   };
 
@@ -4746,6 +4829,7 @@ function CustomFieldsManager({ fields, onChange }) {
 }
 
 function ContactEditModal({ contact, allTags = [], customFields = [], onClose, onSaved }) {
+  const { fieldOrder } = React.useContext(ContactFieldsContext);
   const isNew = !contact.id;
   const sourceTags = allTags.filter((t) => t.category === "source").map((t) => t.name);
   const otherTags = allTags.filter((t) => t.category !== "source").map((t) => t.name);
@@ -4755,14 +4839,26 @@ function ContactEditModal({ contact, allTags = [], customFields = [], onClose, o
     phone: contact.phone || "",
     mobile2: contact.mobile2 || "",
     spouse_mobile: contact.spouse_mobile || "",
+    salutation: contact.salutation || "",
     city: contact.city || "",
+    address_house: contact.address_house || "",
+    address_locality: contact.address_locality || "",
+    address_state: contact.address_state || "",
+    address_pincode: contact.address_pincode || "",
+    address_country: contact.address_country || "India",
     email: contact.email || "",
+    profession: contact.profession || "",
+    industry: contact.industry || "",
+    company: contact.company || "",
+    client_code: contact.client_code || "",
     bday: contact.bday || "",
     anniversary: contact.anniversary || "",
-    client_rating: contact.client_rating || "",
-    is_client: contact.is_client || false,
+    spouse_name: contact.spouse_name || "",
+    spouse_dob: contact.spouse_dob || "",
     wedding_date: contact.wedding_date || "",
     wedding_family_member: contact.wedding_family_member || "",
+    client_rating: contact.client_rating || "",
+    is_client: contact.is_client || false,
     source: contact.source || "",
     tags: Array.isArray(contact.tags) ? contact.tags : [],
     partner_lead_id: contact.partner_lead_id || null,
@@ -4815,12 +4911,24 @@ function ContactEditModal({ contact, allTags = [], customFields = [], onClose, o
       name: form.name || null,
       mobile2: form.mobile2 || null,
       spouse_mobile: form.spouse_mobile || null,
+      salutation: form.salutation || null,
       city: form.city || null,
+      address_house: form.address_house || null,
+      address_locality: form.address_locality || null,
+      address_state: form.address_state || null,
+      address_pincode: form.address_pincode || null,
+      address_country: form.address_country || null,
       email: form.email || null,
+      profession: form.profession || null,
+      industry: form.industry || null,
+      company: form.company || null,
+      client_code: form.client_code || null,
       bday: form.bday || null,
       anniversary: form.anniversary || null,
       client_rating: form.client_rating ? Number(form.client_rating) : null,
       is_client: form.is_client,
+      spouse_name: form.spouse_name || null,
+      spouse_dob: form.spouse_dob || null,
       wedding_date: form.wedding_date || null,
       wedding_family_member: form.wedding_family_member || null,
       source: form.source || null,
@@ -4854,7 +4962,7 @@ function ContactEditModal({ contact, allTags = [], customFields = [], onClose, o
     onSaved();
   };
 
-  const orderedFields = getAllFieldsOrdered(customFields);
+  const orderedFields = getAllFieldsOrdered(customFields, fieldOrder);
   const renderFormField = (f) => {
     if (f.key === "client_rating") return (
       <Field key={f.key} label={f.label}>
@@ -4873,7 +4981,7 @@ function ContactEditModal({ contact, allTags = [], customFields = [], onClose, o
       </Field>
     );
     if (f.fixed) {
-      const placeholders = { name:"Full name", phone:"9876543210", city:"Delhi", email:"email@example.com", bday:"1985-03-15", anniversary:"2010-11-20", wedding_date:"2025-11-15", wedding_family_member:"daughter Priya" };
+      const placeholders = { name:"Full name", phone:"9876543210", salutation:"Mr. / Mrs. / Dr.", city:"Delhi", address_house:"Flat 4B", address_locality:"Connaught Place", address_state:"Delhi", address_pincode:"110001", address_country:"India", email:"email@example.com", profession:"Doctor", industry:"Healthcare", company:"Sun Sea Jewellers", client_code:"SSJ-001", bday:"1985-03-15", anniversary:"2010-11-20", spouse_name:"Priya Sharma", spouse_dob:"1988-06-20", wedding_date:"2025-11-15", wedding_family_member:"daughter Priya" };
       return (
         <Field key={f.key} label={f.label} required={f.required}>
           <Input value={form[f.key] || ""} onChange={e => set(f.key, e.target.value)} placeholder={placeholders[f.key] || ""} />
@@ -5109,6 +5217,7 @@ function RatesScreen() {
 // APPROVALS SCREEN — review & approve scheduled drip messages
 // ──────────────────────────────────────────────────────────
 function ApprovalsScreen({ funnels }) {
+  const { customFields } = React.useContext(ContactFieldsContext);
   const [rows, setRows] = useState([]);
   const [calRows, setCalRows] = useState([]); // birthday/anniversary messages always loaded 40d ahead
   const [loading, setLoading] = useState(true);
@@ -5321,7 +5430,7 @@ const activeRows = tab === "calendar" ? calRows : rows;
         <ContactEditModal
           contact={editContact}
           allTags={editContactTags}
-          customFields={getCustomFields()}
+          customFields={customFields}
           onClose={() => setEditContact(null)}
           onSaved={() => onContactSaved(editContact.id, editContact.name)}
         />
@@ -6521,6 +6630,8 @@ function AnalyticsScreen({ funnels }) {
   const [extraSalesRows, setExtraSalesRows] = useState([]); // bullion_dropdowns rows field='extra_salesperson'
   const [newSalesName, setNewSalesName] = useState("");
   const [salesNameSaving, setSalesNameSaving] = useState(false);
+  const [pageAccessSaving, setPageAccessSaving] = useState(new Set());
+  const [expandedStaffId, setExpandedStaffId] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -6688,6 +6799,38 @@ function AnalyticsScreen({ funnels }) {
   const removeExtraSalesName = async (id) => {
     await sb.from("bullion_dropdowns").update({ active: false }).eq("id", id);
     setExtraSalesRows((r) => r.filter((x) => x.id !== id));
+  };
+
+  const toggleCrmTab = async (s, tabKey) => {
+    setPageAccessSaving((prev) => new Set([...prev, s.id]));
+    const perms = s.app_permissions || {};
+    let crm = Array.isArray(perms.crm) ? [...perms.crm] : [];
+    crm = crm.filter((k) => k !== "all");
+    if (crm.includes(tabKey)) {
+      crm = crm.filter((k) => k !== tabKey);
+    } else {
+      crm = [...crm, tabKey];
+    }
+    const newPerms = { ...perms, crm };
+    await sb.from("staff").update({ app_permissions: newPerms }).eq("id", s.id);
+    setRotationStaff((prev) => prev.map((r) => r.id === s.id ? { ...r, app_permissions: newPerms } : r));
+    setPageAccessSaving((prev) => { const n = new Set(prev); n.delete(s.id); return n; });
+  };
+
+  const grantAllCrm = async (s) => {
+    setPageAccessSaving((prev) => new Set([...prev, s.id]));
+    const newPerms = { ...(s.app_permissions || {}), crm: ["all"] };
+    await sb.from("staff").update({ app_permissions: newPerms }).eq("id", s.id);
+    setRotationStaff((prev) => prev.map((r) => r.id === s.id ? { ...r, app_permissions: newPerms } : r));
+    setPageAccessSaving((prev) => { const n = new Set(prev); n.delete(s.id); return n; });
+  };
+
+  const resetCrmAccess = async (s) => {
+    setPageAccessSaving((prev) => new Set([...prev, s.id]));
+    const { crm: _removed, ...rest } = s.app_permissions || {};
+    await sb.from("staff").update({ app_permissions: rest }).eq("id", s.id);
+    setRotationStaff((prev) => prev.map((r) => r.id === s.id ? { ...r, app_permissions: rest } : r));
+    setPageAccessSaving((prev) => { const n = new Set(prev); n.delete(s.id); return n; });
   };
 
   const fmtLakh = (n) => {
@@ -6883,6 +7026,90 @@ function AnalyticsScreen({ funnels }) {
                   style={{ fontSize: 11, padding: "3px 10px", borderRadius: 6, border: `1px solid ${inPool ? "#fca5a5" : "#86efac"}`, background: inPool ? "#fef2f2" : "#f0fdf4", color: inPool ? "#991b1b" : "#166534", cursor: busy ? "default" : "pointer" }}>
                   {busy ? "…" : inPool ? "Remove" : "Add to pool"}
                 </button>
+              </div>
+            );
+          })}
+          {!rotationStaff.length && <div style={{ color: "#aaa", fontSize: 12 }}>No staff found.</div>}
+        </div>
+      </Card>
+
+      {/* CRM Page Access */}
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#333", marginBottom: 6 }}>🔐 CRM Page Access</div>
+        <div style={{ fontSize: 12, color: "#666", marginBottom: 10 }}>Control which CRM pages each staff member can access. Role defaults are always included — you can only add extra tabs, never remove role defaults here. Click a staff member to expand.</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {rotationStaff.map((s) => {
+            const busy = pageAccessSaving.has(s.id);
+            const isExpanded = expandedStaffId === s.id;
+            const crm = s.app_permissions?.crm;
+            const isFullByRole = s.role === "superadmin" || s.role === "admin";
+            const hasAll = isFullByRole || (Array.isArray(crm) && crm.includes("all"));
+            const roleDefaults = CRM_ROLE_DEFAULT_TABS[s.role] || ["demands"];
+            const extraCrm = Array.isArray(crm) ? crm.filter((k) => k !== "all") : [];
+            const allowedKeys = hasAll ? CRM_ALL_TABS.map((t) => t.k) : [...new Set([...roleDefaults, ...extraCrm])];
+            const extraGranted = extraCrm.filter((k) => !roleDefaults.includes(k));
+            const accessLabel = hasAll ? "Full access" : `${allowedKeys.length} tab${allowedKeys.length !== 1 ? "s" : ""}`;
+            return (
+              <div key={s.id}>
+                <div
+                  onClick={() => !busy && setExpandedStaffId(isExpanded ? null : s.id)}
+                  style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: isExpanded ? "8px 8px 0 0" : 8, background: isExpanded ? "#eff6ff" : "#f9fafb", border: `1px solid ${isExpanded ? "#93c5fd" : "#e5e7eb"}`, cursor: busy ? "default" : "pointer" }}
+                >
+                  <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>{s.name || s.username}</span>
+                  <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 6, background: "#e5e7eb", color: "#555" }}>{s.role}</span>
+                  {hasAll && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 6, background: "#dcfce7", color: "#166534" }}>🔓 Full access</span>}
+                  {!hasAll && extraGranted.length > 0 && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 6, background: "#fef3c7", color: "#92400e" }}>+{extraGranted.length} extra</span>}
+                  <span style={{ fontSize: 11, color: "#888" }}>{accessLabel}</span>
+                  <span style={{ fontSize: 11, color: "#aaa" }}>{isExpanded ? "▲" : "▼"}</span>
+                </div>
+                {isExpanded && (
+                  <div style={{ padding: "10px 12px", background: "#f0f9ff", border: "1px solid #93c5fd", borderTop: "none", borderRadius: "0 0 8px 8px" }}>
+                    <div style={{ fontSize: 11, color: "#555", marginBottom: 8 }}>
+                      <span style={{ fontWeight: 600 }}>Tab access</span>
+                      <span style={{ color: "#888" }}> — 🔵 role default (always on) · 🟢 extra granted · ⚪ not granted</span>
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 10 }}>
+                      {CRM_ALL_TABS.map((tab) => {
+                        const isDefault = roleDefaults.includes(tab.k);
+                        const isGranted = allowedKeys.includes(tab.k);
+                        const canToggle = !isDefault && !isFullByRole && !busy;
+                        return (
+                          <button
+                            key={tab.k}
+                            disabled={!canToggle}
+                            onClick={() => canToggle && toggleCrmTab(s, tab.k)}
+                            title={isDefault ? "Included by role — cannot remove" : isGranted ? "Click to revoke access" : "Click to grant access"}
+                            style={{
+                              fontSize: 11, padding: "3px 8px", borderRadius: 12,
+                              border: `1px solid ${isDefault ? "#93c5fd" : isGranted ? "#86efac" : "#e5e7eb"}`,
+                              background: isDefault ? "#dbeafe" : isGranted ? "#dcfce7" : "#f9fafb",
+                              color: isDefault ? "#1d4ed8" : isGranted ? "#166534" : "#9ca3af",
+                              cursor: canToggle ? "pointer" : "default",
+                              opacity: busy ? 0.6 : 1,
+                            }}
+                          >
+                            {tab.icon} {tab.l}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      {!isFullByRole && !hasAll && (
+                        <button disabled={busy} onClick={() => grantAllCrm(s)}
+                          style={{ fontSize: 11, padding: "3px 10px", borderRadius: 6, border: "1px solid #6366f1", background: "#eef2ff", color: "#3730a3", cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }}>
+                          🔓 Grant all tabs
+                        </button>
+                      )}
+                      {!isFullByRole && (hasAll || extraGranted.length > 0) && (
+                        <button disabled={busy} onClick={() => resetCrmAccess(s)}
+                          style={{ fontSize: 11, padding: "3px 10px", borderRadius: 6, border: "1px solid #fca5a5", background: "#fef2f2", color: "#991b1b", cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }}>
+                          🔒 Reset to role default
+                        </button>
+                      )}
+                      {busy && <span style={{ fontSize: 11, color: "#888" }}>Saving…</span>}
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -8804,15 +9031,27 @@ function BroadcastSendModal({ broadcast, allTags, onClose, onSent }) {
   const uploadMedia = async (file) => {
     if (!file) return;
     setUploading(true); setErr("");
-    const ext = file.name.split(".").pop().toLowerCase();
-    const type = file.type.startsWith("video") ? "video" : file.type === "application/pdf" ? "document" : "image";
-    const path = `broadcasts/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-    const { data, error } = await sb.storage.from("media").upload(path, file, { upsert: true });
-    if (error) { setErr(`Upload failed: ${error.message}`); setUploading(false); return; }
-    const { data: pub } = sb.storage.from("media").getPublicUrl(path);
-    setMediaUrl(pub.publicUrl);
-    setMediaType(type);
-    setUploading(false);
+    try {
+      const isImage = file.type.startsWith("image/");
+      const isVideo = file.type.startsWith("video/");
+      const isPdf = file.type === "application/pdf";
+      let publicUrl;
+      if (isImage) {
+        ({ publicUrl } = await secureImageUpload(file, sb, "broadcasts"));
+      } else if (isVideo || isPdf) {
+        const allowed = ["application/pdf", "video/mp4", "video/quicktime", "video/webm", "video/3gpp"];
+        ({ publicUrl } = await secureNonImageUpload(file, sb, "broadcasts", allowed, 100));
+      } else {
+        throw new Error("Only images, videos, and PDFs are allowed.");
+      }
+      const type = isVideo ? "video" : isPdf ? "document" : "image";
+      setMediaUrl(publicUrl);
+      setMediaType(type);
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setUploading(false);
+    }
   };
 
   const setF = (k, v) => { setFilter((s) => ({ ...s, [k]: v })); setPreview(null); };
@@ -9344,6 +9583,16 @@ export default function App() {
     return () => window.removeEventListener("message", handler);
   }, []);
 
+  // Contact field definitions — loaded from DB, shared across all screens via context.
+  const [cfCustomFields, setCfCustomFields] = React.useState([]);
+  const [cfFieldOrder, setCfFieldOrder] = React.useState(null);
+  const reloadCfDefs = React.useCallback(async () => {
+    const { customFields, fieldOrder } = await fetchContactFieldDefs();
+    setCfCustomFields(customFields);
+    setCfFieldOrder(fieldOrder);
+  }, []);
+  useEffect(() => { if (user?.id) reloadCfDefs(); }, [user?.id, reloadCfDefs]); // eslint-disable-line
+
   // Refresh app_permissions from DB every time the app gets focus (tab switch, window focus).
   // This means if an admin changes someone's permissions in SSJ HR, it takes effect next
   // time that person switches back to the SSJBot tab — no logout required.
@@ -9446,17 +9695,28 @@ export default function App() {
       return p.get("embed");
     } catch { return null; }
   })();
+  const cfCtx = {
+    customFields: cfCustomFields,
+    fieldOrder: cfFieldOrder,
+    setCustomFields: setCfCustomFields,
+    setFieldOrder: setCfFieldOrder,
+    reload: reloadCfDefs,
+  };
+
   if (embedScreen) {
     return (
-      <div style={{ maxWidth: 1280, margin: "0 auto", padding: "0.5rem" }}>
-        {embedScreen === "demands"  && <DemandsScreen funnels={funnels} allTags={allTags} />}
-        {embedScreen === "queue"    && <TelecallerQueueScreen funnels={funnels} />}
-        {embedScreen === "contacts" && <ContactsScreen funnels={funnels} />}
-      </div>
+      <ContactFieldsContext.Provider value={cfCtx}>
+        <div style={{ maxWidth: 1280, margin: "0 auto", padding: "0.5rem" }}>
+          {embedScreen === "demands"  && <DemandsScreen funnels={funnels} allTags={allTags} />}
+          {embedScreen === "queue"    && <TelecallerQueueScreen funnels={funnels} />}
+          {embedScreen === "contacts" && <ContactsScreen funnels={funnels} />}
+        </div>
+      </ContactFieldsContext.Provider>
     );
   }
 
   return (
+    <ContactFieldsContext.Provider value={cfCtx}>
     <div style={{ maxWidth: 1280, margin: "0 auto", padding: "1rem" }}>
       {header}
       <div style={{ display: "flex", gap: 6, marginBottom: 16, borderBottom: "1px solid #eee", paddingBottom: 10, flexWrap: "wrap" }}>
@@ -9485,6 +9745,7 @@ export default function App() {
       {activeScreen === "leadsources" && <LeadSourcesScreen funnels={funnels} />}
       {activeScreen === "formbuilder" && <FormBuilderScreen />}
     </div>
+    </ContactFieldsContext.Provider>
   );
 }
 
