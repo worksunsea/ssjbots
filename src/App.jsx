@@ -103,6 +103,16 @@ const isTelecallerStaff = (s) => {
   if (!p || typeof p !== "object") return false;
   return Object.values(p).some((v) => Array.isArray(v) && v.includes("telecaller"));
 };
+// Returns true if the user can perform write actions on a given CRM tab key.
+// If crm_write is not set in app_permissions, defaults to full write on all visible tabs.
+const canWriteTab = (user, tabKey) => {
+  if (!user) return false;
+  if (user.role === "superadmin" || user.role === "admin") return true;
+  const crmWrite = user.app_permissions?.crm_write;
+  if (!crmWrite) return true;
+  if (crmWrite.includes("all")) return true;
+  return crmWrite.includes(tabKey);
+};
 const PRODUCT_CATEGORIES = ["gold", "silver", "diamond", "polki", "kundan", "gemstone", "solitaire", "lab_diamond", "other"];
 const PRODUCT_TYPES = ["Chain", "Earrings", "Danglers", "Nosepin", "Necklace set", "Pendant", "P Set", "Bangles", "Bracelets", "Gents Jew", "Engagement ring", "Solitaires", "Wedding Accessories", "Gemstones", "Others"];
 const DISCOVERY_SOURCES = ["Google search", "Instagram", "Facebook ad", "WhatsApp", "Walk past store", "Friend referral", "Family referral", "Existing customer", "Newspaper", "Hoarding / banner", "Website", "Other"];
@@ -130,6 +140,7 @@ const CRM_ALL_TABS = [
   { k: "analytics",   l: "Analytics",   icon: "📊" },
   { k: "leadsources", l: "Lead Sources",icon: "🌐" },
   { k: "formbuilder", l: "Form Builder",icon: "🛠️" },
+  { k: "staff",       l: "Staff & Access",icon: "👥" },
 ];
 const CRM_ROLE_DEFAULT_TABS = {
   superadmin: CRM_ALL_TABS.map((t) => t.k),
@@ -5216,7 +5227,7 @@ function RatesScreen() {
 // ──────────────────────────────────────────────────────────
 // APPROVALS SCREEN — review & approve scheduled drip messages
 // ──────────────────────────────────────────────────────────
-function ApprovalsScreen({ funnels }) {
+function ApprovalsScreen({ funnels, canApprove = true }) {
   const { customFields } = React.useContext(ContactFieldsContext);
   const [rows, setRows] = useState([]);
   const [calRows, setCalRows] = useState([]); // birthday/anniversary messages always loaded 40d ahead
@@ -5405,8 +5416,9 @@ const activeRows = tab === "calendar" ? calRows : rows;
 
         {!r.approved && (
           <div style={{ display: "flex", gap: 6, marginTop: 7, alignItems: "center", flexWrap: "wrap" }}>
-            <button onClick={() => approve(r.id)} disabled={isSav || isGenning} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 6, border: "none", background: "#16a34a", color: "#fff", cursor: "pointer", fontWeight: 600 }}>{isSav ? "…" : "✅ Approve"}</button>
-            <button onClick={() => reject(r.id)} disabled={isSav || isGenning} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 6, border: "1px solid #f87171", background: "#fff", color: "#dc2626", cursor: "pointer" }}>❌ Reject</button>
+            {!canApprove && <span style={{ fontSize: 11, color: "#888", fontStyle: "italic" }}>👁️ View only — no approve access</span>}
+            {canApprove && <button onClick={() => approve(r.id)} disabled={isSav || isGenning} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 6, border: "none", background: "#16a34a", color: "#fff", cursor: "pointer", fontWeight: 600 }}>{isSav ? "…" : "✅ Approve"}</button>}
+            {canApprove && <button onClick={() => reject(r.id)} disabled={isSav || isGenning} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 6, border: "1px solid #f87171", background: "#fff", color: "#dc2626", cursor: "pointer" }}>❌ Reject</button>}
             {r.step?.use_ai_message && (
               <button onClick={() => regenOne(r.id)} disabled={isGenning} title="Re-generate AI message" style={{ fontSize: 12, padding: "4px 10px", borderRadius: 6, border: "1px solid #8b5cf6", background: isGenning ? "#ede9fe" : "#fff", color: "#7c3aed", cursor: isGenning ? "not-allowed" : "pointer" }}>
                 {isGenning ? "⏳ Generating…" : r.edited_body ? "🔄 Regen AI" : "🤖 Generate AI"}
@@ -5527,7 +5539,7 @@ const activeRows = tab === "calendar" ? calRows : rows;
                     </span>
                   ))}
                 </div>
-                {unapproved.length > 0 && (
+                {unapproved.length > 0 && canApprove && (
                   <button onClick={(e) => { e.stopPropagation(); approveAll(unapproved.map((r) => r.id)); }} style={{ marginLeft: "auto", fontSize: 12, padding: "3px 12px", borderRadius: 6, border: "1px solid #16a34a", background: "#f0fdf4", color: "#166534", cursor: "pointer", whiteSpace: "nowrap" }}>✅ Approve all {unapproved.length}</button>
                 )}
               </div>
@@ -9223,7 +9235,203 @@ function BroadcastSendModal({ broadcast, allTags, onClose, onSent }) {
   );
 }
 
-// MAIN APP — tabbed interface, tabs filtered by app_permissions (set in SSJ HR → People → Permissions)
+// ──────────────────────────────────────────────────────────
+// STAFF & ACCESS CONTROL SCREEN — SA/admin only
+// Manage which CRM pages each staff member can see and write
+// ──────────────────────────────────────────────────────────
+function StaffAccessScreen() {
+  const [staff, setStaff] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(new Set());
+  const [expandedId, setExpandedId] = useState(null);
+
+  useEffect(() => {
+    setLoading(true);
+    sb.from("staff")
+      .select("id,name,username,role,app_permissions")
+      .eq("tenant_id", getTenantId())
+      .neq("type", "artisan")
+      .order("name")
+      .then(({ data }) => { setStaff(data || []); setLoading(false); });
+  }, []);
+
+  const persist = async (s, newPerms) => {
+    setSaving((p) => new Set([...p, s.id]));
+    await sb.from("staff").update({ app_permissions: newPerms }).eq("id", s.id);
+    setStaff((prev) => prev.map((r) => r.id === s.id ? { ...r, app_permissions: newPerms } : r));
+    setSaving((p) => { const n = new Set(p); n.delete(s.id); return n; });
+  };
+
+  // Returns "none" | "read" | "write" for a staff + tab
+  const getTabLevel = (s, tabKey) => {
+    if (s.role === "superadmin" || s.role === "admin") return "write";
+    const crm = s.app_permissions?.crm;
+    const crmWrite = s.app_permissions?.crm_write;
+    const roleDefaults = CRM_ROLE_DEFAULT_TABS[s.role] || ["demands"];
+    const hasAllView = Array.isArray(crm) && crm.includes("all");
+    const canView = hasAllView || roleDefaults.includes(tabKey) || (Array.isArray(crm) && crm.includes(tabKey));
+    if (!canView) return "none";
+    if (!crmWrite) return "write"; // default: full write on all visible tabs
+    const canWrite = crmWrite.includes("all") || crmWrite.includes(tabKey);
+    return canWrite ? "write" : "read";
+  };
+
+  // Cycle: none → write → read → none (role defaults skip "none")
+  const cycleTabLevel = async (s, tabKey) => {
+    if (s.role === "superadmin" || s.role === "admin") return;
+    const current = getTabLevel(s, tabKey);
+    const roleDefaults = CRM_ROLE_DEFAULT_TABS[s.role] || ["demands"];
+    const isDefault = roleDefaults.includes(tabKey);
+    const next = current === "none" ? "write" : current === "write" ? "read" : (isDefault ? "write" : "none");
+
+    const perms = s.app_permissions || {};
+    // Expand to explicit lists so we can mutate safely
+    let crm = Array.isArray(perms.crm) && !perms.crm.includes("all") ? [...perms.crm] : [...roleDefaults];
+    const curVisibleKeys = Array.isArray(perms.crm) && perms.crm.includes("all")
+      ? CRM_ALL_TABS.map((t) => t.k)
+      : [...new Set([...roleDefaults, ...crm])];
+    let crmWrite = Array.isArray(perms.crm_write) ? [...perms.crm_write] : [...curVisibleKeys];
+
+    if (next === "none") {
+      crm = crm.filter((k) => k !== tabKey);
+      crmWrite = crmWrite.filter((k) => k !== tabKey);
+    } else if (next === "write") {
+      if (!crm.includes(tabKey)) crm = [...crm, tabKey];
+      if (!crmWrite.includes(tabKey)) crmWrite = [...crmWrite, tabKey];
+    } else {
+      if (!crm.includes(tabKey)) crm = [...crm, tabKey];
+      crmWrite = crmWrite.filter((k) => k !== tabKey);
+    }
+    await persist(s, { ...perms, crm, crm_write: crmWrite });
+  };
+
+  const grantAll = async (s, level) => {
+    if (s.role === "superadmin" || s.role === "admin") return;
+    const perms = s.app_permissions || {};
+    if (level === "write") {
+      await persist(s, { ...perms, crm: ["all"], crm_write: ["all"] });
+    } else {
+      await persist(s, { ...perms, crm: ["all"], crm_write: [] });
+    }
+  };
+
+  const resetAccess = async (s) => {
+    if (s.role === "superadmin" || s.role === "admin") return;
+    const { crm: _c, crm_write: _w, ...rest } = s.app_permissions || {};
+    await persist(s, rest);
+  };
+
+  const LEVEL_STYLE = {
+    none:  { bg: "#f3f4f6", color: "#9ca3af", border: "#e5e7eb", icon: "—" },
+    read:  { bg: "#dbeafe", color: "#1d4ed8", border: "#93c5fd", icon: "👁️" },
+    write: { bg: "#dcfce7", color: "#166534", border: "#86efac", icon: "✏️" },
+  };
+
+  if (loading) return <div style={{ color: "#aaa", fontSize: 13, padding: 20 }}>Loading…</div>;
+
+  return (
+    <div style={{ maxWidth: 860 }}>
+      <div style={{ fontSize: 12, color: "#666", marginBottom: 14, padding: "8px 12px", background: "#f0f9ff", borderRadius: 8, border: "1px solid #bae6fd" }}>
+        Click any staff member to expand. For each CRM page, click the chip to cycle access:
+        {" "}<span style={{ padding: "1px 7px", borderRadius: 10, background: "#f3f4f6", color: "#9ca3af", fontSize: 11 }}>— No access</span>
+        {" → "}<span style={{ padding: "1px 7px", borderRadius: 10, background: "#dcfce7", color: "#166534", fontSize: 11 }}>✏️ Write</span>
+        {" → "}<span style={{ padding: "1px 7px", borderRadius: 10, background: "#dbeafe", color: "#1d4ed8", fontSize: 11 }}>👁️ Read only</span>
+        {" → "} No access. <strong>Bold chips</strong> = role default (view access cannot be removed).
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {staff.map((s) => {
+          const isExpanded = expandedId === s.id;
+          const busy = saving.has(s.id);
+          const isSA = s.role === "superadmin" || s.role === "admin";
+          const roleDefaults = CRM_ROLE_DEFAULT_TABS[s.role] || ["demands"];
+          const crm = s.app_permissions?.crm;
+          const hasAll = isSA || (Array.isArray(crm) && crm.includes("all"));
+          const crmWrite = s.app_permissions?.crm_write;
+          const visibleCount = hasAll ? CRM_ALL_TABS.length : [...new Set([...roleDefaults, ...(Array.isArray(crm) ? crm.filter((k) => k !== "all") : [])])].length;
+          const summaryLabel = isSA
+            ? "Full access by role"
+            : hasAll
+              ? (!crmWrite || crmWrite.includes("all") ? "All tabs — full write" : "All tabs — some read-only")
+              : `${visibleCount} of ${CRM_ALL_TABS.length} tabs`;
+
+          return (
+            <div key={s.id}>
+              <div
+                onClick={() => !busy && setExpandedId(isExpanded ? null : s.id)}
+                style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", borderRadius: isExpanded ? "8px 8px 0 0" : 8, background: isExpanded ? "#eff6ff" : "#fafafa", border: `1px solid ${isExpanded ? "#93c5fd" : "#e5e7eb"}`, cursor: busy ? "default" : "pointer", userSelect: "none" }}
+              >
+                <div style={{ flex: 1 }}>
+                  <span style={{ fontSize: 13, fontWeight: 600 }}>{s.name || s.username}</span>
+                  <span style={{ fontSize: 11, color: "#aaa", marginLeft: 6 }}>@{s.username}</span>
+                </div>
+                <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 6, background: "#e5e7eb", color: "#555", fontWeight: 600, textTransform: "uppercase" }}>{s.role}</span>
+                <span style={{ fontSize: 11, color: isSA ? "#166534" : "#555" }}>{summaryLabel}</span>
+                {busy && <span style={{ fontSize: 11, color: "#888" }}>Saving…</span>}
+                <span style={{ fontSize: 11, color: "#aaa" }}>{isExpanded ? "▲" : "▼"}</span>
+              </div>
+              {isExpanded && (
+                <div style={{ padding: "14px", background: "#f8faff", border: "1px solid #93c5fd", borderTop: "none", borderRadius: "0 0 8px 8px" }}>
+                  {isSA ? (
+                    <div style={{ fontSize: 12, color: "#555", fontStyle: "italic" }}>
+                      Superadmin / Admin always has full access to all pages and cannot be restricted.
+                    </div>
+                  ) : (
+                    <>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 12 }}>
+                        {CRM_ALL_TABS.map((tab) => {
+                          const level = getTabLevel(s, tab.k);
+                          const isDefault = roleDefaults.includes(tab.k);
+                          const st = LEVEL_STYLE[level];
+                          return (
+                            <button
+                              key={tab.k}
+                              disabled={busy}
+                              onClick={() => cycleTabLevel(s, tab.k)}
+                              title={isDefault
+                                ? `${tab.l} — role default, view access cannot be removed. Click to toggle write.`
+                                : `${tab.l} — click to cycle: no access → write → read only`}
+                              style={{
+                                fontSize: 11, padding: "4px 10px", borderRadius: 12,
+                                border: `1.5px solid ${st.border}`,
+                                background: st.bg, color: st.color,
+                                cursor: busy ? "default" : "pointer",
+                                opacity: busy ? 0.6 : 1,
+                                fontWeight: isDefault ? 700 : 400,
+                              }}
+                            >
+                              {st.icon} {tab.l}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <button disabled={busy} onClick={() => grantAll(s, "write")}
+                          style={{ fontSize: 11, padding: "4px 12px", borderRadius: 6, border: "1px solid #6366f1", background: "#eef2ff", color: "#3730a3", cursor: busy ? "default" : "pointer" }}>
+                          ✏️ Grant all write
+                        </button>
+                        <button disabled={busy} onClick={() => grantAll(s, "read")}
+                          style={{ fontSize: 11, padding: "4px 12px", borderRadius: 6, border: "1px solid #93c5fd", background: "#dbeafe", color: "#1d4ed8", cursor: busy ? "default" : "pointer" }}>
+                          👁️ All read only
+                        </button>
+                        <button disabled={busy} onClick={() => resetAccess(s)}
+                          style={{ fontSize: 11, padding: "4px 12px", borderRadius: 6, border: "1px solid #fca5a5", background: "#fef2f2", color: "#991b1b", cursor: busy ? "default" : "pointer" }}>
+                          🔒 Reset to role default
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {!staff.length && !loading && <div style={{ color: "#aaa", fontSize: 13 }}>No staff found.</div>}
+      </div>
+    </div>
+  );
+}
+
+// MAIN APP — tabbed interface, tabs filtered by app_permissions
 // ──────────────────────────────────────────────────────────
 // TELECALLER QUEUE SCREEN — mobile-first one-card-at-a-time call queue
 // Shows the highest-priority call task, with full script + objection cheat-sheet.
@@ -9664,6 +9872,7 @@ export default function App() {
     { k: "analytics",  l: "Analytics",   icon: "📊" },
     { k: "leadsources",l: "Lead Sources", icon: "🌐" },
     { k: "formbuilder",l: "Form Builder", icon: "🛠️" },
+    { k: "staff",      l: "Staff & Access", icon: "👥" },
   ];
 
   // Role-based defaults when app_permissions.crm is not set
@@ -9726,7 +9935,7 @@ export default function App() {
       </div>
 
       {activeScreen === "queue" && <TelecallerQueueScreen funnels={funnels} />}
-      {activeScreen === "approvals" && <ApprovalsScreen funnels={funnels} />}
+      {activeScreen === "approvals" && <ApprovalsScreen funnels={funnels} canApprove={canWriteTab(user, "approvals")} />}
       {activeScreen === "demands" && <DemandsScreen funnels={funnels} allTags={allTags} />}
       {activeScreen === "contacts" && <ContactsScreen funnels={funnels} />}
       {activeScreen === "contactsdb" && <ContactsDBScreen />}
@@ -9744,6 +9953,7 @@ export default function App() {
       {activeScreen === "analytics" && <AnalyticsScreen funnels={funnels} />}
       {activeScreen === "leadsources" && <LeadSourcesScreen funnels={funnels} />}
       {activeScreen === "formbuilder" && <FormBuilderScreen />}
+      {activeScreen === "staff" && <StaffAccessScreen />}
     </div>
     </ContactFieldsContext.Provider>
   );
