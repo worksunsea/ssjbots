@@ -9268,21 +9268,21 @@ function StaffAccessScreen() {
     const crm = s.app_permissions?.crm;
     const crmWrite = s.app_permissions?.crm_write;
     const roleDefaults = CRM_ROLE_DEFAULT_TABS[s.role] || ["demands"];
-    const hasAllView = Array.isArray(crm) && crm.includes("all");
-    const canView = hasAllView || roleDefaults.includes(tabKey) || (Array.isArray(crm) && crm.includes(tabKey));
+    // If crm explicitly set, it's authoritative (role defaults can be overridden)
+    const canView = Array.isArray(crm)
+      ? (crm.includes("all") || crm.includes(tabKey))
+      : roleDefaults.includes(tabKey);
     if (!canView) return "none";
-    if (!crmWrite) return "write"; // default: full write on all visible tabs
+    if (!crmWrite) return "write";
     const canWrite = crmWrite.includes("all") || crmWrite.includes(tabKey);
     return canWrite ? "write" : "read";
   };
 
-  // Cycle: none → write → read → none (role defaults skip "none")
+  // Cycle: none → write → read → none (all tabs including role defaults)
   const cycleTabLevel = async (s, tabKey) => {
     if (s.role === "superadmin" || s.role === "admin") return;
     const current = getTabLevel(s, tabKey);
-    const roleDefaults = CRM_ROLE_DEFAULT_TABS[s.role] || ["demands"];
-    const isDefault = roleDefaults.includes(tabKey);
-    const next = current === "none" ? "write" : current === "write" ? "read" : (isDefault ? "write" : "none");
+    const next = current === "none" ? "write" : current === "write" ? "read" : "none";
 
     const perms = s.app_permissions || {};
     // Expand to explicit lists so we can mutate safely
@@ -9336,7 +9336,7 @@ function StaffAccessScreen() {
         {" "}<span style={{ padding: "1px 7px", borderRadius: 10, background: "#f3f4f6", color: "#9ca3af", fontSize: 11 }}>— No access</span>
         {" → "}<span style={{ padding: "1px 7px", borderRadius: 10, background: "#dcfce7", color: "#166534", fontSize: 11 }}>✏️ Write</span>
         {" → "}<span style={{ padding: "1px 7px", borderRadius: 10, background: "#dbeafe", color: "#1d4ed8", fontSize: 11 }}>👁️ Read only</span>
-        {" → "} No access. <strong>Bold chips</strong> = role default (view access cannot be removed).
+        {" → "} No access. <strong>Bold chips</strong> = role default tab.
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {staff.map((s) => {
@@ -9387,9 +9387,7 @@ function StaffAccessScreen() {
                               key={tab.k}
                               disabled={busy}
                               onClick={() => cycleTabLevel(s, tab.k)}
-                              title={isDefault
-                                ? `${tab.l} — role default, view access cannot be removed. Click to toggle write.`
-                                : `${tab.l} — click to cycle: no access → write → read only`}
+                              title={`${tab.l}${isDefault ? " (role default)" : ""} — click to cycle: no access → write → read only → no access`}
                               style={{
                                 fontSize: 11, padding: "4px 10px", borderRadius: 12,
                                 border: `1.5px solid ${st.border}`,
@@ -9886,9 +9884,9 @@ export default function App() {
 
   const crmPerms = user?.app_permissions?.crm;
   const roleDefault = ROLE_DEFAULT_TABS[user?.role] || ["demands"];
-  // Role defaults are always the MINIMUM — app_permissions can only add tabs, never restrict.
+  // If crm explicitly set, it's authoritative (SA can restrict below role defaults too)
   const allowedKeys = crmPerms
-    ? (crmPerms.includes("all") ? ALL_TABS.map((t) => t.k) : [...new Set([...roleDefault, ...crmPerms])])
+    ? (crmPerms.includes("all") ? ALL_TABS.map((t) => t.k) : crmPerms)
     : roleDefault;
 
   const tabs = ALL_TABS.filter((t) => allowedKeys.includes(t.k));
