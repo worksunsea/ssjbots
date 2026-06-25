@@ -10030,6 +10030,7 @@ const PURITIES = [
   { l: "22kt (91.6%)", rateKey: "g22" },
   { l: "18kt (75%)",   rateKey: "g18" },
   { l: "14kt (58.5%)", rateKey: "g14" },
+  { l: "9kt (37.5%)",  rateKey: "g9"  },
   { l: "24kt (99.5%)", rateKey: "g24" },
   { l: "Custom ₹/g",   rateKey: null  },
 ];
@@ -10037,7 +10038,7 @@ const PURITIES = [
 // Parse per-gram gold rates + USD from live rates sheet.
 // Sheet columns: row.gold = label, row.estimated = per-gram rate (₹/g for gold, ₹/USD for forex)
 function parseLiveRatesForCalc(rows) {
-  const out = { g24: null, g22: null, g18: null, g14: null, usd: null };
+  const out = { g24: null, g22: null, g18: null, g14: null, g9: null, usd: null };
   for (const r of rows) {
     const lbl = String(r.gold || "").trim();
     const val = r.estimated;
@@ -10046,6 +10047,7 @@ function parseLiveRatesForCalc(rows) {
     if (lbl === "22 KT")     { out.g22 = val; continue; }
     if (lbl === "18KT")      { out.g18 = val; continue; }
     if (lbl === "14KT")      { out.g14 = val; continue; }
+    if (lbl === "9 KT")      { out.g9  = val; continue; }
     // USD/INR — look for row whose label mentions USD/Dollar with a value in forex range
     if (/usd|dollar/i.test(lbl) && val > 50 && val < 200) { out.usd = val; continue; }
   }
@@ -10060,7 +10062,7 @@ function CalculatorScreen() {
   const [tab, setTab] = useState("jewellery");
   const [rapData, setRapData] = useState(RAP_SEED);
   const [rapAge, setRapAge] = useState(null);
-  const [liveRates, setLiveRates] = useState({ g24: null, g22: null, g18: null, g14: null, usd: null });
+  const [liveRates, setLiveRates] = useState({ g24: null, g22: null, g18: null, g14: null, g9: null, usd: null });
   const [usdInr, setUsdInr] = useState("");
   const [spread, setSpread] = useState(() => { try { return Number(localStorage.getItem("rap_spread") || 8); } catch { return 8; } });
   const [makingMode, setMakingMode] = useState(() => { try { return localStorage.getItem("making_mode") || "per_g"; } catch { return "per_g"; } });
