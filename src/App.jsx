@@ -10339,15 +10339,117 @@ function CalculatorScreen() {
   ${jw.applyGst ? `<tr><td style="padding:3px 6px;font-size:13px;color:#555;">GST @ 3%</td><td style="padding:3px 6px;text-align:right;font-size:13px;">${fmt(jwCalc.gst)}</td></tr>` : ""}
   <tr class="total-row"><td>GRAND TOTAL</td><td style="text-align:right;">${fmt(jwCalc.total)}</td></tr>
   </table>
-  <hr/>
-  <div class="disclaimer">
-    This is just an estimate, not a final bill.<br/>
-    Gold rates apply on full payment.<br/>
-    This is just an estimate slip.
+  <div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill
   </div>
 </div>
 </body></html>`;
 
+    const win = window.open("", "_blank", "width=600,height=800");
+    win.document.write(html);
+    win.document.close();
+    win.onload = () => { win.print(); win.close(); };
+  };
+
+  const handleSolPrint = () => {
+    const today = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" });
+    const clientName = saveContact?.name || saveContact?.phone || "";
+    const row = (label, value) => `<tr><td style="padding:3px 6px;color:#444;font-size:13px;">${label}</td><td style="padding:3px 6px;text-align:right;font-size:13px;">${value}</td></tr>`;
+    const rows = [];
+    rows.push(row("Shape", sol.shape));
+    rows.push(row("Weight", `${sol.weight} ct`));
+    rows.push(row("Colour / Clarity", `${sol.color} / ${sol.clarity}`));
+    rows.push(row("Cut", sol.cut));
+    rows.push(row("Certificate", sol.cert));
+    if (solResult.sellPpc != null) rows.push(row("Sell Price/ct", fmt(solResult.sellPpc)));
+    rows.push(row("Stone Total", solResult.sellTotal != null ? fmt(solResult.sellTotal) : "—"));
+    if (sol.includeGold && solGoldCalc) {
+      rows.push(row("Gold + Making", fmt(solGoldCalc.goldVal + solGoldCalc.making)));
+      if (solGoldCalc.diaInShank > 0) rows.push(row("Diamond in Shank", fmt(solGoldCalc.diaInShank)));
+      if (solGoldCalc.gemVal > 0) rows.push(row("Gemstone / Other", fmt(solGoldCalc.gemVal)));
+      rows.push(row("Setting Total", fmt(solGoldCalc.total)));
+    }
+    const html = `<!DOCTYPE html><html><head><title>Estimate</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Georgia', serif; background: #fff; color: #222; }
+  @page { size: A5 portrait; margin: 15mm; }
+  .wrap { max-width: 400px; margin: 0 auto; }
+  .om { font-size: 32px; color: #8b6914; text-align: center; margin-bottom: 4px; }
+  .title { font-size: 20px; letter-spacing: 3px; text-align: center; font-weight: bold; margin-bottom: 2px; }
+  .date { font-size: 12px; color: #666; text-align: center; margin-bottom: 4px; }
+  .client { font-size: 13px; color: #333; text-align: center; margin-bottom: 10px; font-style: italic; }
+  hr { border: none; border-top: 1px solid #bbb; margin: 8px 0; }
+  hr.thick { border-top: 2px solid #333; }
+  table { width: 100%; border-collapse: collapse; }
+  .total-row td { padding: 5px 6px; font-size: 16px; font-weight: bold; border-top: 2px solid #333; }
+  .disclaimer { font-size: 10px; color: #888; text-align: center; margin-top: 14px; line-height: 1.7; }
+</style></head><body>
+<div class="wrap">
+  <div class="om">ॐ</div>
+  <div class="title">ESTIMATE</div>
+  <div class="date">${today}</div>
+  ${clientName ? `<div class="client">Prepared for: ${clientName}</div>` : ""}
+  <hr class="thick"/>
+  <table>${rows.join("")}
+  ${sol.applyGst ? `<tr><td style="padding:3px 6px;font-size:13px;color:#555;">GST @ 1.5%</td><td style="padding:3px 6px;text-align:right;font-size:13px;">${fmt(solGst)}</td></tr>` : ""}
+  <tr class="total-row"><td>GRAND TOTAL</td><td style="text-align:right;">${fmt(solFinalTotal)}</td></tr>
+  </table>
+  <div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill
+  </div>
+</div>
+</body></html>`;
+    const win = window.open("", "_blank", "width=600,height=800");
+    win.document.write(html);
+    win.document.close();
+    win.onload = () => { win.print(); win.close(); };
+  };
+
+  const handleQuotPrint = () => {
+    const today = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" });
+    const clientName = saveContact?.name || saveContact?.phone || "";
+    const stoneRows = rows.map((r, i) => {
+      const sc = solCalc(r);
+      return `<tr style="border-bottom:1px solid #eee;">
+        <td style="padding:4px 6px;font-size:12px;color:#888;">${i + 1}</td>
+        <td style="padding:4px 6px;font-size:12px;">${r.shape}</td>
+        <td style="padding:4px 6px;font-size:12px;">${r.weight} ct</td>
+        <td style="padding:4px 6px;font-size:12px;">${r.color} / ${r.clarity}</td>
+        <td style="padding:4px 6px;font-size:12px;">${r.cert}</td>
+        <td style="padding:4px 6px;font-size:12px;text-align:right;font-weight:600;">${sc.sellTotal != null ? fmt(sc.sellTotal) : "—"}</td>
+      </tr>`;
+    }).join("");
+    const html = `<!DOCTYPE html><html><head><title>Quotation</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Georgia', serif; background: #fff; color: #222; }
+  @page { size: A5 portrait; margin: 12mm; }
+  .wrap { max-width: 500px; margin: 0 auto; }
+  .om { font-size: 28px; color: #8b6914; text-align: center; margin-bottom: 4px; }
+  .title { font-size: 18px; letter-spacing: 3px; text-align: center; font-weight: bold; margin-bottom: 2px; }
+  .date { font-size: 12px; color: #666; text-align: center; margin-bottom: 4px; }
+  .client { font-size: 13px; color: #333; text-align: center; margin-bottom: 10px; font-style: italic; }
+  hr { border: none; border-top: 1px solid #bbb; margin: 8px 0; }
+  hr.thick { border-top: 2px solid #333; }
+  table { width: 100%; border-collapse: collapse; }
+  th { padding: 5px 6px; font-size: 11px; color: #555; text-align: left; border-bottom: 2px solid #333; font-weight: 600; }
+  th:last-child { text-align: right; }
+  .disclaimer { font-size: 10px; color: #888; text-align: center; margin-top: 14px; line-height: 1.7; }
+</style></head><body>
+<div class="wrap">
+  <div class="om">ॐ</div>
+  <div class="title">QUOTATION</div>
+  <div class="date">${today}</div>
+  ${clientName ? `<div class="client">Prepared for: ${clientName}</div>` : ""}
+  <hr class="thick"/>
+  <table>
+    <thead><tr>
+      <th>#</th><th>Shape</th><th>Weight</th><th>Colour/Clarity</th><th>Cert</th><th style="text-align:right;">Price</th>
+    </tr></thead>
+    <tbody>${stoneRows}</tbody>
+  </table>
+  <div class="disclaimer">This is an estimate only · Prices subject to change · Not a final bill</div>
+</div>
+</body></html>`;
     const win = window.open("", "_blank", "width=600,height=800");
     win.document.write(html);
     win.document.close();
@@ -10610,7 +10712,7 @@ function CalculatorScreen() {
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <Btn small color={C.blue} onClick={() => setSaveModal(true)}>💾 Save Estimate</Btn>
-        <Btn small ghost color={C.blue} onClick={() => window.print()}>🖨️ Print</Btn>
+        <Btn small ghost color={C.blue} onClick={handleSolPrint}>🖨️ Print</Btn>
         {saveContact && <Btn small ghost color={C.green} onClick={() => {
           const sc = solCalc(sol);
           const txt = `*ESTIMATE — Sun Sea Jewellers*\n\n*Stone:* ${sol.shape} ${sol.weight}ct ${sol.color}/${sol.clarity} ${sol.cut}\n*Certificate:* ${sol.cert}\n\n*Sell Price:* ${fmt(sc.sellTotal)}\n${sol.includeGold && solGoldCalc ? `*Setting:* ${fmt(solGoldCalc.total)}\n` : ""}*Total:* ${fmt(solGrandTotal)}\n\n_Sun Sea Jewellers, Mumbai_`;
@@ -10691,7 +10793,7 @@ function CalculatorScreen() {
       <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
         <Btn small color={C.green} onClick={() => setRows(p => [...p, newSolRow()])}>+ Add Stone</Btn>
         <Btn small color={C.blue} onClick={() => setSaveModal(true)}>💾 Save</Btn>
-        <Btn small ghost color={C.blue} onClick={() => window.print()}>🖨️ Print</Btn>
+        <Btn small ghost color={C.blue} onClick={handleQuotPrint}>🖨️ Print</Btn>
         {saveContact && <Btn small ghost color={C.green} onClick={() => {
           const lines = rows.map((r, i) => { const sc = solCalc(r); return `${i+1}. ${r.shape} ${r.weight}ct ${r.color}/${r.clarity} ${r.cert} — ${sc.sellTotal != null ? fmt(sc.sellTotal) : "—"}`; });
           sendWA(saveContact.phone, `*QUOTATION — Sun Sea Jewellers*\n\n${lines.join("\n")}\n\n_Sun Sea Jewellers, Mumbai_`);
