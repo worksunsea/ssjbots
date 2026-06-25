@@ -10096,7 +10096,7 @@ function CalculatorScreen() {
   });
 
   // Solitaire (single stone) state
-  const [sol, setSol] = useState({ ...newSolRow(), includeGold: false, goldGrossWt: "", goldPurityIdx: 2, goldCustomPurity: "", goldRateOverride: "", goldMakingRatePg: "1500", goldMakingRatePct: "15" });
+  const [sol, setSol] = useState({ ...newSolRow(), includeGold: false, goldGrossWt: "", goldPurityIdx: 2, goldCustomPurity: "", goldRateOverride: "", goldMakingRatePg: "1500", goldMakingRatePct: "15", settingDiaWt: "", settingDiaRate: "", settingGemVal: "" });
 
   // Quotation sheet (multi-stone) state
   const [rows, setRows] = useState([newSolRow()]);
@@ -10181,7 +10181,9 @@ function CalculatorScreen() {
     const goldVal = gross * gRate;
     const solMakingR = makingMode === "per_g" ? parseFloat(sol.goldMakingRatePg || 0) : parseFloat(sol.goldMakingRatePct || 0);
     const making = makingMode === "per_g" ? gross * solMakingR : goldVal * (solMakingR / 100);
-    return { goldVal, making, total: goldVal + making };
+    const diaInShank = parseFloat(sol.settingDiaWt || 0) * parseFloat(sol.settingDiaRate || 0);
+    const gemVal = parseFloat(sol.settingGemVal || 0);
+    return { goldVal, making, diaInShank, gemVal, total: goldVal + making + diaInShank + gemVal };
   })();
 
   const solResult = solCalc(sol);
@@ -10421,6 +10423,18 @@ function CalculatorScreen() {
               }
             </div>
           </div>
+          {/* Misc stones in setting */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginTop: 10, alignItems: "end" }}>
+            <div><label style={lbl}>Diamond in Shank (ct)</label><input style={inp} type="number" step="0.001" value={sol.settingDiaWt} onChange={e => setSol(p => ({ ...p, settingDiaWt: e.target.value }))} placeholder="0.00" /></div>
+            <div><label style={lbl}>Diamond Rate (₹/ct)</label><input style={inp} type="number" value={sol.settingDiaRate} onChange={e => setSol(p => ({ ...p, settingDiaRate: e.target.value }))} placeholder="e.g. 25000" /></div>
+            <div><label style={lbl}>Gemstone / Other ₹</label><input style={inp} type="number" value={sol.settingGemVal} onChange={e => setSol(p => ({ ...p, settingGemVal: e.target.value }))} placeholder="direct value" /></div>
+          </div>
+          {(parseFloat(sol.settingDiaWt) > 0 || parseFloat(sol.settingGemVal) > 0) && (
+            <div style={{ fontSize: 12, color: "#555", marginTop: 6 }}>
+              {parseFloat(sol.settingDiaWt) > 0 && <span>Dia in shank: ₹{Math.round(parseFloat(sol.settingDiaWt||0)*parseFloat(sol.settingDiaRate||0)).toLocaleString("en-IN")} </span>}
+              {parseFloat(sol.settingGemVal) > 0 && <span>Gemstone: ₹{Math.round(parseFloat(sol.settingGemVal||0)).toLocaleString("en-IN")}</span>}
+            </div>
+          )}
         </div>
       )}
 
@@ -10431,7 +10445,10 @@ function CalculatorScreen() {
         {sol.cert !== "Non-Cert" && resultRow(`Buy Price/ct (${solResult.buyDisc}% disc)`, solResult.buyPpc !== null ? fmt(solResult.buyPpc) : "—")}
         {sol.cert !== "Non-Cert" && resultRow(`Sell Price/ct (${(sol.sellDisc !== "" ? parseFloat(sol.sellDisc) : solResult.buyDisc - spread).toFixed(1)}% disc)`, solResult.sellPpc !== null ? fmt(solResult.sellPpc) : "—")}
         {resultRow("Sell Total (stone)", solResult.sellTotal !== null ? fmt(solResult.sellTotal) : "—")}
-        {sol.includeGold && solGoldCalc && resultRow("Gold Setting", fmt(solGoldCalc.total))}
+        {sol.includeGold && solGoldCalc && resultRow("Gold + Making", fmt(solGoldCalc.goldVal + solGoldCalc.making))}
+        {sol.includeGold && solGoldCalc && solGoldCalc.diaInShank > 0 && resultRow("Diamond in Shank", fmt(solGoldCalc.diaInShank))}
+        {sol.includeGold && solGoldCalc && solGoldCalc.gemVal > 0 && resultRow("Gemstone / Other", fmt(solGoldCalc.gemVal))}
+        {sol.includeGold && solGoldCalc && resultRow("Setting Total", fmt(solGoldCalc.total))}
         {resultRow("GRAND TOTAL", fmt(solGrandTotal), true)}
         {user?.role === "superadmin" && solResult.buyTotal !== null && solResult.sellTotal !== null && (
           <div style={{ fontSize: 11, color: "#888", marginTop: 6, paddingTop: 6, borderTop: "1px solid #eee" }}>
