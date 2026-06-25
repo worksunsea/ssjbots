@@ -10009,9 +10009,10 @@ const RAP_SEED = {
 function rapLookup(rapData, weight, color, clarity, isRound) {
   const tables = isRound ? rapData.rounds : rapData.fancy;
   if (!tables) return null;
+  const effectiveWeight = Math.min(weight, 5.0); // 5ct+ capped at 5ct pricing
   let bracket = RAP_WEIGHT_RANGES[0];
   for (let i = 0; i < RAP_RANGE_MINS.length; i++) {
-    if (weight >= RAP_RANGE_MINS[i]) bracket = RAP_WEIGHT_RANGES[i];
+    if (effectiveWeight >= RAP_RANGE_MINS[i]) bracket = RAP_WEIGHT_RANGES[i];
   }
   const table = tables[bracket];
   if (!table) return null;
@@ -10063,7 +10064,7 @@ function parseLiveRatesForCalc(rows) {
 }
 
 function newSolRow() {
-  return { id: Date.now() + Math.random(), cert: "IGI", color: "H", shape: "Round", clarity: "VS1", cut: "Excellent", weight: "", buyDisc: "", sellDisc: "", vendorCode: "", purchasePrice: "", notes: "" };
+  return { id: Date.now() + Math.random(), cert: "IGI", color: "H", shape: "Round", clarity: "VS1", cut: "Excellent", weight: "", buyDisc: "", sellDisc: "", vendorCode: "", purchasePrice: "", notes: "", manualPrice: "" };
 }
 
 function CalculatorScreen() {
@@ -10085,7 +10086,7 @@ function CalculatorScreen() {
 
   // Jewellery state
   const [jw, setJw] = useState({
-    itemName: "", grossWt: "", purityIdx: 0, customPurity: "", goldRateOverride: "",
+    itemName: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "",
     makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "",
     dia2Wt: "", dia2Unit: "ct", dia2Rate: "",
     stoneWt: "", stoneUnit: "ct", stoneRate: "",
@@ -10095,7 +10096,7 @@ function CalculatorScreen() {
   });
 
   // Solitaire (single stone) state
-  const [sol, setSol] = useState({ ...newSolRow(), includeGold: false, goldGrossWt: "", goldPurityIdx: 0, goldCustomPurity: "", goldRateOverride: "", goldMakingRatePg: "1500", goldMakingRatePct: "15" });
+  const [sol, setSol] = useState({ ...newSolRow(), includeGold: false, goldGrossWt: "", goldPurityIdx: 2, goldCustomPurity: "", goldRateOverride: "", goldMakingRatePg: "1500", goldMakingRatePct: "15" });
 
   // Quotation sheet (multi-stone) state
   const [rows, setRows] = useState([newSolRow()]);
@@ -10158,15 +10159,19 @@ function CalculatorScreen() {
   // ── Solitaire calculation ──
   const solCalc = (stone) => {
     const w = parseFloat(stone.weight || 0);
+    if (stone.cert === "Non-Cert") {
+      const manualPrice = parseFloat(stone.manualPrice || 0) || null;
+      return { w, rap100: null, rapInrPerCt: null, buyDisc: null, sellDisc: null, buyPpc: null, sellPpc: null, buyTotal: null, sellTotal: manualPrice };
+    }
     const usd = parseFloat(usdInr || 0);
     const isRound = stone.shape === "Round";
     const rap100 = rapLookup(rapData, w, stone.color, stone.clarity, isRound);
     const rapInrPerCt = rap100 !== null ? rap100 * 100 * usd : null;
     const buyDisc = parseFloat(stone.buyDisc || 0);
-    const sellDisc = parseFloat(stone.sellDisc || stone.sellDisc === "" ? (buyDisc - spread) : stone.sellDisc);
+    const sellDisc = parseFloat(stone.sellDisc !== "" ? stone.sellDisc : (buyDisc - spread));
     const buyPpc = rapInrPerCt !== null ? rapInrPerCt * (1 - buyDisc / 100) : null;
     const sellPpc = rapInrPerCt !== null ? rapInrPerCt * (1 - sellDisc / 100) : null;
-    return { w, rapInrPerCt, buyDisc, sellDisc, buyPpc, sellPpc, buyTotal: buyPpc !== null ? buyPpc * w : null, sellTotal: sellPpc !== null ? sellPpc * w : null };
+    return { w, rap100, rapInrPerCt, buyDisc, sellDisc, buyPpc, sellPpc, buyTotal: buyPpc !== null ? buyPpc * w : null, sellTotal: sellPpc !== null ? sellPpc * w : null };
   };
 
   const solGoldCalc = (() => {
@@ -10246,7 +10251,7 @@ function CalculatorScreen() {
         <div><label style={lbl}>Gross Weight (g)</label><input style={inp} type="number" step="0.01" value={jw.grossWt} onChange={e => setJw(p => ({ ...p, grossWt: e.target.value }))} placeholder="0.00" /></div>
         <div>
           <label style={lbl}>Purity</label>
-          <select style={inp} value={jw.purityIdx} onChange={e => setJw(p => ({ ...p, purityIdx: Number(e.target.value) }))}>
+          <select style={inp} value={jw.purityIdx} onChange={e => { const idx = Number(e.target.value); setJw(p => ({ ...p, purityIdx: idx })); saveMakingMode(idx === 0 ? "pct" : "per_g"); }}>
             {PURITIES.map((p2, i) => <option key={i} value={i}>{p2.l}</option>)}
           </select>
         </div>
@@ -10310,15 +10315,17 @@ function CalculatorScreen() {
 
   // ── SOLITAIRE TAB ──
   const solForm = (stone, onChange, showInternal = true) => {
+    const isNonCert = stone.cert === "Non-Cert";
     const isRound = stone.shape === "Round";
     const buyDiscV = parseFloat(stone.buyDisc || 0);
     const autoSell = buyDiscV - spread;
     const usd = parseFloat(usdInr || 0);
-    const rap100 = stone.weight && stone.color && stone.clarity ? rapLookup(rapData, parseFloat(stone.weight), stone.color, stone.clarity, isRound) : null;
+    const rap100 = !isNonCert && stone.weight && stone.color && stone.clarity ? rapLookup(rapData, parseFloat(stone.weight), stone.color, stone.clarity, isRound) : null;
     const rapInrPc = rap100 !== null && usd ? rap100 * 100 * usd : null;
 
     return (
       <div>
+        {/* Top row — always visible */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
           <div><label style={lbl}>Shape</label>
             <select style={inp} value={stone.shape} onChange={e => onChange("shape", e.target.value)}>
@@ -10331,45 +10338,59 @@ function CalculatorScreen() {
               {["IGI","GIA","HRD","Non-Cert"].map(c => <option key={c}>{c}</option>)}
             </select>
           </div>
-          <div><label style={lbl}>Colour</label>
-            <select style={inp} value={stone.color} onChange={e => onChange("color", e.target.value)}>
-              {RAP_COLORS.map(c => <option key={c}>{c}</option>)}
-            </select>
-          </div>
-          <div><label style={lbl}>Clarity</label>
-            <select style={inp} value={stone.clarity} onChange={e => onChange("clarity", e.target.value)}>
-              {["FL","IF","VVS1","VVS2","VS1","VS2","SI1","SI2","I1","I2"].map(c => <option key={c}>{c}</option>)}
-            </select>
-          </div>
-          <div><label style={lbl}>Cut</label>
-            <select style={inp} value={stone.cut} onChange={e => onChange("cut", e.target.value)}>
-              {["Excellent","Very Good","Good","Fair","None"].map(c => <option key={c}>{c}</option>)}
-            </select>
-          </div>
         </div>
 
-        {/* RAP row */}
-        <div style={{ ...card, background: "#f8faff", padding: 10, marginBottom: 10 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, alignItems: "end" }}>
-            <div><label style={lbl}>USD/INR — live</label><input style={inp} type="number" value={usdInr} onChange={e => setUsdInr(e.target.value)} placeholder="e.g. 85" /></div>
-            <div><label style={lbl}>Spread (buy−sell gap)</label><input style={inp} type="number" value={spread} onChange={e => saveSpread(Number(e.target.value))} /></div>
-            <div><label style={lbl}>Buy Disc %</label><input style={inp} type="number" step="0.1" value={stone.buyDisc} onChange={e => onChange("buyDisc", e.target.value)} placeholder="e.g. 43" /></div>
-            <div><label style={lbl}>Sell Disc % (auto {autoSell.toFixed(1)})</label><input style={{ ...inp, background: stone.sellDisc === "" ? "#fffbe6" : "#fff" }} type="number" step="0.1" value={stone.sellDisc} onChange={e => onChange("sellDisc", e.target.value)} placeholder={String(autoSell.toFixed(1))} /></div>
+        {/* Non-Cert: only manual sell price */}
+        {isNonCert ? (
+          <div style={{ marginBottom: 10 }}>
+            <label style={lbl}>Sell Price ₹ (total)</label>
+            <input style={inp} type="number" value={stone.manualPrice} onChange={e => onChange("manualPrice", e.target.value)} placeholder="e.g. 250000" />
           </div>
-          {rap100 !== null ? (
-            <div style={{ marginTop: 8, fontSize: 12, color: "#555" }}>
-              Rap: <strong>₹{Math.round(rap100 * 100).toLocaleString("en-IN")}/ct</strong> (${rap100 * 100}/ct) → INR: <strong>{rapInrPc ? "₹" + Math.round(rapInrPc).toLocaleString("en-IN") + "/ct" : "set USD/INR ↑"}</strong>
-              {rapAge !== null && rapAge > 7 && <span style={{ color: C.orange, marginLeft: 8 }}>⚠️ Rapaport data is {rapAge} days old — sync latest from Drive</span>}
+        ) : (
+          <>
+            {/* Colour / Clarity / Cut */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
+              <div><label style={lbl}>Colour</label>
+                <select style={inp} value={stone.color} onChange={e => onChange("color", e.target.value)}>
+                  {RAP_COLORS.map(c => <option key={c}>{c}</option>)}
+                </select>
+              </div>
+              <div><label style={lbl}>Clarity</label>
+                <select style={inp} value={stone.clarity} onChange={e => onChange("clarity", e.target.value)}>
+                  {["FL","IF","VVS1","VVS2","VS1","VS2","SI1","SI2","I1","I2"].map(c => <option key={c}>{c}</option>)}
+                </select>
+              </div>
+              <div><label style={lbl}>Cut</label>
+                <select style={inp} value={stone.cut} onChange={e => onChange("cut", e.target.value)}>
+                  {["Excellent","Very Good","Good","Fair","None"].map(c => <option key={c}>{c}</option>)}
+                </select>
+              </div>
             </div>
-          ) : stone.weight ? <div style={{ fontSize: 12, color: C.orange, marginTop: 8 }}>⚠️ Weight {parseFloat(stone.weight || 0) < 0.30 ? "< 0.30ct — manual pricing only" : "out of table range"}</div> : null}
-        </div>
 
-        {showInternal && (
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
-            <div><label style={{ ...lbl, color: C.orange }}>Vendor Code (internal)</label><input style={inp} value={stone.vendorCode} onChange={e => onChange("vendorCode", e.target.value)} placeholder="VC-123" /></div>
-            <div><label style={{ ...lbl, color: C.orange }}>Purchase Price ₹ (internal)</label><input style={inp} type="number" value={stone.purchasePrice} onChange={e => onChange("purchasePrice", e.target.value)} placeholder="0" /></div>
-            <div><label style={{ ...lbl, color: C.orange }}>Notes (internal)</label><input style={inp} value={stone.notes} onChange={e => onChange("notes", e.target.value)} placeholder="..." /></div>
-          </div>
+            {/* RAP row */}
+            <div style={{ ...card, background: "#f8faff", padding: 10, marginBottom: 10 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, alignItems: "end" }}>
+                <div><label style={lbl}>USD/INR — live</label><input style={inp} type="number" value={usdInr} onChange={e => setUsdInr(e.target.value)} placeholder="e.g. 85" /></div>
+                {user?.role === "superadmin" && <div><label style={lbl}>Spread (buy−sell gap)</label><input style={inp} type="number" value={spread} onChange={e => saveSpread(Number(e.target.value))} /></div>}
+                <div><label style={lbl}>Buy Disc %</label><input style={inp} type="number" step="0.1" value={stone.buyDisc} onChange={e => onChange("buyDisc", e.target.value)} placeholder="e.g. 43" /></div>
+                <div><label style={lbl}>Sell Disc % (auto {autoSell.toFixed(1)})</label><input style={{ ...inp, background: stone.sellDisc === "" ? "#fffbe6" : "#fff" }} type="number" step="0.1" value={stone.sellDisc} onChange={e => onChange("sellDisc", e.target.value)} placeholder={String(autoSell.toFixed(1))} /></div>
+              </div>
+              {rap100 !== null ? (
+                <div style={{ marginTop: 8, fontSize: 12, color: "#555" }}>
+                  Rap: <strong>${rap100 * 100}/ct</strong> × USD/INR {usd || "?"} = <strong>{rapInrPc ? "₹" + Math.round(rapInrPc).toLocaleString("en-IN") + "/ct" : "set USD/INR ↑"}</strong>
+                  {rapAge !== null && rapAge > 7 && <span style={{ color: C.orange, marginLeft: 8 }}>⚠️ Rapaport {rapAge}d old</span>}
+                </div>
+              ) : stone.weight ? <div style={{ fontSize: 12, color: C.orange, marginTop: 8 }}>⚠️ Weight {parseFloat(stone.weight || 0) < 0.30 ? "< 0.30ct — manual pricing only" : "out of table range"}</div> : null}
+            </div>
+
+            {showInternal && (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
+                <div><label style={{ ...lbl, color: C.orange }}>Vendor Code (internal)</label><input style={inp} value={stone.vendorCode} onChange={e => onChange("vendorCode", e.target.value)} placeholder="VC-123" /></div>
+                <div><label style={{ ...lbl, color: C.orange }}>Purchase Price ₹ (internal)</label><input style={inp} type="number" value={stone.purchasePrice} onChange={e => onChange("purchasePrice", e.target.value)} placeholder="0" /></div>
+                <div><label style={{ ...lbl, color: C.orange }}>Notes (internal)</label><input style={inp} value={stone.notes} onChange={e => onChange("notes", e.target.value)} placeholder="..." /></div>
+              </div>
+            )}
+          </>
         )}
       </div>
     );
@@ -10390,10 +10411,10 @@ function CalculatorScreen() {
         <div style={{ ...card, background: "#fffbe6", marginBottom: 10 }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, alignItems: "end" }}>
             <div><label style={lbl}>Gold Gross Weight (g)</label><input style={inp} type="number" step="0.01" value={sol.goldGrossWt} onChange={e => setSol(p => ({ ...p, goldGrossWt: e.target.value }))} /></div>
-            <div><label style={lbl}>Purity</label><select style={inp} value={sol.goldPurityIdx} onChange={e => setSol(p => ({ ...p, goldPurityIdx: Number(e.target.value) }))}>{PURITIES.map((p2, i) => <option key={i} value={i}>{p2.l}</option>)}</select></div>
+            <div><label style={lbl}>Purity</label><select style={inp} value={sol.goldPurityIdx} onChange={e => { const idx = Number(e.target.value); setSol(p => ({ ...p, goldPurityIdx: idx })); saveMakingMode(idx === 0 ? "pct" : "per_g"); }}>{PURITIES.map((p2, i) => <option key={i} value={i}>{p2.l}</option>)}</select></div>
             {PURITIES[sol.goldPurityIdx]?.rateKey === null && <div><label style={lbl}>Custom Rate ₹/g</label><input style={inp} type="number" step="0.01" value={sol.goldRateOverride} onChange={e => setSol(p => ({ ...p, goldRateOverride: e.target.value }))} placeholder="e.g. 13000" /></div>}
             <div><label style={lbl}>Gold Rate ₹/g {(() => { const k = PURITIES[sol.goldPurityIdx]?.rateKey; return k && liveRates[k] ? <span style={{ color: C.green }}>₹{liveRates[k].toFixed(2)}</span> : null; })()}</label><input style={{ ...inp, background: sol.goldRateOverride ? "#fffbe6" : "#fff" }} type="number" step="0.01" value={sol.goldRateOverride} onChange={e => setSol(p => ({ ...p, goldRateOverride: e.target.value }))} placeholder={(() => { const k = PURITIES[sol.goldPurityIdx]?.rateKey; return k && liveRates[k] ? String(liveRates[k].toFixed(2)) : "e.g. 13345.81"; })()} /></div>
-            <div><label style={lbl}>Making ({makingMode === "per_g" ? "₹/g" : "%"})</label>
+            <div><label style={lbl}>Making — <button onClick={() => saveMakingMode(makingMode === "per_g" ? "pct" : "per_g")} style={{ fontSize: 11, padding: "2px 8px", border: "1px solid #ddd", borderRadius: 4, cursor: "pointer", background: "#f5f5f5" }}>{makingMode === "per_g" ? "₹/g ↔" : "% ↔"}</button></label>
               {makingMode === "per_g"
                 ? <input style={inp} type="number" value={sol.goldMakingRatePg} onChange={e => setSol(p => ({ ...p, goldMakingRatePg: e.target.value }))} placeholder="1500" />
                 : <input style={inp} type="number" value={sol.goldMakingRatePct} onChange={e => setSol(p => ({ ...p, goldMakingRatePct: e.target.value }))} placeholder="15" />
@@ -10406,14 +10427,15 @@ function CalculatorScreen() {
       {/* Results */}
       <div style={{ ...card, background: "#f8faff" }}>
         {resultRow("Weight", `${solResult.w} ct`)}
-        {resultRow(`Buy Price/ct (${solResult.buyDisc}% disc)`, solResult.buyPpc !== null ? fmt(solResult.buyPpc) : "—")}
-        {resultRow(`Sell Price/ct (${(sol.sellDisc !== "" ? parseFloat(sol.sellDisc) : solResult.buyDisc - spread).toFixed(1)}% disc)`, solResult.sellPpc !== null ? fmt(solResult.sellPpc) : "—")}
+        {solResult.rap100 !== null && resultRow("Rap (before disc)", `$${solResult.rap100 * 100}/ct = ${solResult.rapInrPerCt ? "₹" + Math.round(solResult.rapInrPerCt).toLocaleString("en-IN") + "/ct" : "set USD/INR"}`)}
+        {sol.cert !== "Non-Cert" && resultRow(`Buy Price/ct (${solResult.buyDisc}% disc)`, solResult.buyPpc !== null ? fmt(solResult.buyPpc) : "—")}
+        {sol.cert !== "Non-Cert" && resultRow(`Sell Price/ct (${(sol.sellDisc !== "" ? parseFloat(sol.sellDisc) : solResult.buyDisc - spread).toFixed(1)}% disc)`, solResult.sellPpc !== null ? fmt(solResult.sellPpc) : "—")}
         {resultRow("Sell Total (stone)", solResult.sellTotal !== null ? fmt(solResult.sellTotal) : "—")}
         {sol.includeGold && solGoldCalc && resultRow("Gold Setting", fmt(solGoldCalc.total))}
         {resultRow("GRAND TOTAL", fmt(solGrandTotal), true)}
-        {solResult.buyTotal !== null && solResult.sellTotal !== null && (
+        {user?.role === "superadmin" && solResult.buyTotal !== null && solResult.sellTotal !== null && (
           <div style={{ fontSize: 11, color: "#888", marginTop: 6, paddingTop: 6, borderTop: "1px solid #eee" }}>
-            Margin (internal): {fmt(solResult.sellTotal - solResult.buyTotal)} ({solResult.buyTotal > 0 ? ((solResult.sellTotal - solResult.buyTotal) / solResult.buyTotal * 100).toFixed(1) + "%" : "—"})
+            Margin: {fmt(solResult.sellTotal - solResult.buyTotal)} ({solResult.buyTotal > 0 ? ((solResult.sellTotal - solResult.buyTotal) / solResult.buyTotal * 100).toFixed(1) + "%" : "—"}) · Spread: {spread}
           </div>
         )}
       </div>
