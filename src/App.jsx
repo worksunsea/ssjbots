@@ -10089,6 +10089,7 @@ function CalculatorScreen() {
   const [newClientName, setNewClientName] = useState("");
   const [newClientPhone, setNewClientPhone] = useState("");
   const [syncPending, setSyncPending] = useState(0);
+  const [viewEstimate, setViewEstimate] = useState(null);
   const user = loadUser();
 
   const EST_QUEUE = "calc_est_queue";
@@ -11064,16 +11065,74 @@ function CalculatorScreen() {
         {tab === "quotation" && quotationTab}
       </div>
 
+      {/* Estimate detail modal */}
+      {viewEstimate && (() => {
+        const e = viewEstimate;
+        const items = e.items || [];
+        const item = items[0] || {};
+        const fmt = (n) => n != null ? `₹${Math.round(n).toLocaleString("en-IN")}` : "—";
+        const clientName = e.bullion_leads?.name || e._clientName || null;
+        return (
+          <Modal title={`Estimate — ${(e.mode || "").replace("_", " ")}`} onClose={() => setViewEstimate(null)} width={500}>
+            <div style={{ fontSize: 13, color: "#333" }}>
+              {clientName && <div style={{ marginBottom: 10, padding: "6px 10px", background: "#f0f9ff", borderRadius: 6, fontWeight: 600, color: "#1e40af" }}>👤 {clientName}{e.bullion_leads?.phone ? ` · ${e.bullion_leads.phone}` : ""}</div>}
+              <div style={{ color: "#888", fontSize: 11, marginBottom: 12 }}>{new Date(e.created_at).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}</div>
+              {e.mode === "jewellery" && items.map((it, i) => (
+                <div key={i} style={{ marginBottom: 8 }}>
+                  {it.itemName && <div style={{ fontWeight: 600, marginBottom: 4 }}>{it.itemName}{it.vendorCode ? <span style={{ color: "#888", fontWeight: 400, fontSize: 11 }}> · {it.vendorCode}</span> : ""}</div>}
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <tbody>
+                      {it.grossWt && <tr><td style={{ color: "#888", padding: "2px 0", width: 160 }}>Gross weight</td><td style={{ fontWeight: 600 }}>{it.grossWt}g · {PURITIES[it.purityIdx]?.l || "Custom"}</td></tr>}
+                      {it.goldRatePg && <tr><td style={{ color: "#888", padding: "2px 0" }}>Gold rate</td><td>₹{it.goldRatePg}/g · Net {it.netGoldG != null ? `${it.netGoldG.toFixed(3)}g` : "—"}</td></tr>}
+                      {it.goldValue != null && <tr><td style={{ color: "#888", padding: "2px 0" }}>Gold value</td><td>{fmt(it.goldValue)}</td></tr>}
+                      {it.makingTotal != null && <tr><td style={{ color: "#888", padding: "2px 0" }}>Making charges</td><td>{fmt(it.makingTotal)}</td></tr>}
+                      {it.dia1Value > 0 && <tr><td style={{ color: "#888", padding: "2px 0" }}>Diamond 1</td><td>{it.dia1Wt}{it.dia1Unit} @ ₹{it.dia1Rate} = {fmt(it.dia1Value)}</td></tr>}
+                      {it.dia2Value > 0 && <tr><td style={{ color: "#888", padding: "2px 0" }}>Diamond 2</td><td>{it.dia2Wt}{it.dia2Unit} @ ₹{it.dia2Rate} = {fmt(it.dia2Value)}</td></tr>}
+                      {it.stoneValue > 0 && <tr><td style={{ color: "#888", padding: "2px 0" }}>Stone</td><td>{it.stoneWt}{it.stoneUnit} @ ₹{it.stoneRate} = {fmt(it.stoneValue)}</td></tr>}
+                      {it.gst > 0 && <tr><td style={{ color: "#888", padding: "2px 0" }}>GST (3%)</td><td>{fmt(it.gst)}</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
+              {e.mode === "solitaire" && items.map((it, i) => (
+                <div key={i} style={{ marginBottom: 8 }}>
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>{[it.shape, it.weight && `${it.weight}ct`, it.color, it.clarity, it.cert].filter(Boolean).join(" · ")}</div>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <tbody>
+                      {it.rapPerCt != null && <tr><td style={{ color: "#888", padding: "2px 0", width: 160 }}>RAP</td><td>₹{it.rapPerCt}/ct</td></tr>}
+                      {it.buyDisc != null && <tr><td style={{ color: "#888", padding: "2px 0" }}>Buy disc</td><td>{it.buyDisc}%</td></tr>}
+                      {it.sellDisc != null && <tr><td style={{ color: "#888", padding: "2px 0" }}>Sell disc</td><td>{it.sellDisc}%</td></tr>}
+                      {it.sellTotal != null && <tr><td style={{ color: "#888", padding: "2px 0" }}>Stone sell price</td><td style={{ fontWeight: 600 }}>{fmt(it.sellTotal)}</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
+              {e.mode === "solitaire_sheet" && (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead><tr style={{ background: "#f7f7f7" }}>{["#","Shape","Wt","Col","Clar","Cert","Price"].map(h => <th key={h} style={{ padding: "5px 8px", textAlign: "left", fontWeight: 600, color: "#555", fontSize: 11 }}>{h}</th>)}</tr></thead>
+                  <tbody>{items.map((it, i) => <tr key={i} style={{ borderBottom: "1px solid #f0f0f0" }}><td style={{ padding: "4px 8px" }}>{i+1}</td><td style={{ padding: "4px 8px" }}>{it.shape || "—"}</td><td style={{ padding: "4px 8px" }}>{it.weight || "—"}ct</td><td style={{ padding: "4px 8px" }}>{it.color || "—"}</td><td style={{ padding: "4px 8px" }}>{it.clarity || "—"}</td><td style={{ padding: "4px 8px" }}>{it.cert || "—"}</td><td style={{ padding: "4px 8px", fontWeight: 600 }}>{fmt(it.sellTotal)}</td></tr>)}</tbody>
+                </table>
+              )}
+              <div style={{ marginTop: 12, padding: "10px 14px", background: "#f7f7f7", borderRadius: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontWeight: 600, fontSize: 14 }}>Total</span>
+                <span style={{ fontWeight: 700, fontSize: 16, color: C.blue }}>{fmt(e.total_amount)}</span>
+              </div>
+            </div>
+          </Modal>
+        );
+      })()}
+
       {/* Recent estimates */}
       {recentEstimates.length > 0 && (
         <div className="no-print" style={{ marginTop: 16 }}>
           <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8, color: "#555" }}>Recent Estimates</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8 }}>
             {recentEstimates.map(e => (
-              <div key={e.id} style={{ ...card, padding: "10px 14px", fontSize: 12 }}>
+              <div key={e.id} onClick={() => setViewEstimate(e)} style={{ ...card, padding: "10px 14px", fontSize: 12, cursor: "pointer", border: "1px solid #eee" }}>
                 <div style={{ fontWeight: 600, textTransform: "capitalize" }}>{e.mode}</div>
                 <div style={{ color: "#888", fontSize: 11 }}>{new Date(e.created_at).toLocaleDateString("en-IN")}</div>
                 {e.total_amount && <div style={{ color: C.blue, fontWeight: 600, marginTop: 4 }}>₹{Math.round(e.total_amount).toLocaleString("en-IN")}</div>}
+                <div style={{ fontSize: 10, color: "#aaa", marginTop: 4 }}>tap to view details</div>
               </div>
             ))}
           </div>
@@ -11091,7 +11150,7 @@ function CalculatorScreen() {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
               <thead>
                 <tr style={{ background: "#f7f7f7", borderBottom: "2px solid #eee" }}>
-                  {["Client", "Phone", "Type", "What they saw", "Amount", "Date", "Follow-up"].map(h => (
+                  {["Client", "Phone", "Type", "What they saw", "Amount", "Date", "Follow-up", ""].map(h => (
                     <th key={h} style={{ padding: "7px 10px", textAlign: "left", fontWeight: 600, color: "#555", fontSize: 11, whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
@@ -11118,6 +11177,9 @@ function CalculatorScreen() {
                         {client?.phone ? (
                           <Btn small ghost color={C.green} onClick={() => sendWA(client.phone, waMsg)}>📱 Send WA</Btn>
                         ) : <span style={{ color: "#ccc", fontSize: 11 }}>No phone</span>}
+                      </td>
+                      <td style={{ padding: "6px 10px" }}>
+                        <Btn small ghost color={C.blue} onClick={() => setViewEstimate({ ...e, _clientName: client?.name })}>👁 View</Btn>
                       </td>
                     </tr>
                   );
