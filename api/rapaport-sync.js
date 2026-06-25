@@ -583,6 +583,12 @@ export default async function handler(req, res) {
     const r = await fetch(`${appsScriptUrl}?action=file&id=${fileId}`, { redirect: "follow" });
     const d = await r.json();
     if (!d.ok) throw new Error(d.error || "Apps Script file fetch failed");
+    if (d.encoding === "base64") {
+      const pdfParse = require("pdf-parse");
+      const buf = Buffer.from(d.content, "base64");
+      const parsed = await pdfParse(buf);
+      return parsed.text;
+    }
     return d.content;
   };
 
