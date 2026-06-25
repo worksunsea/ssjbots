@@ -10086,7 +10086,7 @@ function CalculatorScreen() {
 
   // Jewellery state
   const [jw, setJw] = useState({
-    itemImage: "", itemName: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true,
+    itemImage: "", itemName: "", vendorCode: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true,
     makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "",
     dia2Wt: "", dia2Unit: "ct", dia2Rate: "",
     stoneWt: "", stoneUnit: "ct", stoneRate: "",
@@ -10229,7 +10229,8 @@ function CalculatorScreen() {
         items = rows.map(r => ({ ...r, ...solCalc(r) }));
         total = null;
       }
-      await sb.from("bullion_estimates").insert({ lead_id: saveContact?.id || null, created_by: user?.name || user?.email, mode, items, total_amount: total || null });
+      const { error: insErr } = await sb.from("bullion_estimates").insert({ lead_id: saveContact?.id || null, created_by: user?.name || user?.email, mode, items, total_amount: total || null });
+      if (insErr) throw new Error(insErr.message);
       showToast("✅ Estimate saved");
       setSaveModal(false);
       sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items,lead_id").order("created_at", { ascending: false }).limit(8).then(({ data }) => setRecentEstimates(data || []));
@@ -10481,8 +10482,9 @@ function CalculatorScreen() {
         <input ref={jwImgRef} type="file" accept="image/*" style={{ display: "none" }} onChange={e => handleJwImagePick(e.target.files?.[0])} />
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 12 }}>
         <div><label style={lbl}>Item Name / Tag</label><input style={inp} value={jw.itemName} onChange={e => setJw(p => ({ ...p, itemName: e.target.value }))} placeholder="e.g. Necklace S-204" /></div>
+        <div><label style={lbl}>Vendor Code</label><input style={inp} value={jw.vendorCode} onChange={e => setJw(p => ({ ...p, vendorCode: e.target.value }))} placeholder="VC-123" /></div>
         <div><label style={lbl}>Gross Weight (g)</label><input style={inp} type="number" step="0.01" value={jw.grossWt} onChange={e => setJw(p => ({ ...p, grossWt: e.target.value }))} placeholder="0.00" /></div>
         <div>
           <label style={lbl}>Purity</label>
@@ -10561,6 +10563,21 @@ function CalculatorScreen() {
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <Btn small color={C.blue} onClick={() => setSaveModal(true)}>💾 Save Estimate</Btn>
         <Btn small ghost color={C.blue} onClick={handleJwPrint}>🖨️ Print</Btn>
+        {saveContact && <Btn small ghost color={C.green} onClick={() => {
+          const lines = [
+            `*ESTIMATE — Sun Sea Jewellers*`,
+            jw.itemName ? `\n*Item:* ${jw.itemName}` : "",
+            `\n*Gold (${PURITIES[jw.purityIdx]?.l || "Custom"}):* ${fmt(jwCalc.goldVal)}`,
+            `*Making:* ${fmt(jwCalc.making)}`,
+            jwCalc.diaTotal > 0 ? `*Diamond/Stone:* ${fmt(jwCalc.diaTotal)}` : "",
+            jwCalc.miscTotal > 0 ? `*Misc:* ${fmt(jwCalc.miscTotal)}` : "",
+            jw.applyGst ? `*GST (3%):* ${fmt(jwCalc.gst)}` : "",
+            `\n*Total: ${fmt(jwCalc.total)}*`,
+            `\n_Sun Sea Jewellers, Mumbai_`
+          ].filter(Boolean).join("\n");
+          sendWA(saveContact.phone, lines);
+        }}>📱 Send WA</Btn>}
+        <Btn small ghost color={C.gray} onClick={() => { setJw({ itemImage: "", itemName: "", vendorCode: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true, makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "", dia2Wt: "", dia2Unit: "ct", dia2Rate: "", stoneWt: "", stoneUnit: "ct", stoneRate: "", misc1Lbl: "Gemstone", misc1Wt: "", misc1Unit: "g", misc1Rate: "", misc1Deduct: true, misc2Lbl: "Mala", misc2Wt: "", misc2Unit: "g", misc2Rate: "", misc2Deduct: false, misc3Lbl: "Lakh", misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false }); setSaveContact(null); setContactSearch(""); }}>🔄 New</Btn>
       </div>
     </div>
   );
