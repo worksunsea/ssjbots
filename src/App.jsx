@@ -10082,7 +10082,41 @@ function CalculatorScreen() {
   const [contactSearch, setContactSearch] = useState(() => { try { const s = localStorage.getItem("calc_active_contact"); if (s) { const c = JSON.parse(s); return c.name + (c.phone ? ` (${c.phone})` : ""); } } catch {} return ""; });
   const [contactResults, setContactResults] = useState([]);
   const [recentEstimates, setRecentEstimates] = useState([]);
+  const [clientHistory, setClientHistory] = useState([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [pendingFollowups, setPendingFollowups] = useState([]);
+  const [addClientMode, setAddClientMode] = useState(false);
+  const [newClientName, setNewClientName] = useState("");
+  const [newClientPhone, setNewClientPhone] = useState("");
+  const [syncPending, setSyncPending] = useState(0);
   const user = loadUser();
+
+  const EST_QUEUE = "calc_est_queue";
+  const queueEstimate = (payload) => {
+    try {
+      const q = JSON.parse(localStorage.getItem(EST_QUEUE) || "[]");
+      const item = { ...payload, _qid: Date.now() + "_" + Math.random().toString(36).slice(2), _synced: false, _queuedAt: new Date().toISOString() };
+      localStorage.setItem(EST_QUEUE, JSON.stringify([...q, item]));
+      setSyncPending(q.filter(e => !e._synced).length + 1);
+      return item._qid;
+    } catch { return null; }
+  };
+  const syncQueue = async () => {
+    try {
+      const q = JSON.parse(localStorage.getItem(EST_QUEUE) || "[]");
+      const unsynced = q.filter(e => !e._synced);
+      if (!unsynced.length) return;
+      let updated = [...q];
+      for (const item of unsynced) {
+        const { _qid, _synced, _queuedAt, ...payload } = item;
+        const { error } = await sb.from("bullion_estimates").insert(payload);
+        if (!error) updated = updated.map(e => e._qid === _qid ? { ...e, _synced: true } : e);
+      }
+      const keep = updated.filter(e => !e._synced).concat(updated.filter(e => e._synced).slice(-100));
+      localStorage.setItem(EST_QUEUE, JSON.stringify(keep));
+      setSyncPending(keep.filter(e => !e._synced).length);
+    } catch {}
+  };
 
   // Jewellery state
   const [jw, setJw] = useState({
@@ -10125,6 +10159,17 @@ function CalculatorScreen() {
     }).catch(() => {});
     // Load recent estimates
     sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items,lead_id").order("created_at", { ascending: false }).limit(8).then(({ data }) => setRecentEstimates(data || []));
+    // Load pending follow-ups (estimates with linked contact, last 30 days)
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    sb.from("bullion_estimates").select("id,mode,total_amount,created_at,lead_id,items,bullion_leads(name,phone)").not("lead_id", "is", null).gte("created_at", since).order("created_at", { ascending: false }).limit(60).then(({ data }) => setPendingFollowups(data || []));
+    // Sync any locally queued estimates that failed to reach DB
+    try {
+      const q = JSON.parse(localStorage.getItem("calc_est_queue") || "[]");
+      setSyncPending(q.filter(e => !e._synced).length);
+    } catch {}
+    syncQueue();
+    // Load store staff for "attended by" dropdown
+    sb.from("staff").select("id,name").order("name").then(({ data }) => setCalcStaff(data || []));
   }, []);
 
   const saveSpread = (v) => { setSpread(v); try { localStorage.setItem("rap_spread", v); } catch { } };
@@ -10205,6 +10250,12 @@ function CalculatorScreen() {
   const solTotalGst = solStoneGst + solGoldGst;
   const solFinalTotal = solGrandTotal != null ? solGrandTotal + solTotalGst : null;
 
+  // Load history when active client changes
+  useEffect(() => {
+    if (!saveContact?.id) { setClientHistory([]); return; }
+    sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items").eq("lead_id", saveContact.id).order("created_at", { ascending: false }).limit(20).then(({ data }) => setClientHistory(data || []));
+  }, [saveContact?.id]);
+
   // ── Search contacts for save ──
   useEffect(() => {
     if (contactSearch.length < 2) { setContactResults([]); return; }
@@ -10214,6 +10265,9 @@ function CalculatorScreen() {
     }, 300);
     return () => clearTimeout(t);
   }, [contactSearch]);
+
+  const [attendedBy, setAttendedBy] = useState(() => localStorage.getItem("calc_attended_by") || "");
+  const [calcStaff, setCalcStaff] = useState([]);
 
   const saveEstimate = async () => {
     setSaving(true);
@@ -10229,12 +10283,27 @@ function CalculatorScreen() {
         items = rows.map(r => ({ ...r, ...solCalc(r) }));
         total = null;
       }
-      const { error: insErr } = await sb.from("bullion_estimates").insert({ lead_id: saveContact?.id || null, created_by: user?.name || user?.email, mode, items, total_amount: total || null });
-      if (insErr) throw new Error(insErr.message);
-      showToast("✅ Estimate saved");
+      const payload = { lead_id: saveContact?.id || null, created_by: user?.name || user?.email, mode, items, total_amount: total || null, metadata: { attended_by: attendedBy || null } };
+      // Save locally first — always works
+      queueEstimate(payload);
+      showToast("✅ Saved locally");
       setSaveModal(false);
-      sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items,lead_id").order("created_at", { ascending: false }).limit(8).then(({ data }) => setRecentEstimates(data || []));
-    } catch (e) { showToast("❌ Save failed: " + e.message); }
+      // Try DB immediately
+      const { error: insErr } = await sb.from("bullion_estimates").insert(payload);
+      if (insErr) { showToast("⚠️ Local only — will sync later"); }
+      else {
+        // Mark queue item synced
+        try {
+          const q = JSON.parse(localStorage.getItem(EST_QUEUE) || "[]");
+          const last = q[q.length - 1];
+          if (last) { const updated = q.map((e, i) => i === q.length - 1 ? { ...e, _synced: true } : e); localStorage.setItem(EST_QUEUE, JSON.stringify(updated)); setSyncPending(updated.filter(e => !e._synced).length); }
+        } catch {}
+        sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items,lead_id").order("created_at", { ascending: false }).limit(8).then(({ data }) => setRecentEstimates(data || []));
+        if (saveContact?.id) sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items").eq("lead_id", saveContact.id).order("created_at", { ascending: false }).limit(20).then(({ data }) => setClientHistory(data || []));
+        const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+        sb.from("bullion_estimates").select("id,mode,total_amount,created_at,lead_id,items,bullion_leads(name,phone)").not("lead_id", "is", null).gte("created_at", since).order("created_at", { ascending: false }).limit(60).then(({ data }) => setPendingFollowups(data || []));
+      }
+    } catch (e) { showToast("❌ " + e.message); }
     setSaving(false);
   };
 
@@ -10823,14 +10892,35 @@ function CalculatorScreen() {
     </div>
   );
 
+  const addNewClient = async () => {
+    if (!newClientName.trim() && !newClientPhone.trim()) return;
+    const { data, error } = await sb.from("bullion_leads").insert({ name: newClientName.trim() || null, phone: newClientPhone.trim() || null, source: "walk_in" }).select("id,name,phone").single();
+    if (error) { showToast("❌ Add failed: " + error.message); return; }
+    setSaveContact(data); setContactSearch(data.name + (data.phone ? ` (${data.phone})` : ""));
+    try { localStorage.setItem("calc_active_contact", JSON.stringify(data)); } catch {}
+    setAddClientMode(false); setNewClientName(""); setNewClientPhone("");
+    showToast("✅ New client added");
+  };
+
   // ── SAVE MODAL ──
   const saveModalEl = saveModal && (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 }}>
-      <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: 400, maxWidth: "95vw" }}>
-        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 12 }}>💾 Save Estimate</div>
+      <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: 440, maxWidth: "95vw", maxHeight: "90vh", overflowY: "auto" }}>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 14 }}>💾 Save Estimate</div>
+
+        {/* Salesperson */}
         <div style={{ marginBottom: 12 }}>
-          <label style={lbl}>Link to Contact (optional)</label>
-          <input style={inp} value={contactSearch} onChange={e => { setContactSearch(e.target.value); setSaveContact(null); try { localStorage.removeItem("calc_active_contact"); } catch {} }} placeholder="Search name or phone…" />
+          <label style={lbl}>Attended by (salesperson)</label>
+          <select style={inp} value={attendedBy} onChange={e => { setAttendedBy(e.target.value); try { localStorage.setItem("calc_attended_by", e.target.value); } catch {} }}>
+            <option value="">— Select staff —</option>
+            {calcStaff.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
+          </select>
+        </div>
+
+        {/* Contact search */}
+        <div style={{ marginBottom: 12 }}>
+          <label style={lbl}>Link to Client</label>
+          <input style={inp} value={contactSearch} onChange={e => { setContactSearch(e.target.value); setSaveContact(null); setAddClientMode(false); try { localStorage.removeItem("calc_active_contact"); } catch {} }} placeholder="Search by name or phone…" />
           {contactResults.length > 0 && (
             <div style={{ border: "1px solid #eee", borderRadius: 6, marginTop: 4, maxHeight: 150, overflowY: "auto" }}>
               {contactResults.map(c => (
@@ -10840,10 +10930,36 @@ function CalculatorScreen() {
               ))}
             </div>
           )}
-          {saveContact && <div style={{ fontSize: 12, color: C.green, marginTop: 4 }}>✓ {saveContact.name}</div>}
+          {/* Not found flow */}
+          {contactSearch.length >= 2 && contactResults.length === 0 && !saveContact && (
+            <div style={{ marginTop: 8, padding: "10px 12px", background: "#fffbe6", borderRadius: 6, border: "1px solid #ffe082" }}>
+              <div style={{ fontSize: 13, marginBottom: 6 }}>No client found for "<strong>{contactSearch}</strong>"</div>
+              {!addClientMode ? (
+                <>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <Btn small color={C.green} onClick={() => { setNewClientName(contactSearch.replace(/^\d+$/, "")); setNewClientPhone(/^\d+$/.test(contactSearch) ? contactSearch : ""); setAddClientMode(true); }}>➕ Add as new client</Btn>
+                  </div>
+                  <div style={{ fontSize: 11, color: "#888", marginTop: 6 }}>💡 Also ask if registered under a family member's number</div>
+                </>
+              ) : (
+                <div style={{ marginTop: 4 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                    <div><label style={{ ...lbl, fontSize: 11 }}>Name</label><input style={inp} value={newClientName} onChange={e => setNewClientName(e.target.value)} placeholder="Full name" /></div>
+                    <div><label style={{ ...lbl, fontSize: 11 }}>Phone</label><input style={inp} value={newClientPhone} onChange={e => setNewClientPhone(e.target.value)} placeholder="Mobile number" /></div>
+                  </div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <Btn small color={C.green} onClick={addNewClient}>✓ Add & Select</Btn>
+                    <Btn small ghost color={C.gray} onClick={() => setAddClientMode(false)}>Cancel</Btn>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          {saveContact && <div style={{ fontSize: 12, color: C.green, marginTop: 6 }}>✓ {saveContact.name}{saveContact.phone ? ` · ${saveContact.phone}` : ""}</div>}
         </div>
+
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-          <Btn ghost color={C.gray} onClick={() => setSaveModal(false)}>Cancel</Btn>
+          <Btn ghost color={C.gray} onClick={() => { setSaveModal(false); setAddClientMode(false); }}>Cancel</Btn>
           <Btn color={C.blue} onClick={saveEstimate} disabled={saving}>{saving ? "Saving…" : "Save"}</Btn>
         </div>
       </div>
@@ -10874,13 +10990,53 @@ function CalculatorScreen() {
         }} className="no-print">🔄 Sync Rapaport</Btn>
       </div>
 
+      {/* Sync pending badge */}
+      {syncPending > 0 && (
+        <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#fff8e1", border: "1px solid #ffe082", borderRadius: 8, padding: "6px 12px", marginBottom: 8, fontSize: 12 }}>
+          <span>⚠️ {syncPending} estimate{syncPending > 1 ? "s" : ""} saved locally, not yet synced to cloud</span>
+          <Btn small ghost color={C.orange} onClick={async () => { await syncQueue(); showToast("✅ Sync done"); }}>Sync now</Btn>
+        </div>
+      )}
+
       {/* Active client banner */}
       {saveContact && (
-        <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#e8f5e9", border: "1px solid #a5d6a7", borderRadius: 8, padding: "8px 14px", marginBottom: 12 }}>
-          <div style={{ fontSize: 14, fontWeight: 600, color: "#2e7d32" }}>
-            👤 Active client: {saveContact.name}{saveContact.phone ? ` · ${saveContact.phone}` : ""}
+        <div className="no-print" style={{ background: "#e8f5e9", border: "1px solid #a5d6a7", borderRadius: 8, marginBottom: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 14px" }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "#2e7d32" }}>
+              👤 {saveContact.name}{saveContact.phone ? ` · ${saveContact.phone}` : ""}
+              {attendedBy && <span style={{ fontWeight: 400, fontSize: 12, color: "#555", marginLeft: 8 }}>· Attended by {attendedBy}</span>}
+            </div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              {clientHistory.length > 0 && (
+                <button onClick={() => setShowHistory(h => !h)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: "#2e7d32", fontWeight: 600 }}>
+                  {showHistory ? "▲ Hide" : `📋 ${clientHistory.length} past estimate${clientHistory.length > 1 ? "s" : ""}`}
+                </button>
+              )}
+              <button onClick={() => { setSaveContact(null); setContactSearch(""); setClientHistory([]); setShowHistory(false); try { localStorage.removeItem("calc_active_contact"); } catch {} }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: "#555" }}>✕ Change</button>
+            </div>
           </div>
-          <button onClick={() => { setSaveContact(null); setContactSearch(""); try { localStorage.removeItem("calc_active_contact"); } catch {} }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: "#555" }}>✕ Change</button>
+          {/* Client history panel */}
+          {showHistory && clientHistory.length > 0 && (
+            <div style={{ borderTop: "1px solid #a5d6a7", padding: "10px 14px" }}>
+              <div style={{ fontSize: 11, color: "#555", marginBottom: 6, fontWeight: 600 }}>PREVIOUS VISITS</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {clientHistory.map(e => {
+                  const item = e.items?.[0] || {};
+                  const label = e.mode === "jewellery" ? (item.itemName || "Jewellery") : e.mode === "solitaire" ? `${item.shape || ""} ${item.weight || ""}ct ${item.color || ""}/${item.clarity || ""}`.trim() : "Quotation";
+                  return (
+                    <div key={e.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, padding: "4px 0", borderBottom: "1px solid #c8e6c9" }}>
+                      <div>
+                        <span style={{ textTransform: "capitalize", fontWeight: 600 }}>{e.mode}</span>
+                        {label && <span style={{ color: "#555", marginLeft: 6 }}>{label}</span>}
+                        <span style={{ color: "#888", marginLeft: 8, fontSize: 11 }}>{new Date(e.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</span>
+                      </div>
+                      {e.total_amount && <span style={{ fontWeight: 700, color: "#1565c0" }}>₹{Math.round(e.total_amount).toLocaleString("en-IN")}</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -10920,6 +11076,54 @@ function CalculatorScreen() {
                 {e.total_amount && <div style={{ color: C.blue, fontWeight: 600, marginTop: 4 }}>₹{Math.round(e.total_amount).toLocaleString("en-IN")}</div>}
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Pending follow-ups marketing section */}
+      {pendingFollowups.length > 0 && (
+        <div className="no-print" style={{ marginTop: 20 }}>
+          <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 10, color: "#555", display: "flex", alignItems: "center", gap: 8 }}>
+            📣 Follow-up List — last 30 days
+            <span style={{ fontSize: 11, fontWeight: 400, color: "#888" }}>({pendingFollowups.length} estimates with linked clients)</span>
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: "#f7f7f7", borderBottom: "2px solid #eee" }}>
+                  {["Client", "Phone", "Type", "What they saw", "Amount", "Date", "Follow-up"].map(h => (
+                    <th key={h} style={{ padding: "7px 10px", textAlign: "left", fontWeight: 600, color: "#555", fontSize: 11, whiteSpace: "nowrap" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {pendingFollowups.map(e => {
+                  const client = e.bullion_leads;
+                  const item = e.items?.[0] || {};
+                  const what = e.mode === "jewellery"
+                    ? (item.itemName || `${item.purityIdx != null ? (["24kt","22kt","18kt","14kt","9kt"][item.purityIdx] || "Gold") : "Gold"} jewellery`)
+                    : e.mode === "solitaire"
+                    ? `${item.shape || ""} ${item.weight || ""}ct ${item.color || ""}/${item.clarity || ""}`.trim()
+                    : `Quotation (${e.items?.length || 0} stones)`;
+                  const waMsg = `Hello ${client?.name || ""},\n\nThank you for visiting Sun Sea Jewellers! You had enquired about *${what}*${e.total_amount ? ` (est. ₹${Math.round(e.total_amount).toLocaleString("en-IN")})` : ""}.\n\nWould you like to proceed or have any questions? We're happy to help you make the right choice.\n\n_Sun Sea Jewellers, Mumbai_`;
+                  return (
+                    <tr key={e.id} style={{ borderBottom: "1px solid #f0f0f0" }}>
+                      <td style={{ padding: "6px 10px", fontWeight: 600 }}>{client?.name || "—"}</td>
+                      <td style={{ padding: "6px 10px", color: "#555" }}>{client?.phone || "—"}</td>
+                      <td style={{ padding: "6px 10px", textTransform: "capitalize", color: "#888" }}>{e.mode}</td>
+                      <td style={{ padding: "6px 10px", color: "#333", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{what}</td>
+                      <td style={{ padding: "6px 10px", fontWeight: 600, color: C.blue }}>{e.total_amount ? `₹${Math.round(e.total_amount).toLocaleString("en-IN")}` : "—"}</td>
+                      <td style={{ padding: "6px 10px", color: "#888", whiteSpace: "nowrap" }}>{new Date(e.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}</td>
+                      <td style={{ padding: "6px 10px" }}>
+                        {client?.phone ? (
+                          <Btn small ghost color={C.green} onClick={() => sendWA(client.phone, waMsg)}>📱 Send WA</Btn>
+                        ) : <span style={{ color: "#ccc", fontSize: 11 }}>No phone</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
