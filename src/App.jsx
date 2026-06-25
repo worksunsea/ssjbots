@@ -10156,9 +10156,10 @@ function CalculatorScreen() {
     const d2raw = parseFloat(jw.dia2Wt || 0);
     const straw = parseFloat(jw.stoneWt || 0);
     const diaTotal = d1raw * parseFloat(jw.dia1Rate || 0) + d2raw * parseFloat(jw.dia2Rate || 0) + straw * parseFloat(jw.stoneRate || 0);
-    const misc1Val = parseFloat(jw.misc1Wt || 0) * parseFloat(jw.misc1Rate || 0);
-    const misc2Val = parseFloat(jw.misc2Wt || 0) * parseFloat(jw.misc2Rate || 0);
-    const misc3Val = parseFloat(jw.misc3Wt || 0) * parseFloat(jw.misc3Rate || 0);
+    const miscVal = (wt, rate) => { const w = parseFloat(wt || 0), r = parseFloat(rate || 0); return w > 0 ? w * r : r; };
+    const misc1Val = miscVal(jw.misc1Wt, jw.misc1Rate);
+    const misc2Val = miscVal(jw.misc2Wt, jw.misc2Rate);
+    const misc3Val = miscVal(jw.misc3Wt, jw.misc3Rate);
     const miscTotal = misc1Val + misc2Val + misc3Val;
     return { gross, gRate, netGold, goldVal, making, diaTotal, miscTotal, total: goldVal + making + diaTotal + miscTotal };
   })();
@@ -10285,7 +10286,11 @@ function CalculatorScreen() {
     if (parseFloat(jw.dia2Wt||0)) rows.push(row(`Diamond 2 (${parseFloat(jw.dia2Wt)}${jw.dia2Unit} @ ₹${jw.dia2Rate})`, fmt(parseFloat(jw.dia2Wt||0)*parseFloat(jw.dia2Rate||0))));
     if (parseFloat(jw.stoneWt||0)) rows.push(row(`Stone (${parseFloat(jw.stoneWt)}${jw.stoneUnit} @ ₹${jw.stoneRate})`, fmt(parseFloat(jw.stoneWt||0)*parseFloat(jw.stoneRate||0))));
     [["misc1","misc1Lbl","misc1Wt","misc1Unit","misc1Rate"],["misc2","misc2Lbl","misc2Wt","misc2Unit","misc2Rate"],["misc3","misc3Lbl","misc3Wt","misc3Unit","misc3Rate"]].forEach(([,lk,wk,uk,rk]) => {
-      if (parseFloat(jw[wk]||0) && parseFloat(jw[rk]||0)) rows.push(row(`${jw[lk]||"Misc"} (${parseFloat(jw[wk])}${jw[uk]})`, fmt(parseFloat(jw[wk]||0)*parseFloat(jw[rk]||0))));
+      const mw = parseFloat(jw[wk]||0), mr = parseFloat(jw[rk]||0);
+      if (!mr) return;
+      const mv = mw > 0 ? mw * mr : mr;
+      const mlabel = mw > 0 ? `${jw[lk]||"Misc"} (${mw}${jw[uk]})` : (jw[lk]||"Misc");
+      rows.push(row(mlabel, fmt(mv)));
     });
 
     const html = `<!DOCTYPE html><html><head><title>Estimate</title>
