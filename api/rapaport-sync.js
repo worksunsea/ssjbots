@@ -525,11 +525,12 @@ export default async function handler(req, res) {
     return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
 
-  // Auth check — Bearer <CRM_SECRET>
+  // Auth check — accepts x-crm-secret header (CRM frontend) or Bearer token
   if (CRM_SECRET) {
+    const xSecret = req.headers["x-crm-secret"] || "";
     const authHeader = req.headers["authorization"] || "";
-    const token = authHeader.replace(/^Bearer\s+/i, "");
-    if (token !== CRM_SECRET) {
+    const bearer = authHeader.replace(/^Bearer\s+/i, "");
+    if (xSecret !== CRM_SECRET && bearer !== CRM_SECRET) {
       return res.status(401).json({ ok: false, error: "Unauthorized" });
     }
   }

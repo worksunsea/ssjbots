@@ -10519,7 +10519,7 @@ function CalculatorScreen() {
         </div>
         <Btn small ghost color={C.blue} onClick={async () => {
           showToast("Syncing Rapaport…");
-          const r = await fetch("/api/rapaport-sync?action=seed");
+          const r = await fetch("/api/rapaport-sync?action=seed", { headers: { "x-crm-secret": CRM_SECRET } });
           const d = await r.json().catch(() => ({}));
           if (d.ok) { showToast("✅ Synced: " + (d.date || "")); setRapAge(0); } else showToast("❌ " + (d.error || "Sync failed"));
         }} className="no-print">🔄 Sync Rapaport</Btn>
