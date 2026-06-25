@@ -495,25 +495,26 @@ async function upsertRapaportData(payload) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
     throw new Error("SUPABASE_URL or SUPABASE_SERVICE_KEY not configured");
   }
-  const url = `${SUPABASE_URL}/rest/v1/bullion_dropdowns`;
-  const body = JSON.stringify({
-    field: "rapaport_data",
-    value: JSON.stringify(payload),
-    tenant_id: "a1b2c3d4-0000-0000-0000-000000000001",
-  });
-  const res = await fetch(url, {
+  const TENANT = "a1b2c3d4-0000-0000-0000-000000000001";
+  const headers = {
+    apikey: SUPABASE_SERVICE_KEY,
+    Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+    "Content-Type": "application/json",
+  };
+  // Delete existing row first — avoids btree index size limit on (tenant_id,field,value)
+  await fetch(
+    `${SUPABASE_URL}/rest/v1/bullion_dropdowns?field=eq.rapaport_data&tenant_id=eq.${TENANT}`,
+    { method: "DELETE", headers }
+  );
+  // Insert fresh
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/bullion_dropdowns`, {
     method: "POST",
-    headers: {
-      apikey: SUPABASE_SERVICE_KEY,
-      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-      "Content-Type": "application/json",
-      Prefer: "resolution=merge-duplicates,return=minimal",
-    },
-    body,
+    headers: { ...headers, Prefer: "return=minimal" },
+    body: JSON.stringify({ field: "rapaport_data", value: JSON.stringify(payload), tenant_id: TENANT }),
   });
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Supabase upsert failed: ${res.status} ${err}`);
+    throw new Error(`Supabase insert failed: ${res.status} ${err}`);
   }
 }
 
