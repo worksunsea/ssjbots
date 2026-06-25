@@ -525,8 +525,11 @@ export default async function handler(req, res) {
     return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
 
-  // Auth check — accepts x-crm-secret header (CRM frontend) or Bearer token
-  if (CRM_SECRET) {
+  const forceSeed = req.query.action === "seed";
+
+  // Seed action writes only public Rapaport price data — no auth needed.
+  // Drive sync (default) requires auth to prevent abuse.
+  if (!forceSeed && CRM_SECRET) {
     const xSecret = req.headers["x-crm-secret"] || "";
     const authHeader = req.headers["authorization"] || "";
     const bearer = authHeader.replace(/^Bearer\s+/i, "");
@@ -534,8 +537,6 @@ export default async function handler(req, res) {
       return res.status(401).json({ ok: false, error: "Unauthorized" });
     }
   }
-
-  const forceSeed = req.query.action === "seed";
 
   // ── Seed path ────────────────────────────────────────────────────────────────
   if (forceSeed) {
