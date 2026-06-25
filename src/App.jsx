@@ -11079,17 +11079,25 @@ function CalculatorScreen() {
               <div style={{ color: "#888", fontSize: 11, marginBottom: 12 }}>{new Date(e.created_at).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}</div>
               {e.mode === "jewellery" && items.map((it, i) => (
                 <div key={i} style={{ marginBottom: 8 }}>
-                  {it.itemName && <div style={{ fontWeight: 600, marginBottom: 4 }}>{it.itemName}{it.vendorCode ? <span style={{ color: "#888", fontWeight: 400, fontSize: 11 }}> · {it.vendorCode}</span> : ""}</div>}
+                  {it.itemImage && (
+                    <div style={{ marginBottom: 10 }}>
+                      <img src={it.itemImage} alt="item" style={{ width: 120, height: 120, objectFit: "cover", borderRadius: 8, border: "1px solid #eee", cursor: "pointer" }}
+                        onClick={() => window.open(it.itemImage, "_blank")} />
+                    </div>
+                  )}
+                  {it.itemName && <div style={{ fontWeight: 600, marginBottom: 6 }}>{it.itemName}{it.vendorCode ? <span style={{ color: "#888", fontWeight: 400, fontSize: 11 }}> · {it.vendorCode}</span> : ""}</div>}
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                     <tbody>
-                      {it.grossWt && <tr><td style={{ color: "#888", padding: "2px 0", width: 160 }}>Gross weight</td><td style={{ fontWeight: 600 }}>{it.grossWt}g · {PURITIES[it.purityIdx]?.l || "Custom"}</td></tr>}
-                      {it.goldRatePg && <tr><td style={{ color: "#888", padding: "2px 0" }}>Gold rate</td><td>₹{it.goldRatePg}/g · Net {it.netGoldG != null ? `${it.netGoldG.toFixed(3)}g` : "—"}</td></tr>}
-                      {it.goldValue != null && <tr><td style={{ color: "#888", padding: "2px 0" }}>Gold value</td><td>{fmt(it.goldValue)}</td></tr>}
-                      {it.makingTotal != null && <tr><td style={{ color: "#888", padding: "2px 0" }}>Making charges</td><td>{fmt(it.makingTotal)}</td></tr>}
-                      {it.dia1Value > 0 && <tr><td style={{ color: "#888", padding: "2px 0" }}>Diamond 1</td><td>{it.dia1Wt}{it.dia1Unit} @ ₹{it.dia1Rate} = {fmt(it.dia1Value)}</td></tr>}
-                      {it.dia2Value > 0 && <tr><td style={{ color: "#888", padding: "2px 0" }}>Diamond 2</td><td>{it.dia2Wt}{it.dia2Unit} @ ₹{it.dia2Rate} = {fmt(it.dia2Value)}</td></tr>}
-                      {it.stoneValue > 0 && <tr><td style={{ color: "#888", padding: "2px 0" }}>Stone</td><td>{it.stoneWt}{it.stoneUnit} @ ₹{it.stoneRate} = {fmt(it.stoneValue)}</td></tr>}
-                      {it.gst > 0 && <tr><td style={{ color: "#888", padding: "2px 0" }}>GST (3%)</td><td>{fmt(it.gst)}</td></tr>}
+                      {it.grossWt && <tr><td style={{ color: "#888", padding: "3px 0", width: 160 }}>Gross weight</td><td style={{ fontWeight: 600 }}>{it.grossWt}g · {PURITIES[it.purityIdx]?.l || "Custom"}</td></tr>}
+                      {it.gRate > 0 && <tr><td style={{ color: "#888", padding: "3px 0" }}>Gold rate</td><td>₹{it.gRate}/g · Net {it.netGold != null ? `${parseFloat(it.netGold).toFixed(3)}g` : "—"}</td></tr>}
+                      {it.goldVal != null && <tr><td style={{ color: "#888", padding: "3px 0" }}>Gold value</td><td>{fmt(it.goldVal)}</td></tr>}
+                      {it.making > 0 && <tr><td style={{ color: "#888", padding: "3px 0" }}>Making charges</td><td>{fmt(it.making)}</td></tr>}
+                      {parseFloat(it.dia1Wt) > 0 && it.dia1Rate > 0 && <tr><td style={{ color: "#888", padding: "3px 0" }}>Diamond 1</td><td>{it.dia1Wt}{it.dia1Unit} @ ₹{it.dia1Rate}/g</td></tr>}
+                      {parseFloat(it.dia2Wt) > 0 && it.dia2Rate > 0 && <tr><td style={{ color: "#888", padding: "3px 0" }}>Diamond 2</td><td>{it.dia2Wt}{it.dia2Unit} @ ₹{it.dia2Rate}/g</td></tr>}
+                      {parseFloat(it.stoneWt) > 0 && it.stoneRate > 0 && <tr><td style={{ color: "#888", padding: "3px 0" }}>Stone</td><td>{it.stoneWt}{it.stoneUnit} @ ₹{it.stoneRate}/g</td></tr>}
+                      {it.diaTotal > 0 && <tr><td style={{ color: "#888", padding: "3px 0" }}>Diamonds/stones</td><td>{fmt(it.diaTotal)}</td></tr>}
+                      {it.subTotal != null && <tr><td style={{ color: "#888", padding: "3px 0" }}>Sub-total</td><td>{fmt(it.subTotal)}</td></tr>}
+                      {it.gst > 0 && <tr><td style={{ color: "#888", padding: "3px 0" }}>GST (3%)</td><td>{fmt(it.gst)}</td></tr>}
                     </tbody>
                   </table>
                 </div>
