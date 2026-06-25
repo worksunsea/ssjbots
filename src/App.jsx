@@ -10297,6 +10297,7 @@ function CalculatorScreen() {
       rows.push(row(mlabel, fmt(mv)));
     });
 
+    const clientName = saveContact?.name || saveContact?.phone || "";
     const html = `<!DOCTYPE html><html><head><title>Estimate</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -10305,22 +10306,35 @@ function CalculatorScreen() {
   .wrap { max-width: 400px; margin: 0 auto; }
   .om { font-size: 32px; color: #8b6914; text-align: center; margin-bottom: 4px; }
   .title { font-size: 20px; letter-spacing: 3px; text-align: center; font-weight: bold; margin-bottom: 2px; }
-  .date { font-size: 12px; color: #666; text-align: center; margin-bottom: 10px; }
-  .item-name { font-size: 15px; font-weight: bold; margin: 8px 0 6px; }
-  .item-img { width: 100px; height: 100px; object-fit: cover; border-radius: 6px; margin-bottom: 8px; }
+  .date { font-size: 12px; color: #666; text-align: center; margin-bottom: 4px; }
+  .client { font-size: 13px; color: #333; text-align: center; margin-bottom: 10px; font-style: italic; }
+  .item-header { display: flex; align-items: center; gap: 10px; margin: 8px 0 6px; }
+  .item-img { width: 52px; height: 52px; object-fit: cover; border-radius: 5px; cursor: pointer; border: 1px solid #ddd; flex-shrink: 0; }
+  .item-name { font-size: 15px; font-weight: bold; }
   hr { border: none; border-top: 1px solid #bbb; margin: 8px 0; }
   hr.thick { border-top: 2px solid #333; }
   table { width: 100%; border-collapse: collapse; }
   .total-row td { padding: 5px 6px; font-size: 16px; font-weight: bold; border-top: 2px solid #333; }
   .disclaimer { font-size: 10px; color: #888; text-align: center; margin-top: 14px; line-height: 1.7; }
-</style></head><body>
+</style>
+<script>
+  function expandImg(src) {
+    var w=window.open('','_blank','width=600,height=600');
+    w.document.write('<body style="margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh"><img src="'+src+'" style="max-width:100%;max-height:100vh;object-fit:contain"/></body>');
+    w.document.close();
+  }
+</script>
+</head><body>
 <div class="wrap">
   <div class="om">ॐ</div>
   <div class="title">ESTIMATE</div>
   <div class="date">${today}</div>
+  ${clientName ? `<div class="client">Prepared for: ${clientName}</div>` : ""}
   <hr class="thick"/>
-  ${jw.itemImage ? `<img class="item-img" src="${jw.itemImage}" alt="item"/>` : ""}
-  ${jw.itemName ? `<div class="item-name">${jw.itemName}</div>` : ""}
+  <div class="item-header">
+    ${jw.itemImage ? `<img class="item-img" src="${jw.itemImage}" alt="item" onclick="expandImg('${jw.itemImage}')"/>` : ""}
+    ${jw.itemName ? `<div class="item-name">${jw.itemName}</div>` : ""}
+  </div>
   <table>${rows.join("")}
   ${jw.applyGst ? `<tr><td style="padding:3px 6px;font-size:13px;color:#555;">GST @ 3%</td><td style="padding:3px 6px;text-align:right;font-size:13px;">${fmt(jwCalc.gst)}</td></tr>` : ""}
   <tr class="total-row"><td>GRAND TOTAL</td><td style="text-align:right;">${fmt(jwCalc.total)}</td></tr>
