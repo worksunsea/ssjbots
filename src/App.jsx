@@ -10089,7 +10089,6 @@ function CalculatorScreen() {
   const [newClientName, setNewClientName] = useState("");
   const [newClientPhone, setNewClientPhone] = useState("");
   const [syncPending, setSyncPending] = useState(0);
-  const [viewEstimate, setViewEstimate] = useState(null);
   const user = loadUser();
 
   const EST_QUEUE = "calc_est_queue";
@@ -10528,6 +10527,79 @@ function CalculatorScreen() {
     win.document.write(html);
     win.document.close();
     win.onload = () => { win.print(); win.close(); };
+  };
+
+  const openEstimateSlip = (est) => {
+    const it = (est.items || [])[0] || {};
+    const clientName = est.bullion_leads?.name || est._clientName || "";
+    const date = new Date(est.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" });
+    const fmtN = (n) => n != null ? `₹${Math.round(n).toLocaleString("en-IN")}` : "—";
+    const row = (label, value) => `<tr><td style="padding:3px 6px;color:#444;font-size:13px;">${label}</td><td style="padding:3px 6px;text-align:right;font-size:13px;">${value}</td></tr>`;
+    const CSS = `* { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Georgia', serif; background: #fff; color: #222; }
+  @page { size: A5 portrait; margin: 15mm; }
+  .wrap { max-width: 400px; margin: 0 auto; padding: 12px; }
+  .om { font-size: 32px; color: #8b6914; text-align: center; margin-bottom: 4px; }
+  .title { font-size: 20px; letter-spacing: 3px; text-align: center; font-weight: bold; margin-bottom: 2px; }
+  .date { font-size: 12px; color: #666; text-align: center; margin-bottom: 4px; }
+  .client { font-size: 13px; color: #333; text-align: center; margin-bottom: 10px; font-style: italic; }
+  .item-header { display: flex; align-items: center; gap: 10px; margin: 8px 0 6px; }
+  .item-img { width: 52px; height: 52px; object-fit: cover; border-radius: 5px; cursor: pointer; border: 1px solid #ddd; flex-shrink: 0; }
+  .item-name { font-size: 15px; font-weight: bold; }
+  hr { border: none; border-top: 1px solid #bbb; margin: 8px 0; }
+  hr.thick { border-top: 2px solid #333; }
+  table { width: 100%; border-collapse: collapse; }
+  th { padding: 5px 6px; font-size: 11px; color: #555; text-align: left; border-bottom: 2px solid #333; font-weight: 600; }
+  th:last-child { text-align: right; }
+  .total-row td { padding: 5px 6px; font-size: 16px; font-weight: bold; border-top: 2px solid #333; }
+  .disclaimer { font-size: 10px; color: #888; text-align: center; margin-top: 14px; }
+  .printbtn { display: block; margin: 12px auto 0; padding: 8px 24px; background: #333; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  @media print { .printbtn { display: none; } }`;
+    let body = "";
+    if (est.mode === "jewellery") {
+      const dRows = [];
+      dRows.push(row("Purity", PURITIES[it.purityIdx]?.l || "Custom"));
+      if (it.grossWt) dRows.push(row("Gross Weight", `${parseFloat(it.grossWt||0).toFixed(3)} g`));
+      if (it.netGold != null) dRows.push(row("Net Gold Weight", `${parseFloat(it.netGold).toFixed(3)} g`));
+      if (it.gRate > 0) dRows.push(row("Gold Rate", `₹${Math.round(it.gRate).toLocaleString("en-IN")}/g`));
+      if (it.goldVal > 0) dRows.push(row("Gold Value", fmtN(it.goldVal)));
+      if (it.making > 0) dRows.push(row("Making", fmtN(it.making)));
+      if (parseFloat(it.dia1Wt||0) > 0 && it.dia1Rate > 0) dRows.push(row(`Diamond 1 (${parseFloat(it.dia1Wt)}${it.dia1Unit} @ ₹${it.dia1Rate})`, fmtN(parseFloat(it.dia1Wt||0)*parseFloat(it.dia1Rate||0))));
+      if (parseFloat(it.dia2Wt||0) > 0 && it.dia2Rate > 0) dRows.push(row(`Diamond 2 (${parseFloat(it.dia2Wt)}${it.dia2Unit} @ ₹${it.dia2Rate})`, fmtN(parseFloat(it.dia2Wt||0)*parseFloat(it.dia2Rate||0))));
+      if (parseFloat(it.stoneWt||0) > 0 && it.stoneRate > 0) dRows.push(row(`Stone (${parseFloat(it.stoneWt)}${it.stoneUnit} @ ₹${it.stoneRate})`, fmtN(parseFloat(it.stoneWt||0)*parseFloat(it.stoneRate||0))));
+      [["misc1Lbl","misc1Wt","misc1Unit","misc1Rate"],["misc2Lbl","misc2Wt","misc2Unit","misc2Rate"],["misc3Lbl","misc3Wt","misc3Unit","misc3Rate"]].forEach(([lk,wk,uk,rk]) => {
+        const mr = parseFloat(it[rk]||0); if (!mr) return;
+        const mw = parseFloat(it[wk]||0);
+        dRows.push(row(mw > 0 ? `${it[lk]||"Misc"} (${mw}${it[uk]})` : (it[lk]||"Misc"), fmtN(mw > 0 ? mw*mr : mr)));
+      });
+      body = `<div class="om">ॐ</div><div class="title">ESTIMATE</div><div class="date">${date}</div>${clientName ? `<div class="client">Prepared for: ${clientName}</div>` : ""}<hr class="thick"/>
+      <div class="item-header">${it.itemImage ? `<img class="item-img" src="${it.itemImage}" alt="item" onclick="expandImg('${it.itemImage}')"/>` : ""}${it.itemName ? `<div class="item-name">${it.itemName}</div>` : ""}</div>
+      <table>${dRows.join("")}${it.applyGst && it.gst > 0 ? row("GST @ 3%", fmtN(it.gst)) : ""}<tr class="total-row"><td>GRAND TOTAL</td><td style="text-align:right;">${fmtN(est.total_amount)}</td></tr></table>
+      <div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill</div>`;
+    } else if (est.mode === "solitaire") {
+      const dRows = [];
+      if (it.shape) dRows.push(row("Shape", it.shape));
+      if (it.weight) dRows.push(row("Weight", `${it.weight} ct`));
+      if (it.color || it.clarity) dRows.push(row("Colour / Clarity", `${it.color||"—"} / ${it.clarity||"—"}`));
+      if (it.cut) dRows.push(row("Cut", it.cut));
+      if (it.cert) dRows.push(row("Certificate", it.cert));
+      if (it.sellPpc != null) dRows.push(row("Sell Price/ct", fmtN(it.sellPpc)));
+      if (it.sellTotal != null) dRows.push(row("Stone Total", fmtN(it.sellTotal)));
+      if (it.includeGold && (it.goldVal||0) + (it.making||0) > 0) dRows.push(row("Gold + Making", fmtN((it.goldVal||0)+(it.making||0))));
+      const stoneGst = it.applyGst && it.sellTotal ? it.sellTotal * 0.015 : 0;
+      const goldGst = it.applyGst && it.includeGold && it.goldVal ? ((it.goldVal||0)+(it.making||0)) * 0.03 : 0;
+      body = `<div class="om">ॐ</div><div class="title">ESTIMATE</div><div class="date">${date}</div>${clientName ? `<div class="client">Prepared for: ${clientName}</div>` : ""}<hr class="thick"/>
+      <table>${dRows.join("")}${stoneGst > 0 ? row("GST @ 1.5% (stone)", fmtN(stoneGst)) : ""}${goldGst > 0 ? row("GST @ 3% (gold setting)", fmtN(goldGst)) : ""}<tr class="total-row"><td>GRAND TOTAL</td><td style="text-align:right;">${fmtN(est.total_amount)}</td></tr></table>
+      <div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill</div>`;
+    } else {
+      const stoneRows = (est.items||[]).map((r, i) => `<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;font-size:12px;color:#888;">${i+1}</td><td style="padding:4px 6px;font-size:12px;">${r.shape||"—"}</td><td style="padding:4px 6px;font-size:12px;">${r.weight||"—"} ct</td><td style="padding:4px 6px;font-size:12px;">${r.color||"—"} / ${r.clarity||"—"}</td><td style="padding:4px 6px;font-size:12px;">${r.cert||"—"}</td><td style="padding:4px 6px;font-size:12px;text-align:right;font-weight:600;">${r.sellTotal != null ? fmtN(r.sellTotal) : "—"}</td></tr>`).join("");
+      body = `<div class="om">ॐ</div><div class="title">QUOTATION</div><div class="date">${date}</div>${clientName ? `<div class="client">Prepared for: ${clientName}</div>` : ""}<hr class="thick"/>
+      <table><thead><tr><th>#</th><th>Shape</th><th>Weight</th><th>Colour/Clarity</th><th>Cert</th><th style="text-align:right;">Price</th></tr></thead><tbody>${stoneRows}</tbody></table>
+      <div class="disclaimer">This is an estimate only · Prices subject to change · Not a final bill</div>`;
+    }
+    const html = `<!DOCTYPE html><html><head><title>Estimate</title><style>${CSS}</style><script>function expandImg(src){var w=window.open('','_blank','width=600,height=600');w.document.write('<body style="margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh"><img src="'+src+'" style="max-width:100%;max-height:100vh;object-fit:contain"/></body>');w.document.close();}<\/script></head><body><div class="wrap">${body}<button class="printbtn" onclick="window.print()">🖨️ Print</button></div></body></html>`;
+    const win = window.open("", "_blank", "width=500,height=750");
+    if (win) { win.document.write(html); win.document.close(); }
   };
 
   const jewelleryTab = (
@@ -11065,78 +11137,13 @@ function CalculatorScreen() {
         {tab === "quotation" && quotationTab}
       </div>
 
-      {/* Estimate detail modal */}
-      {viewEstimate && (() => {
-        const e = viewEstimate;
-        const items = e.items || [];
-        const item = items[0] || {};
-        const fmt = (n) => n != null ? `₹${Math.round(n).toLocaleString("en-IN")}` : "—";
-        const clientName = e.bullion_leads?.name || e._clientName || null;
-        return (
-          <Modal title={`Estimate — ${(e.mode || "").replace("_", " ")}`} onClose={() => setViewEstimate(null)} width={500}>
-            <div style={{ fontSize: 13, color: "#333" }}>
-              {clientName && <div style={{ marginBottom: 10, padding: "6px 10px", background: "#f0f9ff", borderRadius: 6, fontWeight: 600, color: "#1e40af" }}>👤 {clientName}{e.bullion_leads?.phone ? ` · ${e.bullion_leads.phone}` : ""}</div>}
-              <div style={{ color: "#888", fontSize: 11, marginBottom: 12 }}>{new Date(e.created_at).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}</div>
-              {e.mode === "jewellery" && items.map((it, i) => (
-                <div key={i} style={{ marginBottom: 8 }}>
-                  {it.itemImage && (
-                    <div style={{ marginBottom: 10 }}>
-                      <img src={it.itemImage} alt="item" style={{ width: 120, height: 120, objectFit: "cover", borderRadius: 8, border: "1px solid #eee", cursor: "pointer" }}
-                        onClick={() => window.open(it.itemImage, "_blank")} />
-                    </div>
-                  )}
-                  {it.itemName && <div style={{ fontWeight: 600, marginBottom: 6 }}>{it.itemName}{it.vendorCode ? <span style={{ color: "#888", fontWeight: 400, fontSize: 11 }}> · {it.vendorCode}</span> : ""}</div>}
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                    <tbody>
-                      {it.grossWt && <tr><td style={{ color: "#888", padding: "3px 0", width: 160 }}>Gross weight</td><td style={{ fontWeight: 600 }}>{it.grossWt}g · {PURITIES[it.purityIdx]?.l || "Custom"}</td></tr>}
-                      {it.gRate > 0 && <tr><td style={{ color: "#888", padding: "3px 0" }}>Gold rate</td><td>₹{Math.round(it.gRate).toLocaleString("en-IN")}/g · Net {it.netGold != null ? `${parseFloat(it.netGold).toFixed(3)}g` : "—"}</td></tr>}
-                      {it.goldVal != null && <tr><td style={{ color: "#888", padding: "3px 0" }}>Gold value</td><td>{fmt(it.goldVal)}</td></tr>}
-                      {it.making > 0 && <tr><td style={{ color: "#888", padding: "3px 0" }}>Making charges</td><td>{fmt(it.making)}</td></tr>}
-                      {parseFloat(it.dia1Wt) > 0 && it.dia1Rate > 0 && <tr><td style={{ color: "#888", padding: "3px 0" }}>Diamond 1</td><td>{it.dia1Wt}{it.dia1Unit} @ ₹{it.dia1Rate}/g</td></tr>}
-                      {parseFloat(it.dia2Wt) > 0 && it.dia2Rate > 0 && <tr><td style={{ color: "#888", padding: "3px 0" }}>Diamond 2</td><td>{it.dia2Wt}{it.dia2Unit} @ ₹{it.dia2Rate}/g</td></tr>}
-                      {parseFloat(it.stoneWt) > 0 && it.stoneRate > 0 && <tr><td style={{ color: "#888", padding: "3px 0" }}>Stone</td><td>{it.stoneWt}{it.stoneUnit} @ ₹{it.stoneRate}/g</td></tr>}
-                      {it.diaTotal > 0 && <tr><td style={{ color: "#888", padding: "3px 0" }}>Diamonds/stones</td><td>{fmt(it.diaTotal)}</td></tr>}
-                      {it.subTotal != null && <tr><td style={{ color: "#888", padding: "3px 0" }}>Sub-total</td><td>{fmt(it.subTotal)}</td></tr>}
-                      {it.gst > 0 && <tr><td style={{ color: "#888", padding: "3px 0" }}>GST (3%)</td><td>{fmt(it.gst)}</td></tr>}
-                    </tbody>
-                  </table>
-                </div>
-              ))}
-              {e.mode === "solitaire" && items.map((it, i) => (
-                <div key={i} style={{ marginBottom: 8 }}>
-                  <div style={{ fontWeight: 600, marginBottom: 4 }}>{[it.shape, it.weight && `${it.weight}ct`, it.color, it.clarity, it.cert].filter(Boolean).join(" · ")}</div>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                    <tbody>
-                      {it.rapPerCt != null && <tr><td style={{ color: "#888", padding: "2px 0", width: 160 }}>RAP</td><td>₹{it.rapPerCt}/ct</td></tr>}
-                      {it.buyDisc != null && <tr><td style={{ color: "#888", padding: "2px 0" }}>Buy disc</td><td>{it.buyDisc}%</td></tr>}
-                      {it.sellDisc != null && <tr><td style={{ color: "#888", padding: "2px 0" }}>Sell disc</td><td>{it.sellDisc}%</td></tr>}
-                      {it.sellTotal != null && <tr><td style={{ color: "#888", padding: "2px 0" }}>Stone sell price</td><td style={{ fontWeight: 600 }}>{fmt(it.sellTotal)}</td></tr>}
-                    </tbody>
-                  </table>
-                </div>
-              ))}
-              {e.mode === "solitaire_sheet" && (
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                  <thead><tr style={{ background: "#f7f7f7" }}>{["#","Shape","Wt","Col","Clar","Cert","Price"].map(h => <th key={h} style={{ padding: "5px 8px", textAlign: "left", fontWeight: 600, color: "#555", fontSize: 11 }}>{h}</th>)}</tr></thead>
-                  <tbody>{items.map((it, i) => <tr key={i} style={{ borderBottom: "1px solid #f0f0f0" }}><td style={{ padding: "4px 8px" }}>{i+1}</td><td style={{ padding: "4px 8px" }}>{it.shape || "—"}</td><td style={{ padding: "4px 8px" }}>{it.weight || "—"}ct</td><td style={{ padding: "4px 8px" }}>{it.color || "—"}</td><td style={{ padding: "4px 8px" }}>{it.clarity || "—"}</td><td style={{ padding: "4px 8px" }}>{it.cert || "—"}</td><td style={{ padding: "4px 8px", fontWeight: 600 }}>{fmt(it.sellTotal)}</td></tr>)}</tbody>
-                </table>
-              )}
-              <div style={{ marginTop: 12, padding: "10px 14px", background: "#f7f7f7", borderRadius: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontWeight: 600, fontSize: 14 }}>Total</span>
-                <span style={{ fontWeight: 700, fontSize: 16, color: C.blue }}>{fmt(e.total_amount)}</span>
-              </div>
-            </div>
-          </Modal>
-        );
-      })()}
-
       {/* Recent estimates */}
       {recentEstimates.length > 0 && (
         <div className="no-print" style={{ marginTop: 16 }}>
           <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8, color: "#555" }}>Recent Estimates</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8 }}>
             {recentEstimates.map(e => (
-              <div key={e.id} onClick={() => setViewEstimate(e)} style={{ ...card, padding: "10px 14px", fontSize: 12, cursor: "pointer", border: "1px solid #eee" }}>
+              <div key={e.id} onClick={() => openEstimateSlip(e)} style={{ ...card, padding: "10px 14px", fontSize: 12, cursor: "pointer", border: "1px solid #eee" }}>
                 <div style={{ fontWeight: 600, textTransform: "capitalize" }}>{e.mode}</div>
                 <div style={{ color: "#888", fontSize: 11 }}>{new Date(e.created_at).toLocaleDateString("en-IN")}</div>
                 {e.total_amount && <div style={{ color: C.blue, fontWeight: 600, marginTop: 4 }}>₹{Math.round(e.total_amount).toLocaleString("en-IN")}</div>}
@@ -11187,7 +11194,7 @@ function CalculatorScreen() {
                         ) : <span style={{ color: "#ccc", fontSize: 11 }}>No phone</span>}
                       </td>
                       <td style={{ padding: "6px 10px" }}>
-                        <Btn small ghost color={C.blue} onClick={() => setViewEstimate({ ...e, _clientName: client?.name })}>👁 View</Btn>
+                        <Btn small ghost color={C.blue} onClick={() => openEstimateSlip({ ...e, _clientName: client?.name })}>👁 View</Btn>
                       </td>
                     </tr>
                   );
