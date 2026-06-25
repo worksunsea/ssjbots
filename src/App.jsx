@@ -10086,7 +10086,7 @@ function CalculatorScreen() {
 
   // Jewellery state
   const [jw, setJw] = useState({
-    itemImage: "", itemName: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "",
+    itemImage: "", itemName: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true,
     makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "",
     dia2Wt: "", dia2Unit: "ct", dia2Rate: "",
     stoneWt: "", stoneUnit: "ct", stoneRate: "",
@@ -10096,7 +10096,7 @@ function CalculatorScreen() {
   });
 
   // Solitaire (single stone) state
-  const [sol, setSol] = useState({ ...newSolRow(), includeGold: false, goldGrossWt: "", goldPurityIdx: 2, goldCustomPurity: "", goldRateOverride: "", goldMakingRatePg: "1500", goldMakingRatePct: "15", settingDiaWt: "", settingDiaRate: "", settingGemVal: "" });
+  const [sol, setSol] = useState({ ...newSolRow(), includeGold: false, goldGrossWt: "", goldPurityIdx: 2, goldCustomPurity: "", goldRateOverride: "", goldMakingRatePg: "1500", goldMakingRatePct: "15", settingDiaWt: "", settingDiaRate: "", settingGemVal: "", applyGst: true });
 
   // Quotation sheet (multi-stone) state
   const [rows, setRows] = useState([newSolRow()]);
@@ -10161,7 +10161,9 @@ function CalculatorScreen() {
     const misc2Val = miscVal(jw.misc2Wt, jw.misc2Rate);
     const misc3Val = miscVal(jw.misc3Wt, jw.misc3Rate);
     const miscTotal = misc1Val + misc2Val + misc3Val;
-    return { gross, gRate, netGold, goldVal, making, diaTotal, miscTotal, total: goldVal + making + diaTotal + miscTotal };
+    const subTotal = goldVal + making + diaTotal + miscTotal;
+    const gst = jw.applyGst ? subTotal * 0.03 : 0;
+    return { gross, gRate, netGold, goldVal, making, diaTotal, miscTotal, subTotal, gst, total: subTotal + gst };
   })();
 
   // ── Solitaire calculation ──
@@ -10198,6 +10200,8 @@ function CalculatorScreen() {
   const solGrandTotal = solResult.sellTotal != null
     ? solResult.sellTotal + (solGoldCalc?.total || 0)
     : null;
+  const solGst = sol.applyGst && solGrandTotal ? solGrandTotal * 0.015 : 0;
+  const solFinalTotal = solGrandTotal != null ? solGrandTotal + solGst : null;
 
   // ── Search contacts for save ──
   useEffect(() => {
@@ -10218,7 +10222,7 @@ function CalculatorScreen() {
         total = jwCalc.total;
       } else if (tab === "solitaire") {
         items = [{ ...sol, ...solResult }];
-        total = solGrandTotal || solResult.sellTotal || 0;
+        total = solFinalTotal || solResult.sellTotal || 0;
       } else {
         items = rows.map(r => ({ ...r, ...solCalc(r) }));
         total = null;
@@ -10318,6 +10322,7 @@ function CalculatorScreen() {
   ${jw.itemImage ? `<img class="item-img" src="${jw.itemImage}" alt="item"/>` : ""}
   ${jw.itemName ? `<div class="item-name">${jw.itemName}</div>` : ""}
   <table>${rows.join("")}
+  ${jw.applyGst ? `<tr><td style="padding:3px 6px;font-size:13px;color:#555;">GST @ 3%</td><td style="padding:3px 6px;text-align:right;font-size:13px;">${fmt(jwCalc.gst)}</td></tr>` : ""}
   <tr class="total-row"><td>GRAND TOTAL</td><td style="text-align:right;">${fmt(jwCalc.total)}</td></tr>
   </table>
   <hr/>
@@ -10425,6 +10430,13 @@ function CalculatorScreen() {
         {resultRow(`Making (${makingMode === "per_g" ? "₹/g" : "%"})`, fmt(jwCalc.making))}
         {resultRow("Diamond / Stone Total", fmt(jwCalc.diaTotal))}
         {jwCalc.miscTotal > 0 && resultRow("Misc Total", fmt(jwCalc.miscTotal))}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 0" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+            <input type="checkbox" checked={jw.applyGst} onChange={e => setJw(p => ({ ...p, applyGst: e.target.checked }))} />
+            GST @ 3%
+          </label>
+          <span style={{ fontSize: 13 }}>{jw.applyGst ? fmt(jwCalc.gst) : "—"}</span>
+        </div>
         {resultRow("GRAND TOTAL", fmt(jwCalc.total), true)}
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -10568,7 +10580,14 @@ function CalculatorScreen() {
         {sol.includeGold && solGoldCalc && solGoldCalc.diaInShank > 0 && resultRow("Diamond in Shank", fmt(solGoldCalc.diaInShank))}
         {sol.includeGold && solGoldCalc && solGoldCalc.gemVal > 0 && resultRow("Gemstone / Other", fmt(solGoldCalc.gemVal))}
         {sol.includeGold && solGoldCalc && resultRow("Setting Total", fmt(solGoldCalc.total))}
-        {resultRow("GRAND TOTAL", fmt(solGrandTotal), true)}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 0" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+            <input type="checkbox" checked={sol.applyGst} onChange={e => setSol(p => ({ ...p, applyGst: e.target.checked }))} />
+            GST @ 1.5%
+          </label>
+          <span style={{ fontSize: 13 }}>{sol.applyGst ? fmt(solGst) : "—"}</span>
+        </div>
+        {resultRow("GRAND TOTAL", fmt(solFinalTotal), true)}
         {user?.role === "superadmin" && solResult.buyTotal !== null && solResult.sellTotal !== null && (
           <div style={{ fontSize: 11, color: "#888", marginTop: 6, paddingTop: 6, borderTop: "1px solid #eee" }}>
             Margin: {fmt(solResult.sellTotal - solResult.buyTotal)} ({solResult.buyTotal > 0 ? ((solResult.sellTotal - solResult.buyTotal) / solResult.buyTotal * 100).toFixed(1) + "%" : "—"}) · Spread: {spread}
