@@ -10036,20 +10036,26 @@ const PURITIES = [
 ];
 
 // Parse per-gram gold rates + USD from live rates sheet.
-// Sheet columns: row.gold = label, row.estimated = per-gram rate (₹/g for gold, ₹/USD for forex)
+// Sheet columns: row.gold = label (col A), row.estimated = col B, row[""] = col C
+// Gold rates: col B. USD/INR: col C (cell C37 per sheet layout).
 function parseLiveRatesForCalc(rows) {
   const out = { g24: null, g22: null, g18: null, g14: null, g9: null, usd: null };
+  const isNum = v => typeof v === "number" && !isNaN(v);
   for (const r of rows) {
     const lbl = String(r.gold || "").trim();
-    const val = r.estimated;
-    if (typeof val !== "number" || isNaN(val)) continue;
-    if (lbl === "24KT 995")  { out.g24 = val; continue; }
-    if (lbl === "22 KT")     { out.g22 = val; continue; }
-    if (lbl === "18KT")      { out.g18 = val; continue; }
-    if (lbl === "14KT")      { out.g14 = val; continue; }
-    if (lbl === "9 KT")      { out.g9  = val; continue; }
-    // USD/INR — look for row whose label mentions USD/Dollar with a value in forex range
-    if (/usd|dollar/i.test(lbl) && val > 50 && val < 200) { out.usd = val; continue; }
+    const est = r.estimated;
+    const colC = r[""];
+    if (lbl === "24KT 995" && isNum(est))  { out.g24 = est; continue; }
+    if (lbl === "22 KT"    && isNum(est))  { out.g22 = est; continue; }
+    if (lbl === "18KT"     && isNum(est))  { out.g18 = est; continue; }
+    if (lbl === "14KT"     && isNum(est))  { out.g14 = est; continue; }
+    if (lbl === "9 KT"     && isNum(est))  { out.g9  = est; continue; }
+    // USD/INR — value is in col C (r[""]), label in col A contains "usd"/"dollar"
+    if (/usd|dollar/i.test(lbl)) {
+      const usdVal = isNum(colC) && colC > 50 && colC < 200 ? colC
+                   : isNum(est)  && est  > 50 && est  < 200 ? est : null;
+      if (usdVal) { out.usd = usdVal; continue; }
+    }
   }
   return out;
 }
