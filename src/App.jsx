@@ -10078,8 +10078,8 @@ function CalculatorScreen() {
   const [toast, setToast] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveModal, setSaveModal] = useState(false);
-  const [saveContact, setSaveContact] = useState(null);
-  const [contactSearch, setContactSearch] = useState("");
+  const [saveContact, setSaveContact] = useState(() => { try { const s = localStorage.getItem("calc_active_contact"); return s ? JSON.parse(s) : null; } catch { return null; } });
+  const [contactSearch, setContactSearch] = useState(() => { try { const s = localStorage.getItem("calc_active_contact"); if (s) { const c = JSON.parse(s); return c.name + (c.phone ? ` (${c.phone})` : ""); } } catch {} return ""; });
   const [contactResults, setContactResults] = useState([]);
   const [recentEstimates, setRecentEstimates] = useState([]);
   const user = loadUser();
@@ -10577,7 +10577,7 @@ function CalculatorScreen() {
           ].filter(Boolean).join("\n");
           sendWA(saveContact.phone, lines);
         }}>📱 Send WA</Btn>}
-        <Btn small ghost color={C.gray} onClick={() => { setJw({ itemImage: "", itemName: "", vendorCode: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true, makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "", dia2Wt: "", dia2Unit: "ct", dia2Rate: "", stoneWt: "", stoneUnit: "ct", stoneRate: "", misc1Lbl: "Gemstone", misc1Wt: "", misc1Unit: "g", misc1Rate: "", misc1Deduct: true, misc2Lbl: "Mala", misc2Wt: "", misc2Unit: "g", misc2Rate: "", misc2Deduct: false, misc3Lbl: "Lakh", misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false }); setSaveContact(null); setContactSearch(""); }}>🔄 New</Btn>
+        <Btn small ghost color={C.gray} onClick={() => { setJw({ itemImage: "", itemName: "", vendorCode: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true, makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "", dia2Wt: "", dia2Unit: "ct", dia2Rate: "", stoneWt: "", stoneUnit: "ct", stoneRate: "", misc1Lbl: "Gemstone", misc1Wt: "", misc1Unit: "g", misc1Rate: "", misc1Deduct: true, misc2Lbl: "Mala", misc2Wt: "", misc2Unit: "g", misc2Rate: "", misc2Deduct: false, misc3Lbl: "Lakh", misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false }); setSaveContact(null); setContactSearch(""); try { localStorage.removeItem("calc_active_contact"); } catch {} }}>🔄 New</Btn>
       </div>
     </div>
   );
@@ -10830,11 +10830,11 @@ function CalculatorScreen() {
         <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 12 }}>💾 Save Estimate</div>
         <div style={{ marginBottom: 12 }}>
           <label style={lbl}>Link to Contact (optional)</label>
-          <input style={inp} value={contactSearch} onChange={e => { setContactSearch(e.target.value); setSaveContact(null); }} placeholder="Search name or phone…" />
+          <input style={inp} value={contactSearch} onChange={e => { setContactSearch(e.target.value); setSaveContact(null); try { localStorage.removeItem("calc_active_contact"); } catch {} }} placeholder="Search name or phone…" />
           {contactResults.length > 0 && (
             <div style={{ border: "1px solid #eee", borderRadius: 6, marginTop: 4, maxHeight: 150, overflowY: "auto" }}>
               {contactResults.map(c => (
-                <div key={c.id} onClick={() => { setSaveContact(c); setContactSearch(c.name + (c.phone ? ` (${c.phone})` : "")); setContactResults([]); }} style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, borderBottom: "1px solid #f0f0f0" }}>
+                <div key={c.id} onClick={() => { setSaveContact(c); setContactSearch(c.name + (c.phone ? ` (${c.phone})` : "")); setContactResults([]); try { localStorage.setItem("calc_active_contact", JSON.stringify(c)); } catch {} }} style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, borderBottom: "1px solid #f0f0f0" }}>
                   {c.name} {c.phone && <span style={{ color: "#888" }}>{c.phone}</span>}
                 </div>
               ))}
@@ -10873,6 +10873,16 @@ function CalculatorScreen() {
           if (d.ok) { showToast("✅ Synced: " + (d.date || "")); setRapAge(0); } else showToast("❌ " + (d.error || "Sync failed"));
         }} className="no-print">🔄 Sync Rapaport</Btn>
       </div>
+
+      {/* Active client banner */}
+      {saveContact && (
+        <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#e8f5e9", border: "1px solid #a5d6a7", borderRadius: 8, padding: "8px 14px", marginBottom: 12 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: "#2e7d32" }}>
+            👤 Active client: {saveContact.name}{saveContact.phone ? ` · ${saveContact.phone}` : ""}
+          </div>
+          <button onClick={() => { setSaveContact(null); setContactSearch(""); try { localStorage.removeItem("calc_active_contact"); } catch {} }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: "#555" }}>✕ Change</button>
+        </div>
+      )}
 
       {/* Mode tabs */}
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }} className="no-print">
