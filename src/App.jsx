@@ -10269,6 +10269,67 @@ function CalculatorScreen() {
     }
   };
 
+  const handleJwPrint = () => {
+    const today = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" });
+    const purityLabel = PURITIES[jw.purityIdx]?.l || "Custom";
+    const rows = [];
+    const row = (label, value) => `<tr><td style="padding:3px 6px;color:#444;font-size:13px;">${label}</td><td style="padding:3px 6px;text-align:right;font-size:13px;">${value}</td></tr>`;
+
+    rows.push(row("Purity", purityLabel));
+    rows.push(row("Gross Weight", `${parseFloat(jw.grossWt||0).toFixed(3)} g`));
+    rows.push(row("Net Gold Weight", `${jwCalc.netGold.toFixed(3)} g`));
+    rows.push(row("Gold Rate", `₹${jwCalc.gRate.toLocaleString("en-IN")}/g`));
+    rows.push(row("Gold Value", fmt(jwCalc.goldVal)));
+    rows.push(row(`Making`, fmt(jwCalc.making)));
+    if (parseFloat(jw.dia1Wt||0)) rows.push(row(`Diamond 1 (${parseFloat(jw.dia1Wt)}${jw.dia1Unit} @ ₹${jw.dia1Rate})`, fmt(parseFloat(jw.dia1Wt||0)*parseFloat(jw.dia1Rate||0))));
+    if (parseFloat(jw.dia2Wt||0)) rows.push(row(`Diamond 2 (${parseFloat(jw.dia2Wt)}${jw.dia2Unit} @ ₹${jw.dia2Rate})`, fmt(parseFloat(jw.dia2Wt||0)*parseFloat(jw.dia2Rate||0))));
+    if (parseFloat(jw.stoneWt||0)) rows.push(row(`Stone (${parseFloat(jw.stoneWt)}${jw.stoneUnit} @ ₹${jw.stoneRate})`, fmt(parseFloat(jw.stoneWt||0)*parseFloat(jw.stoneRate||0))));
+    [["misc1","misc1Lbl","misc1Wt","misc1Unit","misc1Rate"],["misc2","misc2Lbl","misc2Wt","misc2Unit","misc2Rate"],["misc3","misc3Lbl","misc3Wt","misc3Unit","misc3Rate"]].forEach(([,lk,wk,uk,rk]) => {
+      if (parseFloat(jw[wk]||0) && parseFloat(jw[rk]||0)) rows.push(row(`${jw[lk]||"Misc"} (${parseFloat(jw[wk])}${jw[uk]})`, fmt(parseFloat(jw[wk]||0)*parseFloat(jw[rk]||0))));
+    });
+
+    const html = `<!DOCTYPE html><html><head><title>Estimate</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Georgia', serif; background: #fff; color: #222; }
+  @page { size: A5 portrait; margin: 15mm; }
+  .wrap { max-width: 400px; margin: 0 auto; }
+  .om { font-size: 32px; color: #8b6914; text-align: center; margin-bottom: 4px; }
+  .title { font-size: 20px; letter-spacing: 3px; text-align: center; font-weight: bold; margin-bottom: 2px; }
+  .date { font-size: 12px; color: #666; text-align: center; margin-bottom: 10px; }
+  .item-name { font-size: 15px; font-weight: bold; margin: 8px 0 6px; }
+  .item-img { width: 100px; height: 100px; object-fit: cover; border-radius: 6px; margin-bottom: 8px; }
+  hr { border: none; border-top: 1px solid #bbb; margin: 8px 0; }
+  hr.thick { border-top: 2px solid #333; }
+  table { width: 100%; border-collapse: collapse; }
+  .total-row td { padding: 5px 6px; font-size: 16px; font-weight: bold; border-top: 2px solid #333; }
+  .disclaimer { font-size: 10px; color: #888; text-align: center; margin-top: 14px; line-height: 1.7; }
+</style></head><body>
+<div class="wrap">
+  <div class="om">ॐ</div>
+  <div class="title">ESTIMATE</div>
+  <div class="date">${today}</div>
+  <hr class="thick"/>
+  ${jw.itemImage ? `<img class="item-img" src="${jw.itemImage}" alt="item"/>` : ""}
+  ${jw.itemName ? `<div class="item-name">${jw.itemName}</div>` : ""}
+  <table>${rows.join("")}
+  <tr class="total-row"><td>GRAND TOTAL</td><td style="text-align:right;">${fmt(jwCalc.total)}</td></tr>
+  </table>
+  <hr/>
+  <div class="disclaimer">
+    This is just an estimate, not a final bill.<br/>
+    Gold rates apply on full payment.<br/>
+    This is just an estimate slip.
+  </div>
+</div>
+</body></html>`;
+
+    const win = window.open("", "_blank", "width=600,height=800");
+    win.document.write(html);
+    win.document.close();
+    win.onload = () => { win.print(); win.close(); };
+  };
+
   const jewelleryTab = (
     <div>
       {/* Item image */}
@@ -10363,7 +10424,7 @@ function CalculatorScreen() {
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <Btn small color={C.blue} onClick={() => setSaveModal(true)}>💾 Save Estimate</Btn>
-        <Btn small ghost color={C.blue} onClick={() => window.print()}>🖨️ Print</Btn>
+        <Btn small ghost color={C.blue} onClick={handleJwPrint}>🖨️ Print</Btn>
       </div>
     </div>
   );
