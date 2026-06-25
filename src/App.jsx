@@ -10036,26 +10036,28 @@ const PURITIES = [
 ];
 
 // Parse per-gram gold rates + USD from live rates sheet.
-// Sheet columns: row.gold = label (col A), row.estimated = col B, row[""] = col C
-// Gold rates: col B. USD/INR: col C (cell C37 per sheet layout).
+// Sheet columns: row.gold = col A, row.estimated = col B, row[""] = col C
+// Gold rates in col B. USD/INR: label "USD" in col C (C36), live value in col C next row (C37).
 function parseLiveRatesForCalc(rows) {
   const out = { g24: null, g22: null, g18: null, g14: null, g9: null, usd: null };
   const isNum = v => typeof v === "number" && !isNaN(v);
+  let nextColCisUSD = false;
   for (const r of rows) {
     const lbl = String(r.gold || "").trim();
     const est = r.estimated;
     const colC = r[""];
-    if (lbl === "24KT 995" && isNum(est))  { out.g24 = est; continue; }
-    if (lbl === "22 KT"    && isNum(est))  { out.g22 = est; continue; }
-    if (lbl === "18KT"     && isNum(est))  { out.g18 = est; continue; }
-    if (lbl === "14KT"     && isNum(est))  { out.g14 = est; continue; }
-    if (lbl === "9 KT"     && isNum(est))  { out.g9  = est; continue; }
-    // USD/INR — value is in col C (r[""]), label in col A contains "usd"/"dollar"
-    if (/usd|dollar/i.test(lbl)) {
-      const usdVal = isNum(colC) && colC > 50 && colC < 200 ? colC
-                   : isNum(est)  && est  > 50 && est  < 200 ? est : null;
-      if (usdVal) { out.usd = usdVal; continue; }
+    if (lbl === "24KT 995" && isNum(est)) { out.g24 = est; nextColCisUSD = false; continue; }
+    if (lbl === "22 KT"    && isNum(est)) { out.g22 = est; nextColCisUSD = false; continue; }
+    if (lbl === "18KT"     && isNum(est)) { out.g18 = est; nextColCisUSD = false; continue; }
+    if (lbl === "14KT"     && isNum(est)) { out.g14 = est; nextColCisUSD = false; continue; }
+    if (lbl === "9 KT"     && isNum(est)) { out.g9  = est; nextColCisUSD = false; continue; }
+    // C36 = "USD" label → C37 = live rate (next row, same col C)
+    if (nextColCisUSD && isNum(colC) && colC > 50 && colC < 200) {
+      out.usd = colC;
+      nextColCisUSD = false;
+      continue;
     }
+    nextColCisUSD = /usd/i.test(String(colC || ""));
   }
   return out;
 }
