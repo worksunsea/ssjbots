@@ -10078,6 +10078,7 @@ function CalculatorScreen() {
   const [toast, setToast] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveModal, setSaveModal] = useState(false);
+  const [editEstModal, setEditEstModal] = useState(null);
   const [saveContact, setSaveContact] = useState(() => { try { const s = localStorage.getItem("calc_active_contact"); return s ? JSON.parse(s) : null; } catch { return null; } });
   const [contactSearch, setContactSearch] = useState(() => { try { const s = localStorage.getItem("calc_active_contact"); if (s) { const c = JSON.parse(s); return c.name + (c.phone ? ` (${c.phone})` : ""); } } catch {} return ""; });
   const [contactResults, setContactResults] = useState([]);
@@ -10634,6 +10635,9 @@ function recalcToday(){
       <div class="disclaimer">This is an estimate only · Prices subject to change · Not a final bill</div>
       <div class="btnrow"><button class="printbtn" onclick="window.print()">🖨️ Print</button></div>`;
     }
+    const prevChanges = est.metadata?.changes || [];
+    const changeHistoryHtml = prevChanges.length > 0 ? `<div style="margin-top:12px;border-top:1px solid #eee;padding-top:8px;"><div style="font-size:10px;font-weight:600;color:#888;margin-bottom:4px;">Edit history</div>${prevChanges.map(ch => `<div style="font-size:10px;color:#666;margin-bottom:3px;background:#fafafa;border-radius:3px;padding:3px 6px;"><strong>${ch.by||"?"}</strong> · ${new Date(ch.ts).toLocaleString("en-IN",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})} — ${(ch.fields||[]).map(f=>`${f.f}: ₹${Math.round(f.old||0).toLocaleString("en-IN")} → ₹${Math.round(f.new||0).toLocaleString("en-IN")}`).join(", ")}</div>`).join("")}</div>` : "";
+    body = body.replace(`<div class="btnrow">`, changeHistoryHtml + `<div class="btnrow">`);
     const html = `<!DOCTYPE html><html><head><title>Estimate</title><style>${CSS}</style><script>function expandImg(src){var w=window.open('','_blank','width=600,height=600');w.document.write('<body style="margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh"><img src="'+src+'" style="max-width:100%;max-height:100vh;object-fit:contain"/></body>');w.document.close();}${extraScript}<\/script></head><body><div class="wrap">${body}</div></body></html>`;
     const win = window.open("", "_blank", "width=500,height=750");
     if (win) { win.document.write(html); win.document.close(); }
@@ -10761,6 +10765,69 @@ function recalcToday(){
     </div>
   );
 
+  // ── EDIT ESTIMATE HANDLER ──
+  const handleEditEstimate = async () => {
+    if (!editEstModal) return;
+    const { est, making, dia1Rate, dia2Rate, stoneRate, sellTotal } = editEstModal;
+    const it = (est.items || [])[0] || {};
+    const ctToG = (w, u) => u === "ct" ? parseFloat(w || 0) * 0.2 : parseFloat(w || 0);
+    const changes = [];
+    let updatedItem = { ...it };
+
+    if (est.mode === "jewellery") {
+      const newMaking = parseFloat(making);
+      const newD1Rate = parseFloat(dia1Rate);
+      const newD2Rate = parseFloat(dia2Rate);
+      const newStRate = parseFloat(stoneRate);
+      if (!isNaN(newMaking) && newMaking !== it.making) { changes.push({ f: "making", old: it.making, new: newMaking }); updatedItem = { ...updatedItem, making: newMaking }; }
+      if (!isNaN(newD1Rate) && newD1Rate !== parseFloat(it.dia1Rate || 0)) { changes.push({ f: "dia1Rate", old: parseFloat(it.dia1Rate || 0), new: newD1Rate }); updatedItem = { ...updatedItem, dia1Rate: String(newD1Rate) }; }
+      if (!isNaN(newD2Rate) && newD2Rate !== parseFloat(it.dia2Rate || 0)) { changes.push({ f: "dia2Rate", old: parseFloat(it.dia2Rate || 0), new: newD2Rate }); updatedItem = { ...updatedItem, dia2Rate: String(newD2Rate) }; }
+      if (!isNaN(newStRate) && newStRate !== parseFloat(it.stoneRate || 0)) { changes.push({ f: "stoneRate", old: parseFloat(it.stoneRate || 0), new: newStRate }); updatedItem = { ...updatedItem, stoneRate: String(newStRate) }; }
+      const m = updatedItem.making || 0;
+      const d1 = ctToG(updatedItem.dia1Wt, updatedItem.dia1Unit) * parseFloat(updatedItem.dia1Rate || 0);
+      const d2 = ctToG(updatedItem.dia2Wt, updatedItem.dia2Unit) * parseFloat(updatedItem.dia2Rate || 0);
+      const st = ctToG(updatedItem.stoneWt, updatedItem.stoneUnit) * parseFloat(updatedItem.stoneRate || 0);
+      const newDiaTotal = d1 + d2 + st;
+      const newSubTotal = (updatedItem.goldVal || 0) + m + newDiaTotal + (updatedItem.miscTotal || 0);
+      const newGst = updatedItem.applyGst ? newSubTotal * 0.03 : 0;
+      const newTotal = newSubTotal + newGst;
+      updatedItem = { ...updatedItem, diaTotal: newDiaTotal, gst: newGst, total: newTotal };
+      if (changes.length === 0) { setEditEstModal(null); return; }
+      const oldTotal = est.total_amount;
+      if (Math.round(newTotal) !== Math.round(oldTotal)) changes.push({ f: "total", old: Math.round(oldTotal), new: Math.round(newTotal) });
+      const existingChanges = est.metadata?.changes || [];
+      const newMeta = { ...est.metadata, changes: [...existingChanges, { ts: new Date().toISOString(), by: user?.name || user?.email || "unknown", fields: changes }] };
+      setEditEstModal(p => ({ ...p, saving: true }));
+      const { error } = await sb.from("bullion_estimates").update({ items: [updatedItem], total_amount: newTotal, metadata: newMeta }).eq("id", est.id);
+      if (error) { setEditEstModal(p => ({ ...p, saving: false })); showToast("❌ Save failed: " + error.message); return; }
+      setRecentEstimates(prev => prev.map(e => e.id === est.id ? { ...e, items: [updatedItem], total_amount: newTotal, metadata: newMeta } : e));
+      setPendingFollowups(prev => prev.map(e => e.id === est.id ? { ...e, items: [updatedItem], total_amount: newTotal, metadata: newMeta } : e));
+      setEditEstModal(null);
+      showToast("✓ Estimate updated");
+    } else if (est.mode === "solitaire") {
+      const newSell = parseFloat(sellTotal);
+      if (!isNaN(newSell) && Math.round(newSell) !== Math.round(it.sellTotal || 0)) {
+        changes.push({ f: "sellTotal", old: Math.round(it.sellTotal || 0), new: Math.round(newSell) });
+        updatedItem = { ...updatedItem, sellTotal: newSell };
+      }
+      if (changes.length === 0) { setEditEstModal(null); return; }
+      const goldPart = (it.goldVal || 0) + (it.making || 0);
+      const stoneGst = it.applyGst ? newSell * 0.015 : 0;
+      const goldGst = it.applyGst && it.includeGold ? goldPart * 0.03 : 0;
+      const newTotal = newSell + (it.includeGold ? goldPart : 0) + stoneGst + goldGst;
+      if (Math.round(newTotal) !== Math.round(est.total_amount)) changes.push({ f: "total", old: Math.round(est.total_amount), new: Math.round(newTotal) });
+      const existingChanges = est.metadata?.changes || [];
+      const newMeta = { ...est.metadata, changes: [...existingChanges, { ts: new Date().toISOString(), by: user?.name || user?.email || "unknown", fields: changes }] };
+      setEditEstModal(p => ({ ...p, saving: true }));
+      const { error } = await sb.from("bullion_estimates").update({ items: [updatedItem], total_amount: newTotal, metadata: newMeta }).eq("id", est.id);
+      if (error) { setEditEstModal(p => ({ ...p, saving: false })); showToast("❌ Save failed: " + error.message); return; }
+      setRecentEstimates(prev => prev.map(e => e.id === est.id ? { ...e, items: [updatedItem], total_amount: newTotal, metadata: newMeta } : e));
+      setPendingFollowups(prev => prev.map(e => e.id === est.id ? { ...e, items: [updatedItem], total_amount: newTotal, metadata: newMeta } : e));
+      setEditEstModal(null);
+      showToast("✓ Estimate updated");
+    }
+  };
+
   // ── SOLITAIRE TAB ──
   const solForm = (stone, onChange, showInternal = true) => {
     const isNonCert = stone.cert === "Non-Cert";
@@ -10788,12 +10855,21 @@ function recalcToday(){
           </div>
         </div>
 
-        {/* Non-Cert: only manual sell price */}
+        {/* Non-Cert: manual sell price + internal fields */}
         {isNonCert ? (
-          <div style={{ marginBottom: 10 }}>
-            <label style={lbl}>Sell Price ₹ (total)</label>
-            <input style={inp} type="number" value={stone.manualPrice} onChange={e => onChange("manualPrice", e.target.value)} placeholder="e.g. 250000" />
-          </div>
+          <>
+            <div style={{ marginBottom: 10 }}>
+              <label style={lbl}>Sell Price ₹ (total)</label>
+              <input style={inp} type="number" value={stone.manualPrice} onChange={e => onChange("manualPrice", e.target.value)} placeholder="e.g. 250000" />
+            </div>
+            {showInternal && (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
+                <div><label style={{ ...lbl, color: C.orange }}>Vendor Code (internal)</label><input style={inp} value={stone.vendorCode} onChange={e => onChange("vendorCode", e.target.value)} placeholder="VC-123" /></div>
+                <div><label style={{ ...lbl, color: C.orange }}>Purchase Price ₹ (internal)</label><input style={inp} type="number" value={stone.purchasePrice} onChange={e => onChange("purchasePrice", e.target.value)} placeholder="0" /></div>
+                <div><label style={{ ...lbl, color: C.orange }}>Notes (internal)</label><input style={inp} value={stone.notes} onChange={e => onChange("notes", e.target.value)} placeholder="..." /></div>
+              </div>
+            )}
+          </>
         ) : (
           <>
             {/* Colour / Clarity / Cut */}
@@ -11085,6 +11161,93 @@ function recalcToday(){
       {toast && <div style={{ position: "fixed", bottom: 24, right: 24, background: "#333", color: "#fff", padding: "10px 18px", borderRadius: 8, fontSize: 13, zIndex: 9999 }}>{toast}</div>}
       {saveModalEl}
 
+      {/* ── EDIT ESTIMATE MODAL ── */}
+      {editEstModal && (() => {
+        const { est, making, dia1Rate, dia2Rate, stoneRate, sellTotal } = editEstModal;
+        const it = (est.items || [])[0] || {};
+        const ctToG = (w, u) => u === "ct" ? parseFloat(w || 0) * 0.2 : parseFloat(w || 0);
+        const fmtR = (n) => n != null && !isNaN(n) ? "₹" + Math.round(n).toLocaleString("en-IN") : "—";
+        let previewTotal = est.total_amount;
+        if (est.mode === "jewellery") {
+          const m = parseFloat(making) || 0;
+          const d1 = ctToG(it.dia1Wt, it.dia1Unit) * (parseFloat(dia1Rate) || 0);
+          const d2 = ctToG(it.dia2Wt, it.dia2Unit) * (parseFloat(dia2Rate) || 0);
+          const st = ctToG(it.stoneWt, it.stoneUnit) * (parseFloat(stoneRate) || 0);
+          const subT = (it.goldVal || 0) + m + d1 + d2 + st + (it.miscTotal || 0);
+          previewTotal = subT + (it.applyGst ? subT * 0.03 : 0);
+        } else if (est.mode === "solitaire") {
+          const newSell = parseFloat(sellTotal) || 0;
+          const goldPart = (it.goldVal || 0) + (it.making || 0);
+          const stGst = it.applyGst ? newSell * 0.015 : 0;
+          const gGst = it.applyGst && it.includeGold ? goldPart * 0.03 : 0;
+          previewTotal = newSell + (it.includeGold ? goldPart : 0) + stGst + gGst;
+        }
+        const prevChanges = est.metadata?.changes || [];
+        return (
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+            <div style={{ background: "#fff", borderRadius: 12, padding: 20, width: "100%", maxWidth: 420, maxHeight: "90vh", overflowY: "auto" }}>
+              <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>✏️ Edit Estimate</div>
+              <div style={{ fontSize: 12, color: "#888", marginBottom: 14 }}>{new Date(est.created_at).toLocaleDateString("en-IN")} · {est.bullion_leads?.name || "No client"}</div>
+
+              {est.mode === "jewellery" && (
+                <div style={{ display: "grid", gap: 10 }}>
+                  {(it.making != null) && (
+                    <div><label style={{ fontSize: 12, color: "#555", display: "block", marginBottom: 3 }}>Making ₹ <span style={{ color: "#aaa" }}>(was {fmtR(it.making)})</span></label>
+                      <input style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13, boxSizing: "border-box" }} type="number" value={making} onChange={e => setEditEstModal(p => ({ ...p, making: e.target.value }))} /></div>
+                  )}
+                  {parseFloat(it.dia1Wt || 0) > 0 && (
+                    <div><label style={{ fontSize: 12, color: "#555", display: "block", marginBottom: 3 }}>Diamond 1 Rate ₹/{it.dia1Unit || "ct"} <span style={{ color: "#aaa" }}>(was ₹{it.dia1Rate || 0})</span></label>
+                      <input style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13, boxSizing: "border-box" }} type="number" value={dia1Rate} onChange={e => setEditEstModal(p => ({ ...p, dia1Rate: e.target.value }))} /></div>
+                  )}
+                  {parseFloat(it.dia2Wt || 0) > 0 && (
+                    <div><label style={{ fontSize: 12, color: "#555", display: "block", marginBottom: 3 }}>Diamond 2 Rate ₹/{it.dia2Unit || "ct"} <span style={{ color: "#aaa" }}>(was ₹{it.dia2Rate || 0})</span></label>
+                      <input style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13, boxSizing: "border-box" }} type="number" value={dia2Rate} onChange={e => setEditEstModal(p => ({ ...p, dia2Rate: e.target.value }))} /></div>
+                  )}
+                  {parseFloat(it.stoneWt || 0) > 0 && (
+                    <div><label style={{ fontSize: 12, color: "#555", display: "block", marginBottom: 3 }}>Stone Rate ₹/{it.stoneUnit || "ct"} <span style={{ color: "#aaa" }}>(was ₹{it.stoneRate || 0})</span></label>
+                      <input style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13, boxSizing: "border-box" }} type="number" value={stoneRate} onChange={e => setEditEstModal(p => ({ ...p, stoneRate: e.target.value }))} /></div>
+                  )}
+                </div>
+              )}
+
+              {est.mode === "solitaire" && (
+                <div>
+                  <label style={{ fontSize: 12, color: "#555", display: "block", marginBottom: 3 }}>Stone Sell Total ₹ <span style={{ color: "#aaa" }}>(was {fmtR(it.sellTotal)})</span></label>
+                  <input style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13, boxSizing: "border-box" }} type="number" value={sellTotal} onChange={e => setEditEstModal(p => ({ ...p, sellTotal: e.target.value }))} />
+                </div>
+              )}
+
+              <div style={{ background: "#f0f7ff", borderRadius: 8, padding: "10px 14px", marginTop: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: 13, color: "#555" }}>New total</span>
+                <span style={{ fontWeight: 700, fontSize: 16, color: "#1565c0" }}>{fmtR(previewTotal)}</span>
+              </div>
+              {Math.round(previewTotal) !== Math.round(est.total_amount) && (
+                <div style={{ fontSize: 11, color: C.orange, marginTop: 4, textAlign: "right" }}>
+                  was {fmtR(est.total_amount)} · diff {previewTotal > est.total_amount ? "+" : ""}{fmtR(previewTotal - est.total_amount)}
+                </div>
+              )}
+
+              {prevChanges.length > 0 && (
+                <div style={{ marginTop: 14, borderTop: "1px solid #f0f0f0", paddingTop: 10 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: "#888", marginBottom: 6 }}>Edit history</div>
+                  {prevChanges.map((ch, i) => (
+                    <div key={i} style={{ fontSize: 11, color: "#666", marginBottom: 4, background: "#fafafa", borderRadius: 4, padding: "4px 8px" }}>
+                      <span style={{ fontWeight: 600 }}>{ch.by}</span> · {new Date(ch.ts).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
+                      <div style={{ marginTop: 2 }}>{ch.fields.map((f, j) => <span key={j} style={{ marginRight: 8 }}>{f.f}: {Math.round(f.old)} → {Math.round(f.new)}</span>)}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+                <Btn ghost color={C.gray} onClick={() => setEditEstModal(null)}>Cancel</Btn>
+                <Btn color={C.blue} loading={editEstModal.saving} onClick={handleEditEstimate}>Save changes</Btn>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }} className="no-print">
         <div>
@@ -11180,11 +11343,14 @@ function recalcToday(){
           <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8, color: "#555" }}>Recent Estimates</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8 }}>
             {recentEstimates.map(e => (
-              <div key={e.id} onClick={() => openEstimateSlip(e)} style={{ ...card, padding: "10px 14px", fontSize: 12, cursor: "pointer", border: "1px solid #eee" }}>
-                <div style={{ fontWeight: 600, textTransform: "capitalize" }}>{e.mode}</div>
+              <div key={e.id} style={{ ...card, padding: "10px 14px", fontSize: 12, border: "1px solid #eee" }}>
+                <div style={{ fontWeight: 600, textTransform: "capitalize" }}>{e.mode}{e.metadata?.changes?.length ? <span style={{ marginLeft: 6, fontSize: 9, color: C.orange, fontWeight: 400 }}>edited {e.metadata.changes.length}×</span> : null}</div>
                 <div style={{ color: "#888", fontSize: 11 }}>{new Date(e.created_at).toLocaleDateString("en-IN")}</div>
                 {e.total_amount && <div style={{ color: C.blue, fontWeight: 600, marginTop: 4 }}>₹{Math.round(e.total_amount).toLocaleString("en-IN")}</div>}
-                <div style={{ fontSize: 10, color: "#aaa", marginTop: 4 }}>tap to view details</div>
+                <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                  <button onClick={() => openEstimateSlip(e)} style={{ flex: 1, padding: "3px 0", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: 4, fontSize: 11, cursor: "pointer" }}>👁 View</button>
+                  <button onClick={e2 => { e2.stopPropagation(); const it = (e.items||[])[0]||{}; setEditEstModal({ est: e, making: String(Math.round(it.making||0)), dia1Rate: it.dia1Rate||"", dia2Rate: it.dia2Rate||"", stoneRate: it.stoneRate||"", sellTotal: String(Math.round(it.sellTotal||0)), saving: false }); }} style={{ flex: 1, padding: "3px 0", background: "#fff8e1", border: "1px solid #ffe082", borderRadius: 4, fontSize: 11, cursor: "pointer" }}>✏️ Edit</button>
+                </div>
               </div>
             ))}
           </div>
