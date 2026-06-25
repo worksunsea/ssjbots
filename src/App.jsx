@@ -10086,7 +10086,7 @@ function CalculatorScreen() {
 
   // Jewellery state
   const [jw, setJw] = useState({
-    itemName: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "",
+    itemImage: "", itemName: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "",
     makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "",
     dia2Wt: "", dia2Unit: "ct", dia2Rate: "",
     stoneWt: "", stoneUnit: "ct", stoneRate: "",
@@ -10253,8 +10253,44 @@ function CalculatorScreen() {
   );
 
   // ── JEWELLERY TAB ──
+  const [jwImgUploading, setJwImgUploading] = useState(false);
+  const jwImgRef = useRef();
+
+  const handleJwImagePick = async (file) => {
+    if (!file) return;
+    setJwImgUploading(true);
+    try {
+      const { publicUrl } = await secureImageUpload(file, sb, "estimates", { maxDim: 800, quality: 0.6 });
+      setJw(p => ({ ...p, itemImage: publicUrl }));
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      setJwImgUploading(false);
+    }
+  };
+
   const jewelleryTab = (
     <div>
+      {/* Item image */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+        <div
+          onClick={() => jwImgRef.current?.click()}
+          style={{ width: 72, height: 72, borderRadius: 8, border: "2px dashed #ccc", cursor: "pointer", overflow: "hidden", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "#fafafa" }}
+        >
+          {jw.itemImage
+            ? <img src={jw.itemImage} alt="item" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            : <span style={{ fontSize: 28 }}>{jwImgUploading ? "⏳" : "📷"}</span>}
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Item Photo (optional)</div>
+          <button style={{ fontSize: 11, padding: "4px 10px", borderRadius: 6, border: "1px solid #ccc", background: "#fff", cursor: "pointer" }} onClick={() => jwImgRef.current?.click()} disabled={jwImgUploading}>
+            {jwImgUploading ? "Uploading…" : jw.itemImage ? "Change Photo" : "Add Photo"}
+          </button>
+          {jw.itemImage && <button style={{ fontSize: 11, padding: "4px 8px", borderRadius: 6, border: "1px solid #fcc", background: "#fff8f8", cursor: "pointer", marginLeft: 6 }} onClick={() => setJw(p => ({ ...p, itemImage: "" }))}>✕</button>}
+        </div>
+        <input ref={jwImgRef} type="file" accept="image/*" style={{ display: "none" }} onChange={e => handleJwImagePick(e.target.files?.[0])} />
+      </div>
+
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
         <div><label style={lbl}>Item Name / Tag</label><input style={inp} value={jw.itemName} onChange={e => setJw(p => ({ ...p, itemName: e.target.value }))} placeholder="e.g. Necklace S-204" /></div>
         <div><label style={lbl}>Gross Weight (g)</label><input style={inp} type="number" step="0.01" value={jw.grossWt} onChange={e => setJw(p => ({ ...p, grossWt: e.target.value }))} placeholder="0.00" /></div>
