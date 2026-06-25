@@ -1942,10 +1942,11 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
 // Saves contact (bullion_leads) with source=walk_in + tag walk_in,
 // then optionally records a demand. Bot is OFF by default (client is in store).
 // ──────────────────────────────────────────────────────────
-function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved }) {
+function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved, prefill = null }) {
   const { customFields } = React.useContext(ContactFieldsContext);
   const sourceTags = allTags.filter((t) => t.category === "source").map((t) => t.name);
   const otherTags = allTags.filter((t) => t.category !== "source").map((t) => t.name);
+  const [pastEstimates, setPastEstimates] = useState([]);
 
   const [searchQ, setSearchQ] = useState("");
   const [searchResults, setSearchResults] = useState([]);
@@ -1999,6 +2000,48 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved }) {
     hasExchange: false, exchangeDesc: "", exchangeValue: "",
   });
 
+  // Pre-fill from calculator prefill prop
+  useEffect(() => {
+    if (!prefill) return;
+    const { contact, estimateSummary } = prefill;
+    // Pre-fill estimate-derived fields
+    if (estimateSummary) {
+      const category = estimateSummary.mode === "jewellery" ? "gold" : "diamond";
+      const seen = estimateSummary.itemName ? [estimateSummary.itemName] : [];
+      const quoted = estimateSummary.total ? String(Math.round(estimateSummary.total)) : "";
+      setForm(s => ({ ...s, productCategory: category, itemsSeen: seen, priceQuoted: quoted, estimate: quoted }));
+    }
+    if (!contact?.id) {
+      // Pre-fill basic name/phone if available
+      if (contact?.name || contact?.phone) {
+        setForm(s => ({ ...s, name: contact.name || "", phone: contact.phone || "" }));
+        if (contact.name || contact.phone) setSearchQ((contact.name || contact.phone || "").substring(0, 20));
+      }
+      return;
+    }
+    // Returning client — fetch full profile + past estimates
+    const tid = getTenantId();
+    sb.from("bullion_leads").select("*").eq("id", contact.id).maybeSingle().then(({ data: lead }) => {
+      if (!lead) return;
+      setSelectedContact(lead);
+      setForm(s => ({
+        ...s,
+        name: lead.name || "",
+        phone: lead.phone || "",
+        city: lead.city || "",
+        email: lead.email || "",
+        bday: lead.bday || "",
+        anniversary: lead.anniversary || "",
+        client_rating: lead.client_rating != null ? String(lead.client_rating) : "",
+        is_client: !!lead.is_client,
+        wedding_date: lead.wedding_date || "",
+        wedding_family_member: lead.wedding_family_member || "",
+        tags: lead.tags?.length ? lead.tags : s.tags,
+      }));
+    });
+    sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items,metadata").eq("lead_id", contact.id).order("created_at", { ascending: false }).limit(10).then(({ data }) => setPastEstimates(data || []));
+  }, []); // eslint-disable-line
+
   const set = (k, v) => setForm((s) => ({ ...s, [k]: v }));
   const toggleTag = (tag) => setForm((s) => ({ ...s, tags: s.tags.includes(tag) ? s.tags.filter((t) => t !== tag) : [...s.tags, tag] }));
   const toggleProductType = (t) => setForm((s) => ({ ...s, productTypes: s.productTypes.includes(t) ? s.productTypes.filter((x) => x !== t) : [...s.productTypes, t] }));
@@ -2046,6 +2089,20 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved }) {
       source: c.source || "walk_in",
     }));
     setSearchQ(""); setSearchResults([]);
+    // Load full profile + past estimates for returning client
+    sb.from("bullion_leads").select("*").eq("id", c.id).maybeSingle().then(({ data: lead }) => {
+      if (!lead) return;
+      setForm(s => ({
+        ...s,
+        email: lead.email || s.email,
+        bday: lead.bday || s.bday,
+        anniversary: lead.anniversary || s.anniversary,
+        wedding_date: lead.wedding_date || s.wedding_date,
+        wedding_family_member: lead.wedding_family_member || s.wedding_family_member,
+        is_client: !!lead.is_client,
+      }));
+    });
+    sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items,metadata").eq("lead_id", c.id).order("created_at", { ascending: false }).limit(10).then(({ data }) => setPastEstimates(data || []));
   };
 
   const save = async () => {
@@ -2152,7 +2209,7 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved }) {
       }
 
       setToast(createDemand ? "Walk-in saved with demand." : "Walk-in contact saved.");
-      setTimeout(() => onSaved(), 1500);
+      setTimeout(() => onSaved({ id: leadId, name: form.name || null, phone }), 1500);
     } catch (e) {
       setErr(String(e)); setSaving(false);
     }
@@ -2189,6 +2246,54 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved }) {
               {searching && <span style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", fontSize: 11, color: "#aaa" }}>searching…</span>}
             </div>
           </Field>
+
+          {/* ── Estimate summary panel (from calculator) ── */}
+          {prefill?.estimateSummary && (() => {
+            const es = prefill.estimateSummary;
+            return (
+              <div style={{ background: "#f0f7ff", border: "1px solid #bbdefb", borderRadius: 8, padding: "10px 14px", margin: "0 0 12px", display: "flex", gap: 12, alignItems: "center" }}>
+                {es.itemImage && <img src={es.itemImage} alt="" style={{ width: 48, height: 48, objectFit: "cover", borderRadius: 6, border: "1px solid #ddd", flexShrink: 0 }} />}
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>📋 Shown on counter: {es.itemName || es.mode}</div>
+                  <div style={{ fontSize: 12, color: "#555", marginTop: 2 }}>
+                    {es.mode === "jewellery" ? "💍 Jewellery" : es.mode === "solitaire" ? "💎 Solitaire" : "📋 Quotation"}
+                    {es.purity ? ` · ${es.purity}` : ""}
+                    {es.total > 0 ? ` · ₹${Math.round(es.total).toLocaleString("en-IN")}` : ""}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* ── Returning client — past visit history ── */}
+          {selectedContact && pastEstimates.length > 0 && (
+            <div style={{ background: "#f9f9f9", border: "1px solid #eee", borderRadius: 8, padding: "10px 14px", margin: "0 0 12px" }}>
+              <div style={{ fontWeight: 600, fontSize: 12, color: "#555", marginBottom: 8 }}>🕐 Previous visits ({pastEstimates.length})</div>
+              <div style={{ display: "grid", gap: 6 }}>
+                {pastEstimates.slice(0, 5).map((pe) => {
+                  const pit = (pe.items || [])[0] || {};
+                  const itemLabel = pit.itemName || pit.shape || pe.mode || "—";
+                  const editCount = pe.metadata?.changes?.length || 0;
+                  return (
+                    <div key={pe.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, padding: "4px 0", borderBottom: "1px solid #f0f0f0" }}>
+                      <div>
+                        <span style={{ fontWeight: 500 }}>{itemLabel}</span>
+                        <span style={{ color: "#888", marginLeft: 8 }}>{new Date(pe.created_at).toLocaleDateString("en-IN")}</span>
+                        {editCount > 0 && <span style={{ color: "#e67e22", marginLeft: 6, fontSize: 10 }}>edited {editCount}×</span>}
+                      </div>
+                      {pe.total_amount && <span style={{ fontWeight: 600, color: "#1565c0" }}>₹{Math.round(pe.total_amount).toLocaleString("en-IN")}</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {selectedContact && pastEstimates.length === 0 && (
+            <div style={{ background: "#f0fff4", border: "1px solid #c8e6c9", borderRadius: 8, padding: "8px 14px", margin: "0 0 12px", fontSize: 12, color: "#2e7d32" }}>
+              ✨ Returning client — no saved estimates on file
+            </div>
+          )}
 
           <div style={{ fontSize: 12, color: "#666", margin: "10px 0 6px", fontWeight: 600 }}>👤 Contact Details</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -9953,7 +10058,7 @@ export default function App() {
       {activeScreen === "analytics" && <AnalyticsScreen funnels={funnels} />}
       {activeScreen === "leadsources" && <LeadSourcesScreen funnels={funnels} />}
       {activeScreen === "formbuilder" && <FormBuilderScreen />}
-      {activeScreen === "calculator" && <CalculatorScreen />}
+      {activeScreen === "calculator" && <CalculatorScreen funnels={funnels} allTags={allTags} />}
       {activeScreen === "staff" && <StaffAccessScreen />}
     </div>
     </ContactFieldsContext.Provider>
@@ -10067,7 +10172,7 @@ function newSolRow() {
   return { id: Date.now() + Math.random(), cert: "IGI", color: "H", shape: "Round", clarity: "VS1", cut: "Excellent", weight: "", buyDisc: "", sellDisc: "", vendorCode: "", purchasePrice: "", notes: "", manualPrice: "" };
 }
 
-function CalculatorScreen() {
+function CalculatorScreen({ funnels = [], allTags = [] }) {
   const [tab, setTab] = useState("jewellery");
   const [rapData, setRapData] = useState(RAP_SEED);
   const [rapAge, setRapAge] = useState(null);
@@ -10080,6 +10185,8 @@ function CalculatorScreen() {
   const [saveModal, setSaveModal] = useState(false);
   const [editingEstId, setEditingEstId] = useState(null);
   const [editingEstOrig, setEditingEstOrig] = useState(null);
+  const [walkinOpen, setWalkinOpen] = useState(false);
+  const [walkinPrefill, setWalkinPrefill] = useState(null);
   const [saveContact, setSaveContact] = useState(() => { try { const s = localStorage.getItem("calc_active_contact"); return s ? JSON.parse(s) : null; } catch { return null; } });
   const [contactSearch, setContactSearch] = useState(() => { try { const s = localStorage.getItem("calc_active_contact"); if (s) { const c = JSON.parse(s); return c.name + (c.phone ? ` (${c.phone})` : ""); } } catch {} return ""; });
   const [contactResults, setContactResults] = useState([]);
@@ -10318,8 +10425,21 @@ function CalculatorScreen() {
         // INSERT new estimate
         const payload = { lead_id: saveContact?.id || null, created_by: user?.name || user?.email, mode, items, total_amount: total || null, metadata: { attended_by: attendedBy || null } };
         queueEstimate(payload);
-        showToast("✅ Saved locally");
+        showToast("✅ Saved — opening walk-in form…");
         setSaveModal(false);
+        // Open walk-in form immediately so salesperson can capture client details
+        const it0 = items[0] || {};
+        setWalkinPrefill({
+          contact: saveContact,
+          estimateSummary: {
+            mode,
+            total: total || 0,
+            itemName: it0.itemName || it0.shape || "",
+            itemImage: it0.itemImage || "",
+            purity: PURITIES[it0.purityIdx]?.l || "",
+          },
+        });
+        setWalkinOpen(true);
         const { error: insErr } = await sb.from("bullion_estimates").insert(payload);
         if (insErr) { showToast("⚠️ Local only — will sync later"); }
         else {
@@ -11177,6 +11297,25 @@ function recalcToday(){
       {toast && <div style={{ position: "fixed", bottom: 24, right: 24, background: "#333", color: "#fff", padding: "10px 18px", borderRadius: 8, fontSize: 13, zIndex: 9999 }}>{toast}</div>}
       {saveModalEl}
 
+      {/* Walk-in modal — opened after estimate save OR standalone via header button */}
+      {walkinOpen && (
+        <WalkinEntryModal
+          funnels={funnels}
+          allTags={allTags}
+          prefill={walkinPrefill}
+          onClose={() => setWalkinOpen(false)}
+          onSaved={(lead) => {
+            setWalkinOpen(false);
+            if (lead?.id && !saveContact?.id) {
+              const c = { id: lead.id, name: lead.name, phone: lead.phone };
+              setSaveContact(c);
+              setContactSearch(c.name + (c.phone ? ` (${c.phone})` : ""));
+              try { localStorage.setItem("calc_active_contact", JSON.stringify(c)); } catch {}
+            }
+          }}
+        />
+      )}
+
       {/* Editing banner */}
       {editingEstId && editingEstOrig && (
         <div className="no-print" style={{ background: "#fff3e0", border: "1px solid #ffb74d", borderRadius: 8, padding: "8px 14px", marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 13 }}>
@@ -11192,12 +11331,15 @@ function recalcToday(){
           {rapAge != null && rapAge > 7 && <div style={{ fontSize: 12, color: C.orange, marginTop: 2 }}>⚠️ Rapaport data {rapAge} days old — run sync to update</div>}
           {rapAge != null && rapAge <= 7 && <div style={{ fontSize: 11, color: C.green, marginTop: 2 }}>✓ Rapaport {rapData.date || ""}</div>}
         </div>
-        <Btn small ghost color={C.blue} onClick={async () => {
-          showToast("Syncing Rapaport…");
-          const r = await fetch("/api/rapaport-sync?action=seed", { headers: { "x-crm-secret": CRM_SECRET } });
-          const d = await r.json().catch(() => ({}));
-          if (d.ok) { showToast("✅ Synced: " + (d.date || "")); setRapAge(0); } else showToast("❌ " + (d.error || "Sync failed"));
-        }} className="no-print">🔄 Sync Rapaport</Btn>
+        <div style={{ display: "flex", gap: 8 }} className="no-print">
+          <Btn small color="#16a085" onClick={() => { setWalkinPrefill({ contact: saveContact, estimateSummary: null }); setWalkinOpen(true); }} style={{ color: "#fff" }}>🏪 Walk-in</Btn>
+          <Btn small ghost color={C.blue} onClick={async () => {
+            showToast("Syncing Rapaport…");
+            const r = await fetch("/api/rapaport-sync?action=seed", { headers: { "x-crm-secret": CRM_SECRET } });
+            const d = await r.json().catch(() => ({}));
+            if (d.ok) { showToast("✅ Synced: " + (d.date || "")); setRapAge(0); } else showToast("❌ " + (d.error || "Sync failed"));
+          }}>🔄 Sync Rapaport</Btn>
+        </div>
       </div>
 
       {/* Sync pending badge */}
