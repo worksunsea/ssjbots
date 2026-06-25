@@ -10090,9 +10090,9 @@ function CalculatorScreen() {
     makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "",
     dia2Wt: "", dia2Unit: "ct", dia2Rate: "",
     stoneWt: "", stoneUnit: "ct", stoneRate: "",
-    misc1Lbl: "Rodium", misc1Wt: "", misc1Deduct: true,
-    misc2Lbl: "Polish", misc2Wt: "", misc2Deduct: false,
-    misc3Lbl: "Other", misc3Wt: "", misc3Deduct: false,
+    misc1Lbl: "Gemstone", misc1Wt: "", misc1Unit: "g", misc1Rate: "", misc1Deduct: true,
+    misc2Lbl: "Mala",     misc2Wt: "", misc2Unit: "g", misc2Rate: "", misc2Deduct: false,
+    misc3Lbl: "Lakh",     misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false,
   });
 
   // Solitaire (single stone) state
@@ -10145,9 +10145,9 @@ function CalculatorScreen() {
     const d1g = ctToG(jw.dia1Wt, jw.dia1Unit);
     const d2g = ctToG(jw.dia2Wt, jw.dia2Unit);
     const stg = ctToG(jw.stoneWt, jw.stoneUnit);
-    const misc1g = jw.misc1Deduct ? parseFloat(jw.misc1Wt || 0) : 0;
-    const misc2g = jw.misc2Deduct ? parseFloat(jw.misc2Wt || 0) : 0;
-    const misc3g = jw.misc3Deduct ? parseFloat(jw.misc3Wt || 0) : 0;
+    const misc1g = jw.misc1Deduct ? ctToG(jw.misc1Wt, jw.misc1Unit) : 0;
+    const misc2g = jw.misc2Deduct ? ctToG(jw.misc2Wt, jw.misc2Unit) : 0;
+    const misc3g = jw.misc3Deduct ? ctToG(jw.misc3Wt, jw.misc3Unit) : 0;
     const netGold = Math.max(0, gross - d1g - d2g - stg - misc1g - misc2g - misc3g);
     const goldVal = netGold * gRate;
     const makingR = makingMode === "per_g" ? parseFloat(jw.makingRatePg || 0) : parseFloat(jw.makingRatePct || 0);
@@ -10156,7 +10156,11 @@ function CalculatorScreen() {
     const d2raw = parseFloat(jw.dia2Wt || 0);
     const straw = parseFloat(jw.stoneWt || 0);
     const diaTotal = d1raw * parseFloat(jw.dia1Rate || 0) + d2raw * parseFloat(jw.dia2Rate || 0) + straw * parseFloat(jw.stoneRate || 0);
-    return { gross, gRate, netGold, goldVal, making, diaTotal, total: goldVal + making + diaTotal };
+    const misc1Val = parseFloat(jw.misc1Wt || 0) * parseFloat(jw.misc1Rate || 0);
+    const misc2Val = parseFloat(jw.misc2Wt || 0) * parseFloat(jw.misc2Rate || 0);
+    const misc3Val = parseFloat(jw.misc3Wt || 0) * parseFloat(jw.misc3Rate || 0);
+    const miscTotal = misc1Val + misc2Val + misc3Val;
+    return { gross, gRate, netGold, goldVal, making, diaTotal, miscTotal, total: goldVal + making + diaTotal + miscTotal };
   })();
 
   // ── Solitaire calculation ──
@@ -10292,14 +10296,23 @@ function CalculatorScreen() {
 
       {/* Misc deductions */}
       {[
-        { lblK: "misc1Lbl", wtK: "misc1Wt", dK: "misc1Deduct", def: "Rodium" },
-        { lblK: "misc2Lbl", wtK: "misc2Wt", dK: "misc2Deduct", def: "Polish" },
-        { lblK: "misc3Lbl", wtK: "misc3Wt", dK: "misc3Deduct", def: "Other" },
-      ].map(({ lblK, wtK, dK, def }) => (
-        <div key={wtK} style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 8, marginBottom: 8, alignItems: "end" }}>
-          <div><label style={lbl}>Misc Label</label><input style={inp} value={jw[lblK]} onChange={e => setJw(p => ({ ...p, [lblK]: e.target.value }))} placeholder={def} /></div>
-          <div><label style={lbl}>Weight (g)</label><input style={inp} type="number" step="0.01" value={jw[wtK]} onChange={e => setJw(p => ({ ...p, [wtK]: e.target.value }))} placeholder="0.00" /></div>
-          <div style={{ paddingBottom: 6 }}><label style={{ fontSize: 11, color: "#888", display: "block", marginBottom: 4 }}>Deduct</label><input type="checkbox" checked={jw[dK]} onChange={e => setJw(p => ({ ...p, [dK]: e.target.checked }))} /></div>
+        { lblK: "misc1Lbl", wtK: "misc1Wt", unitK: "misc1Unit", rateK: "misc1Rate", dK: "misc1Deduct", def: "Gemstone" },
+        { lblK: "misc2Lbl", wtK: "misc2Wt", unitK: "misc2Unit", rateK: "misc2Rate", dK: "misc2Deduct", def: "Mala" },
+        { lblK: "misc3Lbl", wtK: "misc3Wt", unitK: "misc3Unit", rateK: "misc3Rate", dK: "misc3Deduct", def: "Lakh" },
+      ].map(({ lblK, wtK, unitK, rateK, dK, def }) => (
+        <div key={wtK} style={{ marginBottom: 8 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 8, alignItems: "end" }}>
+            <div><label style={lbl}>Label</label><input style={inp} value={jw[lblK]} onChange={e => setJw(p => ({ ...p, [lblK]: e.target.value }))} placeholder={def} /></div>
+            <div>
+              <label style={lbl}>Weight</label>
+              <div style={{ display: "flex", gap: 4 }}>
+                <input style={{ ...inp, flex: 1 }} type="number" step="0.001" value={jw[wtK]} onChange={e => setJw(p => ({ ...p, [wtK]: e.target.value }))} placeholder="0.00" />
+                <button style={{ ...inp, width: 40, cursor: "pointer", background: "#f0f0f0", fontWeight: 600, padding: "0 4px" }} onClick={() => setJw(p => ({ ...p, [unitK]: p[unitK] === "ct" ? "g" : "ct" }))}>{jw[unitK]}</button>
+              </div>
+            </div>
+            <div><label style={lbl}>Rate (₹)</label><input style={inp} type="number" step="1" value={jw[rateK]} onChange={e => setJw(p => ({ ...p, [rateK]: e.target.value }))} placeholder="0" /></div>
+            <div style={{ paddingBottom: 6 }}><label style={{ fontSize: 11, color: "#888", display: "block", marginBottom: 4 }}>Deduct</label><input type="checkbox" checked={jw[dK]} onChange={e => setJw(p => ({ ...p, [dK]: e.target.checked }))} /></div>
+          </div>
         </div>
       ))}
 
@@ -10309,6 +10322,7 @@ function CalculatorScreen() {
         {resultRow("Gold Value", fmt(jwCalc.goldVal))}
         {resultRow(`Making (${makingMode === "per_g" ? "₹/g" : "%"})`, fmt(jwCalc.making))}
         {resultRow("Diamond / Stone Total", fmt(jwCalc.diaTotal))}
+        {jwCalc.miscTotal > 0 && resultRow("Misc Total", fmt(jwCalc.miscTotal))}
         {resultRow("GRAND TOTAL", fmt(jwCalc.total), true)}
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
