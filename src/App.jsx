@@ -10200,8 +10200,10 @@ function CalculatorScreen() {
   const solGrandTotal = solResult.sellTotal != null
     ? solResult.sellTotal + (solGoldCalc?.total || 0)
     : null;
-  const solGst = sol.applyGst && solGrandTotal ? solGrandTotal * 0.015 : 0;
-  const solFinalTotal = solGrandTotal != null ? solGrandTotal + solGst : null;
+  const solStoneGst = sol.applyGst && solResult.sellTotal ? solResult.sellTotal * 0.015 : 0;
+  const solGoldGst = sol.applyGst && sol.includeGold && solGoldCalc ? solGoldCalc.total * 0.03 : 0;
+  const solTotalGst = solStoneGst + solGoldGst;
+  const solFinalTotal = solGrandTotal != null ? solGrandTotal + solTotalGst : null;
 
   // ── Search contacts for save ──
   useEffect(() => {
@@ -10391,7 +10393,8 @@ function CalculatorScreen() {
   ${clientName ? `<div class="client">Prepared for: ${clientName}</div>` : ""}
   <hr class="thick"/>
   <table>${rows.join("")}
-  ${sol.applyGst ? `<tr><td style="padding:3px 6px;font-size:13px;color:#555;">GST @ 1.5%</td><td style="padding:3px 6px;text-align:right;font-size:13px;">${fmt(solGst)}</td></tr>` : ""}
+  ${sol.applyGst && solResult.sellTotal != null ? `<tr><td style="padding:3px 6px;font-size:13px;color:#555;">GST @ 1.5% (stone)</td><td style="padding:3px 6px;text-align:right;font-size:13px;">${fmt(solStoneGst)}</td></tr>` : ""}
+  ${sol.applyGst && sol.includeGold && solGoldCalc ? `<tr><td style="padding:3px 6px;font-size:13px;color:#555;">GST @ 3% (gold setting)</td><td style="padding:3px 6px;text-align:right;font-size:13px;">${fmt(solGoldGst)}</td></tr>` : ""}
   <tr class="total-row"><td>GRAND TOTAL</td><td style="text-align:right;">${fmt(solFinalTotal)}</td></tr>
   </table>
   <div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill
@@ -10699,10 +10702,11 @@ function CalculatorScreen() {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 0" }}>
           <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
             <input type="checkbox" checked={sol.applyGst} onChange={e => setSol(p => ({ ...p, applyGst: e.target.checked }))} />
-            GST @ 1.5%
+            GST
           </label>
-          <span style={{ fontSize: 13 }}>{sol.applyGst ? fmt(solGst) : "—"}</span>
         </div>
+        {sol.applyGst && solResult.sellTotal != null && resultRow("GST @ 1.5% (stone)", fmt(solStoneGst))}
+        {sol.applyGst && sol.includeGold && solGoldCalc && resultRow("GST @ 3% (gold setting)", fmt(solGoldGst))}
         {resultRow("GRAND TOTAL", fmt(solFinalTotal), true)}
         {user?.role === "superadmin" && solResult.buyTotal !== null && solResult.sellTotal !== null && (
           <div style={{ fontSize: 11, color: "#888", marginTop: 6, paddingTop: 6, borderTop: "1px solid #eee" }}>
