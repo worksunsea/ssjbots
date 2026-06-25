@@ -501,12 +501,13 @@ async function upsertRapaportData(payload) {
     Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
     "Content-Type": "application/json",
   };
-  // Delete existing row first — avoids btree index size limit on (tenant_id,field,value)
+  // Delete existing row first, then insert.
+  // (unique index is on (tenant_id,field) only after migration 0052 — value column excluded
+  // because large JSON exceeds btree 2704-byte limit)
   await fetch(
     `${SUPABASE_URL}/rest/v1/bullion_dropdowns?field=eq.rapaport_data&tenant_id=eq.${TENANT}`,
     { method: "DELETE", headers }
   );
-  // Insert fresh
   const res = await fetch(`${SUPABASE_URL}/rest/v1/bullion_dropdowns`, {
     method: "POST",
     headers: { ...headers, Prefer: "return=minimal" },
