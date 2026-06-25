@@ -10553,17 +10553,26 @@ function CalculatorScreen() {
   th:last-child { text-align: right; }
   .total-row td { padding: 5px 6px; font-size: 16px; font-weight: bold; border-top: 2px solid #333; }
   .disclaimer { font-size: 10px; color: #888; text-align: center; margin-top: 14px; }
-  .printbtn { display: block; margin: 12px auto 0; padding: 8px 24px; background: #333; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
-  @media print { .printbtn { display: none; } }`;
+  .btnrow { display: flex; gap: 8px; margin-top: 12px; justify-content: center; flex-wrap: wrap; }
+  .printbtn { padding: 8px 20px; background: #333; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .recalcbtn { padding: 8px 20px; background: #1565c0; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  @media print { .btnrow { display: none; } }`;
     let body = "";
+    let extraScript = "";
     if (est.mode === "jewellery") {
+      const todayRate = Math.round(liveRates[PURITIES[it.purityIdx]?.rateKey] || 0);
+      const netGold = parseFloat(it.netGold || 0);
+      const making = parseFloat(it.making || 0);
+      const diaTotal = parseFloat(it.diaTotal || 0);
+      const miscTotal = parseFloat(it.miscTotal || 0);
+      const applyGst = it.applyGst ? 1 : 0;
       const dRows = [];
       dRows.push(row("Purity", PURITIES[it.purityIdx]?.l || "Custom"));
       if (it.grossWt) dRows.push(row("Gross Weight", `${parseFloat(it.grossWt||0).toFixed(3)} g`));
-      if (it.netGold != null) dRows.push(row("Net Gold Weight", `${parseFloat(it.netGold).toFixed(3)} g`));
+      if (it.netGold != null) dRows.push(row("Net Gold Weight", `${netGold.toFixed(3)} g`));
       if (it.gRate > 0) dRows.push(row("Gold Rate", `₹${Math.round(it.gRate).toLocaleString("en-IN")}/g`));
       if (it.goldVal > 0) dRows.push(row("Gold Value", fmtN(it.goldVal)));
-      if (it.making > 0) dRows.push(row("Making", fmtN(it.making)));
+      if (making > 0) dRows.push(row("Making", fmtN(making)));
       if (parseFloat(it.dia1Wt||0) > 0 && it.dia1Rate > 0) dRows.push(row(`Diamond 1 (${parseFloat(it.dia1Wt)}${it.dia1Unit} @ ₹${it.dia1Rate})`, fmtN(parseFloat(it.dia1Wt||0)*parseFloat(it.dia1Rate||0))));
       if (parseFloat(it.dia2Wt||0) > 0 && it.dia2Rate > 0) dRows.push(row(`Diamond 2 (${parseFloat(it.dia2Wt)}${it.dia2Unit} @ ₹${it.dia2Rate})`, fmtN(parseFloat(it.dia2Wt||0)*parseFloat(it.dia2Rate||0))));
       if (parseFloat(it.stoneWt||0) > 0 && it.stoneRate > 0) dRows.push(row(`Stone (${parseFloat(it.stoneWt)}${it.stoneUnit} @ ₹${it.stoneRate})`, fmtN(parseFloat(it.stoneWt||0)*parseFloat(it.stoneRate||0))));
@@ -10572,10 +10581,36 @@ function CalculatorScreen() {
         const mw = parseFloat(it[wk]||0);
         dRows.push(row(mw > 0 ? `${it[lk]||"Misc"} (${mw}${it[uk]})` : (it[lk]||"Misc"), fmtN(mw > 0 ? mw*mr : mr)));
       });
+      const recalcBtnHtml = todayRate > 0 ? `<button class="recalcbtn" onclick="recalcToday()">📊 New estimate — today's rate (₹${todayRate.toLocaleString("en-IN")}/g)</button>` : "";
       body = `<div class="om">ॐ</div><div class="title">ESTIMATE</div><div class="date">${date}</div>${clientName ? `<div class="client">Prepared for: ${clientName}</div>` : ""}<hr class="thick"/>
       <div class="item-header">${it.itemImage ? `<img class="item-img" src="${it.itemImage}" alt="item" onclick="expandImg('${it.itemImage}')"/>` : ""}${it.itemName ? `<div class="item-name">${it.itemName}</div>` : ""}</div>
       <table>${dRows.join("")}${it.applyGst && it.gst > 0 ? row("GST @ 3%", fmtN(it.gst)) : ""}<tr class="total-row"><td>GRAND TOTAL</td><td style="text-align:right;">${fmtN(est.total_amount)}</td></tr></table>
-      <div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill</div>`;
+      <div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill</div>
+      <div class="btnrow"><button class="printbtn" onclick="window.print()">🖨️ Print</button>${recalcBtnHtml}</div>`;
+      extraScript = `
+var TODAY_RATE=${todayRate},NET_GOLD=${netGold},MAKING=${making},DIA_TOTAL=${diaTotal},MISC_TOTAL=${miscTotal},APPLY_GST=${applyGst};
+var CLIENT="${clientName.replace(/"/g,"'")}",IMG="${(it.itemImage||"").replace(/"/g,"'")}",INAME="${(it.itemName||"").replace(/"/g,"'")}",PURITY="${(PURITIES[it.purityIdx]?.l||"Custom").replace(/"/g,"'")}",GWGT="${(it.grossWt||"").toString().replace(/"/g,"'")}",NGWGT="${netGold.toFixed(3)}";
+var MAKING_LBL="Making",DIA1="${it.dia1Wt||""}",DIA1U="${it.dia1Unit||""}",DIA1R="${it.dia1Rate||""}",DIA2="${it.dia2Wt||""}",DIA2U="${it.dia2Unit||""}",DIA2R="${it.dia2Rate||""}",STW="${it.stoneWt||""}",STU="${it.stoneUnit||""}",STR="${it.stoneRate||""}";
+function fmtR(n){return n==null?"—":"₹"+Math.round(n).toLocaleString("en-IN");}
+function recalcToday(){
+  if(!TODAY_RATE){alert("Live rate not loaded");return;}
+  var newGoldVal=NET_GOLD*TODAY_RATE,subT=newGoldVal+MAKING+DIA_TOTAL+MISC_TOTAL,newGst=APPLY_GST?subT*0.03:0,newTotal=subT+newGst;
+  var td=new Date().toLocaleDateString("en-IN",{day:"2-digit",month:"long",year:"numeric"});
+  var r=function(l,v){return "<tr><td style='padding:3px 6px;color:#444;font-size:13px;'>"+l+"</td><td style='padding:3px 6px;text-align:right;font-size:13px;'>"+v+"</td></tr>";};
+  var rows=[r("Purity",PURITY)];
+  if(GWGT)rows.push(r("Gross Weight",parseFloat(GWGT).toFixed(3)+" g"));
+  rows.push(r("Net Gold Weight",NGWGT+" g"));
+  rows.push(r("Gold Rate","₹"+TODAY_RATE.toLocaleString("en-IN")+"/g (today)"));
+  rows.push(r("Gold Value",fmtR(newGoldVal)));
+  if(MAKING>0)rows.push(r(MAKING_LBL,fmtR(MAKING)));
+  if(parseFloat(DIA1)>0&&DIA1R)rows.push(r("Diamond 1 ("+parseFloat(DIA1)+DIA1U+" @ ₹"+DIA1R+")",fmtR(parseFloat(DIA1)*parseFloat(DIA1R))));
+  if(parseFloat(DIA2)>0&&DIA2R)rows.push(r("Diamond 2 ("+parseFloat(DIA2)+DIA2U+" @ ₹"+DIA2R+")",fmtR(parseFloat(DIA2)*parseFloat(DIA2R))));
+  if(parseFloat(STW)>0&&STR)rows.push(r("Stone ("+parseFloat(STW)+STU+" @ ₹"+STR+")",fmtR(parseFloat(STW)*parseFloat(STR))));
+  var gstRow=APPLY_GST&&newGst>0?r("GST @ 3%",fmtR(newGst)):"";
+  var h='<!DOCTYPE html><html><head><title>Estimate</title><style>'+document.head.querySelector("style").textContent+'<\/style><\/head><body><div class="wrap"><div class="om">ॐ<\/div><div class="title">ESTIMATE<\/div><div class="date">'+td+'<\/div>'+(CLIENT?'<div class="client">Prepared for: '+CLIENT+'<\/div>':'')+'<hr class="thick"\/><div class="item-header">'+(IMG?'<img class="item-img" src="'+IMG+'" alt="item"\/>':"")+(INAME?'<div class="item-name">'+INAME+'<\/div>':"")+
+  '<\/div><table>'+rows.join("")+gstRow+'<tr class="total-row"><td>GRAND TOTAL<\/td><td style="text-align:right;">'+fmtR(newTotal)+'<\/td><\/tr><\/table><div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill<\/div><div class="btnrow"><button class="printbtn" onclick="window.print()">🖨️ Print<\/button><\/div><\/div><\/body><\/html>';
+  var w=window.open("","_blank","width=500,height=750");if(w){w.document.write(h);w.document.close();}
+}`;
     } else if (est.mode === "solitaire") {
       const dRows = [];
       if (it.shape) dRows.push(row("Shape", it.shape));
@@ -10590,14 +10625,16 @@ function CalculatorScreen() {
       const goldGst = it.applyGst && it.includeGold && it.goldVal ? ((it.goldVal||0)+(it.making||0)) * 0.03 : 0;
       body = `<div class="om">ॐ</div><div class="title">ESTIMATE</div><div class="date">${date}</div>${clientName ? `<div class="client">Prepared for: ${clientName}</div>` : ""}<hr class="thick"/>
       <table>${dRows.join("")}${stoneGst > 0 ? row("GST @ 1.5% (stone)", fmtN(stoneGst)) : ""}${goldGst > 0 ? row("GST @ 3% (gold setting)", fmtN(goldGst)) : ""}<tr class="total-row"><td>GRAND TOTAL</td><td style="text-align:right;">${fmtN(est.total_amount)}</td></tr></table>
-      <div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill</div>`;
+      <div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill</div>
+      <div class="btnrow"><button class="printbtn" onclick="window.print()">🖨️ Print</button></div>`;
     } else {
       const stoneRows = (est.items||[]).map((r, i) => `<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;font-size:12px;color:#888;">${i+1}</td><td style="padding:4px 6px;font-size:12px;">${r.shape||"—"}</td><td style="padding:4px 6px;font-size:12px;">${r.weight||"—"} ct</td><td style="padding:4px 6px;font-size:12px;">${r.color||"—"} / ${r.clarity||"—"}</td><td style="padding:4px 6px;font-size:12px;">${r.cert||"—"}</td><td style="padding:4px 6px;font-size:12px;text-align:right;font-weight:600;">${r.sellTotal != null ? fmtN(r.sellTotal) : "—"}</td></tr>`).join("");
       body = `<div class="om">ॐ</div><div class="title">QUOTATION</div><div class="date">${date}</div>${clientName ? `<div class="client">Prepared for: ${clientName}</div>` : ""}<hr class="thick"/>
       <table><thead><tr><th>#</th><th>Shape</th><th>Weight</th><th>Colour/Clarity</th><th>Cert</th><th style="text-align:right;">Price</th></tr></thead><tbody>${stoneRows}</tbody></table>
-      <div class="disclaimer">This is an estimate only · Prices subject to change · Not a final bill</div>`;
+      <div class="disclaimer">This is an estimate only · Prices subject to change · Not a final bill</div>
+      <div class="btnrow"><button class="printbtn" onclick="window.print()">🖨️ Print</button></div>`;
     }
-    const html = `<!DOCTYPE html><html><head><title>Estimate</title><style>${CSS}</style><script>function expandImg(src){var w=window.open('','_blank','width=600,height=600');w.document.write('<body style="margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh"><img src="'+src+'" style="max-width:100%;max-height:100vh;object-fit:contain"/></body>');w.document.close();}<\/script></head><body><div class="wrap">${body}<button class="printbtn" onclick="window.print()">🖨️ Print</button></div></body></html>`;
+    const html = `<!DOCTYPE html><html><head><title>Estimate</title><style>${CSS}</style><script>function expandImg(src){var w=window.open('','_blank','width=600,height=600');w.document.write('<body style="margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh"><img src="'+src+'" style="max-width:100%;max-height:100vh;object-fit:contain"/></body>');w.document.close();}${extraScript}<\/script></head><body><div class="wrap">${body}</div></body></html>`;
     const win = window.open("", "_blank", "width=500,height=750");
     if (win) { win.document.write(html); win.document.close(); }
   };
