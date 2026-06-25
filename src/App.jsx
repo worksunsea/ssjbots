@@ -9871,6 +9871,7 @@ export default function App() {
     { k: "analytics",  l: "Analytics",   icon: "📊" },
     { k: "leadsources",l: "Lead Sources", icon: "🌐" },
     { k: "formbuilder",l: "Form Builder", icon: "🛠️" },
+    { k: "calculator", l: "Calculator",    icon: "💎" },
     { k: "staff",      l: "Staff & Access", icon: "👥" },
   ];
 
@@ -9878,8 +9879,8 @@ export default function App() {
   const ROLE_DEFAULT_TABS = {
     superadmin: ALL_TABS.map((t) => t.k),
     admin:      ALL_TABS.map((t) => t.k),
-    manager:    ["demands", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder"],
-    staff:      ["demands", "contacts", "upcoming"],
+    manager:    ["demands", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator"],
+    staff:      ["demands", "contacts", "upcoming", "calculator"],
     telecaller: ["queue", "demands"],
   };
 
@@ -9952,9 +9953,618 @@ export default function App() {
       {activeScreen === "analytics" && <AnalyticsScreen funnels={funnels} />}
       {activeScreen === "leadsources" && <LeadSourcesScreen funnels={funnels} />}
       {activeScreen === "formbuilder" && <FormBuilderScreen />}
+      {activeScreen === "calculator" && <CalculatorScreen />}
       {activeScreen === "staff" && <StaffAccessScreen />}
     </div>
     </ContactFieldsContext.Provider>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CALCULATOR SCREEN — jewellery estimate + solitaire (Rapaport) + quotation sheet
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Rapaport lookup tables — June 19, 2026
+// Structure: { rounds: { "0.30": [[10 rows × 11 cols]], ... }, fancy: { ... } }
+// Rows (clarities): IF, VVS1, VVS2, VS1, VS2, SI1, SI2, I1, I2, I3
+// Cols (colors):    D, E, F, G, H, I, J, K, L, M, N
+// Values in hundreds of $/ct — multiply by 100 to get $/ct
+const RAP_CLARITIES = ["IF","VVS1","VVS2","VS1","VS2","SI1","SI2","I1","I2","I3"];
+const RAP_COLORS    = ["D","E","F","G","H","I","J","K","L","M","N"];
+const RAP_WEIGHT_RANGES = ["0.30","0.40","0.50","0.70","0.90","1.00","1.50","2.00","3.00","4.00","5.00","10.00"];
+const RAP_RANGE_MINS = [0.30,0.40,0.50,0.70,0.90,1.00,1.50,2.00,3.00,4.00,5.00,10.00];
+
+const RAP_SEED = {
+  date: "2026-06-19",
+  rounds: {
+    "0.30": [[27,22,19,17,15,14,13,12,11,10,7],[23,20,17,15,14,13,12,11,10,9,6],[20,18,16,14,13,12,11,10,10,9,6],[18,16,14,13,12,12,11,10,9,8,5],[15,14,13,12,11,11,10,9,8,7,5],[13,12,11,11,10,10,9,8,7,6,5],[12,11,10,10,9,9,8,7,6,6,4],[11,10,9,9,8,8,7,6,5,5,4],[10,9,8,8,7,7,6,6,5,5,3],[9,8,8,7,7,7,6,5,5,4,3]],
+    "0.40": [[31,25,21,20,18,16,15,14,13,11,8],[26,22,19,18,17,15,14,13,12,10,7],[23,20,18,17,16,14,13,12,11,10,7],[21,18,17,16,15,13,12,11,10,9,6],[18,16,15,14,13,12,11,10,9,8,6],[16,14,13,12,12,11,10,9,8,7,6],[14,13,12,11,11,10,10,9,8,7,5],[13,12,11,10,10,9,9,8,7,6,5],[12,11,10,9,9,8,8,7,6,5,4],[11,10,9,8,8,8,7,6,5,5,4]],
+    "0.50": [[47,37,29,25,22,19,16,15,14,13,11],[37,32,26,23,20,17,15,14,13,12,10],[32,28,24,21,19,16,14,13,12,11,10],[27,24,21,19,18,15,13,12,11,10,9],[23,21,19,17,16,14,12,11,10,10,8],[20,18,16,15,14,13,11,10,9,9,8],[17,15,14,13,12,12,11,10,9,9,7],[15,14,13,12,11,11,10,9,8,8,7],[14,13,12,11,10,10,9,9,8,7,6],[13,12,11,10,9,9,8,8,8,6,5]],
+    "0.70": [[64,51,41,35,30,26,23,21,19,17,12],[52,45,38,33,28,24,21,19,17,16,11],[45,40,34,30,26,22,19,17,16,15,11],[38,33,30,27,24,20,17,16,15,14,10],[31,28,25,23,21,18,16,15,14,14,9],[26,23,21,20,18,16,15,14,13,13,9],[22,20,19,18,16,15,14,13,12,12,8],[20,18,17,16,15,14,13,12,11,10,8],[18,16,15,14,13,12,11,11,11,8,7],[16,14,13,12,11,11,10,10,10,7,6]],
+    "0.90": [[96,82,62,53,45,36,29,26,25,20,15],[83,71,57,48,41,32,26,24,23,19,14],[73,63,52,44,38,30,24,22,21,18,13],[59,52,45,40,35,28,23,21,20,17,12],[47,43,39,34,31,26,22,20,19,16,12],[41,37,34,30,28,24,20,19,18,15,11],[35,32,29,26,24,21,19,18,17,14,10],[30,27,25,23,21,19,17,16,15,13,9],[26,23,21,20,18,16,15,15,14,12,8],[23,20,18,17,16,15,14,14,13,10,7]],
+    "1.00": [[150,118,89,76,63,48,37,32,30,23,16],[115,102,81,69,57,44,34,30,28,22,15],[96,87,74,63,52,41,32,28,26,21,14],[75,68,62,54,47,37,30,26,24,20,13],[58,53,49,45,42,34,28,25,23,19,13],[48,44,41,38,35,31,26,24,22,18,12],[40,36,33,31,29,26,23,21,20,17,12],[34,31,29,27,25,23,21,20,19,16,11],[29,27,25,23,21,19,18,17,16,15,10],[25,23,22,21,19,17,16,15,14,14,10]],
+    "1.50": [[200,178,146,127,114,88,71,63,52,33,18],[179,164,136,116,105,82,65,57,49,31,17],[156,145,125,108,98,77,61,54,47,30,16],[129,120,108,94,85,71,57,51,44,29,15],[103,95,86,77,70,63,52,48,40,28,15],[83,77,69,65,60,53,48,44,37,26,14],[70,64,58,54,50,46,41,37,33,25,14],[60,53,48,45,42,38,35,32,29,23,13],[50,45,41,38,36,33,31,29,28,22,12],[44,39,37,34,32,30,29,27,26,21,12]],
+    "2.00": [[330,275,235,205,175,141,113,95,80,41,19],[270,245,210,190,160,132,105,88,76,39,18],[245,220,195,175,150,123,98,83,72,37,17],[205,185,165,150,135,112,92,77,68,35,16],[165,150,135,125,115,104,86,71,65,33,15],[135,120,110,100,93,86,78,66,61,31,15],[109,99,91,84,76,69,63,57,54,29,14],[91,83,76,70,63,57,53,50,47,28,14],[78,71,66,61,54,50,46,43,40,27,13],[68,63,57,54,48,45,42,40,38,26,13]],
+    "3.00": [[550,460,410,350,295,235,200,139,103,49,21],[450,420,370,320,265,210,185,131,98,47,20],[405,375,335,295,245,195,170,124,93,45,19],[335,315,280,245,210,180,155,112,87,43,18],[270,250,225,205,185,160,135,101,82,41,17],[220,205,190,175,160,140,120,92,77,38,16],[175,165,150,140,130,120,110,84,71,35,15],[145,135,125,120,110,103,97,76,62,33,15],[117,111,107,103,95,90,82,65,55,31,14],[95,91,87,83,79,75,67,58,47,30,14]],
+    "4.00": [[745,645,585,495,415,315,255,155,111,54,23],[625,585,525,450,390,295,240,145,106,52,22],[565,520,475,410,355,275,225,138,101,50,21],[465,430,395,360,315,245,200,127,95,47,20],[360,335,315,295,260,215,180,114,90,44,19],[280,260,245,230,210,190,160,105,86,41,18],[225,210,195,185,170,155,140,95,75,39,17],[185,175,160,150,140,130,120,83,66,36,17],[150,140,130,120,115,105,100,73,59,34,16],[125,115,105,100,95,90,80,65,50,32,16]],
+    "5.00": [[1000,855,770,690,580,430,315,175,125,60,25],[835,750,670,595,520,395,295,170,120,57,23],[730,670,595,540,465,360,280,160,115,54,22],[605,555,505,460,395,320,260,150,110,51,21],[480,445,400,360,325,265,225,140,100,48,21],[365,345,315,290,255,225,195,130,95,46,20],[280,260,240,220,205,195,170,120,88,43,19],[220,210,195,180,170,165,150,110,81,41,18],[180,165,155,150,140,135,125,100,69,37,17],[150,140,130,125,120,110,100,80,60,34,16]],
+    "10.00": [[1400,1300,1200,1070,900,635,465,250,140,66,27],[1270,1160,1030,930,820,585,430,235,135,63,26],[1110,1040,930,835,715,535,400,220,130,60,25],[930,865,785,715,610,485,370,205,125,57,24],[750,695,630,565,500,405,325,185,120,55,23],[570,535,495,460,405,340,275,170,115,52,22],[440,405,375,350,325,285,235,150,110,49,21],[345,325,300,275,255,235,200,135,100,47,20],[270,255,240,225,210,195,165,120,85,45,19],[225,210,195,185,175,165,140,105,75,43,18]],
+  },
+  fancy: {
+    "0.30": [[23,21,19,17,16,15,13,11,9,7,6],[21,19,17,16,15,14,12,10,8,7,5],[19,17,16,15,14,13,11,9,7,6,5],[17,16,15,14,13,12,10,8,7,6,4],[16,15,14,13,12,11,9,7,6,5,4],[15,14,13,12,11,10,8,7,6,5,4],[13,12,11,10,9,8,7,6,5,5,3],[11,10,9,8,8,7,7,6,5,5,3],[10,9,8,7,7,7,6,5,5,4,2],[9,8,8,7,7,6,6,5,4,3,2]],
+    "0.40": [[26,24,22,20,18,17,15,13,11,8,7],[24,22,20,18,17,16,14,12,10,8,6],[23,21,19,17,16,15,13,11,9,7,5],[21,19,17,16,15,14,12,10,9,7,5],[19,17,16,15,14,13,11,9,8,6,5],[17,16,15,14,13,12,10,9,7,6,4],[15,14,13,12,11,10,9,8,6,5,4],[13,12,11,10,10,9,8,7,6,5,4],[12,11,10,9,9,8,7,6,5,5,3],[11,10,9,8,8,7,6,5,5,4,3]],
+    "0.50": [[30,28,26,24,22,20,18,17,15,12,9],[28,26,24,23,21,19,17,16,14,11,8],[26,24,23,22,20,18,16,15,13,10,7],[24,22,21,20,19,17,15,14,12,9,7],[22,20,19,18,17,16,14,13,11,8,7],[20,18,17,16,15,14,13,12,10,8,6],[18,17,16,15,14,13,12,11,9,7,6],[16,15,14,13,12,11,10,9,8,6,6],[14,13,12,11,11,10,9,8,7,6,5],[13,12,11,10,10,9,8,7,6,5,4]],
+    "0.70": [[43,40,37,34,31,26,22,20,18,16,10],[40,37,35,32,29,24,20,18,16,15,9],[37,35,33,30,27,22,18,16,15,14,9],[34,32,30,28,25,21,17,15,15,14,8],[31,29,27,25,23,19,16,15,14,13,8],[29,27,25,23,20,18,15,14,13,12,8],[24,23,21,19,17,16,15,14,12,11,7],[20,19,18,17,16,15,14,13,11,10,7],[18,17,16,16,15,14,13,12,10,8,6],[16,15,14,14,13,12,11,10,8,7,5]],
+    "0.90": [[62,58,52,48,41,34,30,27,24,18,11],[59,52,48,45,39,32,28,25,23,17,10],[52,49,46,43,37,30,26,23,22,16,10],[49,47,44,41,35,29,24,22,21,16,9],[46,43,40,37,32,27,23,21,20,15,9],[39,37,35,32,29,25,21,19,18,14,9],[34,32,30,28,25,22,19,17,16,13,8],[28,26,24,22,21,19,17,15,14,12,8],[22,21,20,18,17,16,15,14,13,10,7],[19,18,17,16,15,14,13,12,11,9,7]],
+    "1.00": [[93,82,76,67,57,46,39,35,31,21,13],[82,75,69,62,54,43,37,33,29,20,12],[74,68,64,58,51,40,35,31,28,20,11],[66,62,58,54,48,38,33,29,26,19,10],[56,52,49,46,42,36,31,27,24,18,10],[47,44,42,39,37,32,28,24,22,17,10],[40,38,36,34,32,29,25,22,19,15,9],[34,32,30,28,26,24,22,19,17,14,9],[29,27,25,23,22,20,19,18,16,12,9],[25,23,21,20,19,18,17,16,13,10,8]],
+    "1.50": [[141,132,125,116,99,81,67,59,51,27,15],[132,124,116,108,93,76,63,55,48,26,14],[123,115,108,102,88,72,60,51,45,25,13],[109,105,100,93,82,67,56,48,42,24,12],[92,88,84,79,71,62,52,45,39,23,11],[79,75,72,68,63,56,48,42,36,22,11],[64,61,58,55,52,48,44,38,33,20,11],[49,47,45,43,41,39,37,33,29,18,10],[41,39,37,36,34,32,30,28,26,16,10],[35,33,32,31,29,27,25,24,22,15,10]],
+    "2.00": [[215,200,185,175,160,135,103,82,69,30,16],[200,185,170,160,150,125,96,78,64,29,15],[185,170,160,150,140,117,91,74,59,28,14],[170,160,150,140,130,107,86,70,55,27,13],[135,125,120,115,110,99,82,64,51,25,12],[108,104,99,95,90,85,75,57,48,24,12],[88,84,81,77,74,70,63,51,45,22,12],[70,66,63,60,58,55,51,43,37,21,11],[54,51,49,47,45,43,41,36,33,19,11],[45,42,40,38,36,35,33,29,27,18,10]],
+    "3.00": [[420,355,325,300,270,230,180,122,86,36,17],[365,325,295,275,250,215,170,112,80,33,16],[325,295,270,250,230,200,160,104,74,30,15],[290,265,245,225,210,185,150,95,67,29,15],[240,225,210,195,185,165,140,88,62,27,14],[195,185,175,165,155,145,125,81,57,26,14],[154,142,135,127,121,111,102,71,54,25,13],[119,111,105,100,94,88,82,61,50,24,13],[89,83,79,75,71,66,62,53,44,23,12],[67,63,60,57,54,49,46,41,36,21,11]],
+    "4.00": [[535,460,435,405,375,280,210,137,92,39,19],[460,420,400,375,345,265,200,129,88,37,17],[420,390,370,345,315,250,190,119,82,35,16],[375,340,320,300,275,235,180,109,77,32,16],[305,285,270,255,235,205,170,103,72,29,15],[250,235,220,205,190,175,150,95,66,28,15],[195,185,175,165,155,145,125,81,61,26,14],[158,148,139,132,123,115,105,70,56,25,14],[113,106,100,95,90,84,77,58,48,24,13],[81,77,74,71,68,64,61,47,39,22,12]],
+    "5.00": [[750,635,600,570,490,375,270,146,105,43,20],[630,580,550,525,455,350,250,139,95,40,18],[565,535,510,485,430,320,235,129,89,38,17],[500,470,445,425,365,295,220,124,84,36,17],[420,385,365,335,300,250,205,118,81,33,16],[325,300,275,255,235,210,180,107,77,30,16],[250,230,215,200,185,175,160,97,70,28,15],[195,185,175,165,155,145,135,88,65,27,15],[150,140,135,130,125,120,110,71,56,24,14],[115,110,105,95,90,85,80,61,46,23,13]],
+    "10.00": [[1320,1075,990,920,795,575,410,205,124,53,23],[1070,965,905,835,725,535,390,195,117,50,22],[945,885,835,765,665,495,365,185,111,48,21],[790,745,695,650,575,460,340,170,106,46,20],[655,610,570,530,465,395,305,160,101,44,19],[510,475,440,405,370,330,260,150,97,42,18],[395,370,345,315,285,255,220,135,91,40,17],[315,295,275,250,230,210,185,120,86,38,16],[230,215,205,190,175,160,140,105,77,36,16],[175,165,155,145,135,125,115,90,64,33,15]],
+  },
+};
+
+function rapLookup(rapData, weight, color, clarity, isRound) {
+  const tables = isRound ? rapData.rounds : rapData.fancy;
+  if (!tables) return null;
+  let bracket = RAP_WEIGHT_RANGES[0];
+  for (let i = 0; i < RAP_RANGE_MINS.length; i++) {
+    if (weight >= RAP_RANGE_MINS[i]) bracket = RAP_WEIGHT_RANGES[i];
+  }
+  const table = tables[bracket];
+  if (!table) return null;
+  // FL maps to IF row
+  const clar = clarity === "FL" ? "IF" : clarity;
+  const ci = RAP_CLARITIES.indexOf(clar);
+  const ki = RAP_COLORS.indexOf(color);
+  if (ci < 0 || ki < 0 || !table[ci]) return null;
+  return (table[ci][ki] ?? null);
+}
+
+const FANCY_SHAPES = ["Oval","Princess","Cushion","Pear","Marquise","Emerald","Radiant","Asscher","Heart","Trillion","Baguette","Tapered Baguette","Rose Cut","Old Mine Cut","Old European Cut","Briolette","Bullet","Half Moon","Kite","Shield","Trapezoid"];
+const ALL_SHAPES = ["Round", ...FANCY_SHAPES];
+const PURITIES = [{ l: "22kt (91.6%)", v: 0.916 }, { l: "18kt (75%)", v: 0.75 }, { l: "14kt (58.5%)", v: 0.585 }, { l: "Custom %", v: null }];
+
+function newSolRow() {
+  return { id: Date.now() + Math.random(), cert: "IGI", color: "H", shape: "Round", clarity: "VS1", cut: "Excellent", weight: "", buyDisc: "", sellDisc: "", vendorCode: "", purchasePrice: "", notes: "" };
+}
+
+function CalculatorScreen() {
+  const [tab, setTab] = useState("jewellery");
+  const [rapData, setRapData] = useState(RAP_SEED);
+  const [rapAge, setRapAge] = useState(null);
+  const [liveRates, setLiveRates] = useState([]);
+  const [usdInr, setUsdInr] = useState("");
+  const [goldRate24, setGoldRate24] = useState("");
+  const [spread, setSpread] = useState(() => { try { return Number(localStorage.getItem("rap_spread") || 8); } catch { return 8; } });
+  const [makingMode, setMakingMode] = useState(() => { try { return localStorage.getItem("making_mode") || "per_g"; } catch { return "per_g"; } });
+  const [toast, setToast] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveModal, setSaveModal] = useState(false);
+  const [saveContact, setSaveContact] = useState(null);
+  const [contactSearch, setContactSearch] = useState("");
+  const [contactResults, setContactResults] = useState([]);
+  const [recentEstimates, setRecentEstimates] = useState([]);
+  const user = loadUser();
+
+  // Jewellery state
+  const [jw, setJw] = useState({
+    itemName: "", grossWt: "", purityIdx: 0, customPurity: "", goldRateOverride: "",
+    makingRate: "", dia1Wt: "", dia1Unit: "ct", dia1Rate: "",
+    dia2Wt: "", dia2Unit: "ct", dia2Rate: "",
+    stoneWt: "", stoneUnit: "ct", stoneRate: "",
+    misc1Lbl: "Rodium", misc1Wt: "", misc1Deduct: true,
+    misc2Lbl: "Polish", misc2Wt: "", misc2Deduct: false,
+    misc3Lbl: "Other", misc3Wt: "", misc3Deduct: false,
+  });
+
+  // Solitaire (single stone) state
+  const [sol, setSol] = useState({ ...newSolRow(), includeGold: false, goldGrossWt: "", goldPurityIdx: 0, goldCustomPurity: "", goldRateOverride: "", goldMakingRate: "" });
+
+  // Quotation sheet (multi-stone) state
+  const [rows, setRows] = useState([newSolRow()]);
+
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 3000); };
+
+  // Load Rapaport from DB
+  useEffect(() => {
+    sb.from("bullion_dropdowns").select("value,updated_at").eq("field", "rapaport_data").maybeSingle().then(({ data }) => {
+      if (data?.value) {
+        try {
+          const parsed = JSON.parse(data.value);
+          setRapData(parsed);
+          const updated = new Date(data.updated_at || parsed.updated_at || 0);
+          const ageDays = Math.floor((Date.now() - updated.getTime()) / 86400000);
+          setRapAge(ageDays);
+        } catch { /* use seed */ }
+      }
+    });
+    // Load live rates
+    fetch(`${APPS_SCRIPT_URL}?action=rates`).then(r => r.json()).then(d => {
+      const rows2 = d.rates || d.rows || [];
+      setLiveRates(rows2);
+      // Try to auto-detect gold and USD rates
+      for (const r of rows2) {
+        const vals = Object.values(r).map(v => String(v).toLowerCase());
+        const keys = Object.keys(r).map(v => String(v).toLowerCase());
+        const allText = [...keys, ...vals].join(" ");
+        if (!usdInr && (allText.includes("usd") || allText.includes("dollar"))) {
+          const numVal = Object.values(r).find(v => !isNaN(parseFloat(v)) && parseFloat(v) > 50);
+          if (numVal) setUsdInr(String(parseFloat(numVal)));
+        }
+        if (!goldRate24 && (allText.includes("24") || allText.includes("999"))) {
+          const numVal = Object.values(r).find(v => !isNaN(parseFloat(v)) && parseFloat(v) > 5000);
+          if (numVal) setGoldRate24(String(parseFloat(numVal)));
+        }
+      }
+    }).catch(() => {});
+    // Load recent estimates
+    sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items,lead_id").order("created_at", { ascending: false }).limit(8).then(({ data }) => setRecentEstimates(data || []));
+  }, []);
+
+  const saveSpread = (v) => { setSpread(v); try { localStorage.setItem("rap_spread", v); } catch { } };
+  const saveMakingMode = (v) => { setMakingMode(v); try { localStorage.setItem("making_mode", v); } catch { } };
+
+  // ── Jewellery calculations ──
+  const ctToG = (w, unit) => unit === "ct" ? parseFloat(w || 0) * 0.2 : parseFloat(w || 0);
+  const jwCalc = (() => {
+    const gross = parseFloat(jw.grossWt || 0);
+    const purity = PURITIES[jw.purityIdx].v ?? (parseFloat(jw.customPurity || 0) / 100);
+    const gRateRaw = parseFloat(jw.goldRateOverride || goldRate24 || 0);
+    // goldRate24 is per 10g; convert to per g
+    const gRate = gRateRaw > 1000 ? gRateRaw / 10 : gRateRaw;
+    const d1g = ctToG(jw.dia1Wt, jw.dia1Unit);
+    const d2g = ctToG(jw.dia2Wt, jw.dia2Unit);
+    const stg = ctToG(jw.stoneWt, jw.stoneUnit);
+    const misc1g = jw.misc1Deduct ? parseFloat(jw.misc1Wt || 0) : 0;
+    const misc2g = jw.misc2Deduct ? parseFloat(jw.misc2Wt || 0) : 0;
+    const misc3g = jw.misc3Deduct ? parseFloat(jw.misc3Wt || 0) : 0;
+    const netGold = Math.max(0, gross - d1g - d2g - stg - misc1g - misc2g - misc3g);
+    const goldVal = netGold * gRate * purity;
+    const making = makingMode === "per_g"
+      ? netGold * parseFloat(jw.makingRate || 0)
+      : goldVal * (parseFloat(jw.makingRate || 0) / 100);
+    const diaTotal = d1g * parseFloat(jw.dia1Rate || 0) + d2g * parseFloat(jw.dia2Rate || 0) + stg * parseFloat(jw.stoneRate || 0);
+    return { gross, purity, gRate, netGold, goldVal, making, diaTotal, total: goldVal + making + diaTotal };
+  })();
+
+  // ── Solitaire calculation ──
+  const solCalc = (stone) => {
+    const w = parseFloat(stone.weight || 0);
+    const usd = parseFloat(usdInr || 0);
+    const isRound = stone.shape === "Round";
+    const rap100 = rapLookup(rapData, w, stone.color, stone.clarity, isRound);
+    const rapInrPerCt = rap100 !== null ? rap100 * 100 * usd : null;
+    const buyDisc = parseFloat(stone.buyDisc || 0);
+    const sellDisc = parseFloat(stone.sellDisc || stone.sellDisc === "" ? (buyDisc - spread) : stone.sellDisc);
+    const buyPpc = rapInrPerCt !== null ? rapInrPerCt * (1 - buyDisc / 100) : null;
+    const sellPpc = rapInrPerCt !== null ? rapInrPerCt * (1 - sellDisc / 100) : null;
+    return { w, rapInrPerCt, buyDisc, sellDisc, buyPpc, sellPpc, buyTotal: buyPpc !== null ? buyPpc * w : null, sellTotal: sellPpc !== null ? sellPpc * w : null };
+  };
+
+  const solGoldCalc = (() => {
+    if (!sol.includeGold) return null;
+    const gross = parseFloat(sol.goldGrossWt || 0);
+    const purity = PURITIES[sol.goldPurityIdx].v ?? (parseFloat(sol.goldCustomPurity || 0) / 100);
+    const gRateRaw = parseFloat(sol.goldRateOverride || goldRate24 || 0);
+    const gRate = gRateRaw > 1000 ? gRateRaw / 10 : gRateRaw;
+    const netGold = gross;
+    const goldVal = netGold * gRate * purity;
+    const making = makingMode === "per_g"
+      ? netGold * parseFloat(sol.goldMakingRate || 0)
+      : goldVal * (parseFloat(sol.goldMakingRate || 0) / 100);
+    return { goldVal, making, total: goldVal + making };
+  })();
+
+  const solResult = solCalc(sol);
+  const solGrandTotal = solResult.sellTotal != null
+    ? solResult.sellTotal + (solGoldCalc?.total || 0)
+    : null;
+
+  // ── Search contacts for save ──
+  useEffect(() => {
+    if (contactSearch.length < 2) { setContactResults([]); return; }
+    const t = setTimeout(async () => {
+      const { data } = await sb.from("bullion_leads").select("id,name,phone").or(`name.ilike.%${contactSearch}%,phone.ilike.%${contactSearch}%`).limit(8);
+      setContactResults(data || []);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [contactSearch]);
+
+  const saveEstimate = async () => {
+    setSaving(true);
+    try {
+      let items = [], total = 0, mode = tab;
+      if (tab === "jewellery") {
+        items = [{ ...jw, ...jwCalc }];
+        total = jwCalc.total;
+      } else if (tab === "solitaire") {
+        items = [{ ...sol, ...solResult }];
+        total = solGrandTotal || solResult.sellTotal || 0;
+      } else {
+        items = rows.map(r => ({ ...r, ...solCalc(r) }));
+        total = null;
+      }
+      await sb.from("bullion_estimates").insert({ lead_id: saveContact?.id || null, created_by: user?.name || user?.email, mode, items, total_amount: total || null });
+      showToast("✅ Estimate saved");
+      setSaveModal(false);
+      sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items,lead_id").order("created_at", { ascending: false }).limit(8).then(({ data }) => setRecentEstimates(data || []));
+    } catch (e) { showToast("❌ Save failed: " + e.message); }
+    setSaving(false);
+  };
+
+  const sendWA = (phone, text) => {
+    fetch(`${WA_SERVICE_URL}/clients/8860866000/send`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone: phone.replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, ""), message: text }),
+    }).then(r => r.json()).then(d => showToast(d.ok ? "✅ Sent on WhatsApp" : "❌ " + (d.error || "WA failed"))).catch(e => showToast("❌ " + e.message));
+  };
+
+  const fmt = (n) => n == null ? "—" : "₹" + Math.round(n).toLocaleString("en-IN");
+  const inp = { padding: "6px 10px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13, width: "100%", boxSizing: "border-box" };
+  const lbl = { fontSize: 11, color: "#888", marginBottom: 3, display: "block" };
+  const card = { background: "#fff", border: "1px solid #eee", borderRadius: 10, padding: "16px", marginBottom: 12 };
+  const tabBtn = (k, ico, txt) => (
+    <button key={k} onClick={() => setTab(k)} style={{ padding: "7px 18px", borderRadius: 8, border: `1px solid ${tab === k ? C.blue : "#ddd"}`, background: tab === k ? C.blue : "#fff", color: tab === k ? "#fff" : "#333", fontWeight: tab === k ? 600 : 400, cursor: "pointer", fontSize: 13 }}>{ico} {txt}</button>
+  );
+
+  const resultRow = (label, val, highlight) => (
+    <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: "1px solid #f5f5f5", fontWeight: highlight ? 700 : 400, color: highlight ? C.blue : "#333" }}>
+      <span style={{ fontSize: 13, color: highlight ? C.blue : "#666" }}>{label}</span>
+      <span style={{ fontSize: 13 }}>{val}</span>
+    </div>
+  );
+
+  // ── JEWELLERY TAB ──
+  const jewelleryTab = (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+        <div><label style={lbl}>Item Name / Tag</label><input style={inp} value={jw.itemName} onChange={e => setJw(p => ({ ...p, itemName: e.target.value }))} placeholder="e.g. Necklace S-204" /></div>
+        <div><label style={lbl}>Gross Weight (g)</label><input style={inp} type="number" step="0.01" value={jw.grossWt} onChange={e => setJw(p => ({ ...p, grossWt: e.target.value }))} placeholder="0.00" /></div>
+        <div>
+          <label style={lbl}>Purity</label>
+          <select style={inp} value={jw.purityIdx} onChange={e => setJw(p => ({ ...p, purityIdx: Number(e.target.value) }))}>
+            {PURITIES.map((p2, i) => <option key={i} value={i}>{p2.l}</option>)}
+          </select>
+        </div>
+        {PURITIES[jw.purityIdx].v === null && <div><label style={lbl}>Custom Purity %</label><input style={inp} type="number" step="0.1" value={jw.customPurity} onChange={e => setJw(p => ({ ...p, customPurity: e.target.value }))} placeholder="e.g. 80" /></div>}
+        <div><label style={lbl}>Gold Rate (₹/10g) — auto from live rates</label><input style={inp} type="number" value={jw.goldRateOverride || goldRate24} onChange={e => setJw(p => ({ ...p, goldRateOverride: e.target.value }))} placeholder="e.g. 95000" /></div>
+        <div>
+          <label style={lbl}>Making Charges — mode: <button onClick={() => saveMakingMode(makingMode === "per_g" ? "pct" : "per_g")} style={{ fontSize: 11, padding: "2px 8px", border: "1px solid #ddd", borderRadius: 4, cursor: "pointer", background: "#f5f5f5" }}>{makingMode === "per_g" ? "₹/g ↔" : "% ↔"}</button></label>
+          <input style={inp} type="number" value={jw.makingRate} onChange={e => setJw(p => ({ ...p, makingRate: e.target.value }))} placeholder={makingMode === "per_g" ? "e.g. 600" : "e.g. 12"} />
+        </div>
+      </div>
+
+      {/* Diamonds & Stone */}
+      {[
+        { key: "dia1", label: "Diamond 1", wtK: "dia1Wt", unitK: "dia1Unit", rateK: "dia1Rate" },
+        { key: "dia2", label: "Diamond 2", wtK: "dia2Wt", unitK: "dia2Unit", rateK: "dia2Rate" },
+        { key: "stone", label: "Stone", wtK: "stoneWt", unitK: "stoneUnit", rateK: "stoneRate" },
+      ].map(({ key, label, wtK, unitK, rateK }) => (
+        <div key={key} style={{ display: "grid", gridTemplateColumns: "1fr 80px 1fr", gap: 8, marginBottom: 8, alignItems: "end" }}>
+          <div><label style={lbl}>{label} Weight</label><input style={inp} type="number" step="0.001" value={jw[wtK]} onChange={e => setJw(p => ({ ...p, [wtK]: e.target.value }))} placeholder="0.000" /></div>
+          <div><label style={lbl}>Unit</label><select style={inp} value={jw[unitK]} onChange={e => setJw(p => ({ ...p, [unitK]: e.target.value }))}><option value="ct">ct</option><option value="g">g</option></select></div>
+          <div><label style={lbl}>{label} Rate (₹/g)</label><input style={inp} type="number" value={jw[rateK]} onChange={e => setJw(p => ({ ...p, [rateK]: e.target.value }))} placeholder="0" /></div>
+        </div>
+      ))}
+
+      {/* Misc deductions */}
+      {[
+        { lblK: "misc1Lbl", wtK: "misc1Wt", dK: "misc1Deduct", def: "Rodium" },
+        { lblK: "misc2Lbl", wtK: "misc2Wt", dK: "misc2Deduct", def: "Polish" },
+        { lblK: "misc3Lbl", wtK: "misc3Wt", dK: "misc3Deduct", def: "Other" },
+      ].map(({ lblK, wtK, dK, def }) => (
+        <div key={wtK} style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 8, marginBottom: 8, alignItems: "end" }}>
+          <div><label style={lbl}>Misc Label</label><input style={inp} value={jw[lblK]} onChange={e => setJw(p => ({ ...p, [lblK]: e.target.value }))} placeholder={def} /></div>
+          <div><label style={lbl}>Weight (g)</label><input style={inp} type="number" step="0.01" value={jw[wtK]} onChange={e => setJw(p => ({ ...p, [wtK]: e.target.value }))} placeholder="0.00" /></div>
+          <div style={{ paddingBottom: 6 }}><label style={{ fontSize: 11, color: "#888", display: "block", marginBottom: 4 }}>Deduct</label><input type="checkbox" checked={jw[dK]} onChange={e => setJw(p => ({ ...p, [dK]: e.target.checked }))} /></div>
+        </div>
+      ))}
+
+      {/* Results */}
+      <div style={{ ...card, background: "#f8faff", marginTop: 8 }}>
+        {resultRow("Net Gold Weight", `${jwCalc.netGold.toFixed(3)} g`)}
+        {resultRow("Gold Value", fmt(jwCalc.goldVal))}
+        {resultRow(`Making (${makingMode === "per_g" ? "₹/g" : "%"})`, fmt(jwCalc.making))}
+        {resultRow("Diamond / Stone Total", fmt(jwCalc.diaTotal))}
+        {resultRow("GRAND TOTAL", fmt(jwCalc.total), true)}
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <Btn small color={C.blue} onClick={() => setSaveModal(true)}>💾 Save Estimate</Btn>
+        <Btn small ghost color={C.blue} onClick={() => window.print()}>🖨️ Print</Btn>
+      </div>
+    </div>
+  );
+
+  // ── SOLITAIRE TAB ──
+  const solForm = (stone, onChange, showInternal = true) => {
+    const isRound = stone.shape === "Round";
+    const buyDiscV = parseFloat(stone.buyDisc || 0);
+    const autoSell = buyDiscV - spread;
+    const usd = parseFloat(usdInr || 0);
+    const rap100 = stone.weight && stone.color && stone.clarity ? rapLookup(rapData, parseFloat(stone.weight), stone.color, stone.clarity, isRound) : null;
+    const rapInrPc = rap100 !== null && usd ? rap100 * 100 * usd : null;
+
+    return (
+      <div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
+          <div><label style={lbl}>Shape</label>
+            <select style={inp} value={stone.shape} onChange={e => onChange("shape", e.target.value)}>
+              {ALL_SHAPES.map(s => <option key={s}>{s}</option>)}
+            </select>
+          </div>
+          <div><label style={lbl}>Weight (ct)</label><input style={inp} type="number" step="0.01" value={stone.weight} onChange={e => onChange("weight", e.target.value)} placeholder="1.00" /></div>
+          <div><label style={lbl}>Certificate</label>
+            <select style={inp} value={stone.cert} onChange={e => onChange("cert", e.target.value)}>
+              {["IGI","GIA","HRD","Non-Cert"].map(c => <option key={c}>{c}</option>)}
+            </select>
+          </div>
+          <div><label style={lbl}>Colour</label>
+            <select style={inp} value={stone.color} onChange={e => onChange("color", e.target.value)}>
+              {RAP_COLORS.map(c => <option key={c}>{c}</option>)}
+            </select>
+          </div>
+          <div><label style={lbl}>Clarity</label>
+            <select style={inp} value={stone.clarity} onChange={e => onChange("clarity", e.target.value)}>
+              {["FL","IF","VVS1","VVS2","VS1","VS2","SI1","SI2","I1","I2"].map(c => <option key={c}>{c}</option>)}
+            </select>
+          </div>
+          <div><label style={lbl}>Cut</label>
+            <select style={inp} value={stone.cut} onChange={e => onChange("cut", e.target.value)}>
+              {["Excellent","Very Good","Good","Fair","None"].map(c => <option key={c}>{c}</option>)}
+            </select>
+          </div>
+        </div>
+
+        {/* RAP row */}
+        <div style={{ ...card, background: "#f8faff", padding: 10, marginBottom: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, alignItems: "end" }}>
+            <div><label style={lbl}>USD/INR — live</label><input style={inp} type="number" value={usdInr} onChange={e => setUsdInr(e.target.value)} placeholder="e.g. 85" /></div>
+            <div><label style={lbl}>Spread (buy−sell gap)</label><input style={inp} type="number" value={spread} onChange={e => saveSpread(Number(e.target.value))} /></div>
+            <div><label style={lbl}>Buy Disc %</label><input style={inp} type="number" step="0.1" value={stone.buyDisc} onChange={e => onChange("buyDisc", e.target.value)} placeholder="e.g. 43" /></div>
+            <div><label style={lbl}>Sell Disc % (auto {autoSell.toFixed(1)})</label><input style={{ ...inp, background: stone.sellDisc === "" ? "#fffbe6" : "#fff" }} type="number" step="0.1" value={stone.sellDisc} onChange={e => onChange("sellDisc", e.target.value)} placeholder={String(autoSell.toFixed(1))} /></div>
+          </div>
+          {rap100 !== null ? (
+            <div style={{ marginTop: 8, fontSize: 12, color: "#555" }}>
+              Rap: <strong>₹{Math.round(rap100 * 100).toLocaleString("en-IN")}/ct</strong> (${rap100 * 100}/ct) → INR: <strong>{rapInrPc ? "₹" + Math.round(rapInrPc).toLocaleString("en-IN") + "/ct" : "set USD/INR ↑"}</strong>
+              {rapAge !== null && rapAge > 7 && <span style={{ color: C.orange, marginLeft: 8 }}>⚠️ Rapaport data is {rapAge} days old — sync latest from Drive</span>}
+            </div>
+          ) : stone.weight ? <div style={{ fontSize: 12, color: C.orange, marginTop: 8 }}>⚠️ Weight {parseFloat(stone.weight || 0) < 0.30 ? "< 0.30ct — manual pricing only" : "out of table range"}</div> : null}
+        </div>
+
+        {showInternal && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
+            <div><label style={{ ...lbl, color: C.orange }}>Vendor Code (internal)</label><input style={inp} value={stone.vendorCode} onChange={e => onChange("vendorCode", e.target.value)} placeholder="VC-123" /></div>
+            <div><label style={{ ...lbl, color: C.orange }}>Purchase Price ₹ (internal)</label><input style={inp} type="number" value={stone.purchasePrice} onChange={e => onChange("purchasePrice", e.target.value)} placeholder="0" /></div>
+            <div><label style={{ ...lbl, color: C.orange }}>Notes (internal)</label><input style={inp} value={stone.notes} onChange={e => onChange("notes", e.target.value)} placeholder="..." /></div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const solitaireTab = (
+    <div>
+      {solForm(sol, (k, v) => setSol(p => ({ ...p, [k]: v })))}
+
+      {/* Gold setting toggle */}
+      <div style={{ marginBottom: 10 }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
+          <input type="checkbox" checked={sol.includeGold} onChange={e => setSol(p => ({ ...p, includeGold: e.target.checked }))} />
+          Include Gold Setting
+        </label>
+      </div>
+      {sol.includeGold && (
+        <div style={{ ...card, background: "#fffbe6", marginBottom: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, alignItems: "end" }}>
+            <div><label style={lbl}>Gold Gross Weight (g)</label><input style={inp} type="number" step="0.01" value={sol.goldGrossWt} onChange={e => setSol(p => ({ ...p, goldGrossWt: e.target.value }))} /></div>
+            <div><label style={lbl}>Purity</label><select style={inp} value={sol.goldPurityIdx} onChange={e => setSol(p => ({ ...p, goldPurityIdx: Number(e.target.value) }))}>{PURITIES.map((p2, i) => <option key={i} value={i}>{p2.l}</option>)}</select></div>
+            {PURITIES[sol.goldPurityIdx].v === null && <div><label style={lbl}>Custom %</label><input style={inp} type="number" value={sol.goldCustomPurity} onChange={e => setSol(p => ({ ...p, goldCustomPurity: e.target.value }))} /></div>}
+            <div><label style={lbl}>Gold Rate (₹/10g)</label><input style={inp} type="number" value={sol.goldRateOverride || goldRate24} onChange={e => setSol(p => ({ ...p, goldRateOverride: e.target.value }))} /></div>
+            <div><label style={lbl}>Making ({makingMode === "per_g" ? "₹/g" : "%"})</label><input style={inp} type="number" value={sol.goldMakingRate} onChange={e => setSol(p => ({ ...p, goldMakingRate: e.target.value }))} /></div>
+          </div>
+        </div>
+      )}
+
+      {/* Results */}
+      <div style={{ ...card, background: "#f8faff" }}>
+        {resultRow("Weight", `${solResult.w} ct`)}
+        {resultRow(`Buy Price/ct (${solResult.buyDisc}% disc)`, solResult.buyPpc !== null ? fmt(solResult.buyPpc) : "—")}
+        {resultRow(`Sell Price/ct (${(sol.sellDisc !== "" ? parseFloat(sol.sellDisc) : solResult.buyDisc - spread).toFixed(1)}% disc)`, solResult.sellPpc !== null ? fmt(solResult.sellPpc) : "—")}
+        {resultRow("Sell Total (stone)", solResult.sellTotal !== null ? fmt(solResult.sellTotal) : "—")}
+        {sol.includeGold && solGoldCalc && resultRow("Gold Setting", fmt(solGoldCalc.total))}
+        {resultRow("GRAND TOTAL", fmt(solGrandTotal), true)}
+        {solResult.buyTotal !== null && solResult.sellTotal !== null && (
+          <div style={{ fontSize: 11, color: "#888", marginTop: 6, paddingTop: 6, borderTop: "1px solid #eee" }}>
+            Margin (internal): {fmt(solResult.sellTotal - solResult.buyTotal)} ({solResult.buyTotal > 0 ? ((solResult.sellTotal - solResult.buyTotal) / solResult.buyTotal * 100).toFixed(1) + "%" : "—"})
+          </div>
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <Btn small color={C.blue} onClick={() => setSaveModal(true)}>💾 Save Estimate</Btn>
+        <Btn small ghost color={C.blue} onClick={() => window.print()}>🖨️ Print</Btn>
+        {saveContact && <Btn small ghost color={C.green} onClick={() => {
+          const sc = solCalc(sol);
+          const txt = `*ESTIMATE — Sun Sea Jewellers*\n\n*Stone:* ${sol.shape} ${sol.weight}ct ${sol.color}/${sol.clarity} ${sol.cut}\n*Certificate:* ${sol.cert}\n\n*Sell Price:* ${fmt(sc.sellTotal)}\n${sol.includeGold && solGoldCalc ? `*Setting:* ${fmt(solGoldCalc.total)}\n` : ""}*Total:* ${fmt(solGrandTotal)}\n\n_Sun Sea Jewellers, Mumbai_`;
+          sendWA(saveContact.phone, txt);
+        }}>📱 Send WA</Btn>}
+      </div>
+    </div>
+  );
+
+  // ── QUOTATION SHEET TAB ──
+  const quotationTab = (
+    <div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ background: "#f7f7f7", borderBottom: "2px solid #eee" }}>
+              {["#","Shape","Wt (ct)","Colour","Clarity","Cut","Cert","Rap INR/ct","Sell Disc%","Sell Price",""].map(h => (
+                <th key={h} style={{ padding: "7px 8px", textAlign: "left", fontWeight: 600, color: "#555", fontSize: 11, whiteSpace: "nowrap" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, idx) => {
+              const isRound = row.shape === "Round";
+              const rc = solCalc(row);
+              const sellDiscVal = row.sellDisc !== "" ? parseFloat(row.sellDisc) : rc.buyDisc - spread;
+              return (
+                <tr key={row.id} style={{ borderBottom: "1px solid #f0f0f0" }}>
+                  <td style={{ padding: "4px 8px", color: "#888", fontWeight: 600 }}>{idx + 1}</td>
+                  <td style={{ padding: "4px 4px" }}>
+                    <select style={{ ...inp, padding: "4px 6px", fontSize: 11 }} value={row.shape} onChange={e => setRows(p => p.map((r, i) => i === idx ? { ...r, shape: e.target.value } : r))}>
+                      {ALL_SHAPES.map(s => <option key={s}>{s}</option>)}
+                    </select>
+                  </td>
+                  <td style={{ padding: "4px 4px" }}><input style={{ ...inp, width: 68, padding: "4px 6px", fontSize: 11 }} type="number" step="0.01" value={row.weight} onChange={e => setRows(p => p.map((r, i) => i === idx ? { ...r, weight: e.target.value } : r))} placeholder="1.00" /></td>
+                  <td style={{ padding: "4px 4px" }}>
+                    <select style={{ ...inp, padding: "4px 6px", fontSize: 11 }} value={row.color} onChange={e => setRows(p => p.map((r, i) => i === idx ? { ...r, color: e.target.value } : r))}>
+                      {RAP_COLORS.map(c => <option key={c}>{c}</option>)}
+                    </select>
+                  </td>
+                  <td style={{ padding: "4px 4px" }}>
+                    <select style={{ ...inp, padding: "4px 6px", fontSize: 11 }} value={row.clarity} onChange={e => setRows(p => p.map((r, i) => i === idx ? { ...r, clarity: e.target.value } : r))}>
+                      {["FL","IF","VVS1","VVS2","VS1","VS2","SI1","SI2","I1","I2"].map(c => <option key={c}>{c}</option>)}
+                    </select>
+                  </td>
+                  <td style={{ padding: "4px 4px" }}>
+                    <select style={{ ...inp, padding: "4px 6px", fontSize: 11 }} value={row.cut} onChange={e => setRows(p => p.map((r, i) => i === idx ? { ...r, cut: e.target.value } : r))}>
+                      {["Excellent","Very Good","Good","Fair","None"].map(c => <option key={c}>{c}</option>)}
+                    </select>
+                  </td>
+                  <td style={{ padding: "4px 4px" }}>
+                    <select style={{ ...inp, padding: "4px 6px", fontSize: 11 }} value={row.cert} onChange={e => setRows(p => p.map((r, i) => i === idx ? { ...r, cert: e.target.value } : r))}>
+                      {["IGI","GIA","HRD","Non-Cert"].map(c => <option key={c}>{c}</option>)}
+                    </select>
+                  </td>
+                  <td style={{ padding: "4px 8px", fontSize: 11, color: rc.rapInrPerCt != null ? "#333" : "#ccc" }}>
+                    {rc.rapInrPerCt != null ? "₹" + Math.round(rc.rapInrPerCt).toLocaleString("en-IN") : "—"}
+                  </td>
+                  <td style={{ padding: "4px 4px" }}>
+                    <input style={{ ...inp, width: 60, padding: "4px 6px", fontSize: 11, background: row.sellDisc === "" ? "#fffbe6" : "#fff" }} type="number" step="0.1" value={row.sellDisc} onChange={e => setRows(p => p.map((r, i) => i === idx ? { ...r, sellDisc: e.target.value } : r))} placeholder={String((rc.buyDisc - spread).toFixed(1))} />
+                  </td>
+                  <td style={{ padding: "4px 8px", fontWeight: 600, color: C.blue, whiteSpace: "nowrap" }}>
+                    {rc.sellPpc != null ? "₹" + Math.round(rc.sellPpc * parseFloat(row.weight || 0)).toLocaleString("en-IN") : "—"}
+                  </td>
+                  <td style={{ padding: "4px 4px" }}>
+                    <button onClick={() => setRows(p => p.filter((_, i) => i !== idx))} style={{ background: "none", border: "none", color: "#ccc", cursor: "pointer", fontSize: 16 }}>×</button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ fontSize: 12, color: "#888" }}>Buy disc default: <input style={{ ...inp, width: 60, display: "inline-block", padding: "4px 6px" }} type="number" value={spread} onChange={e => saveSpread(Number(e.target.value))} /> % spread from sell</div>
+        <div style={{ fontSize: 12, color: "#888" }}>USD/INR: <input style={{ ...inp, width: 70, display: "inline-block", padding: "4px 6px" }} type="number" value={usdInr} onChange={e => setUsdInr(e.target.value)} /></div>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+        <Btn small color={C.green} onClick={() => setRows(p => [...p, newSolRow()])}>+ Add Stone</Btn>
+        <Btn small color={C.blue} onClick={() => setSaveModal(true)}>💾 Save</Btn>
+        <Btn small ghost color={C.blue} onClick={() => window.print()}>🖨️ Print</Btn>
+        {saveContact && <Btn small ghost color={C.green} onClick={() => {
+          const lines = rows.map((r, i) => { const sc = solCalc(r); return `${i+1}. ${r.shape} ${r.weight}ct ${r.color}/${r.clarity} ${r.cert} — ${sc.sellTotal != null ? fmt(sc.sellTotal) : "—"}`; });
+          sendWA(saveContact.phone, `*QUOTATION — Sun Sea Jewellers*\n\n${lines.join("\n")}\n\n_Sun Sea Jewellers, Mumbai_`);
+        }}>📱 Send WA</Btn>}
+      </div>
+    </div>
+  );
+
+  // ── SAVE MODAL ──
+  const saveModalEl = saveModal && (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 }}>
+      <div style={{ background: "#fff", borderRadius: 12, padding: 24, width: 400, maxWidth: "95vw" }}>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 12 }}>💾 Save Estimate</div>
+        <div style={{ marginBottom: 12 }}>
+          <label style={lbl}>Link to Contact (optional)</label>
+          <input style={inp} value={contactSearch} onChange={e => { setContactSearch(e.target.value); setSaveContact(null); }} placeholder="Search name or phone…" />
+          {contactResults.length > 0 && (
+            <div style={{ border: "1px solid #eee", borderRadius: 6, marginTop: 4, maxHeight: 150, overflowY: "auto" }}>
+              {contactResults.map(c => (
+                <div key={c.id} onClick={() => { setSaveContact(c); setContactSearch(c.name + (c.phone ? ` (${c.phone})` : "")); setContactResults([]); }} style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, borderBottom: "1px solid #f0f0f0" }}>
+                  {c.name} {c.phone && <span style={{ color: "#888" }}>{c.phone}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+          {saveContact && <div style={{ fontSize: 12, color: C.green, marginTop: 4 }}>✓ {saveContact.name}</div>}
+        </div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <Btn ghost color={C.gray} onClick={() => setSaveModal(false)}>Cancel</Btn>
+          <Btn color={C.blue} onClick={saveEstimate} disabled={saving}>{saving ? "Saving…" : "Save"}</Btn>
+        </div>
+      </div>
+    </div>
+  );
+
+  // ── PRINT STYLES ──
+  const printStyle = `@media print{.no-print{display:none!important}.print-only{display:block!important}body{font-size:12pt}@page{margin:1.5cm}}`;
+
+  return (
+    <div>
+      <style>{printStyle}</style>
+      {toast && <div style={{ position: "fixed", bottom: 24, right: 24, background: "#333", color: "#fff", padding: "10px 18px", borderRadius: 8, fontSize: 13, zIndex: 9999 }}>{toast}</div>}
+      {saveModalEl}
+
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }} className="no-print">
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 18 }}>💎 Jewellery Calculator</div>
+          {rapAge != null && rapAge > 7 && <div style={{ fontSize: 12, color: C.orange, marginTop: 2 }}>⚠️ Rapaport data {rapAge} days old — run sync to update</div>}
+          {rapAge != null && rapAge <= 7 && <div style={{ fontSize: 11, color: C.green, marginTop: 2 }}>✓ Rapaport {rapData.date || ""}</div>}
+        </div>
+        <Btn small ghost color={C.blue} onClick={async () => {
+          showToast("Syncing Rapaport…");
+          const r = await fetch("/api/rapaport-sync?action=seed");
+          const d = await r.json().catch(() => ({}));
+          if (d.ok) { showToast("✅ Synced: " + (d.date || "")); setRapAge(0); } else showToast("❌ " + (d.error || "Sync failed"));
+        }} className="no-print">🔄 Sync Rapaport</Btn>
+      </div>
+
+      {/* Mode tabs */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }} className="no-print">
+        {tabBtn("jewellery", "💍", "Jewellery")}
+        {tabBtn("solitaire", "💎", "Solitaire")}
+        {tabBtn("quotation", "📋", "Quotation Sheet")}
+      </div>
+
+      {/* Print header (hidden on screen) */}
+      <div style={{ display: "none" }} className="print-only">
+        <div style={{ textAlign: "center", marginBottom: 16 }}>
+          <div style={{ fontSize: 20, fontWeight: 700 }}>ESTIMATE</div>
+          <div style={{ fontSize: 13, color: "#888" }}>Sun Sea Jewellers</div>
+          {saveContact && <div style={{ fontSize: 13 }}>{saveContact.name} {saveContact.phone && `· ${saveContact.phone}`}</div>}
+          <div style={{ fontSize: 12, color: "#aaa" }}>{new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}</div>
+        </div>
+      </div>
+
+      {/* Main content */}
+      <div style={card}>
+        {tab === "jewellery" && jewelleryTab}
+        {tab === "solitaire" && solitaireTab}
+        {tab === "quotation" && quotationTab}
+      </div>
+
+      {/* Recent estimates */}
+      {recentEstimates.length > 0 && (
+        <div className="no-print" style={{ marginTop: 16 }}>
+          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8, color: "#555" }}>Recent Estimates</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8 }}>
+            {recentEstimates.map(e => (
+              <div key={e.id} style={{ ...card, padding: "10px 14px", fontSize: 12 }}>
+                <div style={{ fontWeight: 600, textTransform: "capitalize" }}>{e.mode}</div>
+                <div style={{ color: "#888", fontSize: 11 }}>{new Date(e.created_at).toLocaleDateString("en-IN")}</div>
+                {e.total_amount && <div style={{ color: C.blue, fontWeight: 600, marginTop: 4 }}>₹{Math.round(e.total_amount).toLocaleString("en-IN")}</div>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
