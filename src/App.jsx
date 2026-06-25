@@ -10356,7 +10356,7 @@ function CalculatorScreen() {
     rows.push(row("Purity", purityLabel));
     rows.push(row("Gross Weight", `${parseFloat(jw.grossWt||0).toFixed(3)} g`));
     rows.push(row("Net Gold Weight", `${jwCalc.netGold.toFixed(3)} g`));
-    rows.push(row("Gold Rate", `₹${jwCalc.gRate.toLocaleString("en-IN")}/g`));
+    rows.push(row("Gold Rate", `₹${Math.round(jwCalc.gRate).toLocaleString("en-IN")}/g`));
     rows.push(row("Gold Value", fmt(jwCalc.goldVal)));
     rows.push(row(`Making`, fmt(jwCalc.making)));
     if (parseFloat(jw.dia1Wt||0)) rows.push(row(`Diamond 1 (${parseFloat(jw.dia1Wt)}${jw.dia1Unit} @ ₹${jw.dia1Rate})`, fmt(parseFloat(jw.dia1Wt||0)*parseFloat(jw.dia1Rate||0))));
@@ -10565,9 +10565,9 @@ function CalculatorScreen() {
         {PURITIES[jw.purityIdx]?.rateKey === null && <div><label style={lbl}>Custom Rate ₹/g</label><input style={inp} type="number" step="0.01" value={jw.goldRateOverride} onChange={e => setJw(p => ({ ...p, goldRateOverride: e.target.value }))} placeholder="e.g. 13000" /></div>}
         <div>
           <label style={lbl}>
-            Gold Rate ₹/g — live: {(() => { const k = PURITIES[jw.purityIdx]?.rateKey; return k && liveRates[k] ? <span style={{ color: C.green, fontWeight: 600 }}>₹{liveRates[k].toFixed(2)}</span> : <span style={{ color: C.orange }}>loading…</span>; })()}
+            Gold Rate ₹/g — live: {(() => { const k = PURITIES[jw.purityIdx]?.rateKey; return k && liveRates[k] ? <span style={{ color: C.green, fontWeight: 600 }}>₹{Math.round(liveRates[k]).toLocaleString("en-IN")}</span> : <span style={{ color: C.orange }}>loading…</span>; })()}
           </label>
-          <input style={{ ...inp, background: jw.goldRateOverride ? "#fffbe6" : "#fff" }} type="number" step="0.01" value={jw.goldRateOverride} onChange={e => setJw(p => ({ ...p, goldRateOverride: e.target.value }))} placeholder={(() => { const k = PURITIES[jw.purityIdx]?.rateKey; return k && liveRates[k] ? String(liveRates[k].toFixed(2)) : "e.g. 13345.81"; })()} />
+          <input style={{ ...inp, background: jw.goldRateOverride ? "#fffbe6" : "#fff" }} type="number" step="1" value={jw.goldRateOverride} onChange={e => setJw(p => ({ ...p, goldRateOverride: e.target.value }))} placeholder={(() => { const k = PURITIES[jw.purityIdx]?.rateKey; return k && liveRates[k] ? String(Math.round(liveRates[k])) : "e.g. 13346"; })()} />
           {jw.goldRateOverride && <div style={{ fontSize: 11, color: C.orange, marginTop: 2 }}>⚠ Override active — clear to use live rate</div>}
         </div>
         <div>
@@ -10752,7 +10752,7 @@ function CalculatorScreen() {
             <div><label style={lbl}>Gold Gross Weight (g)</label><input style={inp} type="number" step="0.01" value={sol.goldGrossWt} onChange={e => setSol(p => ({ ...p, goldGrossWt: e.target.value }))} /></div>
             <div><label style={lbl}>Purity</label><select style={inp} value={sol.goldPurityIdx} onChange={e => { const idx = Number(e.target.value); setSol(p => ({ ...p, goldPurityIdx: idx })); saveMakingMode(idx === 0 ? "pct" : "per_g"); }}>{PURITIES.map((p2, i) => <option key={i} value={i}>{p2.l}</option>)}</select></div>
             {PURITIES[sol.goldPurityIdx]?.rateKey === null && <div><label style={lbl}>Custom Rate ₹/g</label><input style={inp} type="number" step="0.01" value={sol.goldRateOverride} onChange={e => setSol(p => ({ ...p, goldRateOverride: e.target.value }))} placeholder="e.g. 13000" /></div>}
-            <div><label style={lbl}>Gold Rate ₹/g {(() => { const k = PURITIES[sol.goldPurityIdx]?.rateKey; return k && liveRates[k] ? <span style={{ color: C.green }}>₹{liveRates[k].toFixed(2)}</span> : null; })()}</label><input style={{ ...inp, background: sol.goldRateOverride ? "#fffbe6" : "#fff" }} type="number" step="0.01" value={sol.goldRateOverride} onChange={e => setSol(p => ({ ...p, goldRateOverride: e.target.value }))} placeholder={(() => { const k = PURITIES[sol.goldPurityIdx]?.rateKey; return k && liveRates[k] ? String(liveRates[k].toFixed(2)) : "e.g. 13345.81"; })()} /></div>
+            <div><label style={lbl}>Gold Rate ₹/g {(() => { const k = PURITIES[sol.goldPurityIdx]?.rateKey; return k && liveRates[k] ? <span style={{ color: C.green }}>₹{Math.round(liveRates[k]).toLocaleString("en-IN")}</span> : null; })()}</label><input style={{ ...inp, background: sol.goldRateOverride ? "#fffbe6" : "#fff" }} type="number" step="1" value={sol.goldRateOverride} onChange={e => setSol(p => ({ ...p, goldRateOverride: e.target.value }))} placeholder={(() => { const k = PURITIES[sol.goldPurityIdx]?.rateKey; return k && liveRates[k] ? String(Math.round(liveRates[k])) : "e.g. 13346"; })()} /></div>
             <div><label style={lbl}>Making — <button onClick={() => saveMakingMode(makingMode === "per_g" ? "pct" : "per_g")} style={{ fontSize: 11, padding: "2px 8px", border: "1px solid #ddd", borderRadius: 4, cursor: "pointer", background: "#f5f5f5" }}>{makingMode === "per_g" ? "₹/g ↔" : "% ↔"}</button></label>
               {makingMode === "per_g"
                 ? <input style={inp} type="number" value={sol.goldMakingRatePg} onChange={e => setSol(p => ({ ...p, goldMakingRatePg: e.target.value }))} placeholder="1500" />
@@ -11089,7 +11089,7 @@ function CalculatorScreen() {
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                     <tbody>
                       {it.grossWt && <tr><td style={{ color: "#888", padding: "3px 0", width: 160 }}>Gross weight</td><td style={{ fontWeight: 600 }}>{it.grossWt}g · {PURITIES[it.purityIdx]?.l || "Custom"}</td></tr>}
-                      {it.gRate > 0 && <tr><td style={{ color: "#888", padding: "3px 0" }}>Gold rate</td><td>₹{it.gRate}/g · Net {it.netGold != null ? `${parseFloat(it.netGold).toFixed(3)}g` : "—"}</td></tr>}
+                      {it.gRate > 0 && <tr><td style={{ color: "#888", padding: "3px 0" }}>Gold rate</td><td>₹{Math.round(it.gRate).toLocaleString("en-IN")}/g · Net {it.netGold != null ? `${parseFloat(it.netGold).toFixed(3)}g` : "—"}</td></tr>}
                       {it.goldVal != null && <tr><td style={{ color: "#888", padding: "3px 0" }}>Gold value</td><td>{fmt(it.goldVal)}</td></tr>}
                       {it.making > 0 && <tr><td style={{ color: "#888", padding: "3px 0" }}>Making charges</td><td>{fmt(it.making)}</td></tr>}
                       {parseFloat(it.dia1Wt) > 0 && it.dia1Rate > 0 && <tr><td style={{ color: "#888", padding: "3px 0" }}>Diamond 1</td><td>{it.dia1Wt}{it.dia1Unit} @ ₹{it.dia1Rate}/g</td></tr>}
