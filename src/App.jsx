@@ -10086,7 +10086,7 @@ function CalculatorScreen() {
   // Jewellery state
   const [jw, setJw] = useState({
     itemName: "", grossWt: "", purityIdx: 0, customPurity: "", goldRateOverride: "",
-    makingRate: "", dia1Wt: "", dia1Unit: "ct", dia1Rate: "",
+    makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "",
     dia2Wt: "", dia2Unit: "ct", dia2Rate: "",
     stoneWt: "", stoneUnit: "ct", stoneRate: "",
     misc1Lbl: "Rodium", misc1Wt: "", misc1Deduct: true,
@@ -10095,7 +10095,7 @@ function CalculatorScreen() {
   });
 
   // Solitaire (single stone) state
-  const [sol, setSol] = useState({ ...newSolRow(), includeGold: false, goldGrossWt: "", goldPurityIdx: 0, goldCustomPurity: "", goldRateOverride: "", goldMakingRate: "" });
+  const [sol, setSol] = useState({ ...newSolRow(), includeGold: false, goldGrossWt: "", goldPurityIdx: 0, goldCustomPurity: "", goldRateOverride: "", goldMakingRatePg: "1500", goldMakingRatePct: "15" });
 
   // Quotation sheet (multi-stone) state
   const [rows, setRows] = useState([newSolRow()]);
@@ -10149,9 +10149,8 @@ function CalculatorScreen() {
     const misc3g = jw.misc3Deduct ? parseFloat(jw.misc3Wt || 0) : 0;
     const netGold = Math.max(0, gross - d1g - d2g - stg - misc1g - misc2g - misc3g);
     const goldVal = netGold * gRate;
-    const making = makingMode === "per_g"
-      ? netGold * parseFloat(jw.makingRate || 0)
-      : goldVal * (parseFloat(jw.makingRate || 0) / 100);
+    const makingR = makingMode === "per_g" ? parseFloat(jw.makingRatePg || 0) : parseFloat(jw.makingRatePct || 0);
+    const making = makingMode === "per_g" ? netGold * makingR : goldVal * (makingR / 100);
     const diaTotal = d1g * parseFloat(jw.dia1Rate || 0) + d2g * parseFloat(jw.dia2Rate || 0) + stg * parseFloat(jw.stoneRate || 0);
     return { gross, gRate, netGold, goldVal, making, diaTotal, total: goldVal + making + diaTotal };
   })();
@@ -10175,9 +10174,8 @@ function CalculatorScreen() {
     const gross = parseFloat(sol.goldGrossWt || 0);
     const gRate = getGoldRatePg(sol.goldPurityIdx, sol.goldRateOverride);
     const goldVal = gross * gRate;
-    const making = makingMode === "per_g"
-      ? gross * parseFloat(sol.goldMakingRate || 0)
-      : goldVal * (parseFloat(sol.goldMakingRate || 0) / 100);
+    const solMakingR = makingMode === "per_g" ? parseFloat(sol.goldMakingRatePg || 0) : parseFloat(sol.goldMakingRatePct || 0);
+    const making = makingMode === "per_g" ? gross * solMakingR : goldVal * (solMakingR / 100);
     return { goldVal, making, total: goldVal + making };
   })();
 
@@ -10262,7 +10260,10 @@ function CalculatorScreen() {
         </div>
         <div>
           <label style={lbl}>Making Charges — mode: <button onClick={() => saveMakingMode(makingMode === "per_g" ? "pct" : "per_g")} style={{ fontSize: 11, padding: "2px 8px", border: "1px solid #ddd", borderRadius: 4, cursor: "pointer", background: "#f5f5f5" }}>{makingMode === "per_g" ? "₹/g ↔" : "% ↔"}</button></label>
-          <input style={inp} type="number" value={jw.makingRate} onChange={e => setJw(p => ({ ...p, makingRate: e.target.value }))} placeholder={makingMode === "per_g" ? "e.g. 600" : "e.g. 12"} />
+          {makingMode === "per_g"
+            ? <input style={inp} type="number" value={jw.makingRatePg} onChange={e => setJw(p => ({ ...p, makingRatePg: e.target.value }))} placeholder="1500" />
+            : <input style={inp} type="number" value={jw.makingRatePct} onChange={e => setJw(p => ({ ...p, makingRatePct: e.target.value }))} placeholder="15" />
+          }
         </div>
       </div>
 
@@ -10392,7 +10393,12 @@ function CalculatorScreen() {
             <div><label style={lbl}>Purity</label><select style={inp} value={sol.goldPurityIdx} onChange={e => setSol(p => ({ ...p, goldPurityIdx: Number(e.target.value) }))}>{PURITIES.map((p2, i) => <option key={i} value={i}>{p2.l}</option>)}</select></div>
             {PURITIES[sol.goldPurityIdx]?.rateKey === null && <div><label style={lbl}>Custom Rate ₹/g</label><input style={inp} type="number" step="0.01" value={sol.goldRateOverride} onChange={e => setSol(p => ({ ...p, goldRateOverride: e.target.value }))} placeholder="e.g. 13000" /></div>}
             <div><label style={lbl}>Gold Rate ₹/g {(() => { const k = PURITIES[sol.goldPurityIdx]?.rateKey; return k && liveRates[k] ? <span style={{ color: C.green }}>₹{liveRates[k].toFixed(2)}</span> : null; })()}</label><input style={{ ...inp, background: sol.goldRateOverride ? "#fffbe6" : "#fff" }} type="number" step="0.01" value={sol.goldRateOverride} onChange={e => setSol(p => ({ ...p, goldRateOverride: e.target.value }))} placeholder={(() => { const k = PURITIES[sol.goldPurityIdx]?.rateKey; return k && liveRates[k] ? String(liveRates[k].toFixed(2)) : "e.g. 13345.81"; })()} /></div>
-            <div><label style={lbl}>Making ({makingMode === "per_g" ? "₹/g" : "%"})</label><input style={inp} type="number" value={sol.goldMakingRate} onChange={e => setSol(p => ({ ...p, goldMakingRate: e.target.value }))} /></div>
+            <div><label style={lbl}>Making ({makingMode === "per_g" ? "₹/g" : "%"})</label>
+              {makingMode === "per_g"
+                ? <input style={inp} type="number" value={sol.goldMakingRatePg} onChange={e => setSol(p => ({ ...p, goldMakingRatePg: e.target.value }))} placeholder="1500" />
+                : <input style={inp} type="number" value={sol.goldMakingRatePct} onChange={e => setSol(p => ({ ...p, goldMakingRatePct: e.target.value }))} placeholder="15" />
+              }
+            </div>
           </div>
         </div>
       )}
