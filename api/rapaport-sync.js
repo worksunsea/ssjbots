@@ -566,42 +566,52 @@ export default async function handler(req, res) {
     });
   }
 
-  // ── Google Drive path ────────────────────────────────────────────────────────
+  // ── Drive access — Apps Script proxy (preferred) or Service Account ──────────
+  const appsScriptUrl = process.env.RAPNET_APPS_SCRIPT_URL;
   const saEnv = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-  if (!saEnv) {
+
+  if (!appsScriptUrl && !saEnv) {
     return res.status(501).json({
       ok: false,
-      error: "GOOGLE_SERVICE_ACCOUNT_JSON not configured",
-      hint: [
-        "1. Create a Google Cloud service account with Drive read access.",
-        "2. Download its JSON key file.",
-        "3. Base64-encode it: `base64 -w0 service-account.json`",
-        "4. Set GOOGLE_SERVICE_ACCOUNT_JSON=<base64 value> in Vercel environment variables.",
-        "5. Share the Rapnet Drive folder with the service account email.",
-        "Alternatively, call ?action=seed to load the hardcoded June-19-2026 data.",
-      ].join(" "),
+      error: "No Drive access configured",
+      hint: "Set RAPNET_APPS_SCRIPT_URL in Vercel env (easiest) or GOOGLE_SERVICE_ACCOUNT_JSON.",
     });
   }
 
-  let sa;
-  try {
-    sa = JSON.parse(Buffer.from(saEnv, "base64").toString("utf8"));
-  } catch {
-    return res.status(500).json({ ok: false, error: "Failed to parse GOOGLE_SERVICE_ACCOUNT_JSON — ensure it is valid base64-encoded JSON" });
-  }
+  // Helper: fetch text content of a Drive file via Apps Script proxy
+  const fetchViaAppsScript = async (fileId) => {
+    const r = await fetch(`${appsScriptUrl}?action=file&id=${fileId}`, { redirect: "follow" });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || "Apps Script file fetch failed");
+    return d.content;
+  };
 
-  let token;
-  try {
-    token = await getGoogleAccessToken(sa);
-  } catch (e) {
-    return res.status(500).json({ ok: false, error: `Google auth failed: ${String(e)}` });
-  }
-
+  // Resolve file list (Apps Script or Service Account)
   let files;
-  try {
-    files = await listDriveFiles(token);
-  } catch (e) {
-    return res.status(500).json({ ok: false, error: `Drive list failed: ${String(e)}` });
+  let token = null;
+
+  if (appsScriptUrl) {
+    const r = await fetch(`${appsScriptUrl}?action=files`, { redirect: "follow" });
+    const d = await r.json();
+    if (!d.ok) return res.status(500).json({ ok: false, error: `Apps Script list failed: ${d.error}` });
+    files = (d.files || []).map(f => ({ id: f.id, name: f.name, mimeType: "application/pdf", modifiedTime: f.modified }));
+  } else {
+    let sa;
+    try {
+      sa = JSON.parse(Buffer.from(saEnv, "base64").toString("utf8"));
+    } catch {
+      return res.status(500).json({ ok: false, error: "Failed to parse GOOGLE_SERVICE_ACCOUNT_JSON" });
+    }
+    try {
+      token = await getGoogleAccessToken(sa);
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: `Google auth failed: ${String(e)}` });
+    }
+    try {
+      files = await listDriveFiles(token);
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: `Drive list failed: ${String(e)}` });
+    }
   }
 
   // Find most recently modified Round and Fancy/Pear files
@@ -621,9 +631,14 @@ export default async function handler(req, res) {
   let detectedDate = null;
   const warnings = [];
 
+  const readFile = (fileId, mimeType) =>
+    appsScriptUrl
+      ? fetchViaAppsScript(fileId)
+      : readDriveFile(token, fileId, mimeType);
+
   if (roundFile) {
     try {
-      const text = await readDriveFile(token, roundFile.id, roundFile.mimeType);
+      const text = await readFile(roundFile.id, roundFile.mimeType);
       roundTables = parsePdfTables(text);
       if (!detectedDate) detectedDate = extractDate(text);
       if (!roundTables) warnings.push(`Round file parsed but not enough numbers found — using seed`);
@@ -634,7 +649,7 @@ export default async function handler(req, res) {
 
   if (fancyFile) {
     try {
-      const text = await readDriveFile(token, fancyFile.id, fancyFile.mimeType);
+      const text = await readFile(fancyFile.id, fancyFile.mimeType);
       fancyTables = parsePdfTables(text);
       if (!detectedDate) detectedDate = extractDate(text);
       if (!fancyTables) warnings.push(`Fancy file parsed but not enough numbers found — using seed`);
