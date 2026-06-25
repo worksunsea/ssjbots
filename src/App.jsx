@@ -10152,7 +10152,10 @@ function CalculatorScreen() {
     const goldVal = netGold * gRate;
     const makingR = makingMode === "per_g" ? parseFloat(jw.makingRatePg || 0) : parseFloat(jw.makingRatePct || 0);
     const making = makingMode === "per_g" ? netGold * makingR : goldVal * (makingR / 100);
-    const diaTotal = d1g * parseFloat(jw.dia1Rate || 0) + d2g * parseFloat(jw.dia2Rate || 0) + stg * parseFloat(jw.stoneRate || 0);
+    const d1raw = parseFloat(jw.dia1Wt || 0);
+    const d2raw = parseFloat(jw.dia2Wt || 0);
+    const straw = parseFloat(jw.stoneWt || 0);
+    const diaTotal = d1raw * parseFloat(jw.dia1Rate || 0) + d2raw * parseFloat(jw.dia2Rate || 0) + straw * parseFloat(jw.stoneRate || 0);
     return { gross, gRate, netGold, goldVal, making, diaTotal, total: goldVal + making + diaTotal };
   })();
 
