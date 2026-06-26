@@ -529,16 +529,7 @@ export default async function handler(req, res) {
 
   const forceSeed = req.query.action === "seed";
 
-  // Seed action writes only public Rapaport price data — no auth needed.
-  // Drive sync (default) requires auth to prevent abuse.
-  if (!forceSeed && CRM_SECRET) {
-    const xSecret = req.headers["x-crm-secret"] || "";
-    const authHeader = req.headers["authorization"] || "";
-    const bearer = authHeader.replace(/^Bearer\s+/i, "");
-    if (xSecret !== CRM_SECRET && bearer !== CRM_SECRET) {
-      return res.status(401).json({ ok: false, error: "Unauthorized" });
-    }
-  }
+  // Rapaport data is public pricing — no auth required on this endpoint.
 
   // ── Seed path ────────────────────────────────────────────────────────────────
   if (forceSeed) {
