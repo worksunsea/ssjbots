@@ -152,8 +152,11 @@ export default async function handler(req, res) {
       !Object.values(fancyData.tables ).some(t => t.some(r => r.some(v => v !== null)));
 
     if (roundsEmpty && fancyEmpty) {
-      const sample = (roundsText || fancyText || "").split(/\n/).map(l=>l.trim()).filter(Boolean).slice(0,25);
-      return res.json({ ok: false, error: "PDF parsed but no price data found. First 25 lines: " + JSON.stringify(sample) });
+      const sample = (roundsText || fancyText || "").split(/\n/).map(l=>l.trim()).filter(Boolean).slice(0,15);
+      return res.json({
+        ok: false,
+        error: `PDF parsed but no data. rounds64_len=${rounds64?.length||0} fancyLen=${fancy64?.length||0} roundsTextLen=${roundsText?.length||0} warnings=${JSON.stringify(warnings)} sample=${JSON.stringify(sample)}`
+      });
     }
 
     // Key names MUST match rapLookup() in App.jsx: rapData.rounds / rapData.fancy
