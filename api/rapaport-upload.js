@@ -23,9 +23,7 @@ export default async function handler(req, res) {
   if (!rounds64 && !fancy64) return res.status(400).json({ ok: false, error: "No PDF data received" });
 
   try {
-    if (typeof globalThis.DOMMatrix === "undefined") globalThis.DOMMatrix = class DOMMatrix { constructor() { this.a=1;this.b=0;this.c=0;this.d=1;this.e=0;this.f=0; } };
-    if (typeof globalThis.DOMPoint  === "undefined") globalThis.DOMPoint  = class DOMPoint  { constructor(x=0,y=0){this.x=x;this.y=y;} };
-    const { PDFParse } = require("pdf-parse/dist/pdf-parse/cjs/index.cjs");
+    const pdfParse = require("pdf-parse");
 
     const warnings = [];
     let roundsText = null, fancyText = null;
@@ -33,7 +31,7 @@ export default async function handler(req, res) {
     if (rounds64) {
       try {
         const buf = Buffer.from(rounds64, "base64");
-        const parsed = await new PDFParse({ data: buf }).getText();
+        const parsed = await pdfParse(buf);
         roundsText = parsed.text;
         const sample = parsed.text.split(/\n/).map(l=>l.trim()).filter(Boolean).slice(0,80);
         console.log("ROUNDS_PDF_SAMPLE:", JSON.stringify(sample));
@@ -42,7 +40,7 @@ export default async function handler(req, res) {
     if (fancy64) {
       try {
         const buf = Buffer.from(fancy64, "base64");
-        const parsed = await new PDFParse({ data: buf }).getText();
+        const parsed = await pdfParse(buf);
         fancyText = parsed.text;
         const sample = parsed.text.split(/\n/).map(l=>l.trim()).filter(Boolean).slice(0,40);
         console.log("FANCY_PDF_SAMPLE:", JSON.stringify(sample));
