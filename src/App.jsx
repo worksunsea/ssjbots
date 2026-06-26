@@ -10292,9 +10292,47 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   const [editingEstOrig, setEditingEstOrig] = useState(null);
   const [walkinOpen, setWalkinOpen] = useState(false);
   const [walkinPrefill, setWalkinPrefill] = useState(null);
-  const [activeVisitId, setActiveVisitId] = useState(null);
-  const [activeVisitClient, setActiveVisitClient] = useState(null);
-  const [activeVisitTime, setActiveVisitTime] = useState(null);
+  const [activeVisitId, setActiveVisitId] = useState(() => {
+    try {
+      const s = localStorage.getItem("calc_active_visit");
+      if (!s) return null;
+      const v = JSON.parse(s);
+      // Auto-expire if from a previous calendar day
+      const sessionDay = new Date(v.time).toDateString();
+      if (sessionDay !== new Date().toDateString()) { localStorage.removeItem("calc_active_visit"); return null; }
+      return v.visitId || null;
+    } catch { return null; }
+  });
+  const [activeVisitClient, setActiveVisitClient] = useState(() => {
+    try {
+      const s = localStorage.getItem("calc_active_visit");
+      if (!s) return null;
+      const v = JSON.parse(s);
+      if (new Date(v.time).toDateString() !== new Date().toDateString()) return null;
+      return v.client || null;
+    } catch { return null; }
+  });
+  const [activeVisitTime, setActiveVisitTime] = useState(() => {
+    try {
+      const s = localStorage.getItem("calc_active_visit");
+      if (!s) return null;
+      const v = JSON.parse(s);
+      if (new Date(v.time).toDateString() !== new Date().toDateString()) return null;
+      return v.time || null;
+    } catch { return null; }
+  });
+
+  // Persist visit session to localStorage so it survives page refresh
+  const saveActiveVisit = (visitId, client, time) => {
+    setActiveVisitId(visitId);
+    setActiveVisitClient(client);
+    setActiveVisitTime(time);
+    if (visitId) {
+      try { localStorage.setItem("calc_active_visit", JSON.stringify({ visitId, client, time })); } catch {}
+    } else {
+      try { localStorage.removeItem("calc_active_visit"); } catch {}
+    }
+  };
   const [saveContact, setSaveContact] = useState(() => { try { const s = localStorage.getItem("calc_active_contact"); return s ? JSON.parse(s) : null; } catch { return null; } });
   const [contactSearch, setContactSearch] = useState(() => { try { const s = localStorage.getItem("calc_active_contact"); if (s) { const c = JSON.parse(s); return c.name + (c.phone ? ` (${c.phone})` : ""); } } catch {} return ""; });
   const [contactResults, setContactResults] = useState([]);
@@ -11052,7 +11090,7 @@ function recalcToday(){
           ].filter(Boolean).join("\n");
           sendWA(saveContact.phone, lines);
         }}>📱 Send WA</Btn>}
-        <Btn small ghost color={C.gray} onClick={() => { setJw({ itemImage: "", itemName: "", vendorCode: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true, makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "", dia2Wt: "", dia2Unit: "ct", dia2Rate: "", stoneWt: "", stoneUnit: "ct", stoneRate: "", misc1Lbl: "Gemstone", misc1Wt: "", misc1Unit: "g", misc1Rate: "", misc1Deduct: true, misc2Lbl: "Mala", misc2Wt: "", misc2Unit: "g", misc2Rate: "", misc2Deduct: false, misc3Lbl: "Lakh", misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false }); setSaveContact(null); setContactSearch(""); setActiveVisitId(null); setActiveVisitClient(null); setActiveVisitTime(null); try { localStorage.removeItem("calc_active_contact"); } catch {} }}>🔄 New</Btn>
+        <Btn small ghost color={C.gray} onClick={() => { setJw({ itemImage: "", itemName: "", vendorCode: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true, makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "", dia2Wt: "", dia2Unit: "ct", dia2Rate: "", stoneWt: "", stoneUnit: "ct", stoneRate: "", misc1Lbl: "Gemstone", misc1Wt: "", misc1Unit: "g", misc1Rate: "", misc1Deduct: true, misc2Lbl: "Mala", misc2Wt: "", misc2Unit: "g", misc2Rate: "", misc2Deduct: false, misc3Lbl: "Lakh", misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false }); setSaveContact(null); setContactSearch(""); saveActiveVisit(null, null, null); try { localStorage.removeItem("calc_active_contact"); } catch {} }}>🔄 New</Btn>
       </div>
     </div>
   );
@@ -11341,7 +11379,7 @@ function recalcToday(){
           {contactResults.length > 0 && (
             <div style={{ border: "1px solid #eee", borderRadius: 6, marginTop: 4, maxHeight: 150, overflowY: "auto" }}>
               {contactResults.map(c => (
-                <div key={c.id} onClick={() => { if (activeVisitClient && c.id !== activeVisitClient.id) { setActiveVisitId(null); setActiveVisitClient(null); setActiveVisitTime(null); } setSaveContact(c); setContactSearch(c.name + (c.phone ? ` (${c.phone})` : "")); setContactResults([]); try { localStorage.setItem("calc_active_contact", JSON.stringify(c)); } catch {} }} style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, borderBottom: "1px solid #f0f0f0" }}>
+                <div key={c.id} onClick={() => { if (activeVisitClient && c.id !== activeVisitClient.id) { saveActiveVisit(null, null, null); } setSaveContact(c); setContactSearch(c.name + (c.phone ? ` (${c.phone})` : "")); setContactResults([]); try { localStorage.setItem("calc_active_contact", JSON.stringify(c)); } catch {} }} style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, borderBottom: "1px solid #f0f0f0" }}>
                   {c.name} {c.phone && <span style={{ color: "#888" }}>{c.phone}</span>}
                 </div>
               ))}
@@ -11402,9 +11440,7 @@ function recalcToday(){
           onSaved={(lead) => {
             setWalkinOpen(false);
             if (lead?.visitId) {
-              setActiveVisitId(lead.visitId);
-              setActiveVisitTime(new Date().toISOString());
-              setActiveVisitClient(lead?.id ? { id: lead.id, name: lead.name, phone: lead.phone } : null);
+              saveActiveVisit(lead.visitId, lead?.id ? { id: lead.id, name: lead.name, phone: lead.phone } : null, new Date().toISOString());
             }
             if (lead?.id && !saveContact?.id) {
               const c = { id: lead.id, name: lead.name, phone: lead.phone };
@@ -11420,7 +11456,7 @@ function recalcToday(){
       {activeVisitId && (
         <div className="no-print" style={{ background: "#e8f5e9", border: "1px solid #81c784", borderRadius: 8, padding: "8px 14px", marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 13 }}>
           <span>📋 <strong>Active visit session</strong> · {activeVisitClient?.name || "Client"} · started {activeVisitTime ? new Date(activeVisitTime).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : ""} · new estimates will link to this visit</span>
-          <button onClick={() => { setActiveVisitId(null); setActiveVisitClient(null); setActiveVisitTime(null); }} style={{ background: "none", border: "1px solid #81c784", borderRadius: 4, padding: "2px 10px", cursor: "pointer", fontSize: 12 }}>End session</button>
+          <button onClick={() => saveActiveVisit(null, null, null)} style={{ background: "none", border: "1px solid #81c784", borderRadius: 4, padding: "2px 10px", cursor: "pointer", fontSize: 12 }}>End session</button>
         </div>
       )}
 
