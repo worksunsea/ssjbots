@@ -577,12 +577,9 @@ export default async function handler(req, res) {
     const d = await r.json();
     if (!d.ok) throw new Error(d.error || "Apps Script file fetch failed");
     if (d.encoding === "base64") {
-      if (typeof globalThis.DOMMatrix === "undefined") globalThis.DOMMatrix = class DOMMatrix { constructor() { this.a=1;this.b=0;this.c=0;this.d=1;this.e=0;this.f=0; } };
-      if (typeof globalThis.DOMPoint === "undefined") globalThis.DOMPoint = class DOMPoint { constructor(x=0,y=0){this.x=x;this.y=y;} };
-      const _pdfMod = require("pdf-parse/dist/pdf-parse/cjs/index.cjs");
-      const pdfParse = typeof _pdfMod === "function" ? _pdfMod : (_pdfMod.default || _pdfMod);
+      const { PDFParse } = require("pdf-parse/dist/pdf-parse/cjs/index.cjs");
       const buf = Buffer.from(d.content, "base64");
-      const parsed = await pdfParse(buf);
+      const parsed = await new PDFParse({ data: buf }).getText();
       return parsed.text;
     }
     return d.content;
