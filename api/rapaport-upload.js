@@ -33,6 +33,9 @@ export default async function handler(req, res) {
         const buf = Buffer.from(rounds64, "base64");
         const parsed = await pdfParse(buf);
         roundsText = parsed.text;
+        // Debug: log first 60 lines so we can see PDF text format in Vercel logs
+        const sampleLines = parsed.text.split(/\n/).map(l=>l.trim()).filter(Boolean).slice(0,60);
+        console.log("ROUNDS PDF LINES:", JSON.stringify(sampleLines));
       } catch (err) { warnings.push("Round PDF parse failed: " + err.message); }
     }
     if (fancy64) {
