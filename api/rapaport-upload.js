@@ -70,18 +70,26 @@ export default async function handler(req, res) {
       fancy: fancyData?.tables || {},
     };
 
-    const sbRes = await fetch(`${SUPABASE_URL}/rest/v1/bullion_dropdowns?on_conflict=tenant_id,field`, {
-      method: "POST",
-      headers: {
-        apikey: SUPABASE_SERVICE_KEY,
-        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-        "Content-Type": "application/json",
-        Prefer: "resolution=merge-duplicates,return=minimal",
-      },
-      body: JSON.stringify({ field: "rapaport_data", value: JSON.stringify(merged), tenant_id: "a1b2c3d4-0000-0000-0000-000000000001" }),
-    });
+    const TENANT = "a1b2c3d4-0000-0000-0000-000000000001";
+    const sbHeaders = { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`, "Content-Type": "application/json" };
 
-    if (!sbRes.ok) return res.json({ ok: false, error: "DB write failed: " + await sbRes.text() });
+    // Try UPDATE first; if no rows matched, INSERT
+    const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/bullion_dropdowns?field=eq.rapaport_data&tenant_id=eq.${TENANT}`, {
+      method: "PATCH",
+      headers: { ...sbHeaders, Prefer: "return=representation" },
+      body: JSON.stringify({ value: JSON.stringify(merged) }),
+    });
+    const patched = await patchRes.json().catch(() => []);
+    if (!patchRes.ok) return res.json({ ok: false, error: "DB update failed: " + JSON.stringify(patched) });
+
+    if (!Array.isArray(patched) || patched.length === 0) {
+      const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/bullion_dropdowns`, {
+        method: "POST",
+        headers: sbHeaders,
+        body: JSON.stringify({ field: "rapaport_data", value: JSON.stringify(merged), tenant_id: TENANT }),
+      });
+      if (!insertRes.ok) return res.json({ ok: false, error: "DB insert failed: " + await insertRes.text() });
+    }
 
     return res.json({
       ok: true,
