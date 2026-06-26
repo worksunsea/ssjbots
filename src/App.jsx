@@ -10290,8 +10290,11 @@ function WalkinDashboardScreen({ funnels = [] }) {
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 3000); };
 
+  const [queryError, setQueryError] = useState(null);
+
   const loadVisits = useCallback(async () => {
     setLoading(true);
+    setQueryError(null);
     const now = new Date();
     let since, until = null;
     if (dateFilter === "today") { since = new Date(now); since.setHours(0, 0, 0, 0); }
@@ -10301,13 +10304,24 @@ function WalkinDashboardScreen({ funnels = [] }) {
     }
     else if (dateFilter === "week") { since = new Date(now - 7 * 86400000); }
     else { since = new Date(now - 30 * 86400000); }
+    // Try full join first; fall back to simple query if FK join fails
     let q = sb.from("bullion_visits")
-      .select("id,visited_at,time_out,outcome,temperature,price_quoted,staff,items_seen,notes,followup_required,party_size,bullion_leads(id,name,phone,city),bullion_estimates(id,mode,total_amount,items,created_at)")
+      .select("id,visited_at,time_out,outcome,temperature,price_quoted,staff,items_seen,notes,followup_required,party_size,bullion_leads(id,name,phone,city),bullion_estimates!visit_id(id,mode,total_amount,items,created_at)")
       .eq("tenant_id", getTenantId())
       .gte("visited_at", since.toISOString());
     if (until) q = q.lte("visited_at", until.toISOString());
-    const { data } = await q.order("visited_at", { ascending: false });
-    setVisits(data || []);
+    let { data, error } = await q.order("visited_at", { ascending: false });
+    if (error) {
+      // Retry without estimates join (visit_id FK may not be recognised yet)
+      const q2 = sb.from("bullion_visits")
+        .select("id,visited_at,time_out,outcome,temperature,price_quoted,staff,items_seen,notes,followup_required,party_size,bullion_leads(id,name,phone,city)")
+        .eq("tenant_id", getTenantId())
+        .gte("visited_at", since.toISOString());
+      const r2 = await (until ? q2.lte("visited_at", until.toISOString()) : q2).order("visited_at", { ascending: false });
+      data = r2.data;
+      if (r2.error) setQueryError(r2.error.message);
+    }
+    setVisits((data || []).map(v => ({ ...v, bullion_estimates: v.bullion_estimates || [] })));
     setLoading(false);
   }, [dateFilter]);
 
@@ -10358,10 +10372,13 @@ function WalkinDashboardScreen({ funnels = [] }) {
       </div>
 
       {/* Visit cards */}
+      {queryError && <div style={{ background: "#ffebee", border: "1px solid #ef9a9a", borderRadius: 8, padding: "8px 14px", marginBottom: 10, fontSize: 12, color: "#c62828" }}>⚠️ Query error: {queryError}</div>}
       {loading ? <div style={{ textAlign: "center", padding: 40, color: "#aaa" }}>Loading…</div> : visits.length === 0 ? (
         <div style={{ textAlign: "center", padding: 40, color: "#aaa" }}>
           <div style={{ fontSize: 32, marginBottom: 10 }}>🏪</div>
-          No walk-in sessions recorded. Use the 🏪 Walk-in button inside the 💎 Calculator to start a session.
+          No walk-in sessions found for this period.<br />
+          <span style={{ fontSize: 12 }}>Tenant: {getTenantId()?.slice(0, 8)}… · Filter: {dateFilter}</span><br />
+          <span style={{ fontSize: 11 }}>Walk-ins are recorded when you submit the 🏪 Walk-in form in the Calculator tab.</span>
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -11641,7 +11658,7 @@ function recalcToday(){
             showToast("Syncing Rapaport…");
             const r = await fetch("/api/rapaport-sync", { headers: { "x-crm-secret": CRM_SECRET } });
             const d = await r.json().catch(() => ({}));
-            if (d.ok) { showToast("✅ Synced: " + (d.date || "")); setRapAge(0); } else showToast("❌ " + (d.error || "Sync failed"));
+            if (d.ok) { showToast(`✅ Synced ${d.date || ""} · ${d.source === "seed" ? "⚠️ used fallback seed (Drive parse failed)" : `from Drive: ${d.rounds_file || d.fancy_file || "?"}`}${d.warnings?.length ? " · " + d.warnings[0] : ""}`); setRapAge(0); } else showToast("❌ " + (d.error || "Sync failed"));
           }}>🔄 Sync Rapaport</Btn>
         </div>
       </div>
