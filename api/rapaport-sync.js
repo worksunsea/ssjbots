@@ -433,7 +433,47 @@ async function readDriveFile(token, fileId, mimeType) {
 function parsePdfTables(text) {
   if (!text) return null;
 
-  const lines = text.split(/\n/).map(l => l.trim()).filter(Boolean);
+  const rawLines = text.split(/\n/).map(l => l.trim()).filter(Boolean);
+
+  // Estimate how many Rapaport values a token contains using the ≤35 heuristic.
+  // Small-bracket values ≤35: "16141313"→4, "98877765543"→11, "272220"→3.
+  const estimateTokenVals = (t) => {
+    if (!/^\d{3,}$/.test(t)) return 1;
+    let n = 0, i = 0;
+    while (i < t.length) {
+      if (i + 1 < t.length && parseInt(t.slice(i, i + 2)) <= 35) { n++; i += 2; }
+      else { n++; i++; }
+    }
+    return n;
+  };
+
+  // Pre-pass: join consecutive lines that together form one split data row.
+  // Rapaport small-bracket (.30-.40ct) rows split across 2 lines by pdf-parse.
+  const lines = [];
+  let si = 0;
+  while (si < rawLines.length) {
+    const line = rawLines[si];
+    if (!/RAPAPORT|ROUNDS/i.test(line)) {
+      const stripped = line.replace(/\s+/g, '');
+      if (stripped.length > 0 && /^\d+$/.test(stripped)) {
+        const toks = line.split(/\s+/).filter(t => /^\d+$/.test(t));
+        const estimatedAlone = toks.reduce((s, t) => s + estimateTokenVals(t), 0);
+        if (toks.length >= 1 && toks.length <= 4 && estimatedAlone < 8 && si + 1 < rawLines.length) {
+          const nextLine = rawLines[si + 1];
+          if (!/RAPAPORT|ROUNDS/i.test(nextLine)) {
+            const nextToks = nextLine.split(/\s+/).filter(t => /^\d+$/.test(t));
+            if (nextToks.length >= 2) {
+              lines.push(line.trim() + ' ' + nextLine.trim());
+              si += 2;
+              continue;
+            }
+          }
+        }
+      }
+    }
+    lines.push(line);
+    si++;
+  }
 
   // Normalise lower-bound capture to a WEIGHT_RANGES key
   const normToKey = (raw) => {
@@ -459,23 +499,51 @@ function parsePdfTables(text) {
   const sortedBrackets = Array.from(bracketSet).sort((a, b) => parseFloat(a) - parseFloat(b));
   console.log("RAP brackets detected:", sortedBrackets);
 
-  // Expand merged digit tokens like "987" → [9,8,7] when we have too few tokens.
-  // Only expands ONE token, only when deficit>=2, only 3+ digit tokens.
-  const expandMerged = (tokens, targetCount) => {
-    if (tokens.length >= targetCount) return tokens.slice(0, targetCount).map(Number);
-    const deficit = targetCount - tokens.length;
-    if (deficit < 2) return tokens.map(Number);
-    const result = [];
-    let expanded = false;
-    for (const t of tokens) {
-      if (!expanded && /^\d{3,}$/.test(t) && t.length === deficit + 1) {
-        result.push(...t.split('').map(Number));
-        expanded = true;
-      } else {
-        result.push(parseFloat(t));
-      }
+  // Split a merged token string into n values using ceil-division chunking.
+  // e.g. splitTokenIntoN("272220", 3) → [27, 22, 20]
+  //      splitTokenIntoN("1188976", 3) → [118, 89, 76]
+  const splitTokenIntoN = (tokenStr, n) => {
+    const s = tokenStr;
+    const parts = [];
+    let pos = 0;
+    for (let k = 0; k < n; k++) {
+      const charsLeft = s.length - pos;
+      const remaining = n - k;
+      const chunkLen = Math.ceil(charsLeft / remaining);
+      parts.push(parseInt(s.slice(pos, pos + chunkLen)));
+      pos += chunkLen;
     }
-    return result.slice(0, targetCount);
+    return parts;
+  };
+
+  // Two-phase expansion: phase1 uses ≤35 heuristic for small-bracket rows;
+  // phase2 uses ceil-division for large-bracket rows where values exceed 35.
+  const expandMerged = (tokens, targetCount) => {
+    const phase1 = [];
+    for (const t of tokens) {
+      if (/^\d{2,}$/.test(t)) {
+        let i = 0;
+        while (i < t.length) {
+          if (i + 1 < t.length && parseInt(t.slice(i, i + 2)) <= 35) {
+            phase1.push(parseInt(t.slice(i, i + 2))); i += 2;
+          } else { phase1.push(parseInt(t[i])); i++; }
+        }
+      } else { phase1.push(parseInt(t)); }
+    }
+    if (phase1.length === targetCount) return phase1;
+
+    const strs = [...tokens];
+    while (strs.length < targetCount) {
+      const deficit = targetCount - strs.length;
+      const idx = strs.findIndex(t => /^\d{4,}$/.test(t));
+      if (idx === -1) break;
+      const token = strs[idx];
+      const splitCount = Math.min(deficit + 1, token.length);
+      if (splitCount < 2) break;
+      const parts = splitTokenIntoN(token, splitCount).map(String);
+      strs.splice(idx, 1, ...parts);
+    }
+    return strs.slice(0, targetCount).map(Number);
   };
 
   // Parse one line as a data row of 11 integers; null if not a data row.
@@ -490,9 +558,13 @@ function parsePdfTables(text) {
     s = s.replace(/^[D-N]\s+/, '');
     s = s.replace(/\s+[D-N]$/, '');
 
+    if (/[^0-9\s\t,.-]/.test(s)) return null;
+
     const tokens = s.trim().split(/[\s\t,]+/).filter(t => /^\d+\.?\d*$/.test(t));
-    if (tokens.length < 8) return null;
-    if (tokens.some(t => t.includes('.'))) return null; // small-stone decimal row
+    if (tokens.some(t => t.includes('.'))) return null;
+
+    const estimatedCount = tokens.reduce((sum, t) => sum + estimateTokenVals(t), 0);
+    if (estimatedCount < 8) return null;
 
     const nums = expandMerged(tokens, 11);
     if (nums.length < 8) return null;
