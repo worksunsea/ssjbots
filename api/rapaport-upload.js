@@ -152,7 +152,8 @@ export default async function handler(req, res) {
       !Object.values(fancyData.tables ).some(t => t.some(r => r.some(v => v !== null)));
 
     if (roundsEmpty && fancyEmpty) {
-      return res.json({ ok: false, error: "PDF parsed but no price data found. Check Vercel logs for ROUNDS_PDF_SAMPLE to debug format." });
+      const sample = (roundsText || fancyText || "").split(/\n/).map(l=>l.trim()).filter(Boolean).slice(0,25);
+      return res.json({ ok: false, error: "PDF parsed but no price data found. First 25 lines: " + JSON.stringify(sample) });
     }
 
     // Key names MUST match rapLookup() in App.jsx: rapData.rounds / rapData.fancy
