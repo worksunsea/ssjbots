@@ -10168,7 +10168,10 @@ export default function App() {
       {activeScreen === "formbuilder" && <FormBuilderScreen />}
       {activeScreen === "calculator" && <CalculatorScreen funnels={funnels} allTags={allTags} />}
       {activeScreen === "staff" && <StaffAccessScreen />}
-      {activeScreen === "walkin" && <WalkinDashboardScreen funnels={funnels} />}
+      {activeScreen === "walkin" && <WalkinDashboardScreen funnels={funnels} onEditEstimate={(est) => {
+        try { localStorage.setItem("calc_pending_edit", JSON.stringify(est)); } catch {}
+        setActiveScreen("calculator");
+      }} />}
     </div>
     </ContactFieldsContext.Provider>
   );
@@ -10284,12 +10287,12 @@ function newSolRow() {
 // ─── Walk-in Dashboard Screen ─────────────────────────────────────────────────
 // Shows all clients who had estimates saved in the selected period.
 // Does NOT require a formal bullion_visits record — estimates are evidence of walk-ins.
-function WalkinDashboardScreen({ funnels = [] }) {
+function WalkinDashboardScreen({ funnels = [], onEditEstimate }) {
   const [cards, setCards] = useState([]); // [{lead, estimates, firstAt, lastAt}]
   const [loading, setLoading] = useState(true);
   const [dateFilter, setDateFilter] = useState("today");
   const [assigningLead, setAssigningLead] = useState(null);
-  const [viewEst, setViewEst] = useState(null); // estimate to show in detail modal
+  const [cardSel, setCardSel] = useState({}); // { cardKey: Set<estimateId> }
   const [toast, setToast] = useState("");
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 3000); };
@@ -10421,14 +10424,45 @@ function WalkinDashboardScreen({ funnels = [] }) {
                   </div>
                 </div>
 
-                {/* Estimate pills — click to view details */}
+                {/* Estimate pills — checkbox + view + edit */}
                 <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {estimates.map(e => (
-                    <span key={e.id} onClick={() => setViewEst(e)} style={{ fontSize: 11, padding: "3px 10px", borderRadius: 10, background: "#f0f4ff", border: "1px solid #90caf9", cursor: "pointer", color: "#1565c0" }}>
-                      {estLabel(e)}{e.total_amount ? ` · ₹${Math.round(e.total_amount).toLocaleString("en-IN")}` : ""} 👁
-                    </span>
-                  ))}
+                  {estimates.map(e => {
+                    const sel = (cardSel[cardKey] || new Set()).has(e.id);
+                    return (
+                      <div key={e.id} style={{ display: "flex", alignItems: "center", gap: 4, background: sel ? "#e3f2fd" : "#f5f5f5", border: `1px solid ${sel ? "#90caf9" : "#e0e0e0"}`, borderRadius: 10, padding: "3px 8px" }}>
+                        <input type="checkbox" checked={sel} onChange={() => setCardSel(prev => {
+                          const s = new Set(prev[cardKey] || []);
+                          sel ? s.delete(e.id) : s.add(e.id);
+                          return { ...prev, [cardKey]: s };
+                        })} style={{ cursor: "pointer", width: 13, height: 13 }} />
+                        <span style={{ fontSize: 11, color: "#333" }}>{estLabel(e)}{e.total_amount ? ` · ₹${Math.round(e.total_amount).toLocaleString("en-IN")}` : ""}</span>
+                        <button onClick={() => openEstimateSlipWindow(e, {}, lead.phone)} style={{ fontSize: 11, background: "none", border: "none", cursor: "pointer", padding: "0 2px", color: "#1565c0" }} title="View">👁</button>
+                        {onEditEstimate && <button onClick={() => onEditEstimate(e)} style={{ fontSize: 11, background: "none", border: "none", cursor: "pointer", padding: "0 2px", color: "#e65100" }} title="Edit in Calculator">✏️</button>}
+                      </div>
+                    );
+                  })}
                 </div>
+                {/* Send selected action bar */}
+                {(cardSel[cardKey]?.size || 0) > 0 && (() => {
+                  const selEsts = estimates.filter(e => cardSel[cardKey].has(e.id));
+                  const sendAll = () => {
+                    if (!lead.phone) return;
+                    const phone = lead.phone.replace(/\D/g, "").replace(/^0/, "91");
+                    const date = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+                    const lines = selEsts.map((e, i) => `${i+1}. ${estLabel(e)}${e.total_amount ? " — ₹" + Math.round(e.total_amount).toLocaleString("en-IN") : ""}`).join("\n");
+                    const msg = encodeURIComponent(`*ESTIMATES — Sun Sea Jewellers*\nFor: ${lead.name || lead.phone}\nDate: ${date}\n\n${lines}\n\n_These are estimates only · Prices subject to change_`);
+                    window.open(`https://wa.me/${phone}?text=${msg}`, "_blank");
+                  };
+                  const printAll = () => selEsts.forEach(e => openEstimateSlipWindow(e, {}, lead.phone));
+                  return (
+                    <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", padding: "6px 10px", background: "#e3f2fd", borderRadius: 8 }}>
+                      <span style={{ fontSize: 12, color: "#1565c0", fontWeight: 600 }}>{cardSel[cardKey].size} selected</span>
+                      <button onClick={sendAll} style={{ fontSize: 12, padding: "3px 10px", borderRadius: 6, border: "1px solid #25d366", background: "#f0fdf4", cursor: "pointer" }}>📱 Send via WA</button>
+                      <button onClick={printAll} style={{ fontSize: 12, padding: "3px 10px", borderRadius: 6, border: "1px solid #aaa", background: "#fff", cursor: "pointer" }}>🖨️ Print each</button>
+                      <button onClick={() => setCardSel(prev => ({ ...prev, [cardKey]: new Set() }))} style={{ fontSize: 11, background: "none", border: "none", cursor: "pointer", color: "#888" }}>✕</button>
+                    </div>
+                  );
+                })()}
 
                 {/* Actions */}
                 <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -10453,78 +10487,149 @@ function WalkinDashboardScreen({ funnels = [] }) {
         </div>
       )}
 
-      {/* Estimate detail modal */}
-      {viewEst && (() => {
-        const e = viewEst;
-        const items = e.items || [];
-        const fmt = (n) => n != null ? "₹" + Math.round(n).toLocaleString("en-IN") : "—";
-        const isJw = e.mode === "jewellery";
-        const isSol = e.mode === "solitaire" || e.mode === "solitaire_sheet" || e.mode === "quotation";
-        return (
-          <div onClick={() => setViewEst(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 9000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
-            <div onClick={e2 => e2.stopPropagation()} style={{ background: "#fff", borderRadius: 14, padding: 20, maxWidth: 480, width: "100%", maxHeight: "85vh", overflowY: "auto" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-                <div style={{ fontWeight: 700, fontSize: 15, textTransform: "capitalize" }}>📋 {e.mode} Estimate</div>
-                <button onClick={() => setViewEst(null)} style={{ border: "none", background: "none", fontSize: 18, cursor: "pointer", color: "#888" }}>✕</button>
-              </div>
-              <div style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
-                {new Date(e.created_at).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
-              </div>
-              {items.map((item, i) => (
-                <div key={i} style={{ background: "#f9f9f9", borderRadius: 8, padding: "10px 12px", marginBottom: 8 }}>
-                  {isJw && (
-                    <>
-                      {item.itemName && <div style={{ fontWeight: 700, marginBottom: 6 }}>{item.itemName}</div>}
-                      {[
-                        ["Gross weight", item.grossWt ? item.grossWt + " g" : null],
-                        ["Purity", item.purity || null],
-                        ["Gold rate", item.goldRate ? "₹" + item.goldRate + "/g" : null],
-                        ["Making", item.makingTotal ? fmt(item.makingTotal) : null],
-                        ["Diamond/Stone", item.diaTotal > 0 ? fmt(item.diaTotal) : null],
-                        ["GST", item.gst > 0 ? fmt(item.gst) : null],
-                        ["Total", item.total ? fmt(item.total) : (e.total_amount ? fmt(e.total_amount) : null)],
-                      ].filter(r => r[1]).map(([l, v]) => (
-                        <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "2px 0", borderBottom: "1px solid #eee" }}>
-                          <span style={{ color: "#666" }}>{l}</span><span style={{ fontWeight: l === "Total" ? 700 : 400 }}>{v}</span>
-                        </div>
-                      ))}
-                    </>
-                  )}
-                  {isSol && (
-                    <>
-                      {[
-                        ["Shape", item.shape],
-                        ["Weight", item.weight ? item.weight + " ct" : null],
-                        ["Color / Clarity", [item.color, item.clarity].filter(Boolean).join(" / ") || null],
-                        ["Cut", item.cut],
-                        ["Certificate", item.cert],
-                        ["Sell price", item.sellPrice ? fmt(item.sellPrice) : (e.total_amount ? fmt(e.total_amount) : null)],
-                      ].filter(r => r[1]).map(([l, v]) => (
-                        <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "2px 0", borderBottom: "1px solid #eee" }}>
-                          <span style={{ color: "#666" }}>{l}</span><span style={{ fontWeight: l === "Sell price" ? 700 : 400 }}>{v}</span>
-                        </div>
-                      ))}
-                    </>
-                  )}
-                </div>
-              ))}
-              {e.total_amount > 0 && (
-                <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: 15, marginTop: 8, padding: "8px 0", borderTop: "2px solid #e0e0e0" }}>
-                  <span>Total</span><span style={{ color: "#1565c0" }}>{fmt(e.total_amount)}</span>
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      })()}
     </div>
   );
+}
+
+// Module-level estimate slip opener — shared by CalculatorScreen and WalkinDashboardScreen
+function openEstimateSlipWindow(est, liveRates = {}, clientPhone = "") {
+  const it = (est.items || [])[0] || {};
+  const clientName = est.bullion_leads?.name || est._clientName || "";
+  const phone = clientPhone || est.bullion_leads?.phone || est._clientPhone || "";
+  const date = new Date(est.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" });
+  const fmtN = (n) => n != null ? `₹${Math.round(n).toLocaleString("en-IN")}` : "—";
+  const row = (label, value) => `<tr><td style="padding:3px 6px;color:#444;font-size:13px;">${label}</td><td style="padding:3px 6px;text-align:right;font-size:13px;">${value}</td></tr>`;
+  const waPhone = phone ? phone.replace(/\D/g, "").replace(/^0/, "91") : "";
+  const CSS = `* { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Georgia', serif; background: #fff; color: #222; }
+  @page { size: A5 portrait; margin: 15mm; }
+  .wrap { max-width: 400px; margin: 0 auto; padding: 12px; }
+  .om { font-size: 32px; color: #8b6914; text-align: center; margin-bottom: 4px; }
+  .title { font-size: 20px; letter-spacing: 3px; text-align: center; font-weight: bold; margin-bottom: 2px; }
+  .date { font-size: 12px; color: #666; text-align: center; margin-bottom: 4px; }
+  .client { font-size: 13px; color: #333; text-align: center; margin-bottom: 10px; font-style: italic; }
+  .item-header { display: flex; align-items: center; gap: 10px; margin: 8px 0 6px; }
+  .item-img { width: 52px; height: 52px; object-fit: cover; border-radius: 5px; cursor: pointer; border: 1px solid #ddd; flex-shrink: 0; }
+  .item-name { font-size: 15px; font-weight: bold; }
+  hr { border: none; border-top: 1px solid #bbb; margin: 8px 0; }
+  hr.thick { border-top: 2px solid #333; }
+  table { width: 100%; border-collapse: collapse; }
+  th { padding: 5px 6px; font-size: 11px; color: #555; text-align: left; border-bottom: 2px solid #333; font-weight: 600; }
+  th:last-child { text-align: right; }
+  .total-row td { padding: 5px 6px; font-size: 16px; font-weight: bold; border-top: 2px solid #333; }
+  .disclaimer { font-size: 10px; color: #888; text-align: center; margin-top: 14px; }
+  .btnrow { display: flex; gap: 8px; margin-top: 12px; justify-content: center; flex-wrap: wrap; }
+  .printbtn { padding: 8px 20px; background: #333; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .wabtn { padding: 8px 20px; background: #25d366; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .recalcbtn { padding: 8px 20px; background: #1565c0; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  @media print { .btnrow { display: none; } }`;
+
+  let body = "";
+  let extraScript = "";
+
+  if (est.mode === "jewellery") {
+    const todayRate = Math.round(liveRates[PURITIES[it.purityIdx]?.rateKey] || 0);
+    const netGold = parseFloat(it.netGold || 0);
+    const making = parseFloat(it.making || 0);
+    const diaTotal = parseFloat(it.diaTotal || 0);
+    const miscTotal = parseFloat(it.miscTotal || 0);
+    const applyGst = it.applyGst ? 1 : 0;
+    const dRows = [];
+    dRows.push(row("Purity", PURITIES[it.purityIdx]?.l || "Custom"));
+    if (it.grossWt) dRows.push(row("Gross Weight", `${parseFloat(it.grossWt||0).toFixed(3)} g`));
+    if (it.netGold != null) dRows.push(row("Net Gold Weight", `${netGold.toFixed(3)} g`));
+    if (it.gRate > 0) dRows.push(row("Gold Rate", `₹${Math.round(it.gRate).toLocaleString("en-IN")}/g`));
+    if (it.goldVal > 0) dRows.push(row("Gold Value", fmtN(it.goldVal)));
+    if (making > 0) dRows.push(row("Making", fmtN(making)));
+    if (parseFloat(it.dia1Wt||0) > 0 && it.dia1Rate > 0) dRows.push(row(`Diamond 1 (${parseFloat(it.dia1Wt)}${it.dia1Unit} @ ₹${it.dia1Rate})`, fmtN(parseFloat(it.dia1Wt||0)*parseFloat(it.dia1Rate||0))));
+    if (parseFloat(it.dia2Wt||0) > 0 && it.dia2Rate > 0) dRows.push(row(`Diamond 2 (${parseFloat(it.dia2Wt)}${it.dia2Unit} @ ₹${it.dia2Rate})`, fmtN(parseFloat(it.dia2Wt||0)*parseFloat(it.dia2Rate||0))));
+    if (parseFloat(it.stoneWt||0) > 0 && it.stoneRate > 0) dRows.push(row(`Stone (${parseFloat(it.stoneWt)}${it.stoneUnit} @ ₹${it.stoneRate})`, fmtN(parseFloat(it.stoneWt||0)*parseFloat(it.stoneRate||0))));
+    [["misc1Lbl","misc1Wt","misc1Unit","misc1Rate"],["misc2Lbl","misc2Wt","misc2Unit","misc2Rate"],["misc3Lbl","misc3Wt","misc3Unit","misc3Rate"]].forEach(([lk,wk,uk,rk]) => {
+      const mr = parseFloat(it[rk]||0); if (!mr) return;
+      const mw = parseFloat(it[wk]||0);
+      dRows.push(row(mw > 0 ? `${it[lk]||"Misc"} (${mw}${it[uk]})` : (it[lk]||"Misc"), fmtN(mw > 0 ? mw*mr : mr)));
+    });
+    const recalcBtnHtml = todayRate > 0 ? `<button class="recalcbtn" onclick="recalcToday()">📊 New estimate — today's rate (₹${todayRate.toLocaleString("en-IN")}/g)</button>` : "";
+    const waBtnHtml = waPhone ? `<button class="wabtn" onclick="sendWA()">📱 Send WhatsApp</button>` : "";
+    body = `<div class="om">ॐ</div><div class="title">ESTIMATE</div><div class="date">${date}</div>${clientName ? `<div class="client">Prepared for: ${clientName}</div>` : ""}<hr class="thick"/>
+    <div class="item-header">${it.itemImage ? `<img class="item-img" src="${it.itemImage}" alt="item" onclick="expandImg('${it.itemImage}')"/>` : ""}${it.itemName ? `<div class="item-name">${it.itemName}</div>` : ""}</div>
+    <table>${dRows.join("")}${it.applyGst && it.gst > 0 ? row("GST @ 3%", fmtN(it.gst)) : ""}<tr class="total-row"><td>GRAND TOTAL</td><td style="text-align:right;">${fmtN(est.total_amount)}</td></tr></table>
+    <div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill</div>
+    <div class="btnrow"><button class="printbtn" onclick="window.print()">🖨️ Print</button>${waBtnHtml}${recalcBtnHtml}</div>`;
+    const waMsg = encodeURIComponent(`*ESTIMATE — Sun Sea Jewellers*\n${clientName ? "For: " + clientName + "\n" : ""}Date: ${date}\n\n${it.itemName ? it.itemName + "\n" : ""}Purity: ${PURITIES[it.purityIdx]?.l || "Custom"}\nGross Wt: ${it.grossWt || "—"}g\nTotal: ${fmtN(est.total_amount)}\n\n_This is an estimate only_`);
+    extraScript = `
+function sendWA(){window.open("https://wa.me/${waPhone}?text=${waMsg}","_blank");}
+var TODAY_RATE=${todayRate},NET_GOLD=${netGold},MAKING=${making},DIA_TOTAL=${diaTotal},MISC_TOTAL=${miscTotal},APPLY_GST=${applyGst};
+var CLIENT="${clientName.replace(/"/g,"'")}",IMG="${(it.itemImage||"").replace(/"/g,"'")}",INAME="${(it.itemName||"").replace(/"/g,"'")}",PURITY="${(PURITIES[it.purityIdx]?.l||"Custom").replace(/"/g,"'")}",GWGT="${(it.grossWt||"").toString().replace(/"/g,"'")}",NGWGT="${netGold.toFixed(3)}";
+var MAKING_LBL="Making",DIA1="${it.dia1Wt||""}",DIA1U="${it.dia1Unit||""}",DIA1R="${it.dia1Rate||""}",DIA2="${it.dia2Wt||""}",DIA2U="${it.dia2Unit||""}",DIA2R="${it.dia2Rate||""}",STW="${it.stoneWt||""}",STU="${it.stoneUnit||""}",STR="${it.stoneRate||""}";
+function fmtR(n){return n==null?"—":"₹"+Math.round(n).toLocaleString("en-IN");}
+function expandImg(src){var w=window.open("","_blank","width=600,height=600");w.document.write("<body style='margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh'><img src='"+src+"' style='max-width:100%;max-height:100vh;object-fit:contain'/></body>");w.document.close();}
+function recalcToday(){
+  if(!TODAY_RATE){alert("Live rate not loaded");return;}
+  var newGoldVal=NET_GOLD*TODAY_RATE,subT=newGoldVal+MAKING+DIA_TOTAL+MISC_TOTAL,newGst=APPLY_GST?subT*0.03:0,newTotal=subT+newGst;
+  var td=new Date().toLocaleDateString("en-IN",{day:"2-digit",month:"long",year:"numeric"});
+  var r=function(l,v){return "<tr><td style='padding:3px 6px;color:#444;font-size:13px;'>"+l+"</td><td style='padding:3px 6px;text-align:right;font-size:13px;'>"+v+"</td></tr>";};
+  var rows=[r("Purity",PURITY)];
+  if(GWGT)rows.push(r("Gross Weight",parseFloat(GWGT).toFixed(3)+" g"));
+  rows.push(r("Net Gold Weight",NGWGT+" g"));
+  rows.push(r("Gold Rate","₹"+TODAY_RATE.toLocaleString("en-IN")+"/g (today)"));
+  rows.push(r("Gold Value",fmtR(newGoldVal)));
+  if(MAKING>0)rows.push(r(MAKING_LBL,fmtR(MAKING)));
+  if(parseFloat(DIA1)>0&&DIA1R)rows.push(r("Diamond 1 ("+parseFloat(DIA1)+DIA1U+" @ ₹"+DIA1R+")",fmtR(parseFloat(DIA1)*parseFloat(DIA1R))));
+  if(parseFloat(DIA2)>0&&DIA2R)rows.push(r("Diamond 2 ("+parseFloat(DIA2)+DIA2U+" @ ₹"+DIA2R+")",fmtR(parseFloat(DIA2)*parseFloat(DIA2R))));
+  if(parseFloat(STW)>0&&STR)rows.push(r("Stone ("+parseFloat(STW)+STU+" @ ₹"+STR+")",fmtR(parseFloat(STW)*parseFloat(STR))));
+  var gstRow=APPLY_GST&&newGst>0?r("GST @ 3%",fmtR(newGst)):"";
+  var h='<!DOCTYPE html><html><head><title>Estimate</title><style>'+document.head.querySelector("style").textContent+'<\/style><\/head><body><div class="wrap"><div class="om">ॐ<\/div><div class="title">ESTIMATE<\/div><div class="date">'+td+'<\/div>'+(CLIENT?'<div class="client">Prepared for: '+CLIENT+'<\/div>':'')+'<hr class="thick"\/><div class="item-header">'+(IMG?'<img class="item-img" src="'+IMG+'" alt="item"\/>':"")+(INAME?'<div class="item-name">'+INAME+'<\/div>':"")+
+  '<\/div><table>'+rows.join("")+gstRow+'<tr class="total-row"><td>GRAND TOTAL<\/td><td style="text-align:right;">'+fmtR(newTotal)+'<\/td><\/tr><\/table><div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill<\/div><div class="btnrow"><button class="printbtn" onclick="window.print()">🖨️ Print<\/button><\/div><\/div><\/body><\/html>';
+  var w=window.open("","_blank","width=500,height=750");if(w){w.document.write(h);w.document.close();}
+}`;
+  } else if (est.mode === "solitaire") {
+    const dRows = [];
+    if (it.shape) dRows.push(row("Shape", it.shape));
+    if (it.weight) dRows.push(row("Weight", `${it.weight} ct`));
+    if (it.color || it.clarity) dRows.push(row("Colour / Clarity", `${it.color||"—"} / ${it.clarity||"—"}`));
+    if (it.cut) dRows.push(row("Cut", it.cut));
+    if (it.cert) dRows.push(row("Certificate", it.cert));
+    if (it.sellPpc != null) dRows.push(row("Sell Price/ct", fmtN(it.sellPpc)));
+    if (it.sellTotal != null) dRows.push(row("Stone Total", fmtN(it.sellTotal)));
+    if (it.includeGold && (it.goldVal||0) + (it.making||0) > 0) dRows.push(row("Gold + Making", fmtN((it.goldVal||0)+(it.making||0))));
+    const stoneGst = it.applyGst && it.sellTotal ? it.sellTotal * 0.015 : 0;
+    const goldGst = it.applyGst && it.includeGold && it.goldVal ? ((it.goldVal||0)+(it.making||0)) * 0.03 : 0;
+    const waMsg = encodeURIComponent(`*ESTIMATE — Sun Sea Jewellers*\n${clientName ? "For: " + clientName + "\n" : ""}Date: ${date}\n\n${it.shape||""} ${it.weight||""}ct ${it.color||""} ${it.clarity||""} ${it.cert||""}\nTotal: ${fmtN(est.total_amount)}\n\n_This is an estimate only_`);
+    const waBtnHtml = waPhone ? `<button class="wabtn" onclick="window.open('https://wa.me/${waPhone}?text=${waMsg}','_blank')">📱 Send WhatsApp</button>` : "";
+    body = `<div class="om">ॐ</div><div class="title">ESTIMATE</div><div class="date">${date}</div>${clientName ? `<div class="client">Prepared for: ${clientName}</div>` : ""}<hr class="thick"/>
+    <table>${dRows.join("")}${stoneGst > 0 ? row("GST @ 1.5% (stone)", fmtN(stoneGst)) : ""}${goldGst > 0 ? row("GST @ 3% (gold setting)", fmtN(goldGst)) : ""}<tr class="total-row"><td>GRAND TOTAL</td><td style="text-align:right;">${fmtN(est.total_amount)}</td></tr></table>
+    <div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill</div>
+    <div class="btnrow"><button class="printbtn" onclick="window.print()">🖨️ Print</button>${waBtnHtml}</div>`;
+    extraScript = `function expandImg(src){}`;
+  } else {
+    const stoneLines = (est.items||[]).map((r, i) => `${i+1}. ${r.shape||"—"} ${r.weight||"—"}ct ${r.color||"—"}/${r.clarity||"—"} ${r.cert||""} — ${r.sellTotal != null ? fmtN(r.sellTotal) : "—"}`).join("\n");
+    const waMsg = encodeURIComponent(`*QUOTATION — Sun Sea Jewellers*\n${clientName ? "For: " + clientName + "\n" : ""}Date: ${date}\n\n${stoneLines}\n\n_Prices subject to change · Not a final bill_`);
+    const waBtnHtml = waPhone ? `<button class="wabtn" onclick="window.open('https://wa.me/${waPhone}?text=${waMsg}','_blank')">📱 Send WhatsApp</button>` : "";
+    const stoneRows = (est.items||[]).map((r, i) => `<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;font-size:12px;color:#888;">${i+1}</td><td style="padding:4px 6px;font-size:12px;">${r.shape||"—"}</td><td style="padding:4px 6px;font-size:12px;">${r.weight||"—"} ct</td><td style="padding:4px 6px;font-size:12px;">${r.color||"—"} / ${r.clarity||"—"}</td><td style="padding:4px 6px;font-size:12px;">${r.cert||"—"}</td><td style="padding:4px 6px;font-size:12px;text-align:right;font-weight:600;">${r.sellTotal != null ? fmtN(r.sellTotal) : "—"}</td></tr>`).join("");
+    body = `<div class="om">ॐ</div><div class="title">QUOTATION</div><div class="date">${date}</div>${clientName ? `<div class="client">Prepared for: ${clientName}</div>` : ""}<hr class="thick"/>
+    <table><thead><tr><th>#</th><th>Shape</th><th>Weight</th><th>Colour/Clarity</th><th>Cert</th><th style="text-align:right;">Price</th></tr></thead><tbody>${stoneRows}</tbody></table>
+    <div class="disclaimer">This is an estimate only · Prices subject to change · Not a final bill</div>
+    <div class="btnrow"><button class="printbtn" onclick="window.print()">🖨️ Print</button>${waBtnHtml}</div>`;
+    extraScript = `function expandImg(src){}`;
+  }
+
+  const prevChanges = est.metadata?.changes || [];
+  const changeHistoryHtml = prevChanges.length > 0 ? `<div style="margin-top:12px;border-top:1px solid #eee;padding-top:8px;"><div style="font-size:10px;font-weight:600;color:#888;margin-bottom:4px;">Edit history</div>${prevChanges.map(ch => `<div style="font-size:10px;color:#666;margin-bottom:3px;background:#fafafa;border-radius:3px;padding:3px 6px;"><strong>${ch.by||"?"}</strong> · ${new Date(ch.ts).toLocaleString("en-IN",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})} — ${(ch.fields||[]).map(f=>`${f.f}: ₹${Math.round(f.old||0).toLocaleString("en-IN")} → ₹${Math.round(f.new||0).toLocaleString("en-IN")}`).join(", ")}</div>`).join("")}</div>` : "";
+  body = body.replace(`<div class="btnrow">`, changeHistoryHtml + `<div class="btnrow">`);
+  const html = `<!DOCTYPE html><html><head><title>Estimate</title><style>${CSS}</style><script>${extraScript || "function expandImg(src){}"}<\/script></head><body><div class="wrap">${body}</div></body></html>`;
+  const win = window.open("", "_blank", "width=500,height=750");
+  if (win) { win.document.write(html); win.document.close(); }
 }
 
 function CalculatorScreen({ funnels = [], allTags = [] }) {
   const [tab, setTab] = useState("jewellery");
   const [rapData, setRapData] = useState(RAP_SEED);
   const [rapAge, setRapAge] = useState(null);
+  const [rapUploadOpen, setRapUploadOpen] = useState(false);
+  const [rapUploadRounds, setRapUploadRounds] = useState(null);
+  const [rapUploadFancy, setRapUploadFancy] = useState(null);
+  const [rapUploading, setRapUploading] = useState(false);
   const [liveRates, setLiveRates] = useState({ g24: null, g22: null, g18: null, g14: null, g9: null, usd: null });
   const [usdInr, setUsdInr] = useState("");
   const [spread, setSpread] = useState(() => { try { return Number(localStorage.getItem("rap_spread") || 8); } catch { return 8; } });
@@ -10670,6 +10775,11 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     syncQueue();
     // Load store staff for "attended by" dropdown
     sb.from("staff").select("id,name").order("name").then(({ data }) => setCalcStaff(data || []));
+    // Load estimate forwarded from walk-in tab
+    try {
+      const pending = localStorage.getItem("calc_pending_edit");
+      if (pending) { localStorage.removeItem("calc_pending_edit"); setTimeout(() => loadEstimateForEdit(JSON.parse(pending)), 100); }
+    } catch {}
   }, []);
 
   const saveSpread = (v) => { setSpread(v); try { localStorage.setItem("rap_spread", v); } catch { } };
@@ -11106,7 +11216,8 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     showToast("✏️ Estimate loaded — make changes and tap Update");
   };
 
-  const openEstimateSlip = (est) => {
+  const openEstimateSlip = (est) => openEstimateSlipWindow(est, liveRates);
+  const _openEstimateSlipOLD = (est) => {
     const it = (est.items || [])[0] || {};
     const clientName = est.bullion_leads?.name || est._clientName || "";
     const date = new Date(est.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" });
@@ -11729,8 +11840,58 @@ function recalcToday(){
             const d = await r.json().catch(() => ({}));
             if (d.ok) { showToast(`✅ Synced ${d.date || ""} · ${d.source === "seed" ? "⚠️ used fallback seed (Drive parse failed)" : `from Drive: ${d.rounds_file || d.fancy_file || "?"}`}${d.warnings?.length ? " · " + d.warnings[0] : ""}`); setRapAge(0); } else showToast("❌ " + (d.error || "Sync failed"));
           }}>🔄 Sync Rapaport</Btn>
+          <Btn small ghost color="#6a1b9a" onClick={() => setRapUploadOpen(true)}>📤 Upload PDF</Btn>
         </div>
       </div>
+
+      {/* Rapaport PDF upload modal */}
+      {rapUploadOpen && (
+        <div onClick={() => setRapUploadOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 9000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+          <div onClick={ev => ev.stopPropagation()} style={{ background: "#fff", borderRadius: 14, padding: 24, maxWidth: 420, width: "100%" }}>
+            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>📤 Upload Rapaport PDFs</div>
+            <div style={{ fontSize: 12, color: "#888", marginBottom: 16 }}>Upload the Round and/or Fancy price list PDFs from Rapaport. Both files can be uploaded at once.</div>
+            {[
+              { label: "Round Price List (PDF)", key: "rounds", file: rapUploadRounds, set: setRapUploadRounds },
+              { label: "Fancy/Pear Price List (PDF)", key: "fancy", file: rapUploadFancy, set: setRapUploadFancy },
+            ].map(f => (
+              <div key={f.key} style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>{f.label}</div>
+                <input type="file" accept=".pdf,application/pdf" onChange={e => f.set(e.target.files?.[0] || null)}
+                  style={{ fontSize: 12, width: "100%", padding: "6px 8px", border: "1px solid #ddd", borderRadius: 6, background: f.file ? "#e8f5e9" : "#fff" }} />
+                {f.file && <div style={{ fontSize: 11, color: "#2e7d32", marginTop: 2 }}>✓ {f.file.name}</div>}
+              </div>
+            ))}
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <button disabled={(!rapUploadRounds && !rapUploadFancy) || rapUploading} onClick={async () => {
+                if (!rapUploadRounds && !rapUploadFancy) return;
+                setRapUploading(true);
+                try {
+                  const fd = new FormData();
+                  if (rapUploadRounds) fd.append("rounds", rapUploadRounds);
+                  if (rapUploadFancy) fd.append("fancy", rapUploadFancy);
+                  const r = await fetch("/api/rapaport-upload", { method: "POST", body: fd });
+                  const d = await r.json().catch(() => ({}));
+                  if (d.ok) {
+                    showToast(`✅ Uploaded · ${d.date || ""} · ${[d.rounds_parsed && "Round ✓", d.fancy_parsed && "Fancy ✓"].filter(Boolean).join(", ")}`);
+                    setRapAge(0);
+                    setRapUploadOpen(false);
+                    setRapUploadRounds(null);
+                    setRapUploadFancy(null);
+                    // Reload rapaport data
+                    sb.from("bullion_dropdowns").select("value,updated_at").eq("field", "rapaport_data").maybeSingle().then(({ data }) => {
+                      if (data?.value) { try { setRapData(JSON.parse(data.value)); } catch {} }
+                    });
+                  } else { showToast("❌ " + (d.error || "Upload failed")); }
+                } catch (err) { showToast("❌ " + err.message); }
+                setRapUploading(false);
+              }} style={{ flex: 1, padding: "8px 16px", background: "#6a1b9a", color: "#fff", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, opacity: (!rapUploadRounds && !rapUploadFancy) || rapUploading ? 0.5 : 1 }}>
+                {rapUploading ? "Uploading…" : "📤 Upload & Parse"}
+              </button>
+              <button onClick={() => setRapUploadOpen(false)} style={{ padding: "8px 14px", border: "1px solid #ddd", borderRadius: 8, cursor: "pointer", fontSize: 13, background: "#fff" }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Sync pending badge */}
       {syncPending > 0 && (
