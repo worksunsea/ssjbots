@@ -10282,21 +10282,19 @@ function newSolRow() {
 }
 
 // ─── Walk-in Dashboard Screen ─────────────────────────────────────────────────
+// Shows all clients who had estimates saved in the selected period.
+// Does NOT require a formal bullion_visits record — estimates are evidence of walk-ins.
 function WalkinDashboardScreen({ funnels = [] }) {
-  const [visits, setVisits] = useState([]);
+  const [cards, setCards] = useState([]); // [{lead, estimates, firstAt, lastAt}]
   const [loading, setLoading] = useState(true);
-  const [dateFilter, setDateFilter] = useState("month"); // today | yesterday | week | month
-  const [assigningVisit, setAssigningVisit] = useState(null);
+  const [dateFilter, setDateFilter] = useState("today");
+  const [assigningLead, setAssigningLead] = useState(null);
   const [toast, setToast] = useState("");
-  const [totalAllTime, setTotalAllTime] = useState(null);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 3000); };
 
-  const [queryError, setQueryError] = useState(null);
-
-  const loadVisits = useCallback(async () => {
+  const loadCards = useCallback(async () => {
     setLoading(true);
-    setQueryError(null);
     const now = new Date();
     let since, until = null;
     if (dateFilter === "today") { since = new Date(now); since.setHours(0, 0, 0, 0); }
@@ -10306,38 +10304,34 @@ function WalkinDashboardScreen({ funnels = [] }) {
     }
     else if (dateFilter === "week") { since = new Date(now - 7 * 86400000); }
     else { since = new Date(now - 30 * 86400000); }
-    // Try full join first; fall back to simple query if FK join fails
-    let q = sb.from("bullion_visits")
-      .select("id,visited_at,time_out,outcome,temperature,price_quoted,staff,items_seen,notes,followup_required,party_size,bullion_leads(id,name,phone,city),bullion_estimates!visit_id(id,mode,total_amount,items,created_at)")
+
+    // Primary: estimates with a linked client saved in this period
+    let q = sb.from("bullion_estimates")
+      .select("id,mode,total_amount,created_at,items,lead_id,visit_id,bullion_leads(id,name,phone,city,is_client,client_rating)")
       .eq("tenant_id", getTenantId())
-      .gte("visited_at", since.toISOString());
-    if (until) q = q.lte("visited_at", until.toISOString());
-    let { data, error } = await q.order("visited_at", { ascending: false });
-    if (error) {
-      // Retry without estimates join (visit_id FK may not be recognised yet)
-      const q2 = sb.from("bullion_visits")
-        .select("id,visited_at,time_out,outcome,temperature,price_quoted,staff,items_seen,notes,followup_required,party_size,bullion_leads(id,name,phone,city)")
-        .eq("tenant_id", getTenantId())
-        .gte("visited_at", since.toISOString());
-      const r2 = await (until ? q2.lte("visited_at", until.toISOString()) : q2).order("visited_at", { ascending: false });
-      data = r2.data;
-      if (r2.error) setQueryError(r2.error.message);
+      .not("lead_id", "is", null)
+      .gte("created_at", since.toISOString());
+    if (until) q = q.lte("created_at", until.toISOString());
+    const { data: ests } = await q.order("created_at", { ascending: false });
+
+    // Group by lead_id
+    const byLead = {};
+    for (const e of (ests || [])) {
+      const lid = e.lead_id;
+      if (!byLead[lid]) byLead[lid] = { lead: e.bullion_leads || {}, estimates: [], firstAt: e.created_at, lastAt: e.created_at };
+      byLead[lid].estimates.push(e);
+      if (e.created_at < byLead[lid].firstAt) byLead[lid].firstAt = e.created_at;
+      if (e.created_at > byLead[lid].lastAt) byLead[lid].lastAt = e.created_at;
     }
-    setVisits((data || []).map(v => ({ ...v, bullion_estimates: v.bullion_estimates || [] })));
-    // Fetch most-recent records to diagnose timestamps
-    const { data: recent, count } = await sb.from("bullion_visits")
-      .select("id,visited_at,tenant_id", { count: "exact" })
-      .eq("tenant_id", getTenantId())
-      .order("visited_at", { ascending: false })
-      .limit(3);
-    setTotalAllTime({ count: count ?? 0, recent: recent || [] });
+    // Sort by most recent activity
+    const sorted = Object.values(byLead).sort((a, b) => b.lastAt.localeCompare(a.lastAt));
+    setCards(sorted);
     setLoading(false);
   }, [dateFilter]);
 
-  useEffect(() => { loadVisits(); }, [loadVisits]);
+  useEffect(() => { loadCards(); }, [loadCards]);
 
-  const assignFunnel = async (visit, label) => {
-    const lead = visit.bullion_leads;
+  const assignFunnel = async (lead, label) => {
     if (!lead?.id) return;
     const matched = funnels.find(f => f.name?.toLowerCase().includes(label)) || funnels[0];
     if (!matched?.id) { showToast("No matching funnel found"); return; }
@@ -10347,13 +10341,16 @@ function WalkinDashboardScreen({ funnels = [] }) {
       body: JSON.stringify({ phone: lead.phone, name: lead.name || null, description: `Walk-in ${label} follow-up`, funnel_id: matched.id, tenant_id: getTenantId() }),
     });
     const d = await res.json().catch(() => ({}));
-    if (d.ok) { showToast(`✅ Added to ${matched.name}`); setAssigningVisit(null); }
+    if (d.ok) { showToast(`✅ Added to ${matched.name}`); setAssigningLead(null); }
     else showToast("❌ " + (d.error || "Failed"));
   };
 
-  const tempStyle = { hot: { bg: "#fff3e0", border: "#ffb74d", icon: "🔥" }, warm: { bg: "#fff8e1", border: "#ffd54f", icon: "♨️" }, cold: { bg: "#e3f2fd", border: "#90caf9", icon: "🧊" } };
-
-  const stats = { total: visits.length, purchased: visits.filter(v => v.outcome === "purchased").length, hot: visits.filter(v => v.temperature === "hot").length, noOutcome: visits.filter(v => !v.outcome && !v.temperature).length };
+  const estLabel = (e) => {
+    const it = (e.items || [])[0] || {};
+    if (e.mode === "jewellery") return it.itemName || "Jewellery";
+    if (e.mode === "solitaire") return `${it.shape || "Solitaire"} ${it.weight || ""}ct`.trim();
+    return "Quotation";
+  };
 
   return (
     <div style={{ maxWidth: 900, margin: "0 auto", padding: "0 0 40px" }}>
@@ -10361,101 +10358,93 @@ function WalkinDashboardScreen({ funnels = [] }) {
 
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
-        <div style={{ fontWeight: 700, fontSize: 18 }}>🏪 Walk-in Sessions</div>
+        <div style={{ fontWeight: 700, fontSize: 18 }}>🏪 Walk-in Activity</div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {["today", "yesterday", "week", "month"].map(d => (
             <button key={d} onClick={() => setDateFilter(d)} style={{ padding: "4px 12px", borderRadius: 6, border: `1px solid ${dateFilter === d ? "#1565c0" : "#ddd"}`, background: dateFilter === d ? "#e3f2fd" : "#fff", fontWeight: dateFilter === d ? 600 : 400, cursor: "pointer", fontSize: 12, textTransform: "capitalize" }}>{d}</button>
           ))}
-          <button onClick={loadVisits} style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", cursor: "pointer", fontSize: 12 }}>↻</button>
+          <button onClick={loadCards} style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", cursor: "pointer", fontSize: 12 }}>↻</button>
         </div>
       </div>
 
-      {/* Stats */}
-      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
-        {[{ l: "Total visits", v: stats.total, c: "#1565c0" }, { l: "Purchased", v: stats.purchased, c: "#2e7d32" }, { l: "Hot leads", v: stats.hot, c: "#e65100" }, { l: "No outcome", v: stats.noOutcome, c: "#888" }].map(s => (
-          <div key={s.l} style={{ flex: "1 1 120px", background: "#fff", border: "1px solid #eee", borderRadius: 10, padding: "10px 14px", textAlign: "center" }}>
-            <div style={{ fontSize: 22, fontWeight: 700, color: s.c }}>{s.v}</div>
-            <div style={{ fontSize: 11, color: "#666", marginTop: 2 }}>{s.l}</div>
-          </div>
-        ))}
-      </div>
+      {/* Stats row */}
+      {!loading && cards.length > 0 && (
+        <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+          {[
+            { l: "Clients seen", v: cards.length, c: "#1565c0" },
+            { l: "Estimates done", v: cards.reduce((s, c) => s + c.estimates.length, 0), c: "#6a1b9a" },
+            { l: "Total value quoted", v: "₹" + Math.round(cards.reduce((s, c) => s + c.estimates.reduce((ss, e) => ss + (e.total_amount || 0), 0), 0)).toLocaleString("en-IN"), c: "#2e7d32", small: true },
+            { l: "Existing clients", v: cards.filter(c => c.lead?.is_client).length, c: "#e65100" },
+          ].map(s => (
+            <div key={s.l} style={{ flex: "1 1 120px", background: "#fff", border: "1px solid #eee", borderRadius: 10, padding: "10px 14px", textAlign: "center" }}>
+              <div style={{ fontSize: s.small ? 15 : 22, fontWeight: 700, color: s.c }}>{s.v}</div>
+              <div style={{ fontSize: 11, color: "#666", marginTop: 2 }}>{s.l}</div>
+            </div>
+          ))}
+        </div>
+      )}
 
-      {/* Visit cards */}
-      {queryError && <div style={{ background: "#ffebee", border: "1px solid #ef9a9a", borderRadius: 8, padding: "8px 14px", marginBottom: 10, fontSize: 12, color: "#c62828" }}>⚠️ Query error: {queryError}</div>}
-      {loading ? <div style={{ textAlign: "center", padding: 40, color: "#aaa" }}>Loading…</div> : visits.length === 0 ? (
+      {/* Cards */}
+      {loading ? <div style={{ textAlign: "center", padding: 40, color: "#aaa" }}>Loading…</div> : cards.length === 0 ? (
         <div style={{ textAlign: "center", padding: 40, color: "#aaa" }}>
           <div style={{ fontSize: 32, marginBottom: 10 }}>🏪</div>
-          No walk-in sessions found for this period.<br />
-          <span style={{ fontSize: 12 }}>Tenant: {getTenantId()?.slice(0, 8)}… · Filter: {dateFilter}</span><br />
-          <span style={{ fontSize: 12, fontWeight: 600 }}>All-time total: {totalAllTime?.count ?? "…"}</span><br />
-          {totalAllTime?.recent?.map(r => (
-            <span key={r.id} style={{ fontSize: 11, display: "block", color: "#555" }}>
-              Most recent: {r.visited_at ? new Date(r.visited_at).toLocaleString("en-IN") : "NULL visited_at"}
-            </span>
-          ))}
+          No estimates saved for this period.<br />
+          <span style={{ fontSize: 12 }}>Estimates saved in the 💎 Calculator with a client linked show here automatically.</span>
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {visits.map(v => {
-            const lead = v.bullion_leads || {};
-            const ests = v.bullion_estimates || [];
-            const tc = tempStyle[v.temperature] || { bg: "#f9f9f9", border: "#eee", icon: "👣" };
-            const timeIn = v.visited_at ? new Date(v.visited_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "";
-            const dateStr = v.visited_at ? new Date(v.visited_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short" }) : "";
-            const timeOut = v.time_out ? new Date(v.time_out).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : null;
-            const estTotal = ests.reduce((s, e) => s + (e.total_amount || 0), 0);
+          {cards.map(({ lead, estimates, firstAt, lastAt }) => {
+            const timeFirst = new Date(firstAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+            const timeLast = new Date(lastAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+            const dateStr = new Date(firstAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
+            const total = estimates.reduce((s, e) => s + (e.total_amount || 0), 0);
+            const cardKey = lead.id || lastAt;
             return (
-              <div key={v.id} style={{ background: tc.bg, border: `1px solid ${tc.border}`, borderRadius: 10, padding: "12px 16px" }}>
+              <div key={cardKey} style={{ background: "#fff", border: "1px solid #e0e0e0", borderRadius: 10, padding: "12px 16px", boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 8 }}>
                   <div>
-                    <div style={{ fontWeight: 700, fontSize: 14 }}>{tc.icon} {lead.name || lead.phone || "Unknown client"}</div>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>
+                      {lead.is_client ? "⭐ " : "👣 "}{lead.name || lead.phone || "Unknown"}
+                      {lead.is_client && <span style={{ fontSize: 11, marginLeft: 6, background: "#e8f5e9", color: "#2e7d32", padding: "1px 6px", borderRadius: 10 }}>Client</span>}
+                    </div>
                     <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>
                       {lead.phone && <span style={{ marginRight: 10 }}>{lead.phone}</span>}
-                      {dateStr} · {timeIn}{timeOut ? ` → ${timeOut}` : " → still here"}
-                      {v.staff && <span style={{ marginLeft: 8 }}>· {v.staff}</span>}
-                      {v.party_size > 1 && <span style={{ marginLeft: 8 }}>· {v.party_size} people</span>}
+                      {dateStr} · {timeFirst}{timeFirst !== timeLast ? ` → ${timeLast}` : ""}
                     </div>
-                    {v.items_seen && <div style={{ fontSize: 12, color: "#555", marginTop: 4 }}>Seen: {v.items_seen}</div>}
-                    {v.notes && <div style={{ fontSize: 12, color: "#888", marginTop: 2, fontStyle: "italic" }}>{v.notes}</div>}
                   </div>
                   <div style={{ textAlign: "right" }}>
-                    {v.outcome && <div style={{ fontSize: 12, fontWeight: 600, color: v.outcome === "purchased" ? "#2e7d32" : "#555", marginBottom: 4 }}>✓ {v.outcome}</div>}
-                    {ests.length > 0 && <div style={{ fontSize: 12, color: "#1565c0", fontWeight: 600 }}>📋 {ests.length} estimate{ests.length > 1 ? "s" : ""}{estTotal > 0 ? ` · ₹${Math.round(estTotal).toLocaleString("en-IN")}` : ""}</div>}
-                    {v.price_quoted > 0 && <div style={{ fontSize: 11, color: "#888" }}>Quoted: ₹{Math.round(v.price_quoted).toLocaleString("en-IN")}</div>}
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#1565c0" }}>
+                      📋 {estimates.length} estimate{estimates.length > 1 ? "s" : ""}
+                    </div>
+                    {total > 0 && <div style={{ fontSize: 12, color: "#2e7d32", fontWeight: 600 }}>₹{Math.round(total).toLocaleString("en-IN")}</div>}
                   </div>
                 </div>
 
-                {/* Linked estimates */}
-                {ests.length > 0 && (
-                  <div style={{ marginTop: 8, borderTop: `1px solid ${tc.border}`, paddingTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    {ests.map(e => {
-                      const it = (e.items || [])[0] || {};
-                      const lbl = e.mode === "jewellery" ? (it.itemName || "Jewellery") : e.mode === "solitaire" ? `${it.shape || "Solitaire"} ${it.weight || ""}ct`.trim() : "Quotation";
-                      return (
-                        <span key={e.id} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 10, background: "#fff", border: "1px solid #ddd" }}>
-                          {lbl}{e.total_amount ? ` · ₹${Math.round(e.total_amount).toLocaleString("en-IN")}` : ""}
-                        </span>
-                      );
-                    })}
-                  </div>
-                )}
+                {/* Estimate pills */}
+                <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {estimates.map(e => (
+                    <span key={e.id} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 10, background: "#f5f5f5", border: "1px solid #e0e0e0" }}>
+                      {estLabel(e)}{e.total_amount ? ` · ₹${Math.round(e.total_amount).toLocaleString("en-IN")}` : ""}
+                    </span>
+                  ))}
+                </div>
 
                 {/* Actions */}
                 <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {assigningVisit === v.id ? (
+                  {assigningLead === cardKey ? (
                     <>
-                      <span style={{ fontSize: 12, color: "#555", alignSelf: "center" }}>Add to funnel:</span>
+                      <span style={{ fontSize: 12, color: "#555", alignSelf: "center" }}>Funnel:</span>
                       {["hot", "warm", "cold"].map(l => (
-                        <button key={l} onClick={() => assignFunnel(v, l)} style={{ fontSize: 12, padding: "3px 10px", borderRadius: 6, border: "1px solid #bbb", background: "#fff", cursor: "pointer", textTransform: "capitalize" }}>
+                        <button key={l} onClick={() => assignFunnel(lead, l)} style={{ fontSize: 12, padding: "3px 10px", borderRadius: 6, border: "1px solid #bbb", background: "#fff", cursor: "pointer", textTransform: "capitalize" }}>
                           {l === "hot" ? "🔥" : l === "warm" ? "♨️" : "🧊"} {l}
                         </button>
                       ))}
-                      <button onClick={() => setAssigningVisit(null)} style={{ fontSize: 12, padding: "3px 8px", borderRadius: 6, border: "1px solid #eee", background: "#fff", cursor: "pointer" }}>✕</button>
+                      <button onClick={() => setAssigningLead(null)} style={{ fontSize: 12, padding: "3px 8px", borderRadius: 6, border: "1px solid #eee", background: "#fff", cursor: "pointer" }}>✕</button>
                     </>
                   ) : (
-                    <button onClick={() => setAssigningVisit(v.id)} style={{ fontSize: 12, padding: "3px 10px", borderRadius: 6, border: "1px solid #bbb", background: "#fff", cursor: "pointer" }}>➡️ Add to Funnel</button>
+                    <button onClick={() => setAssigningLead(cardKey)} style={{ fontSize: 12, padding: "3px 10px", borderRadius: 6, border: "1px solid #bbb", background: "#fff", cursor: "pointer" }}>➡️ Add to Funnel</button>
                   )}
-                  {lead.phone && <button onClick={() => { const url = `https://wa.me/91${lead.phone.replace(/\D/g, "")}`; window.open(url, "_blank"); }} style={{ fontSize: 12, padding: "3px 10px", borderRadius: 6, border: "1px solid #25d366", background: "#f0fdf4", cursor: "pointer" }}>💬 WhatsApp</button>}
+                  {lead.phone && <button onClick={() => window.open(`https://wa.me/91${lead.phone.replace(/\D/g, "")}`, "_blank")} style={{ fontSize: 12, padding: "3px 10px", borderRadius: 6, border: "1px solid #25d366", background: "#f0fdf4", cursor: "pointer" }}>💬 WhatsApp</button>}
                 </div>
               </div>
             );
