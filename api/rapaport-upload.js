@@ -2,52 +2,52 @@ import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 import { SUPABASE_URL, SUPABASE_SERVICE_KEY } from "./_lib/config.js";
 
-export const config = { api: { bodyParser: false } };
+const readBody = (req) => new Promise((resolve, reject) => {
+  const chunks = [];
+  req.on("data", c => chunks.push(c));
+  req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+  req.on("error", reject);
+});
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Method not allowed" });
 
+  let rounds64 = null, fancy64 = null;
   try {
-    // Parse multipart form manually using busboy
-    const busboy = require("busboy");
-    const bb = busboy({ headers: req.headers });
-    const files = {};
-    await new Promise((resolve, reject) => {
-      bb.on("file", (fieldname, file, info) => {
-        const chunks = [];
-        file.on("data", d => chunks.push(d));
-        file.on("end", () => { files[fieldname] = { buffer: Buffer.concat(chunks), filename: info.filename }; });
-      });
-      bb.on("finish", resolve);
-      bb.on("error", reject);
-      req.pipe(bb);
-    });
+    const raw = await readBody(req);
+    const body = JSON.parse(raw);
+    rounds64 = body.rounds || null;
+    fancy64 = body.fancy || null;
+  } catch (err) {
+    return res.status(400).json({ ok: false, error: "Invalid request body: " + err.message });
+  }
 
-    if (!files.rounds && !files.fancy) return res.status(400).json({ ok: false, error: "No PDF files uploaded" });
+  if (!rounds64 && !fancy64) return res.status(400).json({ ok: false, error: "No PDF data received" });
 
-    // Polyfill browser APIs needed by pdfjs
+  try {
     if (typeof globalThis.DOMMatrix === "undefined") globalThis.DOMMatrix = class DOMMatrix { constructor() { this.a=1;this.b=0;this.c=0;this.d=1;this.e=0;this.f=0; } };
     if (typeof globalThis.DOMPoint === "undefined") globalThis.DOMPoint = class DOMPoint { constructor(x=0,y=0){this.x=x;this.y=y;} };
     const pdfParse = require("pdf-parse/lib/pdf-parse.js");
 
-    let roundsText = null, fancyText = null;
     const warnings = [];
+    let roundsText = null, fancyText = null;
 
-    if (files.rounds) {
+    if (rounds64) {
       try {
-        const parsed = await pdfParse(files.rounds.buffer);
+        const buf = Buffer.from(rounds64, "base64");
+        const parsed = await pdfParse(buf);
         roundsText = parsed.text;
       } catch (err) { warnings.push("Round PDF parse failed: " + err.message); }
     }
-    if (files.fancy) {
+    if (fancy64) {
       try {
-        const parsed = await pdfParse(files.fancy.buffer);
+        const buf = Buffer.from(fancy64, "base64");
+        const parsed = await pdfParse(buf);
         fancyText = parsed.text;
       } catch (err) { warnings.push("Fancy PDF parse failed: " + err.message); }
     }
 
-    // Parse price tables
-    const parseRapTable = (text, shape) => {
+    const parseRapTable = (text) => {
       if (!text) return null;
       const lines = text.split(/\n/).map(l => l.trim()).filter(Boolean);
       const dateMatch = text.match(/(\d{1,2})[\/\.\-](\d{1,2})[\/\.\-](\d{2,4})/);
@@ -58,25 +58,24 @@ export default async function handler(req, res) {
       const tables = {};
       let currentRange = null;
       for (const line of lines) {
-        const wm = weightRanges.find(w => line.includes(w) || line.includes(`${w}ct`) || line.includes(`${w} ct`));
+        const wm = weightRanges.find(w => line.includes(w));
         if (wm && line.length < 30) { currentRange = wm; tables[wm] = {}; continue; }
         if (!currentRange) continue;
-        const cl = clarities.find(c => line.startsWith(c+" ") || line.startsWith(c+"\t"));
+        const cl = clarities.find(c => line.startsWith(c + " ") || line.startsWith(c + "\t"));
         if (!cl) continue;
-        const nums = line.replace(cl,"").trim().split(/[\s\t]+/).map(n => parseFloat(n.replace(/,/g,""))).filter(n => !isNaN(n) && n > 0);
+        const nums = line.replace(cl, "").trim().split(/[\s\t]+/).map(n => parseFloat(n.replace(/,/g,""))).filter(n => !isNaN(n) && n > 0);
         if (nums.length >= colors.length) {
           tables[currentRange][cl] = {};
           colors.forEach((col, i) => { if (nums[i]) tables[currentRange][cl][col] = nums[i]; });
         }
       }
-      return { shape, date, tables };
+      return { date, tables };
     };
 
-    const roundData = roundsText ? parseRapTable(roundsText, "round") : null;
-    const fancyData = fancyText ? parseRapTable(fancyText, "fancy") : null;
+    const roundData = parseRapTable(roundsText);
+    const fancyData = parseRapTable(fancyText);
     const date = roundData?.date || fancyData?.date || new Date().toLocaleDateString("en-GB");
 
-    // Merge into unified structure and store in DB
     const merged = {
       date,
       updated_at: new Date().toISOString(),
@@ -95,10 +94,7 @@ export default async function handler(req, res) {
       body: JSON.stringify({ field: "rapaport_data", value: JSON.stringify(merged), tenant_id: "a1b2c3d4-0000-0000-0000-000000000001" }),
     });
 
-    if (!sbRes.ok) {
-      const err = await sbRes.text();
-      return res.json({ ok: false, error: "DB write failed: " + err });
-    }
+    if (!sbRes.ok) return res.json({ ok: false, error: "DB write failed: " + await sbRes.text() });
 
     return res.json({
       ok: true,

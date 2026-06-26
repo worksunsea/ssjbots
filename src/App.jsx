@@ -11866,10 +11866,11 @@ function recalcToday(){
                 if (!rapUploadRounds && !rapUploadFancy) return;
                 setRapUploading(true);
                 try {
-                  const fd = new FormData();
-                  if (rapUploadRounds) fd.append("rounds", rapUploadRounds);
-                  if (rapUploadFancy) fd.append("fancy", rapUploadFancy);
-                  const r = await fetch("/api/rapaport-upload", { method: "POST", body: fd });
+                  const toBase64 = (file) => new Promise((res2, rej) => { const fr = new FileReader(); fr.onload = () => res2(fr.result.split(",")[1]); fr.onerror = rej; fr.readAsDataURL(file); });
+                  const payload = {};
+                  if (rapUploadRounds) payload.rounds = await toBase64(rapUploadRounds);
+                  if (rapUploadFancy) payload.fancy = await toBase64(rapUploadFancy);
+                  const r = await fetch("/api/rapaport-upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
                   const d = await r.json().catch(() => ({}));
                   if (d.ok) {
                     showToast(`✅ Uploaded · ${d.date || ""} · ${[d.rounds_parsed && "Round ✓", d.fancy_parsed && "Fancy ✓"].filter(Boolean).join(", ")}`);
