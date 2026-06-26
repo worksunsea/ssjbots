@@ -10501,28 +10501,31 @@ function openEstimateSlipWindow(est, liveRates = {}, clientPhone = "") {
   const row = (label, value) => `<tr><td style="padding:3px 6px;color:#444;font-size:13px;">${label}</td><td style="padding:3px 6px;text-align:right;font-size:13px;">${value}</td></tr>`;
   const waPhone = phone ? phone.replace(/\D/g, "").replace(/^0/, "91") : "";
   const CSS = `* { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: 'Georgia', serif; background: #fff; color: #222; }
+  body { font-family: 'Georgia', serif; background: #fff; color: #222; font-size: 16px; }
   @page { size: A5 portrait; margin: 15mm; }
-  .wrap { max-width: 400px; margin: 0 auto; padding: 12px; }
-  .om { font-size: 32px; color: #8b6914; text-align: center; margin-bottom: 4px; }
-  .title { font-size: 20px; letter-spacing: 3px; text-align: center; font-weight: bold; margin-bottom: 2px; }
-  .date { font-size: 12px; color: #666; text-align: center; margin-bottom: 4px; }
-  .client { font-size: 13px; color: #333; text-align: center; margin-bottom: 10px; font-style: italic; }
-  .item-header { display: flex; align-items: center; gap: 10px; margin: 8px 0 6px; }
-  .item-img { width: 52px; height: 52px; object-fit: cover; border-radius: 5px; cursor: pointer; border: 1px solid #ddd; flex-shrink: 0; }
-  .item-name { font-size: 15px; font-weight: bold; }
-  hr { border: none; border-top: 1px solid #bbb; margin: 8px 0; }
+  .wrap { max-width: 480px; margin: 0 auto; padding: 20px 16px 32px; }
+  .om { font-size: 36px; color: #8b6914; text-align: center; margin-bottom: 6px; }
+  .title { font-size: 22px; letter-spacing: 3px; text-align: center; font-weight: bold; margin-bottom: 4px; }
+  .date { font-size: 14px; color: #666; text-align: center; margin-bottom: 6px; }
+  .client { font-size: 15px; color: #333; text-align: center; margin-bottom: 12px; font-style: italic; }
+  .item-header { display: flex; align-items: center; gap: 12px; margin: 10px 0 8px; }
+  .item-img { width: 64px; height: 64px; object-fit: cover; border-radius: 6px; cursor: pointer; border: 1px solid #ddd; flex-shrink: 0; }
+  .item-name { font-size: 17px; font-weight: bold; }
+  hr { border: none; border-top: 1px solid #bbb; margin: 10px 0; }
   hr.thick { border-top: 2px solid #333; }
   table { width: 100%; border-collapse: collapse; }
-  th { padding: 5px 6px; font-size: 11px; color: #555; text-align: left; border-bottom: 2px solid #333; font-weight: 600; }
+  th { padding: 7px 8px; font-size: 13px; color: #555; text-align: left; border-bottom: 2px solid #333; font-weight: 600; }
   th:last-child { text-align: right; }
-  .total-row td { padding: 5px 6px; font-size: 16px; font-weight: bold; border-top: 2px solid #333; }
-  .disclaimer { font-size: 10px; color: #888; text-align: center; margin-top: 14px; }
-  .btnrow { display: flex; gap: 8px; margin-top: 12px; justify-content: center; flex-wrap: wrap; }
-  .printbtn { padding: 8px 20px; background: #333; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
-  .wabtn { padding: 8px 20px; background: #25d366; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
-  .recalcbtn { padding: 8px 20px; background: #1565c0; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
-  @media print { .btnrow { display: none; } }`;
+  td { padding: 6px 8px; font-size: 15px; color: #333; }
+  td:last-child { text-align: right; }
+  .total-row td { padding: 8px 8px; font-size: 18px; font-weight: bold; border-top: 2px solid #333; color: #111; }
+  .disclaimer { font-size: 12px; color: #888; text-align: center; margin-top: 16px; line-height: 1.5; }
+  .btnrow { display: flex; gap: 10px; margin-top: 20px; justify-content: center; flex-wrap: wrap; }
+  .printbtn { padding: 13px 24px; background: #333; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 15px; min-width: 120px; }
+  .wabtn { padding: 13px 24px; background: #25d366; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 15px; min-width: 120px; }
+  .recalcbtn { padding: 13px 24px; background: #1565c0; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 15px; }
+  @media (max-width: 500px) { .wrap { padding: 16px 12px 40px; } td, th { font-size: 14px; } .total-row td { font-size: 17px; } }
+  @media print { .btnrow { display: none; } body { font-size: 12pt; } }`;
 
   let body = "";
   let extraScript = "";
@@ -10617,7 +10620,7 @@ function recalcToday(){
   const prevChanges = est.metadata?.changes || [];
   const changeHistoryHtml = prevChanges.length > 0 ? `<div style="margin-top:12px;border-top:1px solid #eee;padding-top:8px;"><div style="font-size:10px;font-weight:600;color:#888;margin-bottom:4px;">Edit history</div>${prevChanges.map(ch => `<div style="font-size:10px;color:#666;margin-bottom:3px;background:#fafafa;border-radius:3px;padding:3px 6px;"><strong>${ch.by||"?"}</strong> · ${new Date(ch.ts).toLocaleString("en-IN",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})} — ${(ch.fields||[]).map(f=>`${f.f}: ₹${Math.round(f.old||0).toLocaleString("en-IN")} → ₹${Math.round(f.new||0).toLocaleString("en-IN")}`).join(", ")}</div>`).join("")}</div>` : "";
   body = body.replace(`<div class="btnrow">`, changeHistoryHtml + `<div class="btnrow">`);
-  const html = `<!DOCTYPE html><html><head><title>Estimate</title><style>${CSS}</style><script>${extraScript || "function expandImg(src){}"}<\/script></head><body><div class="wrap">${body}</div></body></html>`;
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Estimate — Sun Sea Jewellers</title><style>${CSS}</style><script>${extraScript || "function expandImg(src){}"}<\/script></head><body><div class="wrap">${body}</div></body></html>`;
   const win = window.open("", "_blank", "width=500,height=750");
   if (win) { win.document.write(html); win.document.close(); }
 }
@@ -11302,7 +11305,7 @@ function recalcToday(){
   if(parseFloat(DIA2)>0&&DIA2R)rows.push(r("Diamond 2 ("+parseFloat(DIA2)+DIA2U+" @ ₹"+DIA2R+")",fmtR(parseFloat(DIA2)*parseFloat(DIA2R))));
   if(parseFloat(STW)>0&&STR)rows.push(r("Stone ("+parseFloat(STW)+STU+" @ ₹"+STR+")",fmtR(parseFloat(STW)*parseFloat(STR))));
   var gstRow=APPLY_GST&&newGst>0?r("GST @ 3%",fmtR(newGst)):"";
-  var h='<!DOCTYPE html><html><head><title>Estimate</title><style>'+document.head.querySelector("style").textContent+'<\/style><\/head><body><div class="wrap"><div class="om">ॐ<\/div><div class="title">ESTIMATE<\/div><div class="date">'+td+'<\/div>'+(CLIENT?'<div class="client">Prepared for: '+CLIENT+'<\/div>':'')+'<hr class="thick"\/><div class="item-header">'+(IMG?'<img class="item-img" src="'+IMG+'" alt="item"\/>':"")+(INAME?'<div class="item-name">'+INAME+'<\/div>':"")+
+  var h='<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Estimate<\/title><style>'+document.head.querySelector("style").textContent+'<\/style><\/head><body><div class="wrap"><div class="om">ॐ<\/div><div class="title">ESTIMATE<\/div><div class="date">'+td+'<\/div>'+(CLIENT?'<div class="client">Prepared for: '+CLIENT+'<\/div>':'')+'<hr class="thick"\/><div class="item-header">'+(IMG?'<img class="item-img" src="'+IMG+'" alt="item"\/>':"")+(INAME?'<div class="item-name">'+INAME+'<\/div>':"")+
   '<\/div><table>'+rows.join("")+gstRow+'<tr class="total-row"><td>GRAND TOTAL<\/td><td style="text-align:right;">'+fmtR(newTotal)+'<\/td><\/tr><\/table><div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill<\/div><div class="btnrow"><button class="printbtn" onclick="window.print()">🖨️ Print<\/button><\/div><\/div><\/body><\/html>';
   var w=window.open("","_blank","width=500,height=750");if(w){w.document.write(h);w.document.close();}
 }`;
