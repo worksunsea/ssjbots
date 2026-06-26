@@ -10640,13 +10640,16 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   const [rapUploadRounds, setRapUploadRounds] = useState(null); // { name, b64 }
   const [rapUploadFancy, setRapUploadFancy] = useState(null);   // { name, b64 }
   const [rapUploading, setRapUploading] = useState(false);
-  const fileToB64 = async (file) => {
-    const ab = await file.arrayBuffer();
-    const bytes = new Uint8Array(ab);
-    let str = "";
-    for (let i = 0; i < bytes.length; i += 8192) str += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
-    return { name: file.name, b64: btoa(str) };
-  };
+  const fileToB64 = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result;
+      const b64 = dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
+      resolve({ name: file.name, b64 });
+    };
+    reader.onerror = () => reject(reader.error || new Error("FileReader failed"));
+    reader.readAsDataURL(file);
+  });
   const [liveRates, setLiveRates] = useState({ g24: null, g22: null, g18: null, g14: null, g9: null, usd: null });
   const [usdInr, setUsdInr] = useState("");
   const [spread, setSpread] = useState(() => { try { return Number(localStorage.getItem("rap_spread") || 8); } catch { return 8; } });
