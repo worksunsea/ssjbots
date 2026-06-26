@@ -11729,7 +11729,7 @@ function recalcToday(){
 
   const addNewClient = async () => {
     if (!newClientName.trim() && !newClientPhone.trim()) return;
-    const { data, error } = await sb.from("bullion_leads").insert({ name: newClientName.trim() || null, phone: newClientPhone.trim() || null, source: "walk_in" }).select("id,name,phone").single();
+    const { data, error } = await sb.from("bullion_leads").insert({ name: newClientName.trim() || null, phone: newClientPhone.trim() || null, source: "walk_in", tenant_id: getTenantId() }).select("id,name,phone").single();
     if (error) { showToast("❌ Add failed: " + error.message); return; }
     setSaveContact(data); setContactSearch(data.name + (data.phone ? ` (${data.phone})` : ""));
     try { localStorage.setItem("calc_active_contact", JSON.stringify(data)); } catch {}
