@@ -611,7 +611,8 @@ export default async function handler(req, res) {
     }
   }
 
-  // Find most recently modified Round and Fancy/Pear files
+  // Sort by modifiedTime desc so .find() always picks the newest file
+  files.sort((a, b) => (b.modifiedTime || "").localeCompare(a.modifiedTime || ""));
   const roundFile = files.find((f) => /round/i.test(f.name));
   const fancyFile = files.find((f) => /pear|fancy/i.test(f.name));
 

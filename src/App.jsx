@@ -10082,8 +10082,8 @@ export default function App() {
     { k: "analytics",  l: "Analytics",   icon: "📊" },
     { k: "leadsources",l: "Lead Sources", icon: "🌐" },
     { k: "formbuilder",l: "Form Builder", icon: "🛠️" },
-    { k: "calculator", l: "Calculator",    icon: "💎" },
     { k: "staff",      l: "Staff & Access", icon: "👥" },
+    { k: "calculator", l: "Calculator",    icon: "💎" },
     { k: "walkin",     l: "Walk-ins",       icon: "🏪" },
   ];
 
