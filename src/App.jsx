@@ -10284,7 +10284,7 @@ function newSolRow() {
 function WalkinDashboardScreen({ funnels = [] }) {
   const [visits, setVisits] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [dateFilter, setDateFilter] = useState("today"); // today | week | month
+  const [dateFilter, setDateFilter] = useState("week"); // today | week | month
   const [assigningVisit, setAssigningVisit] = useState(null);
   const [toast, setToast] = useState("");
 
@@ -10293,15 +10293,20 @@ function WalkinDashboardScreen({ funnels = [] }) {
   const loadVisits = useCallback(async () => {
     setLoading(true);
     const now = new Date();
-    let since;
+    let since, until = null;
     if (dateFilter === "today") { since = new Date(now); since.setHours(0, 0, 0, 0); }
+    else if (dateFilter === "yesterday") {
+      since = new Date(now - 86400000); since.setHours(0, 0, 0, 0);
+      until = new Date(since); until.setHours(23, 59, 59, 999);
+    }
     else if (dateFilter === "week") { since = new Date(now - 7 * 86400000); }
     else { since = new Date(now - 30 * 86400000); }
-    const { data } = await sb.from("bullion_visits")
+    let q = sb.from("bullion_visits")
       .select("id,visited_at,time_out,outcome,temperature,price_quoted,staff,items_seen,notes,followup_required,party_size,bullion_leads(id,name,phone,city),bullion_estimates(id,mode,total_amount,items,created_at)")
       .eq("tenant_id", getTenantId())
-      .gte("visited_at", since.toISOString())
-      .order("visited_at", { ascending: false });
+      .gte("visited_at", since.toISOString());
+    if (until) q = q.lte("visited_at", until.toISOString());
+    const { data } = await q.order("visited_at", { ascending: false });
     setVisits(data || []);
     setLoading(false);
   }, [dateFilter]);
@@ -10335,7 +10340,7 @@ function WalkinDashboardScreen({ funnels = [] }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
         <div style={{ fontWeight: 700, fontSize: 18 }}>🏪 Walk-in Sessions</div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {["today", "week", "month"].map(d => (
+          {["today", "yesterday", "week", "month"].map(d => (
             <button key={d} onClick={() => setDateFilter(d)} style={{ padding: "4px 12px", borderRadius: 6, border: `1px solid ${dateFilter === d ? "#1565c0" : "#ddd"}`, background: dateFilter === d ? "#e3f2fd" : "#fff", fontWeight: dateFilter === d ? 600 : 400, cursor: "pointer", fontSize: 12, textTransform: "capitalize" }}>{d}</button>
           ))}
           <button onClick={loadVisits} style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", cursor: "pointer", fontSize: 12 }}>↻</button>

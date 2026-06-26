@@ -611,8 +611,18 @@ export default async function handler(req, res) {
     }
   }
 
-  // Sort by modifiedTime desc so .find() always picks the newest file
-  files.sort((a, b) => (b.modifiedTime || "").localeCompare(a.modifiedTime || ""));
+  // Sort by date embedded in filename (e.g. "Round Price List 06.26.2026.pdf")
+  // Falls back to modifiedTime, then filename alphabetical — always picks newest
+  const filenameDate = (name) => {
+    const m = String(name).match(/(\d{2})\.(\d{2})\.(\d{4})/);
+    if (m) return new Date(`${m[3]}-${m[1]}-${m[2]}`).getTime();
+    return 0;
+  };
+  files.sort((a, b) => {
+    const da = filenameDate(a.name) || new Date(a.modifiedTime || 0).getTime();
+    const db = filenameDate(b.name) || new Date(b.modifiedTime || 0).getTime();
+    return db - da;
+  });
   const roundFile = files.find((f) => /round/i.test(f.name));
   const fancyFile = files.find((f) => /pear|fancy/i.test(f.name));
 
