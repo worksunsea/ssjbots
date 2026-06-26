@@ -10285,7 +10285,7 @@ function newSolRow() {
 function WalkinDashboardScreen({ funnels = [] }) {
   const [visits, setVisits] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [dateFilter, setDateFilter] = useState("week"); // today | week | month
+  const [dateFilter, setDateFilter] = useState("month"); // today | yesterday | week | month
   const [assigningVisit, setAssigningVisit] = useState(null);
   const [toast, setToast] = useState("");
   const [totalAllTime, setTotalAllTime] = useState(null);
@@ -10324,9 +10324,13 @@ function WalkinDashboardScreen({ funnels = [] }) {
       if (r2.error) setQueryError(r2.error.message);
     }
     setVisits((data || []).map(v => ({ ...v, bullion_estimates: v.bullion_estimates || [] })));
-    // Count all-time records to diagnose if inserts are working at all
-    const { count } = await sb.from("bullion_visits").select("id", { count: "exact", head: true }).eq("tenant_id", getTenantId());
-    setTotalAllTime(count ?? 0);
+    // Fetch most-recent records to diagnose timestamps
+    const { data: recent, count } = await sb.from("bullion_visits")
+      .select("id,visited_at,tenant_id", { count: "exact" })
+      .eq("tenant_id", getTenantId())
+      .order("visited_at", { ascending: false })
+      .limit(3);
+    setTotalAllTime({ count: count ?? 0, recent: recent || [] });
     setLoading(false);
   }, [dateFilter]);
 
@@ -10383,8 +10387,12 @@ function WalkinDashboardScreen({ funnels = [] }) {
           <div style={{ fontSize: 32, marginBottom: 10 }}>🏪</div>
           No walk-in sessions found for this period.<br />
           <span style={{ fontSize: 12 }}>Tenant: {getTenantId()?.slice(0, 8)}… · Filter: {dateFilter}</span><br />
-          <span style={{ fontSize: 12, color: totalAllTime === 0 ? "#c62828" : "#2e7d32", fontWeight: 600 }}>All-time total in DB: {totalAllTime ?? "…"}</span><br />
-          <span style={{ fontSize: 11 }}>{totalAllTime === 0 ? "No visit records exist — walk-in form may not be writing to DB." : "Records exist but outside this date range — try 'week' or 'month' filter."}</span>
+          <span style={{ fontSize: 12, fontWeight: 600 }}>All-time total: {totalAllTime?.count ?? "…"}</span><br />
+          {totalAllTime?.recent?.map(r => (
+            <span key={r.id} style={{ fontSize: 11, display: "block", color: "#555" }}>
+              Most recent: {r.visited_at ? new Date(r.visited_at).toLocaleString("en-IN") : "NULL visited_at"}
+            </span>
+          ))}
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
