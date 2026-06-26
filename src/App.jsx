@@ -11866,7 +11866,13 @@ function recalcToday(){
                 if (!rapUploadRounds && !rapUploadFancy) return;
                 setRapUploading(true);
                 try {
-                  const toBase64 = (file) => new Promise((res2, rej) => { const fr = new FileReader(); fr.onload = () => res2(fr.result.split(",")[1]); fr.onerror = rej; fr.readAsDataURL(file); });
+                  const toBase64 = async (file) => {
+                    const ab = await file.arrayBuffer();
+                    const bytes = new Uint8Array(ab);
+                    let str = "";
+                    for (let i = 0; i < bytes.length; i += 8192) str += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+                    return btoa(str);
+                  };
                   const payload = {};
                   if (rapUploadRounds) payload.rounds = await toBase64(rapUploadRounds);
                   if (rapUploadFancy) payload.fancy = await toBase64(rapUploadFancy);
@@ -11883,7 +11889,7 @@ function recalcToday(){
                       if (data?.value) { try { setRapData(JSON.parse(data.value)); } catch {} }
                     });
                   } else { showToast("❌ " + (d.error || "Upload failed")); }
-                } catch (err) { showToast("❌ " + err.message); }
+                } catch (err) { showToast("❌ " + (err?.message || String(err) || "Upload error")); }
                 setRapUploading(false);
               }} style={{ flex: 1, padding: "8px 16px", background: "#6a1b9a", color: "#fff", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, opacity: (!rapUploadRounds && !rapUploadFancy) || rapUploading ? 0.5 : 1 }}>
                 {rapUploading ? "Uploading…" : "📤 Upload & Parse"}
