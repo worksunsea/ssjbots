@@ -10621,8 +10621,15 @@ function recalcToday(){
   const changeHistoryHtml = prevChanges.length > 0 ? `<div style="margin-top:12px;border-top:1px solid #eee;padding-top:8px;"><div style="font-size:10px;font-weight:600;color:#888;margin-bottom:4px;">Edit history</div>${prevChanges.map(ch => `<div style="font-size:10px;color:#666;margin-bottom:3px;background:#fafafa;border-radius:3px;padding:3px 6px;"><strong>${ch.by||"?"}</strong> · ${new Date(ch.ts).toLocaleString("en-IN",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})} — ${(ch.fields||[]).map(f=>`${f.f}: ₹${Math.round(f.old||0).toLocaleString("en-IN")} → ₹${Math.round(f.new||0).toLocaleString("en-IN")}`).join(", ")}</div>`).join("")}</div>` : "";
   body = body.replace(`<div class="btnrow">`, changeHistoryHtml + `<div class="btnrow">`);
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Estimate — Sun Sea Jewellers</title><style>${CSS}</style><script>${extraScript || "function expandImg(src){}"}<\/script></head><body><div class="wrap">${body}</div></body></html>`;
-  const win = window.open("", "_blank", "width=500,height=750");
-  if (win) { win.document.write(html); win.document.close(); }
+  const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const win = window.open(url, "_blank");
+  if (!win) {
+    // Popup blocked — fallback to document.write
+    const w2 = window.open("", "_blank", "width=500,height=750");
+    if (w2) { w2.document.write(html); w2.document.close(); }
+  }
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 function CalculatorScreen({ funnels = [], allTags = [] }) {
