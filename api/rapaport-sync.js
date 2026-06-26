@@ -15,6 +15,8 @@
 // Round PDF:  file whose name contains "Round"
 // Fancy PDF:  file whose name contains "Pear" or "Fancy"
 
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
 import { SUPABASE_URL, SUPABASE_SERVICE_KEY, CRM_SECRET } from "./_lib/config.js";
 
 // ─── Weight-range labels (in order of appearance in the PDF tables) ──────────
@@ -575,7 +577,7 @@ export default async function handler(req, res) {
     const d = await r.json();
     if (!d.ok) throw new Error(d.error || "Apps Script file fetch failed");
     if (d.encoding === "base64") {
-      const { default: pdfParse } = await import("pdf-parse");
+      const pdfParse = require("pdf-parse");
       const buf = Buffer.from(d.content, "base64");
       const parsed = await pdfParse(buf);
       return parsed.text;
