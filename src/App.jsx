@@ -10289,6 +10289,7 @@ function WalkinDashboardScreen({ funnels = [] }) {
   const [loading, setLoading] = useState(true);
   const [dateFilter, setDateFilter] = useState("today");
   const [assigningLead, setAssigningLead] = useState(null);
+  const [viewEst, setViewEst] = useState(null); // estimate to show in detail modal
   const [toast, setToast] = useState("");
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 3000); };
@@ -10420,11 +10421,11 @@ function WalkinDashboardScreen({ funnels = [] }) {
                   </div>
                 </div>
 
-                {/* Estimate pills */}
+                {/* Estimate pills — click to view details */}
                 <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
                   {estimates.map(e => (
-                    <span key={e.id} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 10, background: "#f5f5f5", border: "1px solid #e0e0e0" }}>
-                      {estLabel(e)}{e.total_amount ? ` · ₹${Math.round(e.total_amount).toLocaleString("en-IN")}` : ""}
+                    <span key={e.id} onClick={() => setViewEst(e)} style={{ fontSize: 11, padding: "3px 10px", borderRadius: 10, background: "#f0f4ff", border: "1px solid #90caf9", cursor: "pointer", color: "#1565c0" }}>
+                      {estLabel(e)}{e.total_amount ? ` · ₹${Math.round(e.total_amount).toLocaleString("en-IN")}` : ""} 👁
                     </span>
                   ))}
                 </div>
@@ -10451,6 +10452,71 @@ function WalkinDashboardScreen({ funnels = [] }) {
           })}
         </div>
       )}
+
+      {/* Estimate detail modal */}
+      {viewEst && (() => {
+        const e = viewEst;
+        const items = e.items || [];
+        const fmt = (n) => n != null ? "₹" + Math.round(n).toLocaleString("en-IN") : "—";
+        const isJw = e.mode === "jewellery";
+        const isSol = e.mode === "solitaire" || e.mode === "solitaire_sheet" || e.mode === "quotation";
+        return (
+          <div onClick={() => setViewEst(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 9000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+            <div onClick={e2 => e2.stopPropagation()} style={{ background: "#fff", borderRadius: 14, padding: 20, maxWidth: 480, width: "100%", maxHeight: "85vh", overflowY: "auto" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                <div style={{ fontWeight: 700, fontSize: 15, textTransform: "capitalize" }}>📋 {e.mode} Estimate</div>
+                <button onClick={() => setViewEst(null)} style={{ border: "none", background: "none", fontSize: 18, cursor: "pointer", color: "#888" }}>✕</button>
+              </div>
+              <div style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
+                {new Date(e.created_at).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+              </div>
+              {items.map((item, i) => (
+                <div key={i} style={{ background: "#f9f9f9", borderRadius: 8, padding: "10px 12px", marginBottom: 8 }}>
+                  {isJw && (
+                    <>
+                      {item.itemName && <div style={{ fontWeight: 700, marginBottom: 6 }}>{item.itemName}</div>}
+                      {[
+                        ["Gross weight", item.grossWt ? item.grossWt + " g" : null],
+                        ["Purity", item.purity || null],
+                        ["Gold rate", item.goldRate ? "₹" + item.goldRate + "/g" : null],
+                        ["Making", item.makingTotal ? fmt(item.makingTotal) : null],
+                        ["Diamond/Stone", item.diaTotal > 0 ? fmt(item.diaTotal) : null],
+                        ["GST", item.gst > 0 ? fmt(item.gst) : null],
+                        ["Total", item.total ? fmt(item.total) : (e.total_amount ? fmt(e.total_amount) : null)],
+                      ].filter(r => r[1]).map(([l, v]) => (
+                        <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "2px 0", borderBottom: "1px solid #eee" }}>
+                          <span style={{ color: "#666" }}>{l}</span><span style={{ fontWeight: l === "Total" ? 700 : 400 }}>{v}</span>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                  {isSol && (
+                    <>
+                      {[
+                        ["Shape", item.shape],
+                        ["Weight", item.weight ? item.weight + " ct" : null],
+                        ["Color / Clarity", [item.color, item.clarity].filter(Boolean).join(" / ") || null],
+                        ["Cut", item.cut],
+                        ["Certificate", item.cert],
+                        ["Sell price", item.sellPrice ? fmt(item.sellPrice) : (e.total_amount ? fmt(e.total_amount) : null)],
+                      ].filter(r => r[1]).map(([l, v]) => (
+                        <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "2px 0", borderBottom: "1px solid #eee" }}>
+                          <span style={{ color: "#666" }}>{l}</span><span style={{ fontWeight: l === "Sell price" ? 700 : 400 }}>{v}</span>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                </div>
+              ))}
+              {e.total_amount > 0 && (
+                <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: 15, marginTop: 8, padding: "8px 0", borderTop: "2px solid #e0e0e0" }}>
+                  <span>Total</span><span style={{ color: "#1565c0" }}>{fmt(e.total_amount)}</span>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
