@@ -70,13 +70,13 @@ export default async function handler(req, res) {
       fancy: fancyData?.tables || {},
     };
 
-    const sbRes = await fetch(`${SUPABASE_URL}/rest/v1/bullion_dropdowns`, {
+    const sbRes = await fetch(`${SUPABASE_URL}/rest/v1/bullion_dropdowns?on_conflict=tenant_id,field`, {
       method: "POST",
       headers: {
         apikey: SUPABASE_SERVICE_KEY,
         Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
         "Content-Type": "application/json",
-        Prefer: "resolution=merge-duplicates",
+        Prefer: "resolution=merge-duplicates,return=minimal",
       },
       body: JSON.stringify({ field: "rapaport_data", value: JSON.stringify(merged), tenant_id: "a1b2c3d4-0000-0000-0000-000000000001" }),
     });

@@ -10766,7 +10766,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
 
   // Load Rapaport from DB
   useEffect(() => {
-    sb.from("bullion_dropdowns").select("value,updated_at").eq("field", "rapaport_data").maybeSingle().then(({ data }) => {
+    sb.from("bullion_dropdowns").select("value,updated_at").eq("field", "rapaport_data").order("updated_at", { ascending: false }).limit(1).maybeSingle().then(({ data }) => {
       if (data?.value) {
         try {
           const parsed = JSON.parse(data.value);
@@ -11908,7 +11908,7 @@ function recalcToday(){
                     setRapAge(0);
                     setRapUploadOpen(false); setRapUploadRounds(null); setRapUploadFancy(null); rapRoundsFileRef.current = null; rapFancyFileRef.current = null;
                     // Reload rapaport data
-                    sb.from("bullion_dropdowns").select("value,updated_at").eq("field", "rapaport_data").maybeSingle().then(({ data }) => {
+                    sb.from("bullion_dropdowns").select("value,updated_at").eq("field", "rapaport_data").order("updated_at", { ascending: false }).limit(1).maybeSingle().then(({ data }) => {
                       if (data?.value) { try { setRapData(JSON.parse(data.value)); } catch {} }
                     });
                   } else { showToast("❌ " + (d.error || "Upload failed")); }
