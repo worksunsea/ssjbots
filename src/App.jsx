@@ -11869,7 +11869,8 @@ function recalcToday(){
         <div onClick={() => setRapUploadOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 9000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
           <div onClick={ev => ev.stopPropagation()} style={{ background: "#fff", borderRadius: 14, padding: 24, maxWidth: 420, width: "100%" }}>
             <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>📤 Upload Rapaport PDFs</div>
-            <div style={{ fontSize: 12, color: "#888", marginBottom: 16 }}>Upload the Round and/or Fancy price list PDFs from Rapaport. Both files can be uploaded at once.</div>
+            <div style={{ fontSize: 12, color: "#888", marginBottom: 8 }}>Upload the Round and/or Fancy price list PDFs from Rapaport. Both files can be uploaded at once.</div>
+            <div style={{ fontSize: 11, color: "#b45309", background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 6, padding: "6px 10px", marginBottom: 12 }}>⚠️ On mobile: first download the PDF to your device (Downloads folder), then select it here. Files picked directly from Google Drive/cloud will fail.</div>
             {[
               { label: "Round Price List (PDF)", key: "rounds", stored: rapUploadRounds, set: setRapUploadRounds },
               { label: "Fancy/Pear Price List (PDF)", key: "fancy", stored: rapUploadFancy, set: setRapUploadFancy },
@@ -11879,7 +11880,7 @@ function recalcToday(){
                 <input type="file" accept=".pdf,application/pdf" onChange={async e => {
                   const file = e.target.files?.[0];
                   if (!file) { f.set(null); return; }
-                  try { f.set(await fileToB64(file)); } catch (err) { showToast("❌ Could not read file: " + (err?.message || String(err))); }
+                  try { f.set(await fileToB64(file)); } catch (err) { showToast("❌ Cannot read file — download PDF to device storage (Downloads folder) first, then select it."); }
                 }} style={{ fontSize: 12, width: "100%", padding: "6px 8px", border: "1px solid #ddd", borderRadius: 6, background: f.stored ? "#e8f5e9" : "#fff" }} />
                 {f.stored && <div style={{ fontSize: 11, color: "#2e7d32", marginTop: 2 }}>✓ {f.stored.name} — ready</div>}
               </div>
