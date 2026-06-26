@@ -2259,8 +2259,9 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved, prefill = n
           price_quoted: form.priceQuoted ? Number(form.priceQuoted) : null,
           items_seen: form.itemsSeen?.join(", ") || null,
         };
-        const { data: vdata } = await sb.from("bullion_visits").insert(visitPayload).select("id").single();
+        const { data: vdata, error: verr } = await sb.from("bullion_visits").insert(visitPayload).select("id").single();
         if (vdata?.id) visitId = vdata.id;
+        else if (verr) console.error("Visit insert failed:", verr.message, verr);
       }
 
       // 3) Optionally create demand
@@ -10287,6 +10288,7 @@ function WalkinDashboardScreen({ funnels = [] }) {
   const [dateFilter, setDateFilter] = useState("week"); // today | week | month
   const [assigningVisit, setAssigningVisit] = useState(null);
   const [toast, setToast] = useState("");
+  const [totalAllTime, setTotalAllTime] = useState(null);
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 3000); };
 
@@ -10322,6 +10324,9 @@ function WalkinDashboardScreen({ funnels = [] }) {
       if (r2.error) setQueryError(r2.error.message);
     }
     setVisits((data || []).map(v => ({ ...v, bullion_estimates: v.bullion_estimates || [] })));
+    // Count all-time records to diagnose if inserts are working at all
+    const { count } = await sb.from("bullion_visits").select("id", { count: "exact", head: true }).eq("tenant_id", getTenantId());
+    setTotalAllTime(count ?? 0);
     setLoading(false);
   }, [dateFilter]);
 
@@ -10378,7 +10383,8 @@ function WalkinDashboardScreen({ funnels = [] }) {
           <div style={{ fontSize: 32, marginBottom: 10 }}>🏪</div>
           No walk-in sessions found for this period.<br />
           <span style={{ fontSize: 12 }}>Tenant: {getTenantId()?.slice(0, 8)}… · Filter: {dateFilter}</span><br />
-          <span style={{ fontSize: 11 }}>Walk-ins are recorded when you submit the 🏪 Walk-in form in the Calculator tab.</span>
+          <span style={{ fontSize: 12, color: totalAllTime === 0 ? "#c62828" : "#2e7d32", fontWeight: 600 }}>All-time total in DB: {totalAllTime ?? "…"}</span><br />
+          <span style={{ fontSize: 11 }}>{totalAllTime === 0 ? "No visit records exist — walk-in form may not be writing to DB." : "Records exist but outside this date range — try 'week' or 'month' filter."}</span>
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
