@@ -10637,8 +10637,10 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   const [rapData, setRapData] = useState(RAP_SEED);
   const [rapAge, setRapAge] = useState(null);
   const [rapUploadOpen, setRapUploadOpen] = useState(false);
-  const [rapUploadRounds, setRapUploadRounds] = useState(null); // { name, b64 }
-  const [rapUploadFancy, setRapUploadFancy] = useState(null);   // { name, b64 }
+  const [rapUploadRounds, setRapUploadRounds] = useState(null); // { name } for display only
+  const [rapUploadFancy, setRapUploadFancy] = useState(null);   // { name } for display only
+  const rapRoundsFileRef = useRef(null); // raw File object stored here, not in state
+  const rapFancyFileRef = useRef(null);
   const [rapUploading, setRapUploading] = useState(false);
   const fileToB64 = (file) => new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -11872,15 +11874,15 @@ function recalcToday(){
             <div style={{ fontSize: 12, color: "#888", marginBottom: 8 }}>Upload the Round and/or Fancy price list PDFs from Rapaport. Both files can be uploaded at once.</div>
             <div style={{ fontSize: 11, color: "#b45309", background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 6, padding: "6px 10px", marginBottom: 12 }}>⚠️ On mobile: first download the PDF to your device (Downloads folder), then select it here. Files picked directly from Google Drive/cloud will fail.</div>
             {[
-              { label: "Round Price List (PDF)", key: "rounds", stored: rapUploadRounds, set: setRapUploadRounds },
-              { label: "Fancy/Pear Price List (PDF)", key: "fancy", stored: rapUploadFancy, set: setRapUploadFancy },
+              { label: "Round Price List (PDF)", key: "rounds", stored: rapUploadRounds, set: setRapUploadRounds, ref: rapRoundsFileRef },
+              { label: "Fancy/Pear Price List (PDF)", key: "fancy", stored: rapUploadFancy, set: setRapUploadFancy, ref: rapFancyFileRef },
             ].map(f => (
               <div key={f.key} style={{ marginBottom: 12 }}>
                 <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>{f.label}</div>
-                <input type="file" accept=".pdf,application/pdf" onChange={async e => {
+                <input type="file" accept=".pdf,application/pdf" onChange={e => {
                   const file = e.target.files?.[0];
-                  if (!file) { f.set(null); return; }
-                  try { f.set(await fileToB64(file)); } catch (err) { showToast("❌ Cannot read file — download PDF to device storage (Downloads folder) first, then select it."); }
+                  f.ref.current = file || null;
+                  f.set(file ? { name: file.name } : null);
                 }} style={{ fontSize: 12, width: "100%", padding: "6px 8px", border: "1px solid #ddd", borderRadius: 6, background: f.stored ? "#e8f5e9" : "#fff" }} />
                 {f.stored && <div style={{ fontSize: 11, color: "#2e7d32", marginTop: 2 }}>✓ {f.stored.name} — ready</div>}
               </div>
@@ -11891,14 +11893,20 @@ function recalcToday(){
                 setRapUploading(true);
                 try {
                   const payload = {};
-                  if (rapUploadRounds) payload.rounds = rapUploadRounds.b64;
-                  if (rapUploadFancy) payload.fancy = rapUploadFancy.b64;
+                  if (rapRoundsFileRef.current) {
+                    try { const r = await fileToB64(rapRoundsFileRef.current); payload.rounds = r.b64; }
+                    catch (err) { showToast("❌ Round PDF unreadable: " + (err?.message || String(err))); setRapUploading(false); return; }
+                  }
+                  if (rapFancyFileRef.current) {
+                    try { const r = await fileToB64(rapFancyFileRef.current); payload.fancy = r.b64; }
+                    catch (err) { showToast("❌ Fancy PDF unreadable: " + (err?.message || String(err))); setRapUploading(false); return; }
+                  }
                   const r = await fetch("/api/rapaport-upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
                   const d = await r.json().catch(() => ({}));
                   if (d.ok) {
                     showToast(`✅ Uploaded · ${d.date || ""} · ${[d.rounds_parsed && "Round ✓", d.fancy_parsed && "Fancy ✓"].filter(Boolean).join(", ")}`);
                     setRapAge(0);
-                    setRapUploadOpen(false); setRapUploadRounds(null); setRapUploadFancy(null);
+                    setRapUploadOpen(false); setRapUploadRounds(null); setRapUploadFancy(null); rapRoundsFileRef.current = null; rapFancyFileRef.current = null;
                     // Reload rapaport data
                     sb.from("bullion_dropdowns").select("value,updated_at").eq("field", "rapaport_data").maybeSingle().then(({ data }) => {
                       if (data?.value) { try { setRapData(JSON.parse(data.value)); } catch {} }
@@ -11909,7 +11917,7 @@ function recalcToday(){
               }} style={{ flex: 1, padding: "8px 16px", background: "#6a1b9a", color: "#fff", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, opacity: (!rapUploadRounds && !rapUploadFancy) || rapUploading ? 0.5 : 1 }}>
                 {rapUploading ? "Uploading…" : "📤 Upload & Parse"}
               </button>
-              <button onClick={() => setRapUploadOpen(false)} style={{ padding: "8px 14px", border: "1px solid #ddd", borderRadius: 8, cursor: "pointer", fontSize: 13, background: "#fff" }}>Cancel</button>
+              <button onClick={() => { setRapUploadOpen(false); setRapUploadRounds(null); setRapUploadFancy(null); rapRoundsFileRef.current = null; rapFancyFileRef.current = null; }} style={{ padding: "8px 14px", border: "1px solid #ddd", borderRadius: 8, cursor: "pointer", fontSize: 13, background: "#fff" }}>Cancel</button>
             </div>
           </div>
         </div>
