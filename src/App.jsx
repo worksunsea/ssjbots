@@ -320,6 +320,9 @@ function LeadsScreen({ funnels, allTags, viewMode = "leads" }) {
   const [filterStatus, setFilterStatus] = useState("");
   const [search, setSearch] = useState("");
   const [adding, setAdding] = useState(false);
+  const [todayVisits, setTodayVisits] = useState([]);
+  const [walkinPanelOpen, setWalkinPanelOpen] = useState(true);
+  const [assigningVisit, setAssigningVisit] = useState(null); // visit id being assigned to funnel
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -343,6 +346,39 @@ function LeadsScreen({ funnels, allTags, viewMode = "leads" }) {
     return () => clearInterval(t);
   }, [load]);
 
+  // Today's walk-in sessions
+  const loadTodayVisits = useCallback(async () => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const { data } = await sb.from("bullion_visits")
+      .select("id,visited_at,time_out,outcome,temperature,price_quoted,staff,items_seen,notes,bullion_leads(id,name,phone),bullion_estimates(id,mode,total_amount)")
+      .eq("tenant_id", getTenantId())
+      .gte("visited_at", today.toISOString())
+      .order("visited_at", { ascending: false });
+    if (data) setTodayVisits(data);
+  }, []);
+  useEffect(() => { loadTodayVisits(); }, [loadTodayVisits]);
+
+  const assignVisitToFunnel = async (visit, label) => {
+    const lead = visit.bullion_leads;
+    if (!lead?.id) return;
+    const funnelMap = { hot: "hot", warm: "warm", cold: "cold" };
+    const matchedFunnel = funnels.find(f => f.name?.toLowerCase().includes(funnelMap[label]) || f.id?.toLowerCase().includes(funnelMap[label])) || funnels[0];
+    if (!matchedFunnel?.id) return;
+    await fetch("/api/demand", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
+      body: JSON.stringify({
+        phone: lead.phone,
+        name: lead.name || null,
+        description: `Walk-in ${label} follow-up — ${visit.items_seen || "items shown"}`,
+        funnel_id: matchedFunnel.id,
+        tenant_id: getTenantId(),
+      }),
+    });
+    setAssigningVisit(null);
+  };
+
   const filtered = useMemo(() => {
     if (!search) return leads;
     const s = search.toLowerCase();
@@ -354,6 +390,57 @@ function LeadsScreen({ funnels, allTags, viewMode = "leads" }) {
 
   return (
     <div style={{ display: "block" }}>
+      {/* ── Today's Walk-in Sessions ── */}
+      <div style={{ marginBottom: 14 }}>
+        <div
+          onClick={() => setWalkinPanelOpen(o => !o)}
+          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", padding: "6px 0", borderBottom: "1px solid #eee", marginBottom: walkinPanelOpen ? 10 : 0 }}
+        >
+          <span style={{ fontWeight: 600, fontSize: 13 }}>🏪 Today's Walk-ins <span style={{ fontWeight: 400, color: "#888", fontSize: 12 }}>({todayVisits.length})</span></span>
+          <span style={{ fontSize: 11, color: "#aaa" }}>{walkinPanelOpen ? "▲ hide" : "▼ show"}</span>
+        </div>
+        {walkinPanelOpen && (
+          todayVisits.length === 0 ? (
+            <div style={{ fontSize: 12, color: "#aaa", padding: "8px 0" }}>No walk-ins recorded today. Use 🏪 Walk-in button in the Calculator to start a session.</div>
+          ) : (
+            <div style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 6 }}>
+              {todayVisits.map(v => {
+                const lead = v.bullion_leads || {};
+                const ests = v.bullion_estimates || [];
+                const estCount = ests.length;
+                const estTotal = ests.reduce((s, e) => s + (e.total_amount || 0), 0);
+                const timeIn = v.visited_at ? new Date(v.visited_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "";
+                const timeOut = v.time_out ? new Date(v.time_out).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "still here";
+                const tempColors = { hot: { bg: "#fff3e0", border: "#ffb74d", icon: "🔥" }, warm: { bg: "#fff8e1", border: "#ffd54f", icon: "♨️" }, cold: { bg: "#e3f2fd", border: "#90caf9", icon: "🧊" } };
+                const tc = tempColors[v.temperature] || { bg: "#f9f9f9", border: "#ddd", icon: "👣" };
+                return (
+                  <div key={v.id} style={{ minWidth: 200, maxWidth: 240, background: tc.bg, border: `1px solid ${tc.border}`, borderRadius: 10, padding: "10px 12px", flexShrink: 0, fontSize: 12 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 2 }}>{tc.icon} {lead.name || lead.phone || "Unknown"}</div>
+                    {lead.phone && <div style={{ color: "#666", marginBottom: 4 }}>{lead.phone}</div>}
+                    <div style={{ color: "#555", marginBottom: 4 }}>⏰ {timeIn} → {timeOut}</div>
+                    {estCount > 0 && <div style={{ color: "#1565c0", fontWeight: 500, marginBottom: 4 }}>📋 {estCount} estimate{estCount > 1 ? "s" : ""}{estTotal > 0 ? ` · ₹${Math.round(estTotal).toLocaleString("en-IN")}` : ""}</div>}
+                    {v.outcome && <div style={{ color: "#388e3c", marginBottom: 4 }}>✓ {v.outcome}</div>}
+                    <div style={{ display: "flex", gap: 4, marginTop: 6, flexWrap: "wrap" }}>
+                      {lead.id && <button onClick={() => setSelectedId(lead.id)} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, border: "1px solid #bbb", background: "#fff", cursor: "pointer" }}>👁 View</button>}
+                      {assigningVisit === v.id ? (
+                        <>
+                          <button onClick={() => assignVisitToFunnel(v, "hot")} style={{ fontSize: 11, padding: "2px 6px", borderRadius: 4, border: "1px solid #ff9800", background: "#fff3e0", cursor: "pointer" }}>🔥 Hot</button>
+                          <button onClick={() => assignVisitToFunnel(v, "warm")} style={{ fontSize: 11, padding: "2px 6px", borderRadius: 4, border: "1px solid #ffc107", background: "#fff8e1", cursor: "pointer" }}>♨️ Warm</button>
+                          <button onClick={() => assignVisitToFunnel(v, "cold")} style={{ fontSize: 11, padding: "2px 6px", borderRadius: 4, border: "1px solid #90caf9", background: "#e3f2fd", cursor: "pointer" }}>🧊 Cold</button>
+                          <button onClick={() => setAssigningVisit(null)} style={{ fontSize: 11, padding: "2px 6px", borderRadius: 4, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>✕</button>
+                        </>
+                      ) : (
+                        <button onClick={() => setAssigningVisit(v.id)} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, border: "1px solid #bbb", background: "#fff", cursor: "pointer" }}>➡️ Funnel</button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )
+        )}
+      </div>
+
       <div>
         <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
           <Input placeholder="Search name/phone/msg" value={search} onChange={(e) => setSearch(e.target.value)} style={{ flex: "1 1 180px" }} />
@@ -2157,7 +2244,25 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved, prefill = n
         }
       }
 
-      // 2) Optionally create demand
+      // 2) Create visit session record
+      let visitId = null;
+      {
+        const visitPayload = {
+          tenant_id: tenantId,
+          lead_id: leadId,
+          visited_at: new Date().toISOString(),
+          staff: form.assignedStaffId || null,
+          party_size: form.partySize ? Number(form.partySize) : null,
+          notes: form.description || null,
+          followup_required: !!form.followupRequired,
+          price_quoted: form.priceQuoted ? Number(form.priceQuoted) : null,
+          items_seen: form.itemsSeen?.join(", ") || null,
+        };
+        const { data: vdata } = await sb.from("bullion_visits").insert(visitPayload).select("id").single();
+        if (vdata?.id) visitId = vdata.id;
+      }
+
+      // 3) Optionally create demand
       if (createDemand) {
         const res = await fetch("/api/demand", {
           method: "POST",
@@ -2209,7 +2314,7 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved, prefill = n
       }
 
       setToast(createDemand ? "Walk-in saved with demand." : "Walk-in contact saved.");
-      setTimeout(() => onSaved({ id: leadId, name: form.name || null, phone }), 1500);
+      setTimeout(() => onSaved({ id: leadId, name: form.name || null, phone, visitId }), 1500);
     } catch (e) {
       setErr(String(e)); setSaving(false);
     }
@@ -10187,6 +10292,9 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   const [editingEstOrig, setEditingEstOrig] = useState(null);
   const [walkinOpen, setWalkinOpen] = useState(false);
   const [walkinPrefill, setWalkinPrefill] = useState(null);
+  const [activeVisitId, setActiveVisitId] = useState(null);
+  const [activeVisitClient, setActiveVisitClient] = useState(null);
+  const [activeVisitTime, setActiveVisitTime] = useState(null);
   const [saveContact, setSaveContact] = useState(() => { try { const s = localStorage.getItem("calc_active_contact"); return s ? JSON.parse(s) : null; } catch { return null; } });
   const [contactSearch, setContactSearch] = useState(() => { try { const s = localStorage.getItem("calc_active_contact"); if (s) { const c = JSON.parse(s); return c.name + (c.phone ? ` (${c.phone})` : ""); } } catch {} return ""; });
   const [contactResults, setContactResults] = useState([]);
@@ -10423,23 +10531,10 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
         }
       } else {
         // INSERT new estimate
-        const payload = { lead_id: saveContact?.id || null, created_by: user?.name || user?.email, mode, items, total_amount: total || null, metadata: { attended_by: attendedBy || null } };
+        const payload = { lead_id: saveContact?.id || null, created_by: user?.name || user?.email, mode, items, total_amount: total || null, metadata: { attended_by: attendedBy || null }, visit_id: activeVisitId || null };
         queueEstimate(payload);
-        showToast("✅ Saved — opening walk-in form…");
+        showToast("✅ Estimate saved");
         setSaveModal(false);
-        // Open walk-in form immediately so salesperson can capture client details
-        const it0 = items[0] || {};
-        setWalkinPrefill({
-          contact: saveContact,
-          estimateSummary: {
-            mode,
-            total: total || 0,
-            itemName: it0.itemName || it0.shape || "",
-            itemImage: it0.itemImage || "",
-            purity: PURITIES[it0.purityIdx]?.l || "",
-          },
-        });
-        setWalkinOpen(true);
         const { error: insErr } = await sb.from("bullion_estimates").insert(payload);
         if (insErr) { showToast("⚠️ Local only — will sync later"); }
         else {
@@ -10957,7 +11052,7 @@ function recalcToday(){
           ].filter(Boolean).join("\n");
           sendWA(saveContact.phone, lines);
         }}>📱 Send WA</Btn>}
-        <Btn small ghost color={C.gray} onClick={() => { setJw({ itemImage: "", itemName: "", vendorCode: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true, makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "", dia2Wt: "", dia2Unit: "ct", dia2Rate: "", stoneWt: "", stoneUnit: "ct", stoneRate: "", misc1Lbl: "Gemstone", misc1Wt: "", misc1Unit: "g", misc1Rate: "", misc1Deduct: true, misc2Lbl: "Mala", misc2Wt: "", misc2Unit: "g", misc2Rate: "", misc2Deduct: false, misc3Lbl: "Lakh", misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false }); setSaveContact(null); setContactSearch(""); try { localStorage.removeItem("calc_active_contact"); } catch {} }}>🔄 New</Btn>
+        <Btn small ghost color={C.gray} onClick={() => { setJw({ itemImage: "", itemName: "", vendorCode: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true, makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "", dia2Wt: "", dia2Unit: "ct", dia2Rate: "", stoneWt: "", stoneUnit: "ct", stoneRate: "", misc1Lbl: "Gemstone", misc1Wt: "", misc1Unit: "g", misc1Rate: "", misc1Deduct: true, misc2Lbl: "Mala", misc2Wt: "", misc2Unit: "g", misc2Rate: "", misc2Deduct: false, misc3Lbl: "Lakh", misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false }); setSaveContact(null); setContactSearch(""); setActiveVisitId(null); setActiveVisitClient(null); setActiveVisitTime(null); try { localStorage.removeItem("calc_active_contact"); } catch {} }}>🔄 New</Btn>
       </div>
     </div>
   );
@@ -11246,7 +11341,7 @@ function recalcToday(){
           {contactResults.length > 0 && (
             <div style={{ border: "1px solid #eee", borderRadius: 6, marginTop: 4, maxHeight: 150, overflowY: "auto" }}>
               {contactResults.map(c => (
-                <div key={c.id} onClick={() => { setSaveContact(c); setContactSearch(c.name + (c.phone ? ` (${c.phone})` : "")); setContactResults([]); try { localStorage.setItem("calc_active_contact", JSON.stringify(c)); } catch {} }} style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, borderBottom: "1px solid #f0f0f0" }}>
+                <div key={c.id} onClick={() => { if (activeVisitClient && c.id !== activeVisitClient.id) { setActiveVisitId(null); setActiveVisitClient(null); setActiveVisitTime(null); } setSaveContact(c); setContactSearch(c.name + (c.phone ? ` (${c.phone})` : "")); setContactResults([]); try { localStorage.setItem("calc_active_contact", JSON.stringify(c)); } catch {} }} style={{ padding: "8px 12px", cursor: "pointer", fontSize: 13, borderBottom: "1px solid #f0f0f0" }}>
                   {c.name} {c.phone && <span style={{ color: "#888" }}>{c.phone}</span>}
                 </div>
               ))}
@@ -11297,7 +11392,7 @@ function recalcToday(){
       {toast && <div style={{ position: "fixed", bottom: 24, right: 24, background: "#333", color: "#fff", padding: "10px 18px", borderRadius: 8, fontSize: 13, zIndex: 9999 }}>{toast}</div>}
       {saveModalEl}
 
-      {/* Walk-in modal — opened after estimate save OR standalone via header button */}
+      {/* Walk-in modal — standalone via header button only */}
       {walkinOpen && (
         <WalkinEntryModal
           funnels={funnels}
@@ -11306,6 +11401,11 @@ function recalcToday(){
           onClose={() => setWalkinOpen(false)}
           onSaved={(lead) => {
             setWalkinOpen(false);
+            if (lead?.visitId) {
+              setActiveVisitId(lead.visitId);
+              setActiveVisitTime(new Date().toISOString());
+              setActiveVisitClient(lead?.id ? { id: lead.id, name: lead.name, phone: lead.phone } : null);
+            }
             if (lead?.id && !saveContact?.id) {
               const c = { id: lead.id, name: lead.name, phone: lead.phone };
               setSaveContact(c);
@@ -11314,6 +11414,14 @@ function recalcToday(){
             }
           }}
         />
+      )}
+
+      {/* Visit session banner */}
+      {activeVisitId && (
+        <div className="no-print" style={{ background: "#e8f5e9", border: "1px solid #81c784", borderRadius: 8, padding: "8px 14px", marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 13 }}>
+          <span>📋 <strong>Active visit session</strong> · {activeVisitClient?.name || "Client"} · started {activeVisitTime ? new Date(activeVisitTime).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : ""} · new estimates will link to this visit</span>
+          <button onClick={() => { setActiveVisitId(null); setActiveVisitClient(null); setActiveVisitTime(null); }} style={{ background: "none", border: "1px solid #81c784", borderRadius: 4, padding: "2px 10px", cursor: "pointer", fontSize: 12 }}>End session</button>
+        </div>
       )}
 
       {/* Editing banner */}
