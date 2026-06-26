@@ -10084,14 +10084,15 @@ export default function App() {
     { k: "formbuilder",l: "Form Builder", icon: "🛠️" },
     { k: "calculator", l: "Calculator",    icon: "💎" },
     { k: "staff",      l: "Staff & Access", icon: "👥" },
+    { k: "walkin",     l: "Walk-ins",       icon: "🏪" },
   ];
 
   // Role-based defaults when app_permissions.crm is not set
   const ROLE_DEFAULT_TABS = {
     superadmin: ALL_TABS.map((t) => t.k),
     admin:      ALL_TABS.map((t) => t.k),
-    manager:    ["demands", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator"],
-    staff:      ["demands", "contacts", "upcoming", "calculator"],
+    manager:    ["demands", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin"],
+    staff:      ["demands", "contacts", "upcoming", "calculator", "walkin"],
     telecaller: ["queue", "demands"],
   };
 
