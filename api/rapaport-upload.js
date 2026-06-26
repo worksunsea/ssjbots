@@ -2,25 +2,12 @@ import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 import { SUPABASE_URL, SUPABASE_SERVICE_KEY } from "./_lib/config.js";
 
-const readBody = (req) => new Promise((resolve, reject) => {
-  const chunks = [];
-  req.on("data", c => chunks.push(c));
-  req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-  req.on("error", reject);
-});
-
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Method not allowed" });
 
-  let rounds64 = null, fancy64 = null;
-  try {
-    const raw = await readBody(req);
-    const body = JSON.parse(raw);
-    rounds64 = body.rounds || null;
-    fancy64 = body.fancy || null;
-  } catch (err) {
-    return res.status(400).json({ ok: false, error: "Invalid request body: " + err.message });
-  }
+  const body = req.body || {};
+  const rounds64 = body.rounds || null;
+  const fancy64 = body.fancy || null;
 
   if (!rounds64 && !fancy64) return res.status(400).json({ ok: false, error: "No PDF data received" });
 
