@@ -10627,9 +10627,16 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   const [rapData, setRapData] = useState(RAP_SEED);
   const [rapAge, setRapAge] = useState(null);
   const [rapUploadOpen, setRapUploadOpen] = useState(false);
-  const [rapUploadRounds, setRapUploadRounds] = useState(null);
-  const [rapUploadFancy, setRapUploadFancy] = useState(null);
+  const [rapUploadRounds, setRapUploadRounds] = useState(null); // { name, b64 }
+  const [rapUploadFancy, setRapUploadFancy] = useState(null);   // { name, b64 }
   const [rapUploading, setRapUploading] = useState(false);
+  const fileToB64 = async (file) => {
+    const ab = await file.arrayBuffer();
+    const bytes = new Uint8Array(ab);
+    let str = "";
+    for (let i = 0; i < bytes.length; i += 8192) str += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+    return { name: file.name, b64: btoa(str) };
+  };
   const [liveRates, setLiveRates] = useState({ g24: null, g22: null, g18: null, g14: null, g9: null, usd: null });
   const [usdInr, setUsdInr] = useState("");
   const [spread, setSpread] = useState(() => { try { return Number(localStorage.getItem("rap_spread") || 8); } catch { return 8; } });
@@ -11851,14 +11858,17 @@ function recalcToday(){
             <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>📤 Upload Rapaport PDFs</div>
             <div style={{ fontSize: 12, color: "#888", marginBottom: 16 }}>Upload the Round and/or Fancy price list PDFs from Rapaport. Both files can be uploaded at once.</div>
             {[
-              { label: "Round Price List (PDF)", key: "rounds", file: rapUploadRounds, set: setRapUploadRounds },
-              { label: "Fancy/Pear Price List (PDF)", key: "fancy", file: rapUploadFancy, set: setRapUploadFancy },
+              { label: "Round Price List (PDF)", key: "rounds", stored: rapUploadRounds, set: setRapUploadRounds },
+              { label: "Fancy/Pear Price List (PDF)", key: "fancy", stored: rapUploadFancy, set: setRapUploadFancy },
             ].map(f => (
               <div key={f.key} style={{ marginBottom: 12 }}>
                 <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>{f.label}</div>
-                <input type="file" accept=".pdf,application/pdf" onChange={e => f.set(e.target.files?.[0] || null)}
-                  style={{ fontSize: 12, width: "100%", padding: "6px 8px", border: "1px solid #ddd", borderRadius: 6, background: f.file ? "#e8f5e9" : "#fff" }} />
-                {f.file && <div style={{ fontSize: 11, color: "#2e7d32", marginTop: 2 }}>✓ {f.file.name}</div>}
+                <input type="file" accept=".pdf,application/pdf" onChange={async e => {
+                  const file = e.target.files?.[0];
+                  if (!file) { f.set(null); return; }
+                  try { f.set(await fileToB64(file)); } catch (err) { showToast("❌ Could not read file: " + (err?.message || String(err))); }
+                }} style={{ fontSize: 12, width: "100%", padding: "6px 8px", border: "1px solid #ddd", borderRadius: 6, background: f.stored ? "#e8f5e9" : "#fff" }} />
+                {f.stored && <div style={{ fontSize: 11, color: "#2e7d32", marginTop: 2 }}>✓ {f.stored.name} — ready</div>}
               </div>
             ))}
             <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
@@ -11866,24 +11876,15 @@ function recalcToday(){
                 if (!rapUploadRounds && !rapUploadFancy) return;
                 setRapUploading(true);
                 try {
-                  const toBase64 = async (file) => {
-                    const ab = await file.arrayBuffer();
-                    const bytes = new Uint8Array(ab);
-                    let str = "";
-                    for (let i = 0; i < bytes.length; i += 8192) str += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
-                    return btoa(str);
-                  };
                   const payload = {};
-                  if (rapUploadRounds) payload.rounds = await toBase64(rapUploadRounds);
-                  if (rapUploadFancy) payload.fancy = await toBase64(rapUploadFancy);
+                  if (rapUploadRounds) payload.rounds = rapUploadRounds.b64;
+                  if (rapUploadFancy) payload.fancy = rapUploadFancy.b64;
                   const r = await fetch("/api/rapaport-upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
                   const d = await r.json().catch(() => ({}));
                   if (d.ok) {
                     showToast(`✅ Uploaded · ${d.date || ""} · ${[d.rounds_parsed && "Round ✓", d.fancy_parsed && "Fancy ✓"].filter(Boolean).join(", ")}`);
                     setRapAge(0);
-                    setRapUploadOpen(false);
-                    setRapUploadRounds(null);
-                    setRapUploadFancy(null);
+                    setRapUploadOpen(false); setRapUploadRounds(null); setRapUploadFancy(null);
                     // Reload rapaport data
                     sb.from("bullion_dropdowns").select("value,updated_at").eq("field", "rapaport_data").maybeSingle().then(({ data }) => {
                       if (data?.value) { try { setRapData(JSON.parse(data.value)); } catch {} }
