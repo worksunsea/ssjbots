@@ -575,7 +575,7 @@ export default async function handler(req, res) {
     const d = await r.json();
     if (!d.ok) throw new Error(d.error || "Apps Script file fetch failed");
     if (d.encoding === "base64") {
-      const pdfParse = require("pdf-parse");
+      const { default: pdfParse } = await import("pdf-parse");
       const buf = Buffer.from(d.content, "base64");
       const parsed = await pdfParse(buf);
       return parsed.text;
