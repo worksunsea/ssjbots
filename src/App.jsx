@@ -141,6 +141,7 @@ const CRM_ALL_TABS = [
   { k: "leadsources", l: "Lead Sources",icon: "🌐" },
   { k: "formbuilder", l: "Form Builder",icon: "🛠️" },
   { k: "staff",       l: "Staff & Access",icon: "👥" },
+  { k: "walkin",      l: "Walk-ins",       icon: "🏪" },
 ];
 const CRM_ROLE_DEFAULT_TABS = {
   superadmin: CRM_ALL_TABS.map((t) => t.k),
@@ -10165,6 +10166,7 @@ export default function App() {
       {activeScreen === "formbuilder" && <FormBuilderScreen />}
       {activeScreen === "calculator" && <CalculatorScreen funnels={funnels} allTags={allTags} />}
       {activeScreen === "staff" && <StaffAccessScreen />}
+      {activeScreen === "walkin" && <WalkinDashboardScreen funnels={funnels} />}
     </div>
     </ContactFieldsContext.Provider>
   );
@@ -10277,6 +10279,156 @@ function newSolRow() {
   return { id: Date.now() + Math.random(), cert: "IGI", color: "H", shape: "Round", clarity: "VS1", cut: "Excellent", weight: "", buyDisc: "", sellDisc: "", vendorCode: "", purchasePrice: "", notes: "", manualPrice: "" };
 }
 
+// ─── Walk-in Dashboard Screen ─────────────────────────────────────────────────
+function WalkinDashboardScreen({ funnels = [] }) {
+  const [visits, setVisits] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [dateFilter, setDateFilter] = useState("today"); // today | week | month
+  const [assigningVisit, setAssigningVisit] = useState(null);
+  const [toast, setToast] = useState("");
+
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 3000); };
+
+  const loadVisits = useCallback(async () => {
+    setLoading(true);
+    const now = new Date();
+    let since;
+    if (dateFilter === "today") { since = new Date(now); since.setHours(0, 0, 0, 0); }
+    else if (dateFilter === "week") { since = new Date(now - 7 * 86400000); }
+    else { since = new Date(now - 30 * 86400000); }
+    const { data } = await sb.from("bullion_visits")
+      .select("id,visited_at,time_out,outcome,temperature,price_quoted,staff,items_seen,notes,followup_required,party_size,bullion_leads(id,name,phone,city),bullion_estimates(id,mode,total_amount,items,created_at)")
+      .eq("tenant_id", getTenantId())
+      .gte("visited_at", since.toISOString())
+      .order("visited_at", { ascending: false });
+    setVisits(data || []);
+    setLoading(false);
+  }, [dateFilter]);
+
+  useEffect(() => { loadVisits(); }, [loadVisits]);
+
+  const assignFunnel = async (visit, label) => {
+    const lead = visit.bullion_leads;
+    if (!lead?.id) return;
+    const matched = funnels.find(f => f.name?.toLowerCase().includes(label)) || funnels[0];
+    if (!matched?.id) { showToast("No matching funnel found"); return; }
+    const res = await fetch("/api/demand", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
+      body: JSON.stringify({ phone: lead.phone, name: lead.name || null, description: `Walk-in ${label} follow-up`, funnel_id: matched.id, tenant_id: getTenantId() }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (d.ok) { showToast(`✅ Added to ${matched.name}`); setAssigningVisit(null); }
+    else showToast("❌ " + (d.error || "Failed"));
+  };
+
+  const tempStyle = { hot: { bg: "#fff3e0", border: "#ffb74d", icon: "🔥" }, warm: { bg: "#fff8e1", border: "#ffd54f", icon: "♨️" }, cold: { bg: "#e3f2fd", border: "#90caf9", icon: "🧊" } };
+
+  const stats = { total: visits.length, purchased: visits.filter(v => v.outcome === "purchased").length, hot: visits.filter(v => v.temperature === "hot").length, noOutcome: visits.filter(v => !v.outcome && !v.temperature).length };
+
+  return (
+    <div style={{ maxWidth: 900, margin: "0 auto", padding: "0 0 40px" }}>
+      {toast && <div style={{ position: "fixed", bottom: 24, right: 24, background: "#333", color: "#fff", padding: "10px 18px", borderRadius: 8, fontSize: 13, zIndex: 9999 }}>{toast}</div>}
+
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
+        <div style={{ fontWeight: 700, fontSize: 18 }}>🏪 Walk-in Sessions</div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {["today", "week", "month"].map(d => (
+            <button key={d} onClick={() => setDateFilter(d)} style={{ padding: "4px 12px", borderRadius: 6, border: `1px solid ${dateFilter === d ? "#1565c0" : "#ddd"}`, background: dateFilter === d ? "#e3f2fd" : "#fff", fontWeight: dateFilter === d ? 600 : 400, cursor: "pointer", fontSize: 12, textTransform: "capitalize" }}>{d}</button>
+          ))}
+          <button onClick={loadVisits} style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", cursor: "pointer", fontSize: 12 }}>↻</button>
+        </div>
+      </div>
+
+      {/* Stats */}
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+        {[{ l: "Total visits", v: stats.total, c: "#1565c0" }, { l: "Purchased", v: stats.purchased, c: "#2e7d32" }, { l: "Hot leads", v: stats.hot, c: "#e65100" }, { l: "No outcome", v: stats.noOutcome, c: "#888" }].map(s => (
+          <div key={s.l} style={{ flex: "1 1 120px", background: "#fff", border: "1px solid #eee", borderRadius: 10, padding: "10px 14px", textAlign: "center" }}>
+            <div style={{ fontSize: 22, fontWeight: 700, color: s.c }}>{s.v}</div>
+            <div style={{ fontSize: 11, color: "#666", marginTop: 2 }}>{s.l}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Visit cards */}
+      {loading ? <div style={{ textAlign: "center", padding: 40, color: "#aaa" }}>Loading…</div> : visits.length === 0 ? (
+        <div style={{ textAlign: "center", padding: 40, color: "#aaa" }}>
+          <div style={{ fontSize: 32, marginBottom: 10 }}>🏪</div>
+          No walk-in sessions recorded. Use the 🏪 Walk-in button inside the 💎 Calculator to start a session.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {visits.map(v => {
+            const lead = v.bullion_leads || {};
+            const ests = v.bullion_estimates || [];
+            const tc = tempStyle[v.temperature] || { bg: "#f9f9f9", border: "#eee", icon: "👣" };
+            const timeIn = v.visited_at ? new Date(v.visited_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "";
+            const dateStr = v.visited_at ? new Date(v.visited_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short" }) : "";
+            const timeOut = v.time_out ? new Date(v.time_out).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : null;
+            const estTotal = ests.reduce((s, e) => s + (e.total_amount || 0), 0);
+            return (
+              <div key={v.id} style={{ background: tc.bg, border: `1px solid ${tc.border}`, borderRadius: 10, padding: "12px 16px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 8 }}>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>{tc.icon} {lead.name || lead.phone || "Unknown client"}</div>
+                    <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>
+                      {lead.phone && <span style={{ marginRight: 10 }}>{lead.phone}</span>}
+                      {dateStr} · {timeIn}{timeOut ? ` → ${timeOut}` : " → still here"}
+                      {v.staff && <span style={{ marginLeft: 8 }}>· {v.staff}</span>}
+                      {v.party_size > 1 && <span style={{ marginLeft: 8 }}>· {v.party_size} people</span>}
+                    </div>
+                    {v.items_seen && <div style={{ fontSize: 12, color: "#555", marginTop: 4 }}>Seen: {v.items_seen}</div>}
+                    {v.notes && <div style={{ fontSize: 12, color: "#888", marginTop: 2, fontStyle: "italic" }}>{v.notes}</div>}
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    {v.outcome && <div style={{ fontSize: 12, fontWeight: 600, color: v.outcome === "purchased" ? "#2e7d32" : "#555", marginBottom: 4 }}>✓ {v.outcome}</div>}
+                    {ests.length > 0 && <div style={{ fontSize: 12, color: "#1565c0", fontWeight: 600 }}>📋 {ests.length} estimate{ests.length > 1 ? "s" : ""}{estTotal > 0 ? ` · ₹${Math.round(estTotal).toLocaleString("en-IN")}` : ""}</div>}
+                    {v.price_quoted > 0 && <div style={{ fontSize: 11, color: "#888" }}>Quoted: ₹{Math.round(v.price_quoted).toLocaleString("en-IN")}</div>}
+                  </div>
+                </div>
+
+                {/* Linked estimates */}
+                {ests.length > 0 && (
+                  <div style={{ marginTop: 8, borderTop: `1px solid ${tc.border}`, paddingTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {ests.map(e => {
+                      const it = (e.items || [])[0] || {};
+                      const lbl = e.mode === "jewellery" ? (it.itemName || "Jewellery") : e.mode === "solitaire" ? `${it.shape || "Solitaire"} ${it.weight || ""}ct`.trim() : "Quotation";
+                      return (
+                        <span key={e.id} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 10, background: "#fff", border: "1px solid #ddd" }}>
+                          {lbl}{e.total_amount ? ` · ₹${Math.round(e.total_amount).toLocaleString("en-IN")}` : ""}
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Actions */}
+                <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {assigningVisit === v.id ? (
+                    <>
+                      <span style={{ fontSize: 12, color: "#555", alignSelf: "center" }}>Add to funnel:</span>
+                      {["hot", "warm", "cold"].map(l => (
+                        <button key={l} onClick={() => assignFunnel(v, l)} style={{ fontSize: 12, padding: "3px 10px", borderRadius: 6, border: "1px solid #bbb", background: "#fff", cursor: "pointer", textTransform: "capitalize" }}>
+                          {l === "hot" ? "🔥" : l === "warm" ? "♨️" : "🧊"} {l}
+                        </button>
+                      ))}
+                      <button onClick={() => setAssigningVisit(null)} style={{ fontSize: 12, padding: "3px 8px", borderRadius: 6, border: "1px solid #eee", background: "#fff", cursor: "pointer" }}>✕</button>
+                    </>
+                  ) : (
+                    <button onClick={() => setAssigningVisit(v.id)} style={{ fontSize: 12, padding: "3px 10px", borderRadius: 6, border: "1px solid #bbb", background: "#fff", cursor: "pointer" }}>➡️ Add to Funnel</button>
+                  )}
+                  {lead.phone && <button onClick={() => { const url = `https://wa.me/91${lead.phone.replace(/\D/g, "")}`; window.open(url, "_blank"); }} style={{ fontSize: 12, padding: "3px 10px", borderRadius: 6, border: "1px solid #25d366", background: "#f0fdf4", cursor: "pointer" }}>💬 WhatsApp</button>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CalculatorScreen({ funnels = [], allTags = [] }) {
   const [tab, setTab] = useState("jewellery");
   const [rapData, setRapData] = useState(RAP_SEED);
@@ -10339,6 +10491,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   const [recentEstimates, setRecentEstimates] = useState([]);
   const [clientHistory, setClientHistory] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [selectedEstimates, setSelectedEstimates] = useState(new Set());
   const [pendingFollowups, setPendingFollowups] = useState([]);
   const [addClientMode, setAddClientMode] = useState(false);
   const [newClientName, setNewClientName] = useState("");
@@ -10507,6 +10660,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
 
   // Load history when active client changes
   useEffect(() => {
+    setSelectedEstimates(new Set());
     if (!saveContact?.id) { setClientHistory([]); return; }
     sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items").eq("lead_id", saveContact.id).order("created_at", { ascending: false }).limit(20).then(({ data }) => setClientHistory(data || []));
   }, [saveContact?.id]);
@@ -11514,14 +11668,34 @@ function recalcToday(){
           {/* Client history panel */}
           {showHistory && clientHistory.length > 0 && (
             <div style={{ borderTop: "1px solid #a5d6a7", padding: "10px 14px" }}>
-              <div style={{ fontSize: 11, color: "#555", marginBottom: 6, fontWeight: 600 }}>PREVIOUS VISITS</div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <div style={{ fontSize: 11, color: "#555", fontWeight: 600 }}>PREVIOUS ESTIMATES</div>
+                {selectedEstimates.size > 0 && (
+                  <button onClick={() => {
+                    const sel = clientHistory.filter(e => selectedEstimates.has(e.id));
+                    const lines = sel.map((e, i) => {
+                      const item = e.items?.[0] || {};
+                      const label = e.mode === "jewellery" ? (item.itemName || "Jewellery") : e.mode === "solitaire" ? `${item.shape || "Solitaire"} ${item.weight || ""}ct ${item.color || ""}/${item.clarity || ""}`.trim() : "Quotation";
+                      const date = new Date(e.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+                      return `*${i + 1}. ${label}* (${date})${e.total_amount ? `\n₹${Math.round(e.total_amount).toLocaleString("en-IN")}` : ""}`;
+                    }).join("\n\n");
+                    const msg = `*ESTIMATE SUMMARY — Sun Sea Jewellers*\n\n${lines}\n\n_For queries call us at Sun Sea Jewellers, Mumbai_`;
+                    sendWA(saveContact.phone, msg);
+                    setSelectedEstimates(new Set());
+                  }} style={{ background: "#25d366", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                    📱 Send {selectedEstimates.size} selected
+                  </button>
+                )}
+              </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {clientHistory.map(e => {
                   const item = e.items?.[0] || {};
                   const label = e.mode === "jewellery" ? (item.itemName || "Jewellery") : e.mode === "solitaire" ? `${item.shape || ""} ${item.weight || ""}ct ${item.color || ""}/${item.clarity || ""}`.trim() : "Quotation";
+                  const checked = selectedEstimates.has(e.id);
                   return (
-                    <div key={e.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, padding: "4px 0", borderBottom: "1px solid #c8e6c9" }}>
-                      <div>
+                    <div key={e.id} onClick={() => setSelectedEstimates(prev => { const n = new Set(prev); checked ? n.delete(e.id) : n.add(e.id); return n; })} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "5px 6px", borderRadius: 6, cursor: "pointer", background: checked ? "#e8f5e9" : "transparent", border: `1px solid ${checked ? "#81c784" : "transparent"}` }}>
+                      <input type="checkbox" checked={checked} onChange={() => {}} style={{ cursor: "pointer", accentColor: "#2e7d32" }} />
+                      <div style={{ flex: 1 }}>
                         <span style={{ textTransform: "capitalize", fontWeight: 600 }}>{e.mode}</span>
                         {label && <span style={{ color: "#555", marginLeft: 6 }}>{label}</span>}
                         <span style={{ color: "#888", marginLeft: 8, fontSize: 11 }}>{new Date(e.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</span>
@@ -11531,6 +11705,7 @@ function recalcToday(){
                   );
                 })}
               </div>
+              {selectedEstimates.size === 0 && <div style={{ fontSize: 11, color: "#aaa", marginTop: 6 }}>Tap estimates to select, then send chosen ones via WhatsApp</div>}
             </div>
           )}
         </div>
