@@ -509,12 +509,37 @@ function parsePdfTables(text) {
 
   if (allDataRows.length < 10) return null;
 
-  // Chunk into groups of 10 and assign to sorted brackets
+  // Sliding-window group validator: genuine Rapaport rows (D→M) have strictly
+  // decreasing IF-clarity value (col 0). Garbled inter-page rows don't.
+  const isValidGroup = (rows) => {
+    if (rows.length < 10) return false;
+    for (let r = 1; r < 10; r++) {
+      if (rows[r][0] >= rows[r - 1][0]) return false;
+    }
+    return true;
+  };
+
+  const cleanGroups = [];
+  let pos = 0;
+  while (pos + 10 <= allDataRows.length && cleanGroups.length < sortedBrackets.length) {
+    const group = allDataRows.slice(pos, pos + 10);
+    if (isValidGroup(group)) {
+      cleanGroups.push(group);
+      pos += 10;
+    } else {
+      pos++;
+    }
+  }
+  console.log(`RAP clean groups=${cleanGroups.length} (expected=${sortedBrackets.length})`);
+
+  if (cleanGroups.length === 0) return null;
+
+  // Assign clean groups to sorted brackets
   const tables = {};
   for (let bi = 0; bi < sortedBrackets.length; bi++) {
     const bracket = sortedBrackets[bi];
-    const group = allDataRows.slice(bi * 10, bi * 10 + 10);
-    if (group.length === 0) break;
+    const group = cleanGroups[bi];
+    if (!group) break;
 
     tables[bracket] = Array.from({ length: 10 }, () => Array(11).fill(null));
 

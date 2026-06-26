@@ -443,11 +443,40 @@ const parseRapTable = (text) => {
     return { tables: {} };
   }
 
+  // Sliding-window group validator: in a genuine Rapaport group of 10 rows
+  // (colors D→M), the IF-clarity value (col 0) strictly decreases row-to-row.
+  // Garbled/extra rows between PDF pages don't satisfy this. Slide past them.
+  const isValidGroup = (rows) => {
+    if (rows.length < 10) return false;
+    for (let r = 1; r < 10; r++) {
+      if (rows[r][0] >= rows[r - 1][0]) return false;
+    }
+    return true;
+  };
+
+  const cleanGroups = [];
+  let pos = 0;
+  while (pos + 10 <= allDataRows.length && cleanGroups.length < sortedBrackets.length) {
+    const group = allDataRows.slice(pos, pos + 10);
+    if (isValidGroup(group)) {
+      cleanGroups.push(group);
+      pos += 10;
+    } else {
+      pos++;
+    }
+  }
+  console.log(`RAP clean groups=${cleanGroups.length} (expected=${sortedBrackets.length})`);
+
+  if (cleanGroups.length === 0) {
+    console.log("RAP: no valid groups found");
+    return { tables: {} };
+  }
+
   const tables = {};
   for (let bi = 0; bi < sortedBrackets.length; bi++) {
     const bracket = sortedBrackets[bi];
-    const group = allDataRows.slice(bi * 10, bi * 10 + 10);
-    if (group.length === 0) break;
+    const group = cleanGroups[bi];
+    if (!group) break;
 
     tables[bracket] = Array.from({ length: 10 }, () => Array(11).fill(null));
 
