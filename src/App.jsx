@@ -11443,7 +11443,7 @@ function recalcToday(){
           <Btn small color="#16a085" onClick={() => { setWalkinPrefill({ contact: saveContact, estimateSummary: null }); setWalkinOpen(true); }} style={{ color: "#fff" }}>🏪 Walk-in</Btn>
           <Btn small ghost color={C.blue} onClick={async () => {
             showToast("Syncing Rapaport…");
-            const r = await fetch("/api/rapaport-sync?action=seed", { headers: { "x-crm-secret": CRM_SECRET } });
+            const r = await fetch("/api/rapaport-sync", { headers: { "x-crm-secret": CRM_SECRET } });
             const d = await r.json().catch(() => ({}));
             if (d.ok) { showToast("✅ Synced: " + (d.date || "")); setRapAge(0); } else showToast("❌ " + (d.error || "Sync failed"));
           }}>🔄 Sync Rapaport</Btn>
