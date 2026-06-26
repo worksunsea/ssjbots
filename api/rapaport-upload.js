@@ -2,16 +2,144 @@ import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 import { SUPABASE_URL, SUPABASE_SERVICE_KEY } from "./_lib/config.js";
 
-// Exact match with RAP_CLARITIES / RAP_COLORS / RAP_WEIGHT_RANGES in App.jsx
-const WEIGHT_RANGES  = ["0.30","0.40","0.50","0.70","0.90","1.00","1.50","2.00","3.00","4.00","5.00"];
-const SEED_CLARITIES = ["IF","VVS1","VVS2","VS1","VS2","SI1","SI2","I1","I2","I3"]; // 10 rows
-const SEED_COLORS    = ["D","E","F","G","H","I","J","K","L","M","N"];               // 11 cols
+// Must match App.jsx rapLookup() weight bracket keys
+const WEIGHT_RANGES = [
+  "0.30","0.40","0.50","0.70","0.90",
+  "1.00","1.50","2.00","3.00","4.00","5.00","10.00",
+];
 
-// FL on PDF → same row as IF (index 0)
-const CLARITY_ROW = { FL:0, IF:0, VVS1:1, VVS2:2, VS1:3, VS2:4, SI1:5, SI2:6, I1:7, I2:8, I3:9 };
+// Returns { date, tables } where tables matches RAP_SEED in App.jsx:
+//   tables["0.30"] = [ [IF_D..IF_N], [VVS1_D..VVS1_N], ... ]  (10 rows × 11 cols)
+//
+// PDF structure (.30ct+ sections):
+//   Header:  "RAPAPORT : (.30 - .39 CT.) : ROUNDS RAPAPORT : (.40 - .49 CT.) :"
+//   Data:    10 rows per bracket (colors D→M), each row has 11 integers
+//   PDF col: IF VVS1 VVS2 VS1 VS2 SI1 SI2 [SI3-skip] I1 I2 I3  (col 7 = SI3, skipped)
+//   Row 0 = D color, row 1 = E, ..., row 9 = M (NO letter labels on data rows)
+//   All bracket sections appear in ascending size order within the text.
+//   Transposition needed: PDF rows=colors, PDF cols=clarities → storage rows=clarities cols=colors
+const parseRapTable = (text) => {
+  if (!text) return null;
 
-// Sorted longest-first so "VVS1" is tried before "VS1", "SI1" before "I1", etc.
-const CLARITY_KEYS = Object.keys(CLARITY_ROW).sort((a,b) => b.length - a.length);
+  const lines = text.split(/\n/).map(l => l.trim()).filter(Boolean);
+
+  // Date from filename-style pattern first (most reliable for Rapaport)
+  const dateMatch = text.match(/(\d{1,2})[\/\.\-](\d{1,2})[\/\.\-](\d{2,4})/);
+  const date = dateMatch
+    ? `${dateMatch[1].padStart(2,"0")}/${dateMatch[2].padStart(2,"0")}/${dateMatch[3].length===2?"20"+dateMatch[3]:dateMatch[3]}`
+    : null;
+
+  // Normalise lower-bound string from header regex to a WEIGHT_RANGES key
+  const normToKey = (raw) => {
+    // raw examples: "30" → 0.30, "1.00" → 1.00, "50" → 0.50
+    const num = raw.includes('.') ? parseFloat(raw) : parseFloat(raw) / 100;
+    for (const w of WEIGHT_RANGES) {
+      if (Math.abs(parseFloat(w) - num) < 0.005) return w;
+    }
+    return null;
+  };
+
+  // Collect bracket keys from all "RAPAPORT : (.XX - .XX CT.) :" header lines
+  const bracketSet = new Set();
+  const HDR_RE = /\(\s*\.?(\d+\.?\d*)\s*[-–—]\s*\.?\d+\.?\d*\s*[Cc][Tt]\.?\s*\)/g;
+  for (const line of lines) {
+    if (!/RAPAPORT/i.test(line)) continue;
+    HDR_RE.lastIndex = 0;
+    let m;
+    while ((m = HDR_RE.exec(line)) !== null) {
+      const key = normToKey(m[1]);
+      if (key) bracketSet.add(key);
+    }
+  }
+  const sortedBrackets = Array.from(bracketSet).sort((a, b) => parseFloat(a) - parseFloat(b));
+  console.log("RAP brackets detected:", sortedBrackets);
+
+  // Expand merged digit tokens produced by some PDF encoders.
+  // Example: tokens ["13","12","987","6","4"] with targetCount=11 would become
+  // ["13","12","9","8","7","6","4"] (11 tokens) because deficit=2, "987".length===3.
+  // Only expands ONE token, only when deficit>=2, only 3+ digit tokens.
+  const expandMerged = (tokens, targetCount) => {
+    if (tokens.length >= targetCount) return tokens.slice(0, targetCount).map(Number);
+    const deficit = targetCount - tokens.length;
+    if (deficit < 2) return tokens.map(Number);
+    const result = [];
+    let expanded = false;
+    for (const t of tokens) {
+      if (!expanded && /^\d{3,}$/.test(t) && t.length === deficit + 1) {
+        result.push(...t.split('').map(Number));
+        expanded = true;
+      } else {
+        result.push(parseFloat(t));
+      }
+    }
+    return result.slice(0, targetCount);
+  };
+
+  // Try to parse a line as one data row of 11 integers.
+  // Returns null for header lines, letter-only lines, decimal (small stone) lines, etc.
+  const tryParseDataRow = (line) => {
+    if (/RAPAPORT|ROUNDS/i.test(line)) return null;
+    if (/^[A-N]$/.test(line)) return null;       // single colour letter
+    if (/^[A-N]-[A-N]$/.test(line)) return null; // grouped header "D-F"
+    if (/[a-z]{3,}/i.test(line)) return null;    // line contains words
+
+    // Strip colour letter that may be attached to or separated from first/last number
+    let s = line;
+    s = s.replace(/^[D-N](?=\d)/, ''); // "D39..." → "39..."
+    s = s.replace(/^[D-N]\s+/, '');    // "D 39 ..." → "39 ..."
+    s = s.replace(/\s+[D-N]$/, '');    // "... 39 D" → "... 39"
+
+    const tokens = s.trim().split(/[\s\t,]+/).filter(t => /^\d+\.?\d*$/.test(t));
+    if (tokens.length < 8) return null;
+    if (tokens.some(t => t.includes('.'))) return null; // decimal = small-stone row, skip
+
+    const nums = expandMerged(tokens, 11);
+    if (nums.length < 8) return null;
+    return nums.slice(0, 11);
+  };
+
+  // Collect every valid data row in document order
+  const allDataRows = [];
+  for (const line of lines) {
+    const row = tryParseDataRow(line);
+    if (row) allDataRows.push(row);
+  }
+  console.log(`RAP rows collected=${allDataRows.length}, expected≈${sortedBrackets.length * 10}`);
+
+  if (allDataRows.length < 10) {
+    console.log("RAP: too few data rows found");
+    return { date, tables: {} };
+  }
+
+  // Chunk into groups of 10 and match to brackets in ascending order
+  const tables = {};
+  for (let bi = 0; bi < sortedBrackets.length; bi++) {
+    const bracket = sortedBrackets[bi];
+    const group = allDataRows.slice(bi * 10, bi * 10 + 10);
+    if (group.length === 0) break;
+
+    tables[bracket] = Array.from({ length: 10 }, () => Array(11).fill(null));
+
+    for (let colorIdx = 0; colorIdx < group.length; colorIdx++) {
+      const nums = group[colorIdx]; // PDF row = one colour (D=0 … M=9)
+      // Transpose: PDF col → clarity index, skipping SI3 at col 7
+      for (let col = 0; col < Math.min(nums.length, 11); col++) {
+        let ci;
+        if (col <= 6)      { ci = col; }
+        else if (col === 7){ continue; }   // skip SI3
+        else               { ci = col - 1; }
+        tables[bracket][ci][colorIdx] = nums[col];
+      }
+    }
+  }
+
+  const filled = Object.values(tables).filter(t =>
+    t.some(row => row.some(v => v !== null))
+  ).length;
+  console.log(`parseRapTable: date=${date} brackets_filled=${filled}/${Object.keys(tables).length}`);
+
+  return { date, tables };
+};
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Method not allowed" });
@@ -47,98 +175,6 @@ export default async function handler(req, res) {
       } catch (err) { warnings.push("Fancy PDF parse failed: " + err.message); }
     }
 
-    // Returns tables in same array-of-arrays format as RAP_SEED in App.jsx:
-    //   tables["0.30"] = [ [IF_D..IF_N], [VVS1_D..VVS1_N], ... ]  (10 rows × 11 cols)
-    //
-    // Handles both layouts that pdf-parse produces:
-    //   Layout A (combined): "IF  27  22  19  17  15  14  13  12  11  10"
-    //   Layout B (split):    "IF\n27  22  19  17  15  14  13  12  11  10"
-    const parseRapTable = (text) => {
-      if (!text) return null;
-
-      const lines = text.split(/\n/).map(l => l.trim()).filter(Boolean);
-      const dateMatch = text.match(/(\d{1,2})[\/\.\-](\d{1,2})[\/\.\-](\d{2,4})/);
-      const date = dateMatch
-        ? `${dateMatch[1].padStart(2,"0")}/${dateMatch[2].padStart(2,"0")}/${dateMatch[3].length===2?"20"+dateMatch[3]:dateMatch[3]}`
-        : null;
-
-      // Detect weight range header: line that starts with (or is) one of the known range values,
-      // followed only by an optional "- N.NN" range end. Anchored so "Round 1.00-1.49" doesn't match.
-      const getRangeKey = (line) => {
-        const norm = line.replace(/[–—]/g, "-").replace(/\s+/g, " ");
-        for (const w of WEIGHT_RANGES) {
-          // Must start with the range value, nothing alphanumeric before it
-          const re = new RegExp(`^${w.replace(".", "\\.")}(\\s*[-]\\s*[\\d.]+)?$`);
-          if (re.test(norm)) return w;
-        }
-        return null;
-      };
-
-      // Detect clarity label at the start of a line (or the entire line)
-      const getClarityAtStart = (line) => {
-        for (const c of CLARITY_KEYS) {
-          if (line === c || line.startsWith(c + " ") || line.startsWith(c + "\t")) return c;
-        }
-        return null;
-      };
-
-      const extractNums = (str) =>
-        str.trim().split(/[\s\t]+/).map(n => parseFloat(n.replace(/,/g, ""))).filter(n => !isNaN(n) && n > 0);
-
-      const tables = {};
-      let currentRange   = null;
-      let pendingRow     = null; // row index when clarity appears alone on a line
-
-      for (const line of lines) {
-        // --- Weight range header ---
-        const rangeKey = getRangeKey(line);
-        if (rangeKey) {
-          currentRange = rangeKey;
-          pendingRow   = null;
-          if (!tables[currentRange]) {
-            tables[currentRange] = Array.from({ length: 10 }, () => Array(11).fill(null));
-          }
-          continue;
-        }
-        if (!currentRange) continue;
-
-        // --- Clarity row (with or without numbers on same line) ---
-        const cl = getClarityAtStart(line);
-        if (cl !== null) {
-          const ri  = CLARITY_ROW[cl];
-          if (ri === undefined) continue;
-          const rest = line.slice(cl.length).trim();
-          const nums = extractNums(rest);
-          if (nums.length >= 3) {
-            // Layout A: "IF 27 22 19 ..."
-            for (let ki = 0; ki < Math.min(nums.length, 11); ki++) tables[currentRange][ri][ki] = nums[ki];
-            pendingRow = null;
-          } else {
-            // Layout B: clarity alone, numbers expected on next line
-            pendingRow = ri;
-          }
-          continue;
-        }
-
-        // --- Numbers line (Layout B follow-up) ---
-        if (pendingRow !== null) {
-          const nums = extractNums(line);
-          if (nums.length >= 3) {
-            for (let ki = 0; ki < Math.min(nums.length, 11); ki++) tables[currentRange][pendingRow][ki] = nums[ki];
-          }
-          pendingRow = null;
-          continue;
-        }
-      }
-
-      const bracketsFilled = Object.values(tables).filter(t =>
-        t.some(row => row.some(v => v !== null))
-      ).length;
-      console.log(`parseRapTable: date=${date} brackets=${bracketsFilled}/${Object.keys(tables).length}`);
-
-      return { date, tables };
-    };
-
     const roundData = parseRapTable(roundsText);
     const fancyData = parseRapTable(fancyText);
     const date = roundData?.date || fancyData?.date || new Date().toLocaleDateString("en-GB");
@@ -156,7 +192,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // Key names MUST match rapLookup() in App.jsx: rapData.rounds / rapData.fancy
     const merged = {
       date,
       updated_at: new Date().toISOString(),
@@ -167,7 +202,6 @@ export default async function handler(req, res) {
     const TENANT = "a1b2c3d4-0000-0000-0000-000000000001";
     const sbHeaders = { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`, "Content-Type": "application/json" };
 
-    // Try UPDATE first; INSERT only if no rows matched
     const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/bullion_dropdowns?field=eq.rapaport_data&tenant_id=eq.${TENANT}`, {
       method: "PATCH",
       headers: { ...sbHeaders, Prefer: "return=representation" },

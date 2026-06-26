@@ -416,51 +416,126 @@ async function readDriveFile(token, fileId, mimeType) {
 // ─── PDF parsing ──────────────────────────────────────────────────────────────
 
 /**
- * Extracts all integers from text (Rapaport prices are whole numbers).
- * Returns them as a flat array in order of appearance.
- */
-function extractNumbers(text) {
-  const nums = [];
-  // Match standalone integers (not part of decimals in ranges like "1.00-1.49")
-  // We want price values which are plain integers
-  const matches = text.matchAll(/(?<![.\d])(\d+)(?![.\d])/g);
-  for (const m of matches) {
-    const n = parseInt(m[1], 10);
-    if (n > 0 && n <= 99999) nums.push(n);
-  }
-  return nums;
-}
-
-/**
- * Groups a flat array of numbers into 10×11 blocks (110 numbers each).
- * Each block represents one weight range.
- * Returns an object keyed by WEIGHT_RANGES labels.
- */
-function groupIntoTables(numbers) {
-  const BLOCK = 110; // 10 clarity rows × 11 color columns
-  const tables = {};
-  let offset = 0;
-  for (const range of WEIGHT_RANGES) {
-    if (offset + BLOCK > numbers.length) break;
-    const block = numbers.slice(offset, offset + BLOCK);
-    const rows = [];
-    for (let r = 0; r < 10; r++) {
-      rows.push(block.slice(r * 11, r * 11 + 11));
-    }
-    tables[range] = rows;
-    offset += BLOCK;
-  }
-  return tables;
-}
-
-/**
- * Attempts to parse price tables from PDF text.
- * Returns null if there are not enough numbers to form at least one table.
+ * Parses Rapaport PDF text into price tables.
+ *
+ * PDF structure (.30ct+ sections):
+ *   Header:  "RAPAPORT : (.30 - .39 CT.) : ROUNDS RAPAPORT : (.40 - .49 CT.) :"
+ *   Data:    10 rows per bracket (colors D→M), each row has 11 integers
+ *   PDF col: IF VVS1 VVS2 VS1 VS2 SI1 SI2 [SI3-skip] I1 I2 I3  (col 7 = SI3, skipped)
+ *   Row 0 = D color, row 1 = E, ..., row 9 = M (no letter labels on data rows)
+ *   All sections appear in ascending size order.
+ *
+ * Storage: tables[bracket][clarityIdx][colorIdx]  (10 clarities × 11 colors)
+ * Requires transposition: PDF rows=colors, PDF cols=clarities → stored rows=clarities cols=colors.
+ *
+ * Returns null if fewer than 10 data rows found.
  */
 function parsePdfTables(text) {
-  const numbers = extractNumbers(text);
-  if (numbers.length < 110) return null;
-  return groupIntoTables(numbers);
+  if (!text) return null;
+
+  const lines = text.split(/\n/).map(l => l.trim()).filter(Boolean);
+
+  // Normalise lower-bound capture to a WEIGHT_RANGES key
+  const normToKey = (raw) => {
+    const num = raw.includes('.') ? parseFloat(raw) : parseFloat(raw) / 100;
+    for (const w of WEIGHT_RANGES) {
+      if (Math.abs(parseFloat(w) - num) < 0.005) return w;
+    }
+    return null;
+  };
+
+  // Collect bracket keys from all "RAPAPORT : (.XX - .XX CT.) :" header lines
+  const bracketSet = new Set();
+  const HDR_RE = /\(\s*\.?(\d+\.?\d*)\s*[-–—]\s*\.?\d+\.?\d*\s*[Cc][Tt]\.?\s*\)/g;
+  for (const line of lines) {
+    if (!/RAPAPORT/i.test(line)) continue;
+    HDR_RE.lastIndex = 0;
+    let m;
+    while ((m = HDR_RE.exec(line)) !== null) {
+      const key = normToKey(m[1]);
+      if (key) bracketSet.add(key);
+    }
+  }
+  const sortedBrackets = Array.from(bracketSet).sort((a, b) => parseFloat(a) - parseFloat(b));
+  console.log("RAP brackets detected:", sortedBrackets);
+
+  // Expand merged digit tokens like "987" → [9,8,7] when we have too few tokens.
+  // Only expands ONE token, only when deficit>=2, only 3+ digit tokens.
+  const expandMerged = (tokens, targetCount) => {
+    if (tokens.length >= targetCount) return tokens.slice(0, targetCount).map(Number);
+    const deficit = targetCount - tokens.length;
+    if (deficit < 2) return tokens.map(Number);
+    const result = [];
+    let expanded = false;
+    for (const t of tokens) {
+      if (!expanded && /^\d{3,}$/.test(t) && t.length === deficit + 1) {
+        result.push(...t.split('').map(Number));
+        expanded = true;
+      } else {
+        result.push(parseFloat(t));
+      }
+    }
+    return result.slice(0, targetCount);
+  };
+
+  // Parse one line as a data row of 11 integers; null if not a data row.
+  const tryParseDataRow = (line) => {
+    if (/RAPAPORT|ROUNDS/i.test(line)) return null;
+    if (/^[A-N]$/.test(line)) return null;
+    if (/^[A-N]-[A-N]$/.test(line)) return null;
+    if (/[a-z]{3,}/i.test(line)) return null;
+
+    let s = line;
+    s = s.replace(/^[D-N](?=\d)/, '');
+    s = s.replace(/^[D-N]\s+/, '');
+    s = s.replace(/\s+[D-N]$/, '');
+
+    const tokens = s.trim().split(/[\s\t,]+/).filter(t => /^\d+\.?\d*$/.test(t));
+    if (tokens.length < 8) return null;
+    if (tokens.some(t => t.includes('.'))) return null; // small-stone decimal row
+
+    const nums = expandMerged(tokens, 11);
+    if (nums.length < 8) return null;
+    return nums.slice(0, 11);
+  };
+
+  // Collect all valid data rows in order
+  const allDataRows = [];
+  for (const line of lines) {
+    const row = tryParseDataRow(line);
+    if (row) allDataRows.push(row);
+  }
+  console.log(`RAP rows=${allDataRows.length}, expected≈${sortedBrackets.length * 10}`);
+
+  if (allDataRows.length < 10) return null;
+
+  // Chunk into groups of 10 and assign to sorted brackets
+  const tables = {};
+  for (let bi = 0; bi < sortedBrackets.length; bi++) {
+    const bracket = sortedBrackets[bi];
+    const group = allDataRows.slice(bi * 10, bi * 10 + 10);
+    if (group.length === 0) break;
+
+    tables[bracket] = Array.from({ length: 10 }, () => Array(11).fill(null));
+
+    for (let colorIdx = 0; colorIdx < group.length; colorIdx++) {
+      const nums = group[colorIdx];
+      for (let col = 0; col < Math.min(nums.length, 11); col++) {
+        let ci;
+        if (col <= 6)       { ci = col; }
+        else if (col === 7) { continue; } // skip SI3
+        else                { ci = col - 1; }
+        tables[bracket][ci][colorIdx] = nums[col];
+      }
+    }
+  }
+
+  const filled = Object.values(tables).filter(t =>
+    t.some(row => row.some(v => v !== null))
+  ).length;
+  console.log(`RAP tables built=${filled}/${Object.keys(tables).length}`);
+
+  return filled > 0 ? tables : null;
 }
 
 /**
