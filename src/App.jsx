@@ -10097,9 +10097,10 @@ export default function App() {
     telecaller: ["queue", "demands"],
   };
 
-  const crmPerms = user?.app_permissions?.crm;
+  // admin/superadmin always get all tabs regardless of stored app_permissions.crm
+  const isAdminRole = user?.role === "superadmin" || user?.role === "admin";
+  const crmPerms = isAdminRole ? null : user?.app_permissions?.crm;
   const roleDefault = ROLE_DEFAULT_TABS[user?.role] || ["demands"];
-  // If crm explicitly set, it's authoritative (SA can restrict below role defaults too)
   const allowedKeys = crmPerms
     ? (crmPerms.includes("all") ? ALL_TABS.map((t) => t.k) : crmPerms)
     : roleDefault;
