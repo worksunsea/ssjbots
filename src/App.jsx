@@ -10755,6 +10755,8 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     misc3Lbl: "Lakh",     misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false,
   });
 
+  const [jwShowMisc, setJwShowMisc] = useState(false);
+
   // Solitaire (single stone) state
   const [sol, setSol] = useState({ ...newSolRow(), includeGold: false, goldGrossWt: "", goldPurityIdx: 2, goldCustomPurity: "", goldRateOverride: "", goldMakingRatePg: "1500", goldMakingRatePct: "15", settingDiaWt: "", settingDiaRate: "", settingGemVal: "", applyGst: true });
 
@@ -11203,6 +11205,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
         misc2Lbl: it.misc2Lbl || "Mala",     misc2Wt: it.misc2Wt || "", misc2Unit: it.misc2Unit || "g", misc2Rate: it.misc2Rate || "", misc2Deduct: it.misc2Deduct !== false,
         misc3Lbl: it.misc3Lbl || "Lakh",     misc3Wt: it.misc3Wt || "", misc3Unit: it.misc3Unit || "g", misc3Rate: it.misc3Rate || "", misc3Deduct: it.misc3Deduct !== false,
       });
+      if (it.misc1Wt || it.misc2Wt || it.misc3Wt) setJwShowMisc(true);
       setTab("jewellery");
     } else if (est.mode === "solitaire") {
       setSol({
@@ -11413,27 +11416,39 @@ function recalcToday(){
         </div>
       ))}
 
-      {/* Misc deductions */}
-      {[
-        { lblK: "misc1Lbl", wtK: "misc1Wt", unitK: "misc1Unit", rateK: "misc1Rate", dK: "misc1Deduct", def: "Gemstone" },
-        { lblK: "misc2Lbl", wtK: "misc2Wt", unitK: "misc2Unit", rateK: "misc2Rate", dK: "misc2Deduct", def: "Mala" },
-        { lblK: "misc3Lbl", wtK: "misc3Wt", unitK: "misc3Unit", rateK: "misc3Rate", dK: "misc3Deduct", def: "Lakh" },
-      ].map(({ lblK, wtK, unitK, rateK, dK, def }) => (
-        <div key={wtK} style={{ marginBottom: 8 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 8, alignItems: "end" }}>
-            <div><label style={lbl}>Label</label><input style={inp} value={jw[lblK]} onChange={e => setJw(p => ({ ...p, [lblK]: e.target.value }))} placeholder={def} /></div>
-            <div>
-              <label style={lbl}>Weight</label>
-              <div style={{ display: "flex", gap: 4 }}>
-                <input style={{ ...inp, flex: 1 }} type="number" step="0.001" value={jw[wtK]} onChange={e => setJw(p => ({ ...p, [wtK]: e.target.value }))} placeholder="0.00" />
-                <button style={{ ...inp, width: 40, cursor: "pointer", background: "#f0f0f0", fontWeight: 600, padding: "0 4px" }} onClick={() => setJw(p => ({ ...p, [unitK]: p[unitK] === "ct" ? "g" : "ct" }))}>{jw[unitK]}</button>
-              </div>
-            </div>
-            <div><label style={lbl}>Rate (₹)</label><input style={inp} type="number" step="1" value={jw[rateK]} onChange={e => setJw(p => ({ ...p, [rateK]: e.target.value }))} placeholder="0" /></div>
-            <div style={{ paddingBottom: 6 }}><label style={{ fontSize: 11, color: "#888", display: "block", marginBottom: 4 }}>Deduct</label><input type="checkbox" checked={jw[dK]} onChange={e => setJw(p => ({ ...p, [dK]: e.target.checked }))} /></div>
-          </div>
+      {/* Misc deductions — collapsed by default */}
+      <div style={{ marginBottom: 8 }}>
+        <div style={{ display: "flex", gap: 8, marginBottom: jwShowMisc ? 8 : 0 }}>
+          <button
+            style={{ fontSize: 12, padding: "5px 12px", borderRadius: 6, border: "1px solid #c9a0dc", background: "#fdf4ff", cursor: "pointer", color: "#7b2d8b" }}
+            onClick={() => { setJw(p => ({ ...p, misc1Lbl: "Kundan", misc1Deduct: true })); setJwShowMisc(true); }}
+          >+ Add Kundan Weight</button>
+          <button
+            style={{ fontSize: 12, padding: "5px 12px", borderRadius: 6, border: "1px solid #ddd", background: "#f8f8f8", cursor: "pointer", color: "#555" }}
+            onClick={() => setJwShowMisc(v => !v)}
+          >{jwShowMisc ? "▲ Hide Extra" : "▼ Extra Weights"}</button>
         </div>
-      ))}
+        {jwShowMisc && [
+          { lblK: "misc1Lbl", wtK: "misc1Wt", unitK: "misc1Unit", rateK: "misc1Rate", dK: "misc1Deduct", def: "Gemstone" },
+          { lblK: "misc2Lbl", wtK: "misc2Wt", unitK: "misc2Unit", rateK: "misc2Rate", dK: "misc2Deduct", def: "Mala" },
+          { lblK: "misc3Lbl", wtK: "misc3Wt", unitK: "misc3Unit", rateK: "misc3Rate", dK: "misc3Deduct", def: "Lakh" },
+        ].map(({ lblK, wtK, unitK, rateK, dK, def }) => (
+          <div key={wtK} style={{ marginBottom: 8 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 8, alignItems: "end" }}>
+              <div><label style={lbl}>Label</label><input style={inp} value={jw[lblK]} onChange={e => setJw(p => ({ ...p, [lblK]: e.target.value }))} placeholder={def} /></div>
+              <div>
+                <label style={lbl}>Weight</label>
+                <div style={{ display: "flex", gap: 4 }}>
+                  <input style={{ ...inp, flex: 1 }} type="number" step="0.001" value={jw[wtK]} onChange={e => setJw(p => ({ ...p, [wtK]: e.target.value }))} placeholder="0.00" />
+                  <button style={{ ...inp, width: 40, cursor: "pointer", background: "#f0f0f0", fontWeight: 600, padding: "0 4px" }} onClick={() => setJw(p => ({ ...p, [unitK]: p[unitK] === "ct" ? "g" : "ct" }))}>{jw[unitK]}</button>
+                </div>
+              </div>
+              <div><label style={lbl}>Rate (₹)</label><input style={inp} type="number" step="1" value={jw[rateK]} onChange={e => setJw(p => ({ ...p, [rateK]: e.target.value }))} placeholder="0" /></div>
+              <div style={{ paddingBottom: 6 }}><label style={{ fontSize: 11, color: "#888", display: "block", marginBottom: 4 }}>Deduct</label><input type="checkbox" checked={jw[dK]} onChange={e => setJw(p => ({ ...p, [dK]: e.target.checked }))} /></div>
+            </div>
+          </div>
+        ))}
+      </div>
 
       {/* Results */}
       <div style={{ ...card, background: "#f8faff", marginTop: 8 }}>
@@ -11468,7 +11483,7 @@ function recalcToday(){
           ].filter(Boolean).join("\n");
           sendWA(saveContact.phone, lines);
         }}>📱 Send WA</Btn>}
-        <Btn small ghost color={C.gray} onClick={() => { setJw({ itemImage: "", itemName: "", vendorCode: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true, makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "", dia2Wt: "", dia2Unit: "ct", dia2Rate: "", stoneWt: "", stoneUnit: "ct", stoneRate: "", misc1Lbl: "Gemstone", misc1Wt: "", misc1Unit: "g", misc1Rate: "", misc1Deduct: true, misc2Lbl: "Mala", misc2Wt: "", misc2Unit: "g", misc2Rate: "", misc2Deduct: false, misc3Lbl: "Lakh", misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false }); setSaveContact(null); setContactSearch(""); saveActiveVisit(null, null, null); try { localStorage.removeItem("calc_active_contact"); } catch {} }}>🔄 New</Btn>
+        <Btn small ghost color={C.gray} onClick={() => { setJw({ itemImage: "", itemName: "", vendorCode: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true, makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "", dia2Wt: "", dia2Unit: "ct", dia2Rate: "", stoneWt: "", stoneUnit: "ct", stoneRate: "", misc1Lbl: "Gemstone", misc1Wt: "", misc1Unit: "g", misc1Rate: "", misc1Deduct: true, misc2Lbl: "Mala", misc2Wt: "", misc2Unit: "g", misc2Rate: "", misc2Deduct: false, misc3Lbl: "Lakh", misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false }); setJwShowMisc(false); setSaveContact(null); setContactSearch(""); saveActiveVisit(null, null, null); try { localStorage.removeItem("calc_active_contact"); } catch {} }}>🔄 New</Btn>
       </div>
     </div>
   );
