@@ -1,6 +1,6 @@
 # SSJ Stable Features — Do Not Break
 **App:** ssjbot.gemtre.in · Supabase + Vercel + React/Vite  
-**Last updated:** 2026-05-14  
+**Last updated:** 2026-06-27  
 **Owner:** Saurav, Sun Sea Jewellers, Karol Bagh  
 **Super Admin email:** work.sunsea@gmail.com
 
@@ -347,13 +347,15 @@ After success, the event row refreshes and shows "📅 queued" instead of "⚠�
 - **Phase 1b**: if phase1 gives exactly N-1 values, re-split 2-char expansions ≥10 (e.g., "432"→[4,32]→[4,3,2]) until count matches targetCount. Fixes .30ct M row.
 - **New phase2**: proportional allocation across ALL merged tokens. Old phase2 split only the FIRST long token; 2ct+ rows have multiple merged tokens (e.g., "215200185175160135", "103826930", "16"). New phase2 splits each proportionally by char-length share. Handles all 8 large fancy brackets correctly.
 
+**10ct bracket excluded (2026-06-27):** `WEIGHT_RANGES` = 11 brackets (.30–5.00 only, no "10.00"). 10ct chart not parsed, not stored. Lookup in `rapLookup()` also caps at 5ct (`Math.min(weight, 5.0)`). Any stone >5ct gets 5ct pricing. This applies to both upload.js + sync.js + App.jsx seed + App.jsx lookup constants.
+
 **PDF structure notes:**
 - Small brackets (.30-.70ct): values ≤43, all merged into ONE token per row (e.g., "2321191716151311976")
-- Large brackets (.90ct-10ct): 2-3 merged tokens per row, last 1-2 values as separate short tokens
+- Large brackets (.90ct-5.00ct): 2-3 merged tokens per row, last 1-2 values as separate short tokens
 - Fancy PDF has .18-.22 and .23-.29 extra brackets (decimal values) — excluded by WEIGHT_RANGES + `tokens.some(t => t.includes('.'))` filter
 - SI3 column (col 7) is in raw data but skipped during storage
 
-**Do NOT change the ≤35 heuristic, phase1b, or proportional phase2 without re-testing both PDFs.**
+**Do NOT change the ≤35 heuristic, phase1b, proportional phase2, or 10ct exclusion without explicit instruction.**
 
 ---
 
