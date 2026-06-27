@@ -332,6 +332,31 @@ After success, the event row refreshes and shows "📅 queued" instead of "⚠�
 
 ---
 
+## 16. RAPAPORT PDF PARSER (api/rapaport-upload.js + api/rapaport-sync.js)
+
+**Function:** `parseRapTable(text)` — parses both Round and Fancy Pear PDFs.
+
+**Round PDF fix (2026-06-27, commit 828f34c):** 5 bugs fixed:
+1. `estimateTokenVals` — ≤35 heuristic (not floor(len/2)) to count values in merged tokens
+2. Pre-join `nextToks.length >= 2` (was 4) — fixes .30ct J/K/L/M rows that split across 2 lines
+3. Two-phase `expandMerged`: phase1 uses ≤35 heuristic; phase2 (ceil-division) fallback for large brackets
+4. `estimatedCount` in `tryParseDataRow` uses same heuristic
+5. Control-char filter: rejects garbage lines (from PDF page boundaries) that contained `)` and `` etc.
+
+**Fancy PDF fix (2026-06-27):** Two additional expandMerged fixes for the Pear Price List PDF:
+- **Phase 1b**: if phase1 gives exactly N-1 values, re-split 2-char expansions ≥10 (e.g., "432"→[4,32]→[4,3,2]) until count matches targetCount. Fixes .30ct M row.
+- **New phase2**: proportional allocation across ALL merged tokens. Old phase2 split only the FIRST long token; 2ct+ rows have multiple merged tokens (e.g., "215200185175160135", "103826930", "16"). New phase2 splits each proportionally by char-length share. Handles all 8 large fancy brackets correctly.
+
+**PDF structure notes:**
+- Small brackets (.30-.70ct): values ≤43, all merged into ONE token per row (e.g., "2321191716151311976")
+- Large brackets (.90ct-10ct): 2-3 merged tokens per row, last 1-2 values as separate short tokens
+- Fancy PDF has .18-.22 and .23-.29 extra brackets (decimal values) — excluded by WEIGHT_RANGES + `tokens.some(t => t.includes('.'))` filter
+- SI3 column (col 7) is in raw data but skipped during storage
+
+**Do NOT change the ≤35 heuristic, phase1b, or proportional phase2 without re-testing both PDFs.**
+
+---
+
 ## 15. FORM BUILDER SCREEN
 
 **Location:** 🛠️ Form Builder tab — visible to manager / admin / superadmin.

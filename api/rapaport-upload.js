@@ -462,37 +462,73 @@ const parseRapTable = (text) => {
   //   Used when Phase 1 yields wrong count (over/under-expanded).
   //   "1188976"→[118,89,76], "47372925"→[47,37,29,25]
   const expandMerged = (tokens, targetCount) => {
-    // Phase 1: ≤35 heuristic
+    // Phase 1: ≤35 heuristic — correct for small-bracket rows (all values ≤35).
+    // Tracks which values came from 2-char expansions for Phase 1b.
     const phase1 = [];
+    const is2Char = [];
     for (const t of tokens) {
       if (/^\d{2,}$/.test(t)) {
         let i = 0;
         while (i < t.length) {
           if (i + 1 < t.length && parseInt(t.slice(i, i + 2)) <= 35) {
             phase1.push(parseInt(t.slice(i, i + 2)));
+            is2Char.push(true);
             i += 2;
           } else {
             phase1.push(parseInt(t[i]));
+            is2Char.push(false);
             i++;
           }
         }
       } else {
         phase1.push(parseInt(t));
+        is2Char.push(false);
       }
     }
     if (phase1.length === targetCount) return phase1;
 
-    // Phase 2: ceil-division on original tokens
+    // Phase 1b: if slightly short, re-split 2-char expansions (≥10) into individual digits.
+    // Fixes fancy .30ct M row: "432"→[4,32] → re-split 32 → [4,3,2].
+    if (phase1.length < targetCount) {
+      const vals = [...phase1];
+      const flags = [...is2Char];
+      for (let k = 0; k < flags.length && vals.length < targetCount; k++) {
+        if (flags[k] && vals[k] >= 10) {
+          vals.splice(k, 1, Math.floor(vals[k] / 10), vals[k] % 10);
+          flags.splice(k, 1, false, false);
+        }
+      }
+      if (vals.length === targetCount) return vals;
+    }
+
+    // Phase 2: proportional allocation for large-bracket rows (values >35).
+    // Fancy 2ct+ rows have multiple merged tokens (e.g. "215200185175160135", "103826930", "16").
+    // Old single-token split incorrectly over-split the first token and missed the rest.
+    // New: distribute target count across ALL long tokens proportionally by char-length share.
+    const isLong = (t) => /^\d{4,}$/.test(t);
+    const shortCount = tokens.filter(t => !isLong(t)).length;
+    const countFromLong = targetCount - shortCount;
+    const totalLongChars = tokens.filter(isLong).reduce((s, t) => s + t.length, 0);
+    if (countFromLong <= 0 || totalLongChars === 0) return tokens.slice(0, targetCount).map(Number);
+
     const strs = [...tokens];
-    while (strs.length < targetCount) {
-      const deficit = targetCount - strs.length;
-      const idx = strs.findIndex(t => /^\d{4,}$/.test(t));
-      if (idx === -1) break;
-      const token = strs[idx];
-      const splitCount = Math.min(deficit + 1, token.length);
-      if (splitCount < 2) break;
-      const parts = splitTokenIntoN(token, splitCount).map(String);
-      strs.splice(idx, 1, ...parts);
+    let remaining = countFromLong;
+    let longsSeen = 0;
+    const numLongs = tokens.filter(isLong).length;
+
+    for (let i = 0; i < strs.length && remaining > 0; i++) {
+      if (!isLong(strs[i])) continue;
+      longsSeen++;
+      const isLastLong = longsSeen === numLongs;
+      const parts = isLastLong
+        ? remaining
+        : Math.max(1, Math.floor(strs[i].length / totalLongChars * countFromLong));
+      if (parts >= 2) {
+        const split = splitTokenIntoN(strs[i], parts).map(String);
+        strs.splice(i, 1, ...split);
+        i += split.length - 1;
+      }
+      remaining -= parts;
     }
     return strs.slice(0, targetCount).map(Number);
   };

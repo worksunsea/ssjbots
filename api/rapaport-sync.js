@@ -516,32 +516,70 @@ function parsePdfTables(text) {
     return parts;
   };
 
-  // Two-phase expansion: phase1 uses ≤35 heuristic for small-bracket rows;
-  // phase2 uses ceil-division for large-bracket rows where values exceed 35.
+  // Three-phase expansion:
+  // Phase 1: ≤35 heuristic for small-bracket rows (values ≤35).
+  // Phase 1b: re-split 2-char expansions when phase1 is slightly short.
+  // Phase 2: proportional allocation for large-bracket rows (values >35), supports multiple merged tokens.
   const expandMerged = (tokens, targetCount) => {
     const phase1 = [];
+    const is2Char = [];
     for (const t of tokens) {
       if (/^\d{2,}$/.test(t)) {
         let i = 0;
         while (i < t.length) {
           if (i + 1 < t.length && parseInt(t.slice(i, i + 2)) <= 35) {
-            phase1.push(parseInt(t.slice(i, i + 2))); i += 2;
-          } else { phase1.push(parseInt(t[i])); i++; }
+            phase1.push(parseInt(t.slice(i, i + 2)));
+            is2Char.push(true);
+            i += 2;
+          } else {
+            phase1.push(parseInt(t[i]));
+            is2Char.push(false);
+            i++;
+          }
         }
-      } else { phase1.push(parseInt(t)); }
+      } else {
+        phase1.push(parseInt(t));
+        is2Char.push(false);
+      }
     }
     if (phase1.length === targetCount) return phase1;
 
+    if (phase1.length < targetCount) {
+      const vals = [...phase1];
+      const flags = [...is2Char];
+      for (let k = 0; k < flags.length && vals.length < targetCount; k++) {
+        if (flags[k] && vals[k] >= 10) {
+          vals.splice(k, 1, Math.floor(vals[k] / 10), vals[k] % 10);
+          flags.splice(k, 1, false, false);
+        }
+      }
+      if (vals.length === targetCount) return vals;
+    }
+
+    const isLong = (t) => /^\d{4,}$/.test(t);
+    const shortCount = tokens.filter(t => !isLong(t)).length;
+    const countFromLong = targetCount - shortCount;
+    const totalLongChars = tokens.filter(isLong).reduce((s, t) => s + t.length, 0);
+    if (countFromLong <= 0 || totalLongChars === 0) return tokens.slice(0, targetCount).map(Number);
+
     const strs = [...tokens];
-    while (strs.length < targetCount) {
-      const deficit = targetCount - strs.length;
-      const idx = strs.findIndex(t => /^\d{4,}$/.test(t));
-      if (idx === -1) break;
-      const token = strs[idx];
-      const splitCount = Math.min(deficit + 1, token.length);
-      if (splitCount < 2) break;
-      const parts = splitTokenIntoN(token, splitCount).map(String);
-      strs.splice(idx, 1, ...parts);
+    let remaining = countFromLong;
+    let longsSeen = 0;
+    const numLongs = tokens.filter(isLong).length;
+
+    for (let i = 0; i < strs.length && remaining > 0; i++) {
+      if (!isLong(strs[i])) continue;
+      longsSeen++;
+      const isLastLong = longsSeen === numLongs;
+      const parts = isLastLong
+        ? remaining
+        : Math.max(1, Math.floor(strs[i].length / totalLongChars * countFromLong));
+      if (parts >= 2) {
+        const split = splitTokenIntoN(strs[i], parts).map(String);
+        strs.splice(i, 1, ...split);
+        i += split.length - 1;
+      }
+      remaining -= parts;
     }
     return strs.slice(0, targetCount).map(Number);
   };
