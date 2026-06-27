@@ -12058,6 +12058,13 @@ function recalcToday(){
                   <div style={{ display: "flex", gap: 6, marginTop: 2 }}>
                     <button onClick={() => openEstimateSlip(e)} style={{ flex: 1, padding: "3px 0", background: "#f5f5f5", border: "1px solid #ddd", borderRadius: 4, fontSize: 11, cursor: "pointer" }}>👁 View</button>
                     <button onClick={() => loadEstimateForEdit(e)} style={{ flex: 1, padding: "3px 0", background: "#fff8e1", border: "1px solid #ffe082", borderRadius: 4, fontSize: 11, cursor: "pointer" }}>✏️ Edit</button>
+                    {user?.role === "superadmin" && (
+                      <button onClick={async () => {
+                        if (!window.confirm("Delete this estimate? Cannot be undone.")) return;
+                        await sb.from("bullion_estimates").delete().eq("id", e.id);
+                        setRecentEstimates(prev => prev.filter(r => r.id !== e.id));
+                      }} style={{ padding: "3px 6px", background: "#fff5f5", border: "1px solid #ffcdd2", borderRadius: 4, fontSize: 11, cursor: "pointer", color: "#c0392b" }}>🗑</button>
+                    )}
                   </div>
                 </div>
               );
