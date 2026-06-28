@@ -10058,6 +10058,12 @@ export default function App() {
       <div>
         <p style={{ fontSize: 12, color: "#888", margin: 0 }}>{ROLES[user.role] || user.role} · {user.name}</p>
       </div>
+      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+        <span style={{ fontSize: 11, color: "#ccc", marginRight: 2 }}>Apps:</span>
+        <a href="https://ssjbot.gemtre.in" style={{ fontSize: 11, padding: "3px 9px", borderRadius: 5, border: "2px solid #4a90d9", background: "#eef5ff", color: "#2563eb", fontWeight: 600, textDecoration: "none" }}>Bot</a>
+        <a href="https://hr.gemtre.in" target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, padding: "3px 9px", borderRadius: 5, border: "1px solid #ddd", background: "#fff", color: "#555", textDecoration: "none" }}>HR</a>
+        <a href="https://fms.gemtre.in" target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, padding: "3px 9px", borderRadius: 5, border: "1px solid #ddd", background: "#fff", color: "#555", textDecoration: "none" }}>FMS</a>
+      </div>
       <button onClick={logout} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 7, border: "1px solid #ddd", background: "transparent", cursor: "pointer" }}>Logout</button>
     </div>
   );
