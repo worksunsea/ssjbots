@@ -71,10 +71,9 @@ export async function bootAllSessions(opts = {}) {
   if (opts.onIncoming) onIncoming = opts.onIncoming;
   migrateLegacyAuth();
 
-  // Ensure default client exists as a known session (even if not paired)
-  const clients = new Set(listClientDirs());
-  clients.add(sanitize(DEFAULT_CLIENT_ID));
-
+  // Only boot sessions that have an existing auth directory.
+  // Do NOT force-add DEFAULT_CLIENT_ID — if it was deleted via UI it should stay gone.
+  const clients = listClientDirs();
   for (const id of clients) {
     connectClient(id).catch((err) => console.error(`[baileys] connect ${id} failed`, err));
   }
@@ -129,8 +128,9 @@ export async function connectClient(clientIdRaw) {
       sess.connected = false;
       const code = lastDisconnect?.error?.output?.statusCode;
       const loggedOut = code === DisconnectReason.loggedOut;
-      console.log(`[baileys:${clientId}] closed code=${code} loggedOut=${loggedOut}`);
-      if (!loggedOut) {
+      console.log(`[baileys:${clientId}] closed code=${code} loggedOut=${loggedOut} destroyed=${sess.destroyed}`);
+      // Don't reconnect if explicitly destroyed (logoutClient called) or WA says logged out
+      if (!loggedOut && !sess.destroyed) {
         clearTimeout(sess.reconnectTimer);
         sess.reconnectTimer = setTimeout(() => connectClient(clientId).catch(() => {}), 3000);
       }
@@ -244,10 +244,15 @@ export async function logoutClient(clientIdRaw) {
   const clientId = sanitize(clientIdRaw);
   const s = sessions.get(clientId);
   if (s) {
-    try { await s.sock?.logout(); } catch {}
+    // Mark destroyed + cancel reconnect timer BEFORE logout so the connection.update
+    // close event doesn't race and re-create the session from stale auth files.
+    s.destroyed = true;
+    clearTimeout(s.reconnectTimer);
     sessions.delete(clientId);
+    try { await s.sock?.logout(); } catch {}
+    try { s.sock?.end(new Error("destroyed")); } catch {}
   }
-  // Always remove auth dir, even if session wasn't in memory (disconnected state)
+  // Always remove auth dir — even if session wasn't in memory (disconnected state)
   try { fs.rmSync(clientDir(clientId), { recursive: true, force: true }); } catch {}
   return { ok: true };
 }
