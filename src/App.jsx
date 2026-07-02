@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
+import QRCode from "qrcode";
 import { secureImageUpload, secureNonImageUpload } from "./utils/imageUpload";
+import { getDeviceToken, shouldForceLogout, SESSION_POLL_MS } from "./utils/session-security";
 
 // ── SUPABASE (shared Sun Sea project — same as ssj-hr / fms-tracker) ──
 const SUPABASE_URL = "https://uppyxzellmuissdlxsmy.supabase.co";
@@ -237,19 +239,73 @@ function LoginScreen({ onLogin }) {
   const [p, setP] = useState("");
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
+  const [stage, setStage] = useState("password"); // "password" | "totp"
+  const [pendingUser, setPendingUser] = useState(null);
+  const [code, setCode] = useState("");
+  const logoutReason = (() => { try { return localStorage.getItem("ssj_logout_reason"); } catch { return null; } })();
+
+  const finishLogin = (data) => { try { localStorage.removeItem("ssj_logout_reason"); } catch { /* ignore */ } onLogin(data); };
 
   const submit = async () => {
     if (!u || !p) return;
     setLoading(true); setErr("");
     const { data, error } = await sb.from("staff").select("*").eq("tenant_id", getTenantId()).eq("username", u.trim()).eq("password", p).single();
     if (error || !data) { setErr("Incorrect username or password."); setLoading(false); return; }
-    setLoading(false);
-    onLogin(data);
+    if (data.active === false) { setErr("This account has been deactivated. Contact your administrator."); setLoading(false); return; }
+
+    try {
+      const res = await fetch("/api/device-check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
+        body: JSON.stringify({ tenantId: data.tenant_id, deviceToken: getDeviceToken(), staffId: data.id, staffName: data.name || data.username }),
+      }).then((r) => r.json());
+      setLoading(false);
+      if (res?.needsTotp) { setPendingUser(data); setStage("totp"); return; }
+      finishLogin(data);
+    } catch {
+      // device-check unreachable — fail open on login (don't lock staff out over a network blip)
+      setLoading(false);
+      finishLogin(data);
+    }
   };
+
+  const submitTotp = async () => {
+    if (!pendingUser || code.length < 6) return;
+    setLoading(true); setErr("");
+    try {
+      const res = await fetch("/api/device-check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
+        body: JSON.stringify({ tenantId: pendingUser.tenant_id, deviceToken: getDeviceToken(), staffId: pendingUser.id, staffName: pendingUser.name || pendingUser.username, code }),
+      }).then((r) => r.json());
+      setLoading(false);
+      if (!res?.ok) { setErr("Wrong code. Check the office authenticator and try again."); return; }
+      finishLogin(pendingUser);
+    } catch {
+      setLoading(false);
+      setErr("Couldn't verify the code — check your connection and try again.");
+    }
+  };
+
+  if (stage === "totp") {
+    return (
+      <div style={{ maxWidth: 360, margin: "4rem auto", padding: "2rem", background: "#fff", border: "1px solid #e0e0e0", borderRadius: 16 }}>
+        <p style={{ fontSize: 13, color: "#888", margin: "0 0 8px" }}>New device detected</p>
+        <p style={{ fontSize: 12, color: "#888", margin: "0 0 24px" }}>Enter the 6-digit code from the office authenticator to continue.</p>
+        <input value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))} onKeyDown={(e) => e.key === "Enter" && submitTotp()} placeholder="000000" autoFocus
+          style={{ width: "100%", fontSize: 22, letterSpacing: 6, textAlign: "center", marginBottom: 16, padding: 10, borderRadius: 8, border: "1px solid #ddd" }} />
+        {err && <p style={{ fontSize: 12, color: C.red, margin: "0 0 12px" }}>{err}</p>}
+        <button onClick={submitTotp} disabled={loading || code.length < 6} style={{ width: "100%", padding: 10, borderRadius: 8, border: "none", background: C.blue, color: "#fff", fontSize: 14, cursor: "pointer", fontWeight: 500, marginBottom: 8 }}>{loading ? "Verifying..." : "Verify"}</button>
+        <button onClick={() => { setStage("password"); setPendingUser(null); setCode(""); setErr(""); }} style={{ width: "100%", padding: 8, borderRadius: 8, border: "none", background: "transparent", color: "#888", fontSize: 12, cursor: "pointer" }}>← Back</button>
+      </div>
+    );
+  }
 
   return (
     <div style={{ maxWidth: 360, margin: "4rem auto", padding: "2rem", background: "#fff", border: "1px solid #e0e0e0", borderRadius: 16 }}>
       <p style={{ fontSize: 13, color: "#888", margin: "0 0 24px" }}>Leads · Funnels · Approvals · Analytics</p>
+      {logoutReason === "expired" && <p style={{ fontSize: 12, color: C.orange, margin: "0 0 12px" }}>Your session expired after 15 days. Please log in again.</p>}
+      {logoutReason === "deactivated" && <p style={{ fontSize: 12, color: C.red, margin: "0 0 12px" }}>Your account was deactivated. Contact your administrator.</p>}
       <label style={{ fontSize: 11, color: "#888", display: "block", marginBottom: 4 }}>USERNAME</label>
       <input value={u} onChange={(e) => setU(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} style={{ width: "100%", fontSize: 14, marginBottom: 12, padding: 8, borderRadius: 8, border: "1px solid #ddd" }} />
       <label style={{ fontSize: 11, color: "#888", display: "block", marginBottom: 4 }}>PASSWORD</label>
@@ -9437,6 +9493,97 @@ function BroadcastSendModal({ broadcast, allTags, onClose, onSent }) {
 }
 
 // ──────────────────────────────────────────────────────────
+// SECURITY PANEL — superadmin only, inside Staff & Access
+// Office-TOTP shared device gate: generate/rotate the one shared code, see +
+// revoke trusted devices. See SSJ_STABLE_FEATURES.md §19.
+// ──────────────────────────────────────────────────────────
+function SecurityPanel() {
+  const [settings, setSettings] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [setup, setSetup] = useState(null); // { secret, qrDataUrl } | null — shown once after generate/rotate
+
+  const staffId = loadUser()?.id;
+  const tenantId = getTenantId();
+
+  const load = async () => {
+    setLoading(true);
+    const params = new URLSearchParams({ tenantId, staffId: String(staffId) });
+    const res = await fetch(`/api/security-settings?${params}`, { headers: { "x-crm-secret": CRM_SECRET } }).then((r) => r.json()).catch(() => null);
+    if (res?.ok) setSettings(res);
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, []); // eslint-disable-line
+
+  const post = async (action, extra = {}) => {
+    setBusy(true);
+    const res = await fetch("/api/security-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
+      body: JSON.stringify({ tenantId, staffId, action, ...extra }),
+    }).then((r) => r.json()).catch(() => null);
+    setBusy(false);
+    return res;
+  };
+
+  const generateOrRotate = async () => {
+    const res = await post(settings?.hasSecret ? "rotate" : "generate");
+    if (!res?.ok) return;
+    const qrDataUrl = await QRCode.toDataURL(res.otpauthUri, { width: 200, margin: 2 }).catch(() => "");
+    setSetup({ secret: res.secret, qrDataUrl });
+    await load();
+  };
+
+  const toggle = async () => { await post(settings.totpEnabled ? "disable" : "enable"); await load(); };
+  const revoke = async (deviceToken) => { await post("revoke_device", { deviceToken }); await load(); };
+
+  if (loading) return <div style={{ color: "#aaa", fontSize: 13, padding: 12 }}>Loading security settings…</div>;
+
+  return (
+    <div style={{ marginBottom: 16, padding: 14, background: "#fdf4ff", border: "1px solid #e9d5ff", borderRadius: 10 }}>
+      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>🔐 Office 2FA — new device gate</div>
+      <div style={{ fontSize: 12, color: "#555", marginBottom: 10 }}>
+        One shared authenticator code, kept on a single office phone. When anyone logs in from a device that hasn't been verified before, they'll be asked for that code. Verified devices stay trusted for {settings?.deviceTrustDays ?? 30} days.
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: setup ? 12 : 0 }}>
+        <Pill color={settings?.totpEnabled ? C.green : C.gray} solid>{settings?.totpEnabled ? "Enabled" : "Disabled"}</Pill>
+        {settings?.hasSecret && <Btn small ghost color={settings?.totpEnabled ? C.red : C.green} onClick={toggle} disabled={busy}>{settings?.totpEnabled ? "Disable" : "Enable"}</Btn>}
+        <Btn small color={C.blue} onClick={generateOrRotate} disabled={busy}>{settings?.hasSecret ? "🔄 Rotate code" : "Generate office code"}</Btn>
+      </div>
+
+      {setup && (
+        <div style={{ marginTop: 12, padding: 12, background: "#fff", border: "1px solid #ddd", borderRadius: 8, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+          {setup.qrDataUrl && <img src={setup.qrDataUrl} alt="TOTP QR" width={140} height={140} />}
+          <div>
+            <div style={{ fontSize: 12, color: "#555", marginBottom: 6 }}>Scan this once on the office phone's authenticator app (Google Authenticator, Authy, etc). Shown only now — save it.</div>
+            <div style={{ fontFamily: "monospace", fontSize: 13, background: "#f5f5f5", padding: "4px 8px", borderRadius: 6, wordBreak: "break-all" }}>{setup.secret}</div>
+            <Btn small ghost color={C.gray} onClick={() => setSetup(null)} style={{ marginTop: 8 }}>Done</Btn>
+          </div>
+        </div>
+      )}
+
+      {settings?.devices?.length > 0 && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: "#888", marginBottom: 6 }}>TRUSTED DEVICES</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {settings.devices.map((d) => (
+              <div key={d.device_token} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "6px 8px", background: "#fff", borderRadius: 6, border: "1px solid #eee" }}>
+                <div style={{ flex: 1 }}>
+                  <div>{d.verified_by_name || "—"} <span style={{ color: "#aaa" }}>· trusted until {fmtD(d.trusted_until)}</span></div>
+                  <div style={{ color: "#aaa", fontSize: 10 }}>{d.label || "unknown device"}</div>
+                </div>
+                <Btn small ghost color={C.red} onClick={() => revoke(d.device_token)} disabled={busy}>Revoke</Btn>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
 // STAFF & ACCESS CONTROL SCREEN — SA/admin only
 // Manage which CRM pages each staff member can see and write
 // ──────────────────────────────────────────────────────────
@@ -9531,8 +9678,11 @@ function StaffAccessScreen() {
 
   if (loading) return <div style={{ color: "#aaa", fontSize: 13, padding: 20 }}>Loading…</div>;
 
+  const isSuperadmin = loadUser()?.role === "superadmin";
+
   return (
     <div style={{ maxWidth: 860 }}>
+      {isSuperadmin && <SecurityPanel />}
       <div style={{ fontSize: 12, color: "#666", marginBottom: 14, padding: "8px 12px", background: "#f0f9ff", borderRadius: 8, border: "1px solid #bae6fd" }}>
         Click any staff member to expand. For each CRM page, click the chip to cycle access:
         {" "}<span style={{ padding: "1px 7px", borderRadius: 10, background: "#f3f4f6", color: "#9ca3af", fontSize: 11 }}>— No access</span>
@@ -9953,7 +10103,18 @@ export default function App() {
   const isProfilePage = typeof window !== "undefined" && window.location.pathname === "/profile";
   if (isProfilePage) return <GenericProfileForm />;
 
-  const [user, setUser] = useState(loadUser);
+  const [user, setUser] = useState(() => {
+    const u = loadUser();
+    // Grandfather in sessions cached before the 15-day-reauth feature shipped —
+    // stamp authAt now instead of treating "no authAt" as already-expired,
+    // so this deploy doesn't mass-logout everyone mid-shift. See SSJ_STABLE_FEATURES.md §19.
+    if (u && !u.authAt) {
+      const stamped = { ...u, authAt: Date.now() };
+      saveUser(stamped);
+      return stamped;
+    }
+    return u;
+  });
   const isTelecallerUser = (() => {
     if (!user) return false;
     if (user.role === "telecaller") return true;
@@ -9966,8 +10127,11 @@ export default function App() {
   const [personas, setPersonas] = useState([]);
   const [allTags, setAllTags] = useState([]);
 
-  const login = (u) => { saveUser(u); setUser(u); };
-  const logout = () => { saveUser(null); setUser(null); };
+  const login = (u) => { const stamped = { ...u, authAt: Date.now() }; saveUser(stamped); setUser(stamped); };
+  const logout = (reason) => {
+    saveUser(null); setUser(null);
+    if (reason) { try { localStorage.setItem("ssj_logout_reason", reason); } catch { /* ignore */ } }
+  };
 
   // SSO via postMessage — when iframed inside fms.gemtre.in, the parent sends
   // the logged-in user object so this app inherits the session without a
@@ -9977,8 +10141,12 @@ export default function App() {
       const allowed = ["https://fms.gemtre.in", "https://fms-tracker.vercel.app", "https://jewelbos.vercel.app", "https://jewelbos.com"];
       if (!allowed.includes(e.origin) && !/^https:\/\/(fms-tracker|jewelbos)-.*\.vercel\.app$/.test(e.origin)) return;
       if (e.data?.type === "sso-login" && e.data.user) {
-        saveUser(e.data.user);
-        setUser(e.data.user);
+        // Parent app (fms.gemtre.in etc.) is the trust boundary for SSO — skip the
+        // office-TOTP device gate here, but still stamp a fresh authAt so the
+        // deactivation/15-day-reauth checks below apply the same as a direct login.
+        const stamped = { ...e.data.user, authAt: Date.now() };
+        saveUser(stamped);
+        setUser(stamped);
       }
       if (e.data?.type === "sso-logout") {
         saveUser(null);
@@ -10001,14 +10169,23 @@ export default function App() {
   }, []);
   useEffect(() => { if (user?.id) reloadCfDefs(); }, [user?.id, reloadCfDefs]); // eslint-disable-line
 
-  // Refresh app_permissions from DB every time the app gets focus (tab switch, window focus).
-  // This means if an admin changes someone's permissions in SSJ HR, it takes effect next
-  // time that person switches back to the SSJBot tab — no logout required.
+  // Refresh app_permissions from DB every time the app gets focus (tab switch, window focus),
+  // and check active/deactivation + the 15-day reauth clock at the same time. If an admin
+  // changes permissions it takes effect next focus — no logout required. If the account was
+  // deactivated, or the 15-day reauth window lapsed (superadmin exempt — see
+  // isSessionExpired), force back to LoginScreen. Also polled on an interval (SESSION_POLL_MS)
+  // so a deactivated user gets kicked even from a tab left open all day, not just on focus.
+  // See SSJ_STABLE_FEATURES.md §19.
   useEffect(() => {
     if (!user?.id) return;
     const refresh = async () => {
-      const { data } = await sb.from("staff").select("app_permissions").eq("id", user.id).maybeSingle();
-      if (data && JSON.stringify(data.app_permissions) !== JSON.stringify(user.app_permissions)) {
+      const { data } = await sb.from("staff").select("app_permissions,active").eq("id", user.id).maybeSingle();
+      if (!data) return;
+      if (shouldForceLogout({ active: data.active, user, nowMs: Date.now() })) {
+        logout(data.active === false ? "deactivated" : "expired");
+        return;
+      }
+      if (JSON.stringify(data.app_permissions) !== JSON.stringify(user.app_permissions)) {
         const updated = { ...user, app_permissions: data.app_permissions };
         saveUser(updated);
         setUser(updated);
@@ -10016,7 +10193,8 @@ export default function App() {
     };
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
-    return () => { window.removeEventListener("focus", refresh); };
+    const interval = setInterval(refresh, SESSION_POLL_MS);
+    return () => { window.removeEventListener("focus", refresh); clearInterval(interval); };
   }, [user?.id]); // eslint-disable-line
 
   const loadFunnels = useCallback(async () => {
@@ -10053,7 +10231,7 @@ export default function App() {
         <a href="https://hr.gemtre.in" target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, padding: "3px 9px", borderRadius: 5, border: "1px solid #ddd", background: "#fff", color: "#555", textDecoration: "none" }}>HR</a>
         <a href="https://fms.gemtre.in" target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, padding: "3px 9px", borderRadius: 5, border: "1px solid #ddd", background: "#fff", color: "#555", textDecoration: "none" }}>FMS</a>
       </div>
-      <button onClick={logout} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 7, border: "1px solid #ddd", background: "transparent", cursor: "pointer" }}>Logout</button>
+      <button onClick={() => logout()} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 7, border: "1px solid #ddd", background: "transparent", cursor: "pointer" }}>Logout</button>
     </div>
   );
 
