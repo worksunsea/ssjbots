@@ -1,6 +1,6 @@
 # SSJ Stable Features — Do Not Break
 **App:** ssjbot.gemtre.in · Supabase + Vercel + React/Vite  
-**Last updated:** 2026-06-27  
+**Last updated:** 2026-07-02  
 **Owner:** Saurav, Sun Sea Jewellers, Karol Bagh  
 **Super Admin email:** work.sunsea@gmail.com
 
@@ -152,13 +152,29 @@ One contact can have multiple demands (each for a different product/occasion).
 - Authority assets: auto-sends brochure/intro video to new leads (`bullion_media_assets`)
 - Post-sale WA: on CONVERTED → schedules D+3 feedback, D+7 Google review, D+30 check-in
 - Missed call auto-reply from `bullion_dropdowns.missed_call_auto_reply`
-- Jewelry fields: metal, stone, item_category, ring_size, purity, hallmark_pref
+- Multi-item enquiries: `enquiry_items` jsonb array on `bullion_demands`, each `{product, purity, weightG, notes}` (migration `0055`, replaces the old single metal/stone/item_category/ring_size/purity/hallmark_pref fields — **do not resurrect the old flat fields**, DemandEntryModal/WalkinEntryModal now render a repeatable item list instead)
 - Exchange/trade-in: has_exchange, exchange_desc, exchange_value
 - Design notes: log of designs sent to client
 - Duplicate demand guard (returns existing if bot_active=true, unless `allowDuplicate=true`)
 - Lead merge/dedup: MergeLeadsModal → re-points all demands/messages/logs to primary
 
 **Key files:** `api/demand.js`, `api/demand-outcome.js`, `api/merge-leads.js`
+
+---
+
+## 6b. LEAD SOURCE WEBHOOKS (2026-07-02)
+
+**What it does:** `api/lead.js?token=<webhook_token>` accepts inbound leads directly from external portals — no service-secret needed, the token (from `bullion_lead_sources.webhook_token`) is the auth.
+
+**Supported source types:** `facebook`/`instagram` (Meta lead-gen, incl. `hub.challenge` GET verification), `indiamart`, `justdial`, `googleads`, and a generic field-mapped fallback (`bullion_lead_sources.field_map`).
+
+**Config per source (`bullion_lead_sources` table):** `name`, `source_type`, `webhook_token` (unique), `field_map`, `default_funnel_id`, `enroll_drip`, `active`.
+
+**The existing service-secret POST path on `api/lead.js` (used by internal tools/imports) is unchanged** — the token path is purely additive, gated on `req.query.token` being present.
+
+**Migration:** `0049_lead_sources.sql`
+
+**Key file:** `api/lead.js`
 
 ---
 
@@ -199,6 +215,14 @@ One contact can have multiple demands (each for a different product/occasion).
 - `BOT_NUMBERS` env: `8860866000,9312839912` — these receive inbound + run the FAQ bot
 
 **Key files:** `api/_lib/wa.js`, `wa-service/src/baileys.js`, `wa-service/src/index.js`
+
+**Logout/reconnect race fix (2026-07-02, commit `039b186`):** `logoutClient` now marks the session `destroyed = true` and clears the reconnect timer BEFORE calling `sock.logout()`. The `connection.update` close handler checks `sess.destroyed` and skips the auto-reconnect if set — previously the close event could race the logout call and re-create the session from stale auth files before they were removed. `bootAllSessions` also no longer force-adds `DEFAULT_CLIENT_ID` — it only boots sessions with an existing auth directory, so a session removed via the Connections tab actually stays removed after a NAS restart.
+
+**Media-service:** ffmpeg is now installed in the Docker image (`media-service/Dockerfile: RUN apk add --no-cache ffmpeg`) instead of bind-mounted from the NAS host — do not remove the `/usr/bin/ffmpeg` / `/usr/lib` host mounts from `docker-compose.yml` without keeping this Dockerfile line, and vice versa.
+
+**wa-service default client id:** `WA_CLIENT_ID` env default is `main` (was `ssj-test`).
+
+**Docker volume paths (`wa-service/docker-compose.yml`, `media-service/docker-compose.yml`) are Synology NAS paths (`/volume1/...`) — do NOT commit local dev machine paths (e.g. `C:/docker-data/...`) into these files, that breaks the NAS deploy.**
 
 ---
 
@@ -257,6 +281,9 @@ Gamified MCQ quiz for staff jewellery knowledge. Separate from main CRM. Not yet
 | 0041 | May 14 2026 | Type cast fix (::text) for HR tables with text tenant_id — rolled back, superseded by 0042 |
 | 0042 | May 14 2026 | Final HR RLS policies — all tables with tenant_id scoped; petty_cash_txns via runner_id, training_progress via staff_id subquery ✅ |
 | 0043 | May 14 2026 | Remove SECURITY DEFINER from bullion_upsert_lead; drop rls_auto_enable() + ensure_rls event trigger ✅ |
+| 0047 | — | Post-birthday/anniversary step +3d → +7d — file not yet committed, run status unconfirmed |
+| 0049 | — | bullion_lead_sources table for lead webhook intake ✅ |
+| 0055 | — | enquiry_items jsonb on bullion_demands ✅ |
 
 ---
 
@@ -386,3 +413,27 @@ After success, the event row refreshes and shows "📅 queued" instead of "⚠�
 **Key components:** `FormBuilderScreen`, `SsjFormFieldEditor`, `SSJ_FORM_DEFS` (default specs).
 
 **Do NOT make fields with `isFixed=true` editable** — those are DB column mappings.
+
+---
+
+## 17. CRM TAB LISTS — TWO PARALLEL DEFINITIONS, KEEP THEM IN SYNC
+
+**There are two separate tab-key lists in `src/App.jsx` and they MUST stay identical in tab keys:**
+- `ALL_TABS` / `ROLE_DEFAULT_TABS` (~line 10060) — drives the actual tab bar + which screen renders.
+- `CRM_ALL_TABS` / `CRM_ROLE_DEFAULT_TABS` (~line 123) — drives the Staff & Access screen's per-tab toggle chips.
+
+**Bug fixed 2026-07-02 (commit `d2837d9`):** `CRM_ALL_TABS`/`CRM_ROLE_DEFAULT_TABS` was missing the `calculator` and `walkin` keys entirely. Any manager whose access was ever customized in Staff & Access lost the Calculator tab and it couldn't even be re-granted (the toggle chip didn't exist). Managers who never had custom permissions set were unaffected (they fall back to `ROLE_DEFAULT_TABS`, which did have `calculator`).
+
+**When adding a new tab to `ALL_TABS`, always add the same key to `CRM_ALL_TABS` (and to both `manager`/`staff` default arrays if it should be a role default) in the same change — otherwise Staff & Access silently can't grant it.**
+
+---
+
+## 18. JEWELLERY CALCULATOR — SIZE/NOTES + CAMERA CAPTURE (2026-07-02)
+
+**Added to the jewellery tab in CalculatorScreen (commit `d2837d9`):**
+- `jw.size` — free-text size field (e.g. ring size) next to Vendor Code.
+- `jw.notes` — free-text notes textarea above the Results panel.
+- Both persist automatically — `saveEstimate` spreads the whole `jw` object into `items[0]`, and `loadEstimateForEdit` maps `it.size`/`it.notes` back in. The "🔄 New" reset button also resets both.
+- Item photo `<input type="file">` now has `capture="environment"` so mobile browsers open the camera directly instead of the gallery picker (desktop ignores the attribute, falls back to file picker as before).
+
+---
