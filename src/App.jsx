@@ -1601,7 +1601,6 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
     });
   }, []);
 
-  const [jewExpanded, setJewExpanded] = useState(false);
   const [exExpanded, setExExpanded] = useState(false);
   const [form, setForm] = useState({
     phone: "", name: "",
@@ -1611,8 +1610,8 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
     funnelId: "",
     crmSource: "",
     assignedStaffId: "",
-    // Jewelry fields
-    metal: "", stone: "", itemCategory: "", ringSize: "", purity: "", hallmarkPref: "",
+    // Per-item enquiries
+    enquiryItems: [{ product: "", purity: "", weightG: "", notes: "" }],
     // Exchange
     hasExchange: false, exchangeDesc: "", exchangeValue: "",
     // Design notes
@@ -1621,6 +1620,9 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
 
   const set = (k, v) => setForm((s) => ({ ...s, [k]: v }));
   const toggleProductType = (t) => setForm((s) => ({ ...s, productTypes: s.productTypes.includes(t) ? s.productTypes.filter((x) => x !== t) : [...s.productTypes, t] }));
+  const addItem = () => setForm((s) => ({ ...s, enquiryItems: [...s.enquiryItems, { product: "", purity: "", weightG: "", notes: "" }] }));
+  const removeItem = (i) => setForm((s) => ({ ...s, enquiryItems: s.enquiryItems.filter((_, idx) => idx !== i) }));
+  const setItem = (i, field, val) => setForm((s) => ({ ...s, enquiryItems: s.enquiryItems.map((it, idx) => idx === i ? { ...it, [field]: val } : it) }));
 
   const doSearch = useCallback(async (q) => {
     if (!q || q.length < 2) { setSearchResults([]); return; }
@@ -1716,12 +1718,7 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
           tenantId: getTenantId(),
           skipBot: !activateBot,
           allowDuplicate: allowDuplicate || false,
-          metal: form.metal || null,
-          stone: form.stone || null,
-          itemCategory: form.itemCategory || null,
-          ringSize: form.ringSize || null,
-          purity: form.purity || null,
-          hallmarkPref: form.hallmarkPref || null,
+          enquiryItems: form.enquiryItems,
           hasExchange: form.hasExchange || false,
           exchangeDesc: form.exchangeDesc || null,
           exchangeValue: form.exchangeValue ? Number(form.exchangeValue) : null,
@@ -1832,80 +1829,68 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
             </div>
           </Field>
 
-          {/* Jewelry details — collapsible */}
-          <div style={{ border: "1px solid #eee", borderRadius: 8, marginBottom: 8 }}>
-            <button type="button" onClick={() => setJewExpanded((v) => !v)}
-              style={{ width: "100%", padding: "8px 12px", background: "#fafafa", border: "none", borderRadius: 8, textAlign: "left", cursor: "pointer", fontSize: 13, fontWeight: 600, color: "#555" }}>
-              💎 Jewelry Details {jewExpanded ? "▲" : "▼"}
-            </button>
-            {jewExpanded && (
-              <div style={{ padding: "10px 12px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-                <Field label="Metal">
-                  <Select value={form.metal} onChange={(e) => set("metal", e.target.value)}>
-                    <option value="">—</option>
-                    <option value="gold_22k">Gold 22k</option>
-                    <option value="gold_18k">Gold 18k</option>
-                    <option value="gold_14k">Gold 14k</option>
-                    <option value="white_gold">White Gold</option>
-                    <option value="platinum">Platinum</option>
-                    <option value="silver">Silver</option>
-                    <option value="other">Other</option>
-                  </Select>
-                </Field>
-                <Field label="Stone">
-                  <Select value={form.stone} onChange={(e) => set("stone", e.target.value)}>
-                    <option value="">—</option>
-                    <option value="none">None</option>
-                    <option value="diamond">Diamond</option>
-                    <option value="ruby">Ruby</option>
-                    <option value="emerald">Emerald</option>
-                    <option value="sapphire">Sapphire</option>
-                    <option value="pearl">Pearl</option>
-                    <option value="kundan">Kundan</option>
-                    <option value="polki">Polki</option>
-                    <option value="other">Other</option>
-                  </Select>
-                </Field>
-                <Field label="Category">
-                  <Select value={form.itemCategory} onChange={(e) => set("itemCategory", e.target.value)}>
-                    <option value="">—</option>
-                    <option value="ring">Ring</option>
-                    <option value="necklace">Necklace</option>
-                    <option value="earrings">Earrings</option>
-                    <option value="bangles">Bangles</option>
-                    <option value="bracelet">Bracelet</option>
-                    <option value="pendant">Pendant</option>
-                    <option value="set">Set</option>
-                    <option value="anklet">Anklet</option>
-                    <option value="other">Other</option>
-                  </Select>
-                </Field>
-                {form.itemCategory === "ring" && (
-                  <Field label="Ring size">
-                    <Input value={form.ringSize} onChange={(e) => set("ringSize", e.target.value)} placeholder="e.g. 6, 6.5, 7" />
+          {/* Items Enquired — multi-item */}
+          <div style={{ marginBottom: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: "#555" }}>
+                📦 Items Enquired
+                <span style={{ marginLeft: 6, background: C.blue, color: "#fff", borderRadius: 10, padding: "1px 7px", fontSize: 11 }}>
+                  {form.enquiryItems.length}
+                </span>
+              </span>
+            </div>
+            {form.enquiryItems.map((item, i) => (
+              <div key={i} style={{ border: "1px solid #e0e7ff", borderRadius: 8, padding: "10px 12px", marginBottom: 8, background: "#fafbff" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: "#6366f1" }}>Item {i + 1}</span>
+                  {form.enquiryItems.length > 1 && (
+                    <button type="button" onClick={() => removeItem(i)}
+                      style={{ background: "transparent", border: "none", color: C.red, cursor: "pointer", fontSize: 16, lineHeight: 1, padding: "0 4px" }}>
+                      ✕
+                    </button>
+                  )}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
+                  <Field label="Product">
+                    <Select value={item.product} onChange={(e) => setItem(i, "product", e.target.value)}>
+                      <option value="">— select —</option>
+                      <option value="ring">Ring</option>
+                      <option value="necklace">Necklace</option>
+                      <option value="earrings">Earrings</option>
+                      <option value="bangles">Bangles</option>
+                      <option value="bracelet">Bracelet</option>
+                      <option value="pendant">Pendant</option>
+                      <option value="set">Set</option>
+                      <option value="anklet">Anklet</option>
+                      <option value="chain">Chain</option>
+                      <option value="other">Other</option>
+                    </Select>
                   </Field>
-                )}
-                <Field label="Purity">
-                  <Select value={form.purity} onChange={(e) => set("purity", e.target.value)}>
-                    <option value="">—</option>
-                    <option value="916">916 (22k)</option>
-                    <option value="750">750 (18k)</option>
-                    <option value="585">585 (14k)</option>
-                    <option value="925">925 (Silver)</option>
-                    <option value="999">999 (Fine)</option>
-                    <option value="other">Other</option>
-                  </Select>
-                </Field>
-                <Field label="Hallmark pref">
-                  <Select value={form.hallmarkPref} onChange={(e) => set("hallmarkPref", e.target.value)}>
-                    <option value="">—</option>
-                    <option value="bis_hallmark">BIS Hallmark</option>
-                    <option value="none">None</option>
-                    <option value="client_choice">Client's choice</option>
-                  </Select>
+                  <Field label="Purity">
+                    <Select value={item.purity} onChange={(e) => setItem(i, "purity", e.target.value)}>
+                      <option value="">— select —</option>
+                      <option value="916">916 (22k)</option>
+                      <option value="750">750 (18k)</option>
+                      <option value="585">585 (14k)</option>
+                      <option value="925">925 (Silver)</option>
+                      <option value="999">999 (Fine)</option>
+                      <option value="other">Other</option>
+                    </Select>
+                  </Field>
+                  <Field label="Weight (g)">
+                    <Input type="number" min="0" step="0.1" value={item.weightG} onChange={(e) => setItem(i, "weightG", e.target.value)} placeholder="grams" />
+                  </Field>
+                </div>
+                <Field label="Notes">
+                  <Textarea rows={2} value={item.notes} onChange={(e) => setItem(i, "notes", e.target.value)}
+                    placeholder="any specific notes for this item…" />
                 </Field>
               </div>
-            )}
+            ))}
+            <button type="button" onClick={addItem}
+              style={{ width: "100%", padding: "7px 0", border: `1px dashed ${C.blue}`, borderRadius: 8, background: "transparent", color: C.blue, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
+              + Add Item
+            </button>
           </div>
 
           {/* Exchange / trade-in — collapsible */}
@@ -2083,8 +2068,8 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved, prefill = n
     itemsSeen: [], priceQuoted: "",
     notBoughtReason: "", notBoughtNotes: "",
     competitorMentioned: "", followupRequired: false,
-    // Jewelry fields
-    metal: "", stone: "", itemCategory: "", ringSize: "", purity: "", hallmarkPref: "",
+    // Per-item enquiries
+    enquiryItems: [{ product: "", purity: "", weightG: "", notes: "" }],
     // Exchange
     hasExchange: false, exchangeDesc: "", exchangeValue: "",
   });
@@ -2135,6 +2120,9 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved, prefill = n
   const toggleTag = (tag) => setForm((s) => ({ ...s, tags: s.tags.includes(tag) ? s.tags.filter((t) => t !== tag) : [...s.tags, tag] }));
   const toggleProductType = (t) => setForm((s) => ({ ...s, productTypes: s.productTypes.includes(t) ? s.productTypes.filter((x) => x !== t) : [...s.productTypes, t] }));
   const toggleItemSeen = (t) => setForm((s) => ({ ...s, itemsSeen: s.itemsSeen.includes(t) ? s.itemsSeen.filter((x) => x !== t) : [...s.itemsSeen, t] }));
+  const addItem = () => setForm((s) => ({ ...s, enquiryItems: [...s.enquiryItems, { product: "", purity: "", weightG: "", notes: "" }] }));
+  const removeItem = (i) => setForm((s) => ({ ...s, enquiryItems: s.enquiryItems.filter((_, idx) => idx !== i) }));
+  const setItem = (i, field, val) => setForm((s) => ({ ...s, enquiryItems: s.enquiryItems.map((it, idx) => idx === i ? { ...it, [field]: val } : it) }));
 
   const uploadDesignRef = async (file) => {
     if (!file) return;
@@ -2301,12 +2289,7 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved, prefill = n
             tenantId,
             skipBot: !activateBot,
             allowDuplicate: true,
-            metal: form.metal || null,
-            stone: form.stone || null,
-            itemCategory: form.itemCategory || null,
-            ringSize: form.ringSize || null,
-            purity: form.purity || null,
-            hallmarkPref: form.hallmarkPref || null,
+            enquiryItems: form.enquiryItems,
             hasExchange: form.hasExchange || false,
             exchangeDesc: form.exchangeDesc || null,
             exchangeValue: form.exchangeValue ? Number(form.exchangeValue) : null,
@@ -2490,63 +2473,68 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved, prefill = n
                 </div>
               </Field>
 
-              {/* Jewelry details */}
-              <div style={{ border: "1px solid #eee", borderRadius: 8, marginBottom: 8 }}>
-                <button type="button" onClick={() => set("_jewExp", !form._jewExp)}
-                  style={{ width: "100%", padding: "8px 12px", background: "#fafafa", border: "none", borderRadius: 8, textAlign: "left", cursor: "pointer", fontSize: 13, fontWeight: 600, color: "#555" }}>
-                  💎 Jewelry Details {form._jewExp ? "▲" : "▼"}
-                </button>
-                {form._jewExp && (
-                  <div style={{ padding: "10px 12px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-                    <Field label="Metal">
-                      <Select value={form.metal} onChange={(e) => set("metal", e.target.value)}>
-                        <option value="">—</option>
-                        <option value="gold_22k">Gold 22k</option><option value="gold_18k">Gold 18k</option>
-                        <option value="gold_14k">Gold 14k</option><option value="white_gold">White Gold</option>
-                        <option value="platinum">Platinum</option><option value="silver">Silver</option>
-                        <option value="other">Other</option>
-                      </Select>
-                    </Field>
-                    <Field label="Stone">
-                      <Select value={form.stone} onChange={(e) => set("stone", e.target.value)}>
-                        <option value="">—</option>
-                        <option value="none">None</option><option value="diamond">Diamond</option>
-                        <option value="ruby">Ruby</option><option value="emerald">Emerald</option>
-                        <option value="sapphire">Sapphire</option><option value="pearl">Pearl</option>
-                        <option value="kundan">Kundan</option><option value="polki">Polki</option>
-                        <option value="other">Other</option>
-                      </Select>
-                    </Field>
-                    <Field label="Category">
-                      <Select value={form.itemCategory} onChange={(e) => set("itemCategory", e.target.value)}>
-                        <option value="">—</option>
-                        <option value="ring">Ring</option><option value="necklace">Necklace</option>
-                        <option value="earrings">Earrings</option><option value="bangles">Bangles</option>
-                        <option value="bracelet">Bracelet</option><option value="pendant">Pendant</option>
-                        <option value="set">Set</option><option value="anklet">Anklet</option>
-                        <option value="other">Other</option>
-                      </Select>
-                    </Field>
-                    {form.itemCategory === "ring" && (
-                      <Field label="Ring size"><Input value={form.ringSize} onChange={(e) => set("ringSize", e.target.value)} placeholder="e.g. 6, 6.5, 7" /></Field>
-                    )}
-                    <Field label="Purity">
-                      <Select value={form.purity} onChange={(e) => set("purity", e.target.value)}>
-                        <option value="">—</option>
-                        <option value="916">916 (22k)</option><option value="750">750 (18k)</option>
-                        <option value="585">585 (14k)</option><option value="925">925 Silver</option>
-                        <option value="999">999 Fine</option><option value="other">Other</option>
-                      </Select>
-                    </Field>
-                    <Field label="Hallmark pref">
-                      <Select value={form.hallmarkPref} onChange={(e) => set("hallmarkPref", e.target.value)}>
-                        <option value="">—</option>
-                        <option value="bis_hallmark">BIS Hallmark</option>
-                        <option value="none">None</option><option value="client_choice">Client's choice</option>
-                      </Select>
+              {/* Items Enquired — multi-item */}
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: "#555" }}>
+                    📦 Items Enquired
+                    <span style={{ marginLeft: 6, background: C.blue, color: "#fff", borderRadius: 10, padding: "1px 7px", fontSize: 11 }}>
+                      {form.enquiryItems.length}
+                    </span>
+                  </span>
+                </div>
+                {form.enquiryItems.map((item, i) => (
+                  <div key={i} style={{ border: "1px solid #e0e7ff", borderRadius: 8, padding: "10px 12px", marginBottom: 8, background: "#fafbff" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: "#6366f1" }}>Item {i + 1}</span>
+                      {form.enquiryItems.length > 1 && (
+                        <button type="button" onClick={() => removeItem(i)}
+                          style={{ background: "transparent", border: "none", color: C.red, cursor: "pointer", fontSize: 16, lineHeight: 1, padding: "0 4px" }}>
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
+                      <Field label="Product">
+                        <Select value={item.product} onChange={(e) => setItem(i, "product", e.target.value)}>
+                          <option value="">— select —</option>
+                          <option value="ring">Ring</option>
+                          <option value="necklace">Necklace</option>
+                          <option value="earrings">Earrings</option>
+                          <option value="bangles">Bangles</option>
+                          <option value="bracelet">Bracelet</option>
+                          <option value="pendant">Pendant</option>
+                          <option value="set">Set</option>
+                          <option value="anklet">Anklet</option>
+                          <option value="chain">Chain</option>
+                          <option value="other">Other</option>
+                        </Select>
+                      </Field>
+                      <Field label="Purity">
+                        <Select value={item.purity} onChange={(e) => setItem(i, "purity", e.target.value)}>
+                          <option value="">— select —</option>
+                          <option value="916">916 (22k)</option>
+                          <option value="750">750 (18k)</option>
+                          <option value="585">585 (14k)</option>
+                          <option value="925">925 (Silver)</option>
+                          <option value="999">999 (Fine)</option>
+                          <option value="other">Other</option>
+                        </Select>
+                      </Field>
+                      <Field label="Weight (g)">
+                        <Input type="number" min="0" step="0.1" value={item.weightG} onChange={(e) => setItem(i, "weightG", e.target.value)} placeholder="grams" />
+                      </Field>
+                    </div>
+                    <Field label="Notes">
+                      <Textarea rows={2} value={item.notes} onChange={(e) => setItem(i, "notes", e.target.value)}
+                        placeholder="any specific notes for this item…" />
                     </Field>
                   </div>
-                )}
+                ))}
+                <button type="button" onClick={addItem}
+                  style={{ width: "100%", padding: "7px 0", border: `1px dashed ${C.blue}`, borderRadius: 8, background: "transparent", color: C.blue, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
+                  + Add Item
+                </button>
               </div>
 
               {/* Exchange / trade-in */}

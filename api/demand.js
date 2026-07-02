@@ -175,13 +175,8 @@ export default async function handler(req, res) {
         crm_source: body.crmSource || null,
         priority_score: calcInitialPriority(body.crmSource),
         created_by: body.createdBy || null,
-        // Jewelry specification fields
-        metal: body.metal || null,
-        stone: body.stone || null,
-        item_category: body.itemCategory || null,
-        ring_size: body.ringSize || null,
-        purity: body.purity || null,
-        hallmark_pref: body.hallmarkPref || null,
+        // Multi-item enquiries
+        enquiry_items: Array.isArray(body.enquiryItems) ? body.enquiryItems : [],
         // Exchange / trade-in
         has_exchange: !!body.hasExchange,
         exchange_desc: body.exchangeDesc || null,
