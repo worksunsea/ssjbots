@@ -15,7 +15,7 @@ export default async function handler(req, res) {
 
   // Allow browser to call this endpoint
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
@@ -23,14 +23,16 @@ export default async function handler(req, res) {
   const path = req.query.path || "/clients";
   const url = `${WA_SERVICE_URL}${path}`;
 
-  const headers = { "Content-Type": "application/json" };
+  const hasBody = req.method !== "GET" && req.method !== "DELETE" && req.body && Object.keys(req.body).length > 0;
+  const headers = {};
   if (WA_SERVICE_SECRET) headers["x-service-secret"] = WA_SERVICE_SECRET;
+  if (hasBody) headers["Content-Type"] = "application/json";
 
   try {
     const r = await fetch(url, {
       method: req.method,
       headers,
-      body: req.method !== "GET" && req.body ? JSON.stringify(req.body) : undefined,
+      body: hasBody ? JSON.stringify(req.body) : undefined,
     });
     const data = await r.json().catch(() => ({}));
     return res.status(r.status).json(data);
