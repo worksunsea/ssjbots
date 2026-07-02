@@ -141,13 +141,14 @@ const CRM_ALL_TABS = [
   { k: "leadsources", l: "Lead Sources",icon: "🌐" },
   { k: "formbuilder", l: "Form Builder",icon: "🛠️" },
   { k: "staff",       l: "Staff & Access",icon: "👥" },
+  { k: "calculator",  l: "Calculator",     icon: "💎" },
   { k: "walkin",      l: "Walk-ins",       icon: "🏪" },
 ];
 const CRM_ROLE_DEFAULT_TABS = {
   superadmin: CRM_ALL_TABS.map((t) => t.k),
   admin:      CRM_ALL_TABS.map((t) => t.k),
-  manager:    ["demands", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder"],
-  staff:      ["demands", "contacts", "upcoming"],
+  manager:    ["demands", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin"],
+  staff:      ["demands", "contacts", "upcoming", "calculator", "walkin"],
   telecaller: ["queue", "demands"],
 };
 
@@ -10752,7 +10753,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
 
   // Jewellery state
   const [jw, setJw] = useState({
-    itemImage: "", itemName: "", vendorCode: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true,
+    itemImage: "", itemName: "", vendorCode: "", size: "", notes: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true,
     makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "",
     dia2Wt: "", dia2Unit: "ct", dia2Rate: "",
     stoneWt: "", stoneUnit: "ct", stoneRate: "",
@@ -11200,6 +11201,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     if (est.mode === "jewellery") {
       setJw({
         itemImage: it.itemImage || "", itemName: it.itemName || "", vendorCode: it.vendorCode || "",
+        size: it.size || "", notes: it.notes || "",
         grossWt: it.grossWt || "", purityIdx: it.purityIdx ?? 2, customPurity: it.customPurity || "",
         goldRateOverride: it.gRate ? String(Math.round(it.gRate)) : "",
         applyGst: it.applyGst !== false,
@@ -11379,12 +11381,13 @@ function recalcToday(){
           </button>
           {jw.itemImage && <button style={{ fontSize: 11, padding: "4px 8px", borderRadius: 6, border: "1px solid #fcc", background: "#fff8f8", cursor: "pointer", marginLeft: 6 }} onClick={() => setJw(p => ({ ...p, itemImage: "" }))}>✕</button>}
         </div>
-        <input ref={jwImgRef} type="file" accept="image/*" style={{ display: "none" }} onChange={e => handleJwImagePick(e.target.files?.[0])} />
+        <input ref={jwImgRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={e => handleJwImagePick(e.target.files?.[0])} />
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 12 }}>
         <div><label style={lbl}>Item Name / Tag</label><input style={inp} value={jw.itemName} onChange={e => setJw(p => ({ ...p, itemName: e.target.value }))} placeholder="e.g. Necklace S-204" /></div>
         <div><label style={lbl}>Vendor Code</label><input style={inp} value={jw.vendorCode} onChange={e => setJw(p => ({ ...p, vendorCode: e.target.value }))} placeholder="VC-123" /></div>
+        <div><label style={lbl}>Size</label><input style={inp} value={jw.size} onChange={e => setJw(p => ({ ...p, size: e.target.value }))} placeholder="e.g. 14 (ring size)" /></div>
         <div><label style={lbl}>Gross Weight (g)</label><input style={inp} type="number" step="0.01" value={jw.grossWt} onChange={e => setJw(p => ({ ...p, grossWt: e.target.value }))} placeholder="0.00" /></div>
         <div>
           <label style={lbl}>Purity</label>
@@ -11456,6 +11459,12 @@ function recalcToday(){
         ))}
       </div>
 
+      {/* Notes */}
+      <div style={{ marginBottom: 8 }}>
+        <label style={lbl}>Notes</label>
+        <textarea style={{ ...inp, minHeight: 50, resize: "vertical", fontFamily: "inherit" }} value={jw.notes} onChange={e => setJw(p => ({ ...p, notes: e.target.value }))} placeholder="Any remarks about the item..." />
+      </div>
+
       {/* Results */}
       <div style={{ ...card, background: "#f8faff", marginTop: 8 }}>
         {resultRow("Net Gold Weight", `${jwCalc.netGold.toFixed(3)} g`)}
@@ -11489,7 +11498,7 @@ function recalcToday(){
           ].filter(Boolean).join("\n");
           sendWA(saveContact.phone, lines);
         }}>📱 Send WA</Btn>}
-        <Btn small ghost color={C.gray} onClick={() => { setJw({ itemImage: "", itemName: "", vendorCode: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true, makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "", dia2Wt: "", dia2Unit: "ct", dia2Rate: "", stoneWt: "", stoneUnit: "ct", stoneRate: "", misc1Lbl: "Gemstone", misc1Wt: "", misc1Unit: "g", misc1Rate: "", misc1Deduct: true, misc2Lbl: "Mala", misc2Wt: "", misc2Unit: "g", misc2Rate: "", misc2Deduct: false, misc3Lbl: "Lakh", misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false }); setJwShowMisc(false); setSaveContact(null); setContactSearch(""); saveActiveVisit(null, null, null); try { localStorage.removeItem("calc_active_contact"); } catch {} }}>🔄 New</Btn>
+        <Btn small ghost color={C.gray} onClick={() => { setJw({ itemImage: "", itemName: "", vendorCode: "", size: "", notes: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true, makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "", dia2Wt: "", dia2Unit: "ct", dia2Rate: "", stoneWt: "", stoneUnit: "ct", stoneRate: "", misc1Lbl: "Gemstone", misc1Wt: "", misc1Unit: "g", misc1Rate: "", misc1Deduct: true, misc2Lbl: "Mala", misc2Wt: "", misc2Unit: "g", misc2Rate: "", misc2Deduct: false, misc3Lbl: "Lakh", misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false }); setJwShowMisc(false); setSaveContact(null); setContactSearch(""); saveActiveVisit(null, null, null); try { localStorage.removeItem("calc_active_contact"); } catch {} }}>🔄 New</Btn>
       </div>
     </div>
   );
