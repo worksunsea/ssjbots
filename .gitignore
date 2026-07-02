@@ -33,5 +33,11 @@ dist-ssr
 downloads/
 .claude/
 
+# Claude Code skill/plugin clones (nested git repos, not app code)
+/everything-claude-code/
+/open-design/
+/ui-ux-pro-max-skill/
+/.od/
+
 # Large binary backups
 scripts/*.sql.gz
