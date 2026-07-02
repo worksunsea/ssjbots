@@ -14,7 +14,7 @@
 | Database | Supabase (PostgreSQL) — all tables prefixed `bullion_*` |
 | WA messaging | Baileys service on Synology NAS — accessed via `/api/wa-proxy` |
 | Config store | `bullion_dropdowns` table — cadence offsets, scripts, dispositions (no deploy needed to change) |
-| Auth | Staff table + `app_permissions` JSONB for role-based access |
+| Auth | Staff table + `app_permissions` JSONB for role-based access. Plus (2026-07-02): `staff.active` deactivation flag, 15-day forced reauth (superadmin exempt), office-TOTP new-device gate — see `SSJ_STABLE_FEATURES.md` §19 |
 | Tenant | `a1b2c3d4-0000-0000-0000-000000000001` (SSJ default) |
 
 ---

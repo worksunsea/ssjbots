@@ -284,6 +284,7 @@ Gamified MCQ quiz for staff jewellery knowledge. Separate from main CRM. Not yet
 | 0047 | — | Post-birthday/anniversary step +3d → +7d — file not yet committed, run status unconfirmed |
 | 0049 | — | bullion_lead_sources table for lead webhook intake ✅ |
 | 0055 | — | enquiry_items jsonb on bullion_demands ✅ |
+| 0056 | 2026-07-02 | staff.active + tenant_security_settings + trusted_devices + device_verifications (§19 session security) — run in Supabase before deploy |
 
 ---
 
@@ -435,5 +436,52 @@ After success, the event row refreshes and shows "📅 queued" instead of "⚠�
 - `jw.notes` — free-text notes textarea above the Results panel.
 - Both persist automatically — `saveEstimate` spreads the whole `jw` object into `items[0]`, and `loadEstimateForEdit` maps `it.size`/`it.notes` back in. The "🔄 New" reset button also resets both.
 - Item photo `<input type="file">` now has `capture="environment"` so mobile browsers open the camera directly instead of the gallery picker (desktop ignores the attribute, falls back to file picker as before).
+
+---
+
+## 19. SESSION SECURITY — OFFICE-TOTP DEVICE GATE, DEACTIVATION LOGOUT, 15-DAY REAUTH (2026-07-02)
+
+**⚠️ Shared-database feature — see "Shared staff-table contract for sibling repos" at the end of this section. Only implemented in ssjbots so far; ssj-hr/fms-tracker/jewelbos each need their own client-side enforcement added separately before deactivation/reauth is honored there too.**
+
+### Background / why this exists
+ssjbots has no server session, no JWT, no Supabase Auth — login is a direct browser query (`sb.from("staff")...eq("password",p).single()`, `LoginScreen`) and the entire `staff` row is cached in `localStorage["ssj_bullion_user"]`. Authorization for data access is Postgres RLS scoped by `tenant_id`, not by the cached user object (that's UI-gating only). This section adds three linked controls on top of that architecture without introducing Supabase Auth.
+
+### 1. Office-TOTP "new device" gate
+One shared TOTP secret (NOT per-user) lives on a physical phone kept in the office, generating a single 6-digit code for the whole team. When staff log in (existing password flow) from a device that hasn't been verified before, they're additionally prompted for that code (`LoginScreen` `stage:"totp"`). Once verified, the device is trusted for `device_trust_days` (default 30) and isn't asked again until that window lapses.
+- **Feature is OFF by default** (`tenant_security_settings.totp_enabled = false` until a superadmin explicitly generates a secret) — deploying this code changes nothing until turned on.
+- Device identity = a random `crypto.randomUUID()` stored in `localStorage["ssj_device_token"]` (`getDeviceToken()`, `src/utils/session-security.js`). Clearing site storage / a different browser = a new device, will re-prompt.
+- **The shared secret never reaches the browser.** `tenant_security_settings` has RLS enabled with zero anon policies — only the service-role client in `api/device-check.js` / `api/security-settings.js` can read/write it. Do NOT add an anon SELECT policy to this table.
+- Trust is **device-scoped, not user-scoped** (judgment call): once any staff member verifies a browser, other staff on that same browser skip TOTP too. `verified_by_staff_id`/`verified_by_name` on `trusted_devices` + the `device_verifications` audit table record who first verified each device.
+- Superadmin setup UI: `SecurityPanel` component, rendered inside the Staff & Access screen for superadmin only (`isSuperadmin` check via `loadUser()?.role`). Generate/Rotate shows the QR + secret text **once** (scan into the office phone's authenticator app — Google Authenticator, Authy, etc), then it's gone from the client.
+- **SSO logins (postMessage from fms.gemtre.in etc) skip the TOTP step** — the parent app is the trust boundary for iframed sessions — but SSO sessions still get `authAt` stamped and are subject to deactivation/reauth checks below. This is a deliberate judgment call, not an oversight.
+
+### 2. Deactivated staff → logged out of all devices
+`staff.active boolean DEFAULT true` (migration `0056`). Login checks `active === false` and refuses with a clear message. For **already-open sessions**, the existing focus/visibilitychange effect (`src/App.jsx`, ~line 10007) now also re-selects `active` (alongside `app_permissions`) and force-logs-out if deactivated. A `setInterval(SESSION_POLL_MS)` (5 min) was added alongside it so a tab left open all day gets caught too, not just on tab-switch/focus.
+- **Honest limitation:** this is client-side enforcement against a public anon key + RLS-by-tenant (not per-user) architecture — it was never a hard security boundary and this feature doesn't change that. The realistic goal is stopping a *deactivated non-technical employee* from continuing to use their existing session, which it achieves. True per-user server enforcement would require Supabase Auth — explicitly out of scope for this change.
+
+### 3. 15-day forced reauth (superadmin exempt)
+`login()`/SSO stamp `authAt = Date.now()` onto the cached user. `isSessionExpired(user, nowMs, reauthDays)` (`src/utils/session-security.js`, pure + unit-tested) returns `false` unconditionally for `role === "superadmin"`; for everyone else, an absent or >15-day-old `authAt` forces logout back to `LoginScreen` with a "session expired" message.
+- **Deployment grandfather clause:** existing cached sessions from before this feature shipped have no `authAt` at all. Rather than treating that as "already expired" and mass-logging-out every manager/telecaller mid-shift the moment this deploys, the top-level `App` component's initial `useState(loadUser)` lazy initializer stamps `authAt = Date.now()` once on first load if it's missing, so the 15-day clock starts fresh from deploy time instead of retroactively. **Do not remove this grandfather stamp** — without it, shipping any future change to this logic could mass-logout the whole team without warning.
+- Device-trust (30d) and reauth (15d) are **separate timers with different lengths on purpose**: reauth re-proves password identity; device-trust controls whether the office TOTP code is asked again. Making them equal would mean every 15-day reauth also re-triggers TOTP, defeating the "don't ask again on this device" point of the feature.
+
+### Schema (migration `0056_device_trust_and_active.sql`)
+- `staff.active boolean NOT NULL DEFAULT true` — **on the shared table**, non-breaking default.
+- `tenant_security_settings (tenant_id pk, totp_secret, totp_enabled, reauth_days default 15, device_trust_days default 30, updated_at, updated_by)` — RLS on, no anon policies.
+- `trusted_devices (id, tenant_id, device_token, label, verified_by_staff_id, verified_by_name, trusted_until, last_seen_at, created_at, unique(tenant_id, device_token))` — RLS on, no anon policies.
+- `device_verifications (id, tenant_id, staff_id, staff_name, device_token, ip, device, verified_at)` — audit log, RLS on, no anon policies.
+
+### Endpoints
+- `POST /api/device-check` — `x-crm-secret` gated. `{tenantId, deviceToken, staffId?, staffName?, code?}` → trust lookup, then TOTP verify + trust-minting if `code` sent. Called from `LoginScreen` right after password success.
+- `GET/POST /api/security-settings` — `x-crm-secret` gated + independently re-verifies `staff.role === "superadmin"` server-side (never trusts a client-sent role, since there's no server session). `generate`/`rotate`/`enable`/`disable`/`revoke_device` actions.
+
+### Key files
+`src/utils/session-security.js` (pure logic — `getDeviceToken`, `isSessionExpired`, `shouldForceLogout`, `isTrustedUntilValid`, tested in `src/__tests__/session-security.test.js`), `api/device-check.js`, `api/security-settings.js`, `src/App.jsx` (`LoginScreen`, `SecurityPanel`, `login`/`logout`, focus/interval effect, SSO handler), `supabase/migrations/0056_device_trust_and_active.sql`.
+
+### Shared staff-table contract for sibling repos (ssj-hr, fms-tracker, jewelbos)
+These apps read the same Supabase project/`staff` table but each has its own separate login/session code — **none of the enforcement above happens automatically in those apps.**
+1. **`staff.active` now exists tenant-wide.** Any app authenticating against `staff` should treat `active === false` as "reject login, expire any cached session." Defaults to `true`, so nothing breaks until each app adds the check — but deactivating someone today only takes effect in ssjbots.
+2. **`tenant_security_settings.totp_secret` is server-only, by design.** Never add an anon-readable policy. If auth is consolidated later (e.g. into `jewelbos`), reuse `tenant_security_settings`/`trusted_devices` rather than inventing parallel tables.
+3. **`ssj_device_token` / `authAt` / the 15-day clock are ssjbots client-cache conventions**, not shared state — other apps would need their own equivalent local implementation of `isSessionExpired`/`shouldForceLogout` (the logic in `src/utils/session-security.js` is small and pure, safe to copy).
+4. ssj-hr already has a **different**, pre-existing **per-user** TOTP setup (`staff.totp_secret`, `staff.totp_enabled`, `api/verify-totp.js`) — that is unrelated to `tenant_security_settings` (the shared office secret) and both can coexist; don't conflate them.
 
 ---
