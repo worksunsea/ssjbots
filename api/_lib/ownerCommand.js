@@ -8,6 +8,7 @@ import { TENANT_ID, CLAUDE_MODEL } from "./config.js";
 import { getActiveStaff, executeCreateTask } from "./taskCommand.js";
 import { buildReportText } from "./reportQueries.js";
 import { logCommand, getLastCommand, markFeedback, getRecentCorrections } from "./ownerLog.js";
+import { queueDevTask } from "./devAgent.js";
 
 function todayIST() {
   return new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
@@ -57,7 +58,10 @@ async function classifyOwnerMessage(messageText, staffNames, corrections) {
     "",
     `4. Commenting on the PREVIOUS reply the bot just sent (e.g. "wrong answer", "galat jawab tha", "that's not right", "no that's wrong", or conversely "yes correct", "sahi hai", "thanks that's right"): {"intent":"feedback","rating":"wrong"|"correct"}`,
     "",
-    `5. Anything else (chit-chat, unclear, not matching the above): {"intent":"none"}`,
+    `5. Asking for an actual CODE/APP CHANGE — a bug fix, a new feature, a UI tweak, "add a button that...", "fix the bug where...", "change the code so that...". This is different from #2 (which only reads data) — #5 is when he wants the SOFTWARE itself modified: {"intent":"dev_task","task":"<the coding request, cleaned up but keep his intent/details>","repo_hint":"<one of: ssj-hr|ssjbots|fms-tracker|unsure>"}`,
+    "   ssj-hr = the HR app (tasks/leaves/help slips/petty cash/staff). ssjbots = the WhatsApp bot/CRM (this bot, leads, demands, walk-ins). fms-tracker = the field/job tracker (jobs, FMS). Guess from context; use \"unsure\" if genuinely unclear.",
+    "",
+    `6. Anything else (chit-chat, unclear, not matching the above): {"intent":"none"}`,
     "",
     "The message may be in English, Hindi, or Hinglish (Devanagari or Latin script, or mixed) for any of the above.",
     ...correctionsBlock,
@@ -177,6 +181,13 @@ export async function handleOwnerMessage(sb, messageText) {
   } else if (parsed.intent === "search_resources") {
     const r = await searchResources(sb, parsed.query || messageText);
     result = { replyText: r.text, mediaUrl: r.mediaUrl, mediaType: r.mediaType, filename: r.filename, caption: r.caption };
+  } else if (parsed.intent === "dev_task") {
+    try {
+      await queueDevTask(sb, { taskText: parsed.task || messageText, repoHint: parsed.repo_hint });
+      result = { replyText: "🖥️ Sent to your dev agent — check your PC. It'll wait for your approval on each step, same as a normal Claude Code chat. (Only works if your PC and the dev-agent listener are on.)" };
+    } catch (err) {
+      result = { replyText: `Couldn't queue that — ${String(err.message || err)}` };
+    }
   } else {
     result = { replyText: "Didn't catch that. You can: assign a task, ask for a report (e.g. \"give me reporting\"), or ask me to look something up (e.g. \"bank details for ICICI\")." };
   }
@@ -184,9 +195,9 @@ export async function handleOwnerMessage(sb, messageText) {
   await logCommand(sb, {
     messageText,
     intent: parsed.intent,
-    topic: parsed.topic,
+    topic: parsed.topic || parsed.repo_hint,
     staffName: parsed.staff_name || parsed.assignee,
-    searchQuery: parsed.query,
+    searchQuery: parsed.query || parsed.task,
     replyText: result.replyText || result.caption,
   }).catch((err) => console.error("ownerCommand: logCommand failed", err));
 

@@ -1,0 +1,13 @@
+{
+  "name": "ssj-dev-agent-listener",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.103.3",
+    "dotenv": "^16.4.5"
+  }
+}
