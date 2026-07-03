@@ -4,7 +4,8 @@
 // Saurav created the task from the app himself.
 
 import { askClaude, parseBotJson } from "./claude.js";
-import { TENANT_ID, CLAUDE_MODEL } from "./config.js";
+import { sendWhatsApp } from "./wa.js";
+import { TENANT_ID, CLAUDE_MODEL, WA_SESSION_CLIENT_ID } from "./config.js";
 
 const nameEq = (a, b) => String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
 
@@ -12,13 +13,13 @@ function todayIST() {
   return new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
 }
 
-async function getActiveStaffNames(sb) {
+async function getActiveStaff(sb) {
   const { data } = await sb
     .from("staff")
-    .select("name")
+    .select("name,phone")
     .eq("tenant_id", TENANT_ID)
     .eq("active", true);
-  return (data || []).map((s) => s.name).filter(Boolean);
+  return (data || []).filter((s) => s.name);
 }
 
 // Extracts { intent: "create_task"|"none", assignee, title, due_date } from
@@ -81,9 +82,18 @@ export async function createTaskFromCommand(sb, { assignedToName, title, dueDate
   return row;
 }
 
-// Full pipeline: parse (incl. name resolution) → create. Returns the WhatsApp reply text.
+// Plain template, no AI — sent only for tasks created via this WhatsApp
+// command path (not app-created tasks, to avoid any risk of notifying staff
+// during bulk operations like CSV import or backup restore).
+function buildAssigneeNotifyText({ title, dueDate }) {
+  const dueText = dueDate ? ` — due ${dueDate}` : "";
+  return `📋 New task from Saurav: "${title}"${dueText}`;
+}
+
+// Full pipeline: parse (incl. name resolution) → create → notify assignee. Returns the WhatsApp reply text for Saurav.
 export async function handleOwnerTaskCommand(sb, messageText) {
-  const staffNames = await getActiveStaffNames(sb);
+  const staff = await getActiveStaff(sb);
+  const staffNames = staff.map((s) => s.name);
   const parsed = await parseTaskCommand(messageText, staffNames);
 
   if (parsed.intent !== "create_task" || !parsed.title) {
@@ -95,14 +105,14 @@ export async function handleOwnerTaskCommand(sb, messageText) {
 
   // parsed.assignee should already be an exact roster name — confirm, since
   // the model is instructed to but isn't guaranteed to comply perfectly.
-  const matchedName = staffNames.find((n) => nameEq(n, parsed.assignee));
-  if (!matchedName) {
+  const matchedStaff = staff.find((s) => nameEq(s.name, parsed.assignee));
+  if (!matchedStaff) {
     return `Couldn't match "${parsed.assignee}" against the staff list. Check the spelling?`;
   }
 
   try {
     await createTaskFromCommand(sb, {
-      assignedToName: matchedName,
+      assignedToName: matchedStaff.name,
       title: parsed.title,
       dueDate: parsed.due_date,
     });
@@ -111,5 +121,17 @@ export async function handleOwnerTaskCommand(sb, messageText) {
   }
 
   const dueText = parsed.due_date ? `, due ${parsed.due_date}` : "";
-  return `✅ Task assigned to ${matchedName}: ${parsed.title}${dueText}`;
+  let notifyNote = "";
+  if (matchedStaff.phone) {
+    const wa = await sendWhatsApp({
+      phone: matchedStaff.phone,
+      msg: buildAssigneeNotifyText({ title: parsed.title, dueDate: parsed.due_date }),
+      client: WA_SESSION_CLIENT_ID,
+    });
+    if (wa.status !== 1) notifyNote = ` (couldn't notify ${matchedStaff.name} on WhatsApp: ${wa.message})`;
+  } else {
+    notifyNote = ` (${matchedStaff.name} has no phone on file — not notified)`;
+  }
+
+  return `✅ Task assigned to ${matchedStaff.name}: ${parsed.title}${dueText}${notifyNote}`;
 }
