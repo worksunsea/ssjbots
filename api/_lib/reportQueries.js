@@ -21,6 +21,7 @@ export async function getOverdueDelegations(sb) {
     .from("tasks")
     .select("title,assigned_to,due_date")
     .eq("tenant_id", TENANT_ID)
+    .eq("task_type", "one-time") // KRAs (recurring) are not delegations, even if admin-assigned
     .ilike("assigned_by", "Saurav")
     .not("assigned_to", "ilike", "Saurav")
     .in("status", ["Pending", "In Progress", "Pending Approval"])
@@ -38,7 +39,7 @@ export async function getMyTasks(sb) {
 export async function getStaffTasks(sb, staffName) {
   const { data } = await sb
     .from("tasks")
-    .select("title,assigned_by,due_date,status")
+    .select("title,assigned_by,task_type,due_date,status")
     .eq("tenant_id", TENANT_ID)
     .ilike("assigned_to", staffName)
     .in("status", ["Pending", "In Progress"])
@@ -238,8 +239,9 @@ export async function buildReportText(sb, topic, opts = {}) {
     case "staff_tasks": {
       if (!opts.staffName) return "Couldn't match that name against the staff list. Check the spelling?";
       const rows = await getStaffTasks(sb, opts.staffName);
+      // KRAs (recurring) never show who assigned them — only one-time delegations do.
       return `📋 ${opts.staffName}'s pending tasks (${rows.length}):\n` + fmtList(
-        rows.map((r) => `- ${r.title} (due ${r.due_date}, from ${r.assigned_by})`),
+        rows.map((r) => `- ${r.title} (due ${r.due_date}${r.task_type === "recurring" ? "" : `, from ${r.assigned_by}`})`),
         "Nothing pending. 🎉"
       );
     }
