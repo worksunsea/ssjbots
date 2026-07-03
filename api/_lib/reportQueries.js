@@ -162,6 +162,58 @@ export async function findLeads(sb, query) {
   return data || [];
 }
 
+// A named staff member's phone/role — "what's Priya's number".
+export async function getStaffContact(sb, staffName) {
+  const { data } = await sb
+    .from("staff")
+    .select("name,phone,role,staff_role")
+    .eq("tenant_id", TENANT_ID)
+    .ilike("name", staffName)
+    .maybeSingle();
+  return data || null;
+}
+
+// Business docs expiring within 30 days — same window as the app's own banner.
+export async function getExpiringDocs(sb) {
+  const { data } = await sb
+    .from("business_docs")
+    .select("title,expiry_date")
+    .eq("tenant_id", TENANT_ID)
+    .not("expiry_date", "is", null)
+    .lte("expiry_date", istMidnightOffset(-30).slice(0, 10))
+    .order("expiry_date", { ascending: true });
+  return data || [];
+}
+
+// Tasks completed today (any assignee) — "what's gotten done today".
+export async function getRecentCompletions(sb) {
+  const { data } = await sb
+    .from("tasks")
+    .select("title,assigned_to,completed_at")
+    .eq("tenant_id", TENANT_ID)
+    .gte("completed_at", istMidnightOffset(0))
+    .order("completed_at", { ascending: false })
+    .limit(30);
+  return data || [];
+}
+
+// A named staff member's approved leave days this quarter — mirrors the
+// quarterDays calc in ssj-hr's App.jsx (LeavesScreen).
+export async function getLeaveBalance(sb, staffName) {
+  const now = new Date(Date.now() + 5.5 * 3600000);
+  const qStart = new Date(Date.UTC(now.getUTCFullYear(), Math.floor(now.getUTCMonth() / 3) * 3, 1)).toISOString().slice(0, 10);
+  const { data } = await sb
+    .from("leaves")
+    .select("leave_type,days,half_day,from_date")
+    .eq("tenant_id", TENANT_ID)
+    .ilike("staff_name", staffName)
+    .eq("status", "Approved")
+    .eq("unsanctioned", false)
+    .gte("from_date", qStart);
+  const totalDays = (data || []).reduce((sum, l) => sum + (l.half_day ? 0.5 : l.days), 0);
+  return { rows: data || [], totalDays, quarterStart: qStart };
+}
+
 // ── WhatsApp text formatting for the on-demand "get report" command ────────
 function fmtList(items, empty) {
   return items.length ? items.join("\n") : empty;
@@ -248,6 +300,31 @@ export async function buildReportText(sb, topic, opts = {}) {
     case "fms_jobs": {
       const s = await getFmsJobStats(sb);
       return `⚙️ FMS: ${s.todayJobs} jobs today, ${s.editApprovals} edit approval${s.editApprovals === 1 ? "" : "s"} pending.`;
+    }
+    case "staff_contact": {
+      if (!opts.staffName) return "Couldn't match that name against the staff list. Check the spelling?";
+      const s = await getStaffContact(sb, opts.staffName);
+      if (!s) return `Couldn't find ${opts.staffName} in staff.`;
+      return `📞 ${s.name}: ${s.phone || "no phone on file"}${s.staff_role ? ` (${s.staff_role})` : ""}`;
+    }
+    case "expiring_docs": {
+      const rows = await getExpiringDocs(sb);
+      return `📄 Business docs expiring within 30 days (${rows.length}):\n` + fmtList(
+        rows.map((r) => `- ${r.title} — ${r.expiry_date}`),
+        "None expiring soon. 🎉"
+      );
+    }
+    case "recent_completions": {
+      const rows = await getRecentCompletions(sb);
+      return `✅ Completed today (${rows.length}):\n` + fmtList(
+        rows.map((r) => `- ${r.title} by ${r.assigned_to}`),
+        "Nothing marked done yet today."
+      );
+    }
+    case "leave_balance": {
+      if (!opts.staffName) return "Couldn't match that name against the staff list. Check the spelling?";
+      const { totalDays, quarterStart } = await getLeaveBalance(sb, opts.staffName);
+      return `📅 ${opts.staffName} has taken ${totalDays} day${totalDays === 1 ? "" : "s"} of approved leave since ${quarterStart} (this quarter).`;
     }
     case "lead_lookup": {
       if (!opts.query) return "What name or phone number should I look up?";
