@@ -9,10 +9,12 @@ import { askClaude, parseBotJson } from "./_lib/claude.js";
 import { getRates, ratesForPrompt } from "./_lib/rates.js";
 import { getFaqs, faqsForPrompt } from "./_lib/faqs.js";
 import { buildSystemPrompt, buildMessages } from "./_lib/prompt.js";
+import { handleOwnerTaskCommand } from "./_lib/taskCommand.js";
 import {
   normalizePhone,
   BOT_NUMBERS,
   OWNER_ALERT_PHONE,
+  OWNER_PHONE,
   SUPABASE_SERVICE_KEY,
   ANTHROPIC_API_KEY,
   CLAUDE_MODEL,
@@ -81,6 +83,20 @@ export default async function handler(req, res) {
   }
 
   if (!phone || !msg) return res.status(200).json({ ok: false, reason: "no_phone_or_msg" });
+
+  // ── Owner WhatsApp → task-assignment command ────────────────────────────────
+  // Only Saurav's own number can create tasks this way; everyone else falls
+  // through to the normal lead/FAQ bot below.
+  if (OWNER_PHONE && normalizePhone(phone) === normalizePhone(OWNER_PHONE)) {
+    try {
+      const sb = supa();
+      const reply = await handleOwnerTaskCommand(sb, msg);
+      await sendWhatsApp({ phone: jid || phone, msg: reply, client: waClient || undefined });
+    } catch (err) {
+      console.error("webhook: owner task command failed", err);
+    }
+    return res.status(200).json({ ok: true, handled: "owner_task_command" });
+  }
 
   // Skip the owner's own number — prevents loops
   if (OWNER_ALERT_PHONE && normalizePhone(phone) === normalizePhone(OWNER_ALERT_PHONE)) {

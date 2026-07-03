@@ -18,6 +18,12 @@ export const WBIZTOOL_DEFAULT_CLIENT = process.env.WBIZTOOL_DEFAULT_CLIENT || "7
 export const HARD_EXCHANGE_CAP = Number(process.env.HARD_EXCHANGE_CAP || 100);
 export const OWNER_ALERT_PHONE = process.env.OWNER_ALERT_PHONE || "8860866000";
 
+// Saurav's personal number — the only sender trusted to issue WhatsApp task
+// commands, and the recipient of the morning/evening digest pings.
+export const OWNER_PHONE = process.env.OWNER_PHONE || "";
+export const DIGEST_CRON_SECRET = process.env.DIGEST_CRON_SECRET || process.env.CRON_SECRET || "";
+export const REPORTING_URL = process.env.REPORTING_URL || "https://hr.gemtre.in/reporting";
+
 // Only these WA numbers run the bot (reply to inbound messages).
 // Other numbers (birthday/anniversary) are send-only.
 export const BOT_NUMBERS = (process.env.BOT_NUMBERS || "8860866000,9312839912")
