@@ -4,12 +4,12 @@
 // Funnels/demands are assigned manually by telecallers in CRM.
 
 import { supa } from "./_lib/supabase.js";
-import { sendWhatsApp } from "./_lib/wa.js";
+import { sendWhatsApp, sendWhatsAppMedia } from "./_lib/wa.js";
 import { askClaude, parseBotJson } from "./_lib/claude.js";
 import { getRates, ratesForPrompt } from "./_lib/rates.js";
 import { getFaqs, faqsForPrompt } from "./_lib/faqs.js";
 import { buildSystemPrompt, buildMessages } from "./_lib/prompt.js";
-import { handleOwnerTaskCommand } from "./_lib/taskCommand.js";
+import { handleOwnerMessage } from "./_lib/ownerCommand.js";
 import {
   normalizePhone,
   BOT_NUMBERS,
@@ -85,18 +85,24 @@ export default async function handler(req, res) {
 
   if (!phone || !msg) return res.status(200).json({ ok: false, reason: "no_phone_or_msg" });
 
-  // ── Owner WhatsApp → task-assignment command ────────────────────────────────
-  // Only Saurav's own number can create tasks this way; everyone else falls
-  // through to the normal lead/FAQ bot below.
+  // ── Owner WhatsApp commands: task assignment, on-demand report, resource search ──
+  // Only Saurav's own number reaches this branch; everyone else falls through
+  // to the normal lead/FAQ bot below.
   if (OWNER_PHONE && normalizePhone(phone) === normalizePhone(OWNER_PHONE)) {
     try {
       const sb = supa();
-      const reply = await handleOwnerTaskCommand(sb, msg);
-      await sendWhatsApp({ phone: jid || phone, msg: reply, client: waClient || WA_SESSION_CLIENT_ID });
+      const { replyText, mediaUrl, caption } = await handleOwnerMessage(sb, msg);
+      const sendTarget = jid || phone;
+      const client = waClient || WA_SESSION_CLIENT_ID;
+      if (mediaUrl) {
+        await sendWhatsAppMedia({ phone: sendTarget, mediaUrl, caption: caption || "", client });
+      } else if (replyText) {
+        await sendWhatsApp({ phone: sendTarget, msg: replyText, client });
+      }
     } catch (err) {
-      console.error("webhook: owner task command failed", err);
+      console.error("webhook: owner command failed", err);
     }
-    return res.status(200).json({ ok: true, handled: "owner_task_command" });
+    return res.status(200).json({ ok: true, handled: "owner_command" });
   }
 
   // Skip the owner's own number — prevents loops
