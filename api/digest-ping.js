@@ -6,6 +6,7 @@
 import { supa } from "./_lib/supabase.js";
 import { sendWhatsApp } from "./_lib/wa.js";
 import { runEmailDigest } from "./_lib/emailDigest.js";
+import { getUpcomingEvents, formatEventsLine } from "./_lib/birthdays.js";
 import { TENANT_ID, OWNER_PHONE, DIGEST_CRON_SECRET, REPORTING_URL } from "./_lib/config.js";
 
 function checkAuth(req) {
@@ -47,18 +48,32 @@ export default async function handler(req, res) {
     if (pendingLeaves) parts.push(`${pendingLeaves} leave${pendingLeaves > 1 ? "s" : ""}`);
     if (pendingPettyCash) parts.push(`${pendingPettyCash} petty cash`);
 
+    const events = await getUpcomingEvents(sb, 2).catch((err) => {
+      console.error("digest-ping: birthday/anniversary lookup failed", err);
+      return [];
+    });
+    const eventsLine = formatEventsLine(events);
+
     const greeting = mode === "morning" ? "🔔 Morning check-in" : "🌙 Evening check-in";
     const teaser = parts.length ? `${parts.join(" + ")} pending` : "all clear";
-    const msg = `${greeting} — ${teaser} → ${REPORTING_URL}`;
+    const msg = [`${greeting} — ${teaser} → ${REPORTING_URL}`, eventsLine].filter(Boolean).join("\n");
 
     const wa = await sendWhatsApp({ phone: OWNER_PHONE, msg });
+    if (wa.status !== 1) console.error("digest-ping: WhatsApp send failed", wa.message);
 
     const emailResults = await runEmailDigest(sb).catch((err) => {
       console.error("digest-ping: email digest failed", err);
       return [];
     });
 
-    return res.status(200).json({ ok: true, mode, sent: wa.status === 1, emailAccountsChecked: emailResults.length });
+    return res.status(200).json({
+      ok: true,
+      mode,
+      sent: wa.status === 1,
+      sendError: wa.status === 1 ? null : wa.message,
+      emailAccountsChecked: emailResults.length,
+      upcomingEvents: events.length,
+    });
   } catch (err) {
     console.error("digest-ping error", err);
     return res.status(500).json({ ok: false, error: String(err.message || err) });
