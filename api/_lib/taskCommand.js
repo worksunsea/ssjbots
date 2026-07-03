@@ -12,12 +12,27 @@ function todayIST() {
   return new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
 }
 
-// Extracts { intent: "create_task"|"none", assignee, title, due_date } from free text.
-export async function parseTaskCommand(messageText) {
+async function getActiveStaffNames(sb) {
+  const { data } = await sb
+    .from("staff")
+    .select("name")
+    .eq("tenant_id", TENANT_ID)
+    .eq("active", true);
+  return (data || []).map((s) => s.name).filter(Boolean);
+}
+
+// Extracts { intent: "create_task"|"none", assignee, title, due_date } from
+// free text. `staffNames` is the live roster — Claude resolves misspelled/
+// phonetic name variants (e.g. "Vineet" -> "Vinit") against it directly,
+// since a plain string-match pass can't catch that but the model can.
+export async function parseTaskCommand(messageText, staffNames) {
   const system = [
     `Today's date is ${todayIST()} (IST).`,
     "The user is a business owner texting his WhatsApp bot to assign a task to a staff member.",
-    "Extract the command as JSON only, no prose: {\"intent\":\"create_task\",\"assignee\":\"<name>\",\"title\":\"<short task description>\",\"due_date\":\"YYYY-MM-DD\"}",
+    `Staff roster (the ONLY valid values for "assignee"): ${staffNames.join(", ")}`,
+    "The name in the message may be misspelled or a phonetic variant (e.g. \"Vineet\" for \"Vinit\", \"Rames\" for \"Ramesh\"). Match it to the closest name in the roster and return that EXACT roster spelling in \"assignee\".",
+    "If no roster name is a plausible match, set \"assignee\" to null — do not invent a name.",
+    "Extract the command as JSON only, no prose: {\"intent\":\"create_task\",\"assignee\":\"<exact roster name or null>\",\"title\":\"<short task description>\",\"due_date\":\"YYYY-MM-DD\"}",
     "Resolve relative dates (e.g. 'by Friday', 'tomorrow', 'next week') against today's date.",
     "If due date isn't mentioned, omit due_date (do not guess).",
     "The message may be in English, Hindi, or Hinglish.",
@@ -34,25 +49,6 @@ export async function parseTaskCommand(messageText) {
   } catch {
     return { intent: "none" };
   }
-}
-
-// Resolves a free-text name against the shared `staff` table.
-// Returns { match } on a unique hit, or { candidates } listing close matches.
-export async function resolveAssignee(sb, assigneeName) {
-  const { data: staff } = await sb
-    .from("staff")
-    .select("id,name,active")
-    .eq("tenant_id", TENANT_ID)
-    .eq("active", true);
-
-  const exact = (staff || []).filter((s) => nameEq(s.name, assigneeName));
-  if (exact.length === 1) return { match: exact[0] };
-
-  const needle = String(assigneeName || "").trim().toLowerCase();
-  const partial = (staff || []).filter((s) => s.name?.toLowerCase().includes(needle) || needle.includes(s.name?.toLowerCase() || "\0"));
-  if (partial.length === 1) return { match: partial[0] };
-
-  return { candidates: (exact.length ? exact : partial).map((s) => s.name) };
 }
 
 // Inserts a task row matching ssj-hr's createTask shape (App.jsx createTask).
@@ -80,24 +76,28 @@ export async function createTaskFromCommand(sb, { assignedToName, title, dueDate
   return row;
 }
 
-// Full pipeline: parse → resolve → create. Returns the WhatsApp reply text.
+// Full pipeline: parse (incl. name resolution) → create. Returns the WhatsApp reply text.
 export async function handleOwnerTaskCommand(sb, messageText) {
-  const parsed = await parseTaskCommand(messageText);
-  if (parsed.intent !== "create_task" || !parsed.assignee || !parsed.title) {
+  const staffNames = await getActiveStaffNames(sb);
+  const parsed = await parseTaskCommand(messageText, staffNames);
+
+  if (parsed.intent !== "create_task" || !parsed.title) {
     return "Didn't catch a task assignment there. Try: \"assign <name>: <task> by <date>\"";
   }
+  if (!parsed.assignee) {
+    return `Couldn't match that name against the staff list. Check the spelling?`;
+  }
 
-  const resolved = await resolveAssignee(sb, parsed.assignee);
-  if (resolved.candidates) {
-    if (!resolved.candidates.length) {
-      return `Couldn't find a staff member named "${parsed.assignee}". Check the spelling?`;
-    }
-    return `Found more than one match for "${parsed.assignee}": ${resolved.candidates.join(", ")}. Which one?`;
+  // parsed.assignee should already be an exact roster name — confirm, since
+  // the model is instructed to but isn't guaranteed to comply perfectly.
+  const matchedName = staffNames.find((n) => nameEq(n, parsed.assignee));
+  if (!matchedName) {
+    return `Couldn't match "${parsed.assignee}" against the staff list. Check the spelling?`;
   }
 
   try {
     await createTaskFromCommand(sb, {
-      assignedToName: resolved.match.name,
+      assignedToName: matchedName,
       title: parsed.title,
       dueDate: parsed.due_date,
     });
@@ -106,5 +106,5 @@ export async function handleOwnerTaskCommand(sb, messageText) {
   }
 
   const dueText = parsed.due_date ? `, due ${parsed.due_date}` : "";
-  return `✅ Task assigned to ${resolved.match.name}: ${parsed.title}${dueText}`;
+  return `✅ Task assigned to ${matchedName}: ${parsed.title}${dueText}`;
 }
