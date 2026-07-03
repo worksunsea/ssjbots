@@ -35,7 +35,12 @@ export async function parseTaskCommand(messageText, staffNames) {
     "Extract the command as JSON only, no prose: {\"intent\":\"create_task\",\"assignee\":\"<exact roster name or null>\",\"title\":\"<short task description>\",\"due_date\":\"YYYY-MM-DD\"}",
     "Resolve relative dates (e.g. 'by Friday', 'tomorrow', 'next week') against today's date.",
     "If due date isn't mentioned, omit due_date (do not guess).",
-    "The message may be in English, Hindi, or Hinglish.",
+    "",
+    "The message is very often Hindi or Hinglish (Devanagari script or Latin transliteration, or mixed), not just English. Treat these exactly the same as an English task command:",
+    "- Hindi task-assignment sentences are usually verb-final and don't use English words like \"assign\". Example: \"Ramesh ko bolo ki invoice fix kare Friday tak\" or \"रमेश को बोलो invoice fix करे शुक्रवार तक\" -> assignee \"Ramesh\", title \"fix invoice\", due_date resolved from \"Friday\"/\"शुक्रवार\".",
+    "- The assignee's name is frequently followed by a postposition (ko/se/ne/को/से/ने) — strip it before matching against the roster, e.g. \"Ramesh ko\" -> \"Ramesh\", \"रमेश को\" -> \"रमेश\" -> match to roster name \"Ramesh\".",
+    "- Common Hindi/Hinglish date words relative to today: aaj/आज = today, kal/कल = tomorrow (when talking about the future), parso/परसों = day after tomorrow, agla hafta/agle hafte/अगले हफ्ते = next week, is hafte/इस हफ्ते = this week, mahine ke end tak/महीने के अंत तक = end of this month.",
+    "- Do not require the word \"assign\" or any specific verb — any sentence instructing a named staff member to do something is a task-assignment command, in any of English, Hindi, or Hinglish.",
     "If the message does NOT look like a task-assignment instruction, reply exactly: {\"intent\":\"none\"}",
   ].join("\n");
   try {
