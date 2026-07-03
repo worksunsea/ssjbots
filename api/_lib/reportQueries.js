@@ -57,6 +57,7 @@ export async function getPendingLeaves(sb) {
     .select("staff_name,leave_type,from_date,to_date,half_day,days")
     .eq("tenant_id", TENANT_ID)
     .eq("status", "Pending")
+    .gte("from_date", todayIST()) // only upcoming — not stale past-dated pending requests
     .order("from_date", { ascending: true });
   return data || [];
 }

@@ -79,9 +79,15 @@ async function searchResources(sb, query) {
   if (docMatches?.length) {
     const doc = docMatches[0];
     if (doc.front_image_url) {
+      // The upload form accepts images AND PDFs into this same column
+      // (accept="image/*,.pdf") — sending a PDF as mediaType "image" fails
+      // to render in WhatsApp, so detect it from the URL/extension.
+      const isPdf = /\.pdf(\?|$)/i.test(doc.front_image_url);
       return {
         text: null,
         mediaUrl: doc.front_image_url,
+        mediaType: isPdf ? "document" : "image",
+        filename: isPdf ? `${doc.title}.pdf` : undefined,
         caption: `📋 ${doc.title}${doc.notes ? "\n" + doc.notes : ""}`,
       };
     }
@@ -110,7 +116,7 @@ export async function handleOwnerMessage(sb, messageText) {
 
   if (parsed.intent === "search_resources") {
     const result = await searchResources(sb, parsed.query || messageText);
-    return { replyText: result.text, mediaUrl: result.mediaUrl, caption: result.caption };
+    return { replyText: result.text, mediaUrl: result.mediaUrl, mediaType: result.mediaType, filename: result.filename, caption: result.caption };
   }
 
   return { replyText: "Didn't catch that. You can: assign a task, ask for a report (e.g. \"give me reporting\"), or ask me to look something up (e.g. \"bank details for ICICI\")." };

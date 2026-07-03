@@ -91,11 +91,11 @@ export default async function handler(req, res) {
   if (OWNER_PHONE && normalizePhone(phone) === normalizePhone(OWNER_PHONE)) {
     try {
       const sb = supa();
-      const { replyText, mediaUrl, caption } = await handleOwnerMessage(sb, msg);
+      const { replyText, mediaUrl, mediaType, filename, caption } = await handleOwnerMessage(sb, msg);
       const sendTarget = jid || phone;
       const client = waClient || WA_SESSION_CLIENT_ID;
       if (mediaUrl) {
-        await sendWhatsAppMedia({ phone: sendTarget, mediaUrl, caption: caption || "", client });
+        await sendWhatsAppMedia({ phone: sendTarget, mediaUrl, mediaType: mediaType || "image", filename, caption: caption || "", client });
       } else if (replyText) {
         await sendWhatsApp({ phone: sendTarget, msg: replyText, client });
       }
