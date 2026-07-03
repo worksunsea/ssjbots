@@ -24,6 +24,12 @@ export const OWNER_PHONE = process.env.OWNER_PHONE || "";
 export const DIGEST_CRON_SECRET = process.env.DIGEST_CRON_SECRET || process.env.CRON_SECRET || "";
 export const REPORTING_URL = process.env.REPORTING_URL || "https://hr.gemtre.in/reporting";
 
+// wa-service's bare /send route falls back to a "default"/"main" session that
+// doesn't exist — the live session is named "Reception" (confirmed via
+// GET /clients). Proactive sends (no inbound message to inherit a client
+// from) must pass this explicitly or wa-service 502s.
+export const WA_SESSION_CLIENT_ID = process.env.WA_SESSION_CLIENT_ID || "Reception";
+
 // Only these WA numbers run the bot (reply to inbound messages).
 // Other numbers (birthday/anniversary) are send-only.
 export const BOT_NUMBERS = (process.env.BOT_NUMBERS || "8860866000,9312839912")

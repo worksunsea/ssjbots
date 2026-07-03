@@ -7,7 +7,7 @@ import { supa } from "./_lib/supabase.js";
 import { sendWhatsApp } from "./_lib/wa.js";
 import { runEmailDigest } from "./_lib/emailDigest.js";
 import { getUpcomingEvents, formatEventsLine } from "./_lib/birthdays.js";
-import { TENANT_ID, OWNER_PHONE, DIGEST_CRON_SECRET, REPORTING_URL } from "./_lib/config.js";
+import { TENANT_ID, OWNER_PHONE, DIGEST_CRON_SECRET, REPORTING_URL, WA_SESSION_CLIENT_ID } from "./_lib/config.js";
 
 function checkAuth(req) {
   if (!DIGEST_CRON_SECRET) return true; // dev mode
@@ -58,7 +58,7 @@ export default async function handler(req, res) {
     const teaser = parts.length ? `${parts.join(" + ")} pending` : "all clear";
     const msg = [`${greeting} — ${teaser} → ${REPORTING_URL}`, eventsLine].filter(Boolean).join("\n");
 
-    const wa = await sendWhatsApp({ phone: OWNER_PHONE, msg });
+    const wa = await sendWhatsApp({ phone: OWNER_PHONE, msg, client: WA_SESSION_CLIENT_ID });
     if (wa.status !== 1) console.error("digest-ping: WhatsApp send failed", wa.message);
 
     const emailResults = await runEmailDigest(sb).catch((err) => {

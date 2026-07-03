@@ -15,6 +15,7 @@ import {
   BOT_NUMBERS,
   OWNER_ALERT_PHONE,
   OWNER_PHONE,
+  WA_SESSION_CLIENT_ID,
   SUPABASE_SERVICE_KEY,
   ANTHROPIC_API_KEY,
   CLAUDE_MODEL,
@@ -91,7 +92,7 @@ export default async function handler(req, res) {
     try {
       const sb = supa();
       const reply = await handleOwnerTaskCommand(sb, msg);
-      await sendWhatsApp({ phone: jid || phone, msg: reply, client: waClient || undefined });
+      await sendWhatsApp({ phone: jid || phone, msg: reply, client: waClient || WA_SESSION_CLIENT_ID });
     } catch (err) {
       console.error("webhook: owner task command failed", err);
     }
