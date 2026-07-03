@@ -11,8 +11,13 @@ import { buildReportText } from "./reportQueries.js";
 function todayIST() {
   return new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
 }
+const nameEq = (a, b) => String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
 
-const REPORT_TOPICS = ["delegations", "my_tasks", "help_slips", "leaves", "petty_cash", "walkins", "demands", "full"];
+const REPORT_TOPICS = [
+  "delegations", "my_tasks", "staff_tasks", "help_slips", "leaves", "petty_cash",
+  "walkins", "demands", "staff_demands", "attendance_today", "low_stock", "fms_jobs",
+  "lead_lookup", "full",
+];
 
 async function classifyOwnerMessage(messageText, staffNames) {
   const system = [
@@ -20,14 +25,23 @@ async function classifyOwnerMessage(messageText, staffNames) {
     "Classify the message into exactly one of these JSON shapes (JSON only, no prose):",
     "",
     `1. Assigning a task to a staff member: {"intent":"create_task","assignee":"<exact roster name or null>","title":"<short task description>","due_date":"YYYY-MM-DD or omit"}`,
-    `   Staff roster (ONLY valid "assignee" values): ${staffNames.join(", ")}`,
+    `   Staff roster (ONLY valid "assignee"/"staff_name" values below): ${staffNames.join(", ")}`,
     "   Match misspelled/phonetic names to the closest roster name (e.g. \"Vineet\" -> \"Vinit\"). Set assignee to null if no plausible match.",
     "   Hindi/Hinglish task commands are common and verb-final, e.g. \"Ramesh ko bolo ki invoice fix kare Friday tak\" -> assignee Ramesh, title \"fix invoice\", due_date resolved. Strip postpositions (ko/se/ne) from the name.",
     "",
-    `2. Asking for a status report / how things are going / numbers on something: {"intent":"get_report","topic":"<one of: ${REPORT_TOPICS.join("|")}>"}`,
-    "   \"delegations\" = tasks he assigned to others. \"my_tasks\" = his own tasks. \"help_slips\" = help slips assigned to him. \"leaves\" = pending leave approvals. \"petty_cash\" = pending petty cash approvals. \"walkins\" = store walk-ins/conversions. \"demands\" = open CRM demands/pipeline. \"full\" = general \"give me the report\"/\"how are things\" with no specific topic.",
+    `2. Asking for a status report / numbers / status on something: {"intent":"get_report","topic":"<one of: ${REPORT_TOPICS.join("|")}>","staff_name":"<exact roster name, ONLY for staff_tasks/staff_demands>","query":"<free text, ONLY for lead_lookup>"}`,
+    "   - \"delegations\" = tasks he assigned to others (overdue). \"my_tasks\" = his own tasks.",
+    "   - \"staff_tasks\" = a NAMED staff member's pending tasks, e.g. \"Naveen's pending tasks\", \"what does Priya have to do\" -> extract staff_name from the roster.",
+    "   - \"help_slips\" = help slips assigned to him. \"leaves\" = pending/upcoming leave approvals. \"petty_cash\" = pending petty cash approvals.",
+    "   - \"walkins\" = store walk-ins/conversions. \"demands\" = all open CRM demands/pipeline.",
+    "   - \"staff_demands\" = a NAMED staff member's open CRM demands, e.g. \"what demands does Mahesh have open\" -> extract staff_name.",
+    "   - \"attendance_today\" = who is absent/not present today, e.g. \"who's absent today\", \"who hasn't come in\".",
+    "   - \"low_stock\" = inventory items below minimum stock level, e.g. \"what needs reordering\", \"low stock items\".",
+    "   - \"fms_jobs\" = field/job tracker status, e.g. \"how many jobs today\", \"any pending job edit approvals\".",
+    "   - \"lead_lookup\" = looking up a specific CUSTOMER by name or phone (not a staff member), e.g. \"who is Rohit Sharma\", \"find customer 98111...\" -> put the name/phone in \"query\".",
+    "   - \"full\" = general \"give me the report\"/\"how are things\" with no specific topic.",
     "",
-    `3. Asking to look something up / retrieve information (bank details, passwords, licenses, templates, any stored company info or document): {"intent":"search_resources","query":"<short search keywords, e.g. 'ICICI bank details'>"}`,
+    `3. Asking to look something up / retrieve company information or a document (bank details, passwords, licenses, templates — NOT a customer): {"intent":"search_resources","query":"<short search keywords, e.g. 'ICICI bank details'>"}`,
     "",
     `4. Anything else (chit-chat, unclear, not matching the above): {"intent":"none"}`,
     "",
@@ -110,7 +124,10 @@ export async function handleOwnerMessage(sb, messageText) {
 
   if (parsed.intent === "get_report") {
     const topic = REPORT_TOPICS.includes(parsed.topic) ? parsed.topic : "full";
-    const replyText = await buildReportText(sb, topic);
+    const resolvedStaffName = parsed.staff_name
+      ? staff.find((s) => nameEq(s.name, parsed.staff_name))?.name || null
+      : null;
+    const replyText = await buildReportText(sb, topic, { staffName: resolvedStaffName, query: parsed.query });
     return { replyText };
   }
 

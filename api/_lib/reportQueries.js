@@ -30,11 +30,17 @@ export async function getOverdueDelegations(sb) {
 }
 
 export async function getMyTasks(sb) {
+  return getStaffTasks(sb, "Saurav");
+}
+
+// Any named staff member's pending tasks — "Naveen's pending tasks" etc.
+// staffName should already be resolved to the exact roster spelling.
+export async function getStaffTasks(sb, staffName) {
   const { data } = await sb
     .from("tasks")
     .select("title,assigned_by,due_date,status")
     .eq("tenant_id", TENANT_ID)
-    .ilike("assigned_to", "Saurav")
+    .ilike("assigned_to", staffName)
     .in("status", ["Pending", "In Progress"])
     .order("due_date", { ascending: true });
   return data || [];
@@ -94,12 +100,74 @@ export async function getPendingDemands(sb) {
   return data || [];
 }
 
+// Active staff not present today and not on approved leave today — since
+// attendance rows only exist for people who actually punched in (no explicit
+// "Absent" status), absence is derived by exclusion.
+export async function getAbsentToday(sb) {
+  const today = todayIST();
+  const [{ data: staff }, { data: attendanceToday }, { data: leavesToday }] = await Promise.all([
+    sb.from("staff").select("name").eq("tenant_id", TENANT_ID).eq("active", true),
+    sb.from("attendance").select("staff_name").eq("tenant_id", TENANT_ID).eq("date", today),
+    sb.from("leaves").select("staff_name").eq("tenant_id", TENANT_ID).eq("status", "Approved").lte("from_date", today).gte("to_date", today),
+  ]);
+  const present = new Set((attendanceToday || []).map((r) => r.staff_name?.toLowerCase()));
+  const onLeave = new Set((leavesToday || []).map((r) => r.staff_name?.toLowerCase()));
+  return (staff || [])
+    .filter((s) => !present.has(s.name?.toLowerCase()) && !onLeave.has(s.name?.toLowerCase()))
+    .map((s) => s.name);
+}
+
+export async function getLowStock(sb) {
+  const { data } = await sb
+    .from("low_stock_view")
+    .select("name,current_stock,min_level")
+    .eq("tenant_id", TENANT_ID)
+    .order("current_stock", { ascending: true })
+    .limit(30);
+  return data || [];
+}
+
+export async function getFmsJobStats(sb) {
+  const todayStart = istMidnightOffset(0);
+  const [{ count: todayJobs }, { count: editApprovals }] = await Promise.all([
+    sb.from("jobs").select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).gte("created_at", todayStart),
+    sb.from("job_edit_approvals").select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).eq("status", "pending"),
+  ]);
+  return { todayJobs: todayJobs || 0, editApprovals: editApprovals || 0 };
+}
+
+// A named staff member's open (not-yet-closed) CRM demands.
+export async function getStaffDemands(sb, staffName) {
+  const { data } = await sb
+    .from("bullion_demands")
+    .select("description,product_category,budget,created_at,lead:bullion_leads(name,phone)")
+    .eq("tenant_id", TENANT_ID)
+    .ilike("assigned_to", staffName)
+    .is("outcome", null)
+    .order("created_at", { ascending: true })
+    .limit(30);
+  return data || [];
+}
+
+// Free-text customer lookup by name or phone.
+export async function findLeads(sb, query) {
+  const cleaned = String(query || "").replace(/[,()]/g, " ").trim();
+  const q = `%${cleaned}%`;
+  const { data } = await sb
+    .from("bullion_leads")
+    .select("name,phone,city,status,last_msg,last_msg_at")
+    .eq("tenant_id", TENANT_ID)
+    .or(`name.ilike.${q},phone.ilike.${q}`)
+    .limit(5);
+  return data || [];
+}
+
 // ── WhatsApp text formatting for the on-demand "get report" command ────────
 function fmtList(items, empty) {
   return items.length ? items.join("\n") : empty;
 }
 
-export async function buildReportText(sb, topic) {
+export async function buildReportText(sb, topic, opts = {}) {
   switch (topic) {
     case "delegations": {
       const rows = await getOverdueDelegations(sb);
@@ -112,6 +180,14 @@ export async function buildReportText(sb, topic) {
       const rows = await getMyTasks(sb);
       return `✅ Your own pending tasks (${rows.length}):\n` + fmtList(
         rows.map((r) => `- ${r.title} (due ${r.due_date})`),
+        "Nothing pending. 🎉"
+      );
+    }
+    case "staff_tasks": {
+      if (!opts.staffName) return "Couldn't match that name against the staff list. Check the spelling?";
+      const rows = await getStaffTasks(sb, opts.staffName);
+      return `📋 ${opts.staffName}'s pending tasks (${rows.length}):\n` + fmtList(
+        rows.map((r) => `- ${r.title} (due ${r.due_date}, from ${r.assigned_by})`),
         "Nothing pending. 🎉"
       );
     }
@@ -147,11 +223,45 @@ export async function buildReportText(sb, topic) {
         "None open. 🎉"
       );
     }
+    case "staff_demands": {
+      if (!opts.staffName) return "Couldn't match that name against the staff list. Check the spelling?";
+      const rows = await getStaffDemands(sb, opts.staffName);
+      return `📇 ${opts.staffName}'s open demands (${rows.length}):\n` + fmtList(
+        rows.map((r) => `- ${r.lead?.name || r.lead?.phone || "Unknown"}: ${r.description || r.product_category || "demand"}${r.budget ? " (₹" + Math.round(r.budget).toLocaleString("en-IN") + ")" : ""}`),
+        "None open. 🎉"
+      );
+    }
+    case "attendance_today": {
+      const absent = await getAbsentToday(sb);
+      return `🧑‍🤝‍🧑 Absent today (${absent.length}):\n` + fmtList(
+        absent.map((n) => `- ${n}`),
+        "Everyone's present or on approved leave. 🎉"
+      );
+    }
+    case "low_stock": {
+      const rows = await getLowStock(sb);
+      return `📦 Low stock (${rows.length}):\n` + fmtList(
+        rows.map((r) => `- ${r.name}: ${r.current_stock}/${r.min_level}`),
+        "Nothing below minimum. 🎉"
+      );
+    }
+    case "fms_jobs": {
+      const s = await getFmsJobStats(sb);
+      return `⚙️ FMS: ${s.todayJobs} jobs today, ${s.editApprovals} edit approval${s.editApprovals === 1 ? "" : "s"} pending.`;
+    }
+    case "lead_lookup": {
+      if (!opts.query) return "What name or phone number should I look up?";
+      const rows = await findLeads(sb, opts.query);
+      return `🔍 Matches for "${opts.query}" (${rows.length}):\n` + fmtList(
+        rows.map((r) => `- ${r.name || "Unknown"} · ${r.phone || "no phone"} · ${r.city || ""} · status: ${r.status}${r.last_msg ? `\n  last: "${r.last_msg.slice(0, 60)}"` : ""}`),
+        "No matching customer found."
+      );
+    }
     case "full":
     default: {
-      const [deleg, mine, slips, leaves, petty, walkins] = await Promise.all([
+      const [deleg, mine, slips, leaves, petty, walkins, absent] = await Promise.all([
         getOverdueDelegations(sb), getMyTasks(sb), getOpenHelpSlips(sb),
-        getPendingLeaves(sb), getPendingPettyCash(sb), getWalkinStats(sb),
+        getPendingLeaves(sb), getPendingPettyCash(sb), getWalkinStats(sb), getAbsentToday(sb),
       ]);
       return [
         `📊 Quick report:`,
@@ -160,6 +270,7 @@ export async function buildReportText(sb, topic) {
         `- Open help slips: ${slips.length}`,
         `- Leaves pending: ${leaves.length}`,
         `- Petty cash pending: ${petty.count}`,
+        `- Absent today: ${absent.length}${absent.length ? " (" + absent.slice(0, 5).join(", ") + (absent.length > 5 ? "…" : "") + ")" : ""}`,
         `- Walk-ins: ${walkins.today} today, ${walkins.yesterday} yesterday`,
         `Full detail: https://hr.gemtre.in/reporting`,
       ].join("\n");
