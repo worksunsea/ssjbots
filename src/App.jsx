@@ -10418,7 +10418,8 @@ const FANCY_SHAPES = ["Oval","Princess","Cushion","Pear","Marquise","Emerald","R
 const ALL_SHAPES = ["Round", ...FANCY_SHAPES];
 // Purity options — rateKey maps to live rate field; null = manual.
 // mult (optional) scales the live rate for purities that share a base rate
-// (e.g. 92.5 silver is quoted off the same 999 fine-silver rate) — default 1.
+// but sell at a discount to it — default 1 (unused for now: 92.5 silver is
+// billed at the same ₹/g as 999, per store policy — just a different label).
 const PURITIES = [
   { l: "22kt (91.6%)", rateKey: "g22" },
   { l: "18kt (75%)",   rateKey: "g18" },
@@ -10426,7 +10427,7 @@ const PURITIES = [
   { l: "9kt (37.5%)",  rateKey: "g9"  },
   { l: "24kt (99.5%)", rateKey: "g24" },
   { l: "Silver (999)",   rateKey: "silver" },
-  { l: "Silver (92.5%)", rateKey: "silver", mult: 0.925 },
+  { l: "Silver (92.5%)", rateKey: "silver" },
   { l: "Custom ₹/g",   rateKey: null  },
 ];
 
@@ -10444,17 +10445,14 @@ function parseLiveRatesForCalc(rows) {
   const out = { g24: null, g22: null, g18: null, g14: null, g9: null, silver: null, usd: null };
   const isNum = v => typeof v === "number" && !isNaN(v);
   let nextColCisUSD = false;
-  let nextRowIsSilver = false;
   for (const r of rows) {
     const lbl = String(r.gold || "").trim();
     const est = r.estimated;
     const colC = r[""];
-    if (lbl === "Silver Rate") { nextRowIsSilver = true; continue; }
-    if (nextRowIsSilver && isNum(r.gold) && r.gold > 10000) {
-      out.silver = Math.round(r.gold / 1000 * 100) / 100;
-      nextRowIsSilver = false;
-      continue;
-    }
+    // Retail per-gram silver rate sits in a row marked "ESTIMATED" in col C
+    // (right after the silver coin table) — NOT the "Silver Rate" section
+    // below it, which is the raw ₹/kg spot/MCX-linked rate (no retail markup).
+    if (String(colC || "").trim() === "ESTIMATED" && isNum(r.gold)) { out.silver = r.gold; continue; }
     if (lbl === "24KT 995" && isNum(est)) { out.g24 = est; nextColCisUSD = false; continue; }
     if (lbl === "22 KT"    && isNum(est)) { out.g22 = est; nextColCisUSD = false; continue; }
     if (lbl === "18KT"     && isNum(est)) { out.g18 = est; nextColCisUSD = false; continue; }
@@ -10472,7 +10470,7 @@ function parseLiveRatesForCalc(rows) {
 }
 
 function newSolRow() {
-  return { id: Date.now() + Math.random(), cert: "IGI", color: "H", shape: "Round", clarity: "VS1", cut: "Excellent", weight: "", buyDisc: "", sellDisc: "", vendorCode: "", purchasePrice: "", notes: "", manualPrice: "", qty: "1" };
+  return { id: Date.now() + Math.random(), cert: "IGI", color: "H", shape: "Round", clarity: "VS1", cut: "Excellent", weight: "", buyDisc: "", sellDisc: "", vendorCode: "", purchasePrice: "", notes: "", manualPrice: "" };
 }
 
 // ─── Walk-in Dashboard Screen ─────────────────────────────────────────────────
@@ -10845,6 +10843,11 @@ function openEstimateSlipWindow(est, liveRates = {}, clientPhone = "") {
       const mw = parseFloat(it[wk]||0);
       dRows.push(row(mw > 0 ? `${it[lk]||"Misc"} (${mw}${it[uk]})` : (it[lk]||"Misc"), fmtN(mw > 0 ? mw*mr : mr)));
     });
+    const qty = Math.max(1, parseInt(it.qty || "1", 10) || 1);
+    if (qty > 1 && it.perPieceTotal > 0) {
+      dRows.push(row("Per-piece Total", fmtN(it.perPieceTotal)));
+      dRows.push(row("Pcs", qty));
+    }
     const recalcBtnHtml = todayRate > 0 ? `<button class="recalcbtn" onclick="recalcToday()">📊 New estimate — today's rate (₹${todayRate.toLocaleString("en-IN")}/g)</button>` : "";
     const waBtnHtml = waPhone ? `<button class="wabtn" onclick="sendWA()">📱 Send WhatsApp</button>` : "";
     body = `<div class="om">ॐ</div><div class="title">ESTIMATE</div><div class="date">${date}</div>${clientName ? `<div class="client">Prepared for: ${clientName}</div>` : ""}<hr class="thick"/>
@@ -10852,17 +10855,17 @@ function openEstimateSlipWindow(est, liveRates = {}, clientPhone = "") {
     <table>${dRows.join("")}${it.applyGst && it.gst > 0 ? row("GST @ 3%", fmtN(it.gst)) : ""}<tr class="total-row"><td>GRAND TOTAL</td><td style="text-align:right;">${fmtN(est.total_amount)}</td></tr></table>
     <div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill</div>
     <div class="btnrow"><button class="printbtn" onclick="window.print()">🖨️ Print</button>${waBtnHtml}${recalcBtnHtml}</div>`;
-    const waMsg = encodeURIComponent(`*ESTIMATE — Sun Sea Jewellers*\n${clientName ? "For: " + clientName + "\n" : ""}Date: ${date}\n\n${it.itemName ? it.itemName + "\n" : ""}Purity: ${PURITIES[it.purityIdx]?.l || "Custom"}\nGross Wt: ${it.grossWt || "—"}g\nTotal: ${fmtN(est.total_amount)}\n\n_This is an estimate only_`);
+    const waMsg = encodeURIComponent(`*ESTIMATE — Sun Sea Jewellers*\n${clientName ? "For: " + clientName + "\n" : ""}Date: ${date}\n\n${it.itemName ? it.itemName + "\n" : ""}Purity: ${PURITIES[it.purityIdx]?.l || "Custom"}\nGross Wt: ${it.grossWt || "—"}g\n${qty > 1 ? `Pcs: ${qty}\n` : ""}Total: ${fmtN(est.total_amount)}\n\n_This is an estimate only_`);
     extraScript = `
 function sendWA(){window.open("https://wa.me/${waPhone}?text=${waMsg}","_blank");}
-var TODAY_RATE=${todayRate},NET_GOLD=${netGold},MAKING=${making},DIA_TOTAL=${diaTotal},MISC_TOTAL=${miscTotal},APPLY_GST=${applyGst};
+var TODAY_RATE=${todayRate},NET_GOLD=${netGold},MAKING=${making},DIA_TOTAL=${diaTotal},MISC_TOTAL=${miscTotal},APPLY_GST=${applyGst},QTY=${qty};
 var CLIENT="${clientName.replace(/"/g,"'")}",IMG="${(it.itemImage||"").replace(/"/g,"'")}",INAME="${(it.itemName||"").replace(/"/g,"'")}",PURITY="${(PURITIES[it.purityIdx]?.l||"Custom").replace(/"/g,"'")}",GWGT="${(it.grossWt||"").toString().replace(/"/g,"'")}",NGWGT="${netGold.toFixed(3)}";
 var MAKING_LBL="Making",DIA1="${it.dia1Wt||""}",DIA1U="${it.dia1Unit||""}",DIA1R="${it.dia1Rate||""}",DIA2="${it.dia2Wt||""}",DIA2U="${it.dia2Unit||""}",DIA2R="${it.dia2Rate||""}",STW="${it.stoneWt||""}",STU="${it.stoneUnit||""}",STR="${it.stoneRate||""}";
 function fmtR(n){return n==null?"—":"₹"+Math.round(n).toLocaleString("en-IN");}
 function expandImg(src){var w=window.open("","_blank","width=600,height=600");w.document.write("<body style='margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh'><img src='"+src+"' style='max-width:100%;max-height:100vh;object-fit:contain'/></body>");w.document.close();}
 function recalcToday(){
   if(!TODAY_RATE){alert("Live rate not loaded");return;}
-  var newGoldVal=NET_GOLD*TODAY_RATE,subT=newGoldVal+MAKING+DIA_TOTAL+MISC_TOTAL,newGst=APPLY_GST?subT*0.03:0,newTotal=subT+newGst;
+  var newGoldVal=NET_GOLD*TODAY_RATE,subT=newGoldVal+MAKING+DIA_TOTAL+MISC_TOTAL,newGst=APPLY_GST?subT*0.03:0,perPiece=subT+newGst,newTotal=perPiece*QTY;
   var td=new Date().toLocaleDateString("en-IN",{day:"2-digit",month:"long",year:"numeric"});
   var r=function(l,v){return "<tr><td style='padding:3px 6px;color:#444;font-size:13px;'>"+l+"</td><td style='padding:3px 6px;text-align:right;font-size:13px;'>"+v+"</td></tr>";};
   var rows=[r("Purity",PURITY)];
@@ -10874,6 +10877,7 @@ function recalcToday(){
   if(parseFloat(DIA1)>0&&DIA1R)rows.push(r("Diamond 1 ("+parseFloat(DIA1)+DIA1U+" @ ₹"+DIA1R+")",fmtR(parseFloat(DIA1)*parseFloat(DIA1R))));
   if(parseFloat(DIA2)>0&&DIA2R)rows.push(r("Diamond 2 ("+parseFloat(DIA2)+DIA2U+" @ ₹"+DIA2R+")",fmtR(parseFloat(DIA2)*parseFloat(DIA2R))));
   if(parseFloat(STW)>0&&STR)rows.push(r("Stone ("+parseFloat(STW)+STU+" @ ₹"+STR+")",fmtR(parseFloat(STW)*parseFloat(STR))));
+  if(QTY>1){rows.push(r("Per-piece Total",fmtR(perPiece)));rows.push(r("Pcs",QTY));}
   var gstRow=APPLY_GST&&newGst>0?r("GST @ 3%",fmtR(newGst)):"";
   var h='<!DOCTYPE html><html><head><title>Estimate</title><style>'+document.head.querySelector("style").textContent+'<\/style><\/head><body><div class="wrap"><div class="om">ॐ<\/div><div class="title">ESTIMATE<\/div><div class="date">'+td+'<\/div>'+(CLIENT?'<div class="client">Prepared for: '+CLIENT+'<\/div>':'')+'<hr class="thick"\/><div class="item-header">'+(IMG?'<img class="item-img" src="'+IMG+'" alt="item"\/>':"")+(INAME?'<div class="item-name">'+INAME+'<\/div>':"")+
   '<\/div><table>'+rows.join("")+gstRow+'<tr class="total-row"><td>GRAND TOTAL<\/td><td style="text-align:right;">'+fmtR(newTotal)+'<\/td><\/tr><\/table><div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill<\/div><div class="btnrow"><button class="printbtn" onclick="window.print()">🖨️ Print<\/button><\/div><\/div><\/body><\/html>';
@@ -11042,7 +11046,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
 
   // Jewellery state
   const [jw, setJw] = useState({
-    itemImage: "", itemName: "", vendorCode: "", size: "", notes: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true,
+    itemImage: "", itemName: "", vendorCode: "", size: "", notes: "", qty: "1", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true,
     makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "",
     dia2Wt: "", dia2Unit: "ct", dia2Rate: "",
     stoneWt: "", stoneUnit: "ct", stoneRate: "",
@@ -11052,7 +11056,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   });
 
   const [jwShowMisc, setJwShowMisc] = useState(false);
-  const [quotShowExtra, setQuotShowExtra] = useState(false); // Pcs / Notes columns — hidden by default, same pattern as jwShowMisc
+  const [quotShowExtra, setQuotShowExtra] = useState(false); // Notes column — hidden by default, same pattern as jwShowMisc
 
   // Solitaire (single stone) state
   const [sol, setSol] = useState({ ...newSolRow(), includeGold: false, goldGrossWt: "", goldPurityIdx: 2, goldCustomPurity: "", goldRateOverride: "", goldMakingRatePg: "1500", goldMakingRatePct: "15", settingDiaWt: "", settingDiaRate: "", settingGemVal: "", applyGst: true });
@@ -11138,7 +11142,9 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     const miscTotal = misc1Val + misc2Val + misc3Val;
     const subTotal = goldVal + making + diaTotal + miscTotal;
     const gst = jw.applyGst ? subTotal * 0.03 : 0;
-    return { gross, gRate, netGold, goldVal, making, diaTotal, miscTotal, subTotal, gst, total: subTotal + gst };
+    const qty = Math.max(1, parseInt(jw.qty || "1", 10) || 1);
+    const perPieceTotal = subTotal + gst;
+    return { gross, gRate, netGold, goldVal, making, diaTotal, miscTotal, subTotal, gst, qty, perPieceTotal, total: perPieceTotal * qty };
   })();
 
   // ── Solitaire calculation ──
@@ -11327,6 +11333,10 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
       const mlabel = mw > 0 ? `${jw[lk]||"Misc"} (${mw}${jw[uk]})` : (jw[lk]||"Misc");
       rows.push(row(mlabel, fmt(mv)));
     });
+    if (jwCalc.qty > 1) {
+      rows.push(row("Per-piece Total", fmt(jwCalc.perPieceTotal)));
+      rows.push(row("Pcs", jwCalc.qty));
+    }
 
     const clientName = saveContact?.name || saveContact?.phone || "";
     const html = `<!DOCTYPE html><html><head><title>Estimate</title>
@@ -11447,10 +11457,9 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
         <td style="padding:4px 6px;font-size:12px;">${r.weight} ct</td>
         <td style="padding:4px 6px;font-size:12px;">${r.color} / ${r.clarity}</td>
         <td style="padding:4px 6px;font-size:12px;">${r.cert}</td>
-        <td style="padding:4px 6px;font-size:12px;text-align:center;">${r.qty || "1"}</td>
         <td style="padding:4px 6px;font-size:12px;text-align:right;font-weight:600;">${sc.sellTotal != null ? fmt(sc.sellTotal) : "—"}</td>
       </tr>`;
-      const notesRow = r.notes ? `<tr style="border-bottom:1px solid #eee;"><td colspan="7" style="padding:0 6px 6px;font-size:11px;color:#777;">📝 ${r.notes}</td></tr>` : "";
+      const notesRow = r.notes ? `<tr style="border-bottom:1px solid #eee;"><td colspan="6" style="padding:0 6px 6px;font-size:11px;color:#777;">📝 ${r.notes}</td></tr>` : "";
       return mainRow + notesRow;
     }).join("");
     const html = `<!DOCTYPE html><html><head><title>Quotation</title>
@@ -11496,7 +11505,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     if (est.mode === "jewellery") {
       setJw({
         itemImage: it.itemImage || "", itemName: it.itemName || "", vendorCode: it.vendorCode || "",
-        size: it.size || "", notes: it.notes || "",
+        size: it.size || "", notes: it.notes || "", qty: it.qty || "1",
         grossWt: it.grossWt || "", purityIdx: it.purityIdx ?? 2, customPurity: it.customPurity || "",
         goldRateOverride: it.gRate ? String(Math.round(it.gRate)) : "",
         applyGst: it.applyGst !== false,
@@ -11545,118 +11554,6 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   };
 
   const openEstimateSlip = (est) => openEstimateSlipWindow(est, liveRates);
-  const _openEstimateSlipOLD = (est) => {
-    const it = (est.items || [])[0] || {};
-    const clientName = est.bullion_leads?.name || est._clientName || "";
-    const date = new Date(est.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" });
-    const fmtN = (n) => n != null ? `₹${Math.round(n).toLocaleString("en-IN")}` : "—";
-    const row = (label, value) => `<tr><td style="padding:3px 6px;color:#444;font-size:13px;">${label}</td><td style="padding:3px 6px;text-align:right;font-size:13px;">${value}</td></tr>`;
-    const CSS = `* { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: 'Georgia', serif; background: #fff; color: #222; }
-  @page { size: A5 portrait; margin: 15mm; }
-  .wrap { max-width: 400px; margin: 0 auto; padding: 12px; }
-  .om { font-size: 32px; color: #8b6914; text-align: center; margin-bottom: 4px; }
-  .title { font-size: 20px; letter-spacing: 3px; text-align: center; font-weight: bold; margin-bottom: 2px; }
-  .date { font-size: 12px; color: #666; text-align: center; margin-bottom: 4px; }
-  .client { font-size: 13px; color: #333; text-align: center; margin-bottom: 10px; font-style: italic; }
-  .item-header { display: flex; align-items: center; gap: 10px; margin: 8px 0 6px; }
-  .item-img { width: 52px; height: 52px; object-fit: cover; border-radius: 5px; cursor: pointer; border: 1px solid #ddd; flex-shrink: 0; }
-  .item-name { font-size: 15px; font-weight: bold; }
-  hr { border: none; border-top: 1px solid #bbb; margin: 8px 0; }
-  hr.thick { border-top: 2px solid #333; }
-  table { width: 100%; border-collapse: collapse; }
-  th { padding: 5px 6px; font-size: 11px; color: #555; text-align: left; border-bottom: 2px solid #333; font-weight: 600; }
-  th:last-child { text-align: right; }
-  .total-row td { padding: 5px 6px; font-size: 16px; font-weight: bold; border-top: 2px solid #333; }
-  .disclaimer { font-size: 10px; color: #888; text-align: center; margin-top: 14px; }
-  .btnrow { display: flex; gap: 8px; margin-top: 12px; justify-content: center; flex-wrap: wrap; }
-  .printbtn { padding: 8px 20px; background: #333; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
-  .recalcbtn { padding: 8px 20px; background: #1565c0; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
-  @media print { .btnrow { display: none; } }`;
-    let body = "";
-    let extraScript = "";
-    if (est.mode === "jewellery") {
-      const todayRate = Math.round(purityRatePg(it.purityIdx, liveRates));
-      const netGold = parseFloat(it.netGold || 0);
-      const making = parseFloat(it.making || 0);
-      const diaTotal = parseFloat(it.diaTotal || 0);
-      const miscTotal = parseFloat(it.miscTotal || 0);
-      const applyGst = it.applyGst ? 1 : 0;
-      const dRows = [];
-      dRows.push(row("Purity", PURITIES[it.purityIdx]?.l || "Custom"));
-      if (it.grossWt) dRows.push(row("Gross Weight", `${parseFloat(it.grossWt||0).toFixed(3)} g`));
-      if (it.netGold != null) dRows.push(row("Net Gold Weight", `${netGold.toFixed(3)} g`));
-      if (it.gRate > 0) dRows.push(row("Gold Rate", `₹${Math.round(it.gRate).toLocaleString("en-IN")}/g`));
-      if (it.goldVal > 0) dRows.push(row("Gold Value", fmtN(it.goldVal)));
-      if (making > 0) dRows.push(row("Making", fmtN(making)));
-      if (parseFloat(it.dia1Wt||0) > 0 && it.dia1Rate > 0) dRows.push(row(`Diamond 1 (${parseFloat(it.dia1Wt)}${it.dia1Unit} @ ₹${it.dia1Rate})`, fmtN(parseFloat(it.dia1Wt||0)*parseFloat(it.dia1Rate||0))));
-      if (parseFloat(it.dia2Wt||0) > 0 && it.dia2Rate > 0) dRows.push(row(`Diamond 2 (${parseFloat(it.dia2Wt)}${it.dia2Unit} @ ₹${it.dia2Rate})`, fmtN(parseFloat(it.dia2Wt||0)*parseFloat(it.dia2Rate||0))));
-      if (parseFloat(it.stoneWt||0) > 0 && it.stoneRate > 0) dRows.push(row(`Stone (${parseFloat(it.stoneWt)}${it.stoneUnit} @ ₹${it.stoneRate})`, fmtN(parseFloat(it.stoneWt||0)*parseFloat(it.stoneRate||0))));
-      [["misc1Lbl","misc1Wt","misc1Unit","misc1Rate"],["misc2Lbl","misc2Wt","misc2Unit","misc2Rate"],["misc3Lbl","misc3Wt","misc3Unit","misc3Rate"]].forEach(([lk,wk,uk,rk]) => {
-        const mr = parseFloat(it[rk]||0); if (!mr) return;
-        const mw = parseFloat(it[wk]||0);
-        dRows.push(row(mw > 0 ? `${it[lk]||"Misc"} (${mw}${it[uk]})` : (it[lk]||"Misc"), fmtN(mw > 0 ? mw*mr : mr)));
-      });
-      const recalcBtnHtml = todayRate > 0 ? `<button class="recalcbtn" onclick="recalcToday()">📊 New estimate — today's rate (₹${todayRate.toLocaleString("en-IN")}/g)</button>` : "";
-      body = `<div class="om">ॐ</div><div class="title">ESTIMATE</div><div class="date">${date}</div>${clientName ? `<div class="client">Prepared for: ${clientName}</div>` : ""}<hr class="thick"/>
-      <div class="item-header">${it.itemImage ? `<img class="item-img" src="${it.itemImage}" alt="item" onclick="expandImg('${it.itemImage}')"/>` : ""}${it.itemName ? `<div class="item-name">${it.itemName}</div>` : ""}</div>
-      <table>${dRows.join("")}${it.applyGst && it.gst > 0 ? row("GST @ 3%", fmtN(it.gst)) : ""}<tr class="total-row"><td>GRAND TOTAL</td><td style="text-align:right;">${fmtN(est.total_amount)}</td></tr></table>
-      <div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill</div>
-      <div class="btnrow"><button class="printbtn" onclick="window.print()">🖨️ Print</button>${recalcBtnHtml}</div>`;
-      extraScript = `
-var TODAY_RATE=${todayRate},NET_GOLD=${netGold},MAKING=${making},DIA_TOTAL=${diaTotal},MISC_TOTAL=${miscTotal},APPLY_GST=${applyGst};
-var CLIENT="${clientName.replace(/"/g,"'")}",IMG="${(it.itemImage||"").replace(/"/g,"'")}",INAME="${(it.itemName||"").replace(/"/g,"'")}",PURITY="${(PURITIES[it.purityIdx]?.l||"Custom").replace(/"/g,"'")}",GWGT="${(it.grossWt||"").toString().replace(/"/g,"'")}",NGWGT="${netGold.toFixed(3)}";
-var MAKING_LBL="Making",DIA1="${it.dia1Wt||""}",DIA1U="${it.dia1Unit||""}",DIA1R="${it.dia1Rate||""}",DIA2="${it.dia2Wt||""}",DIA2U="${it.dia2Unit||""}",DIA2R="${it.dia2Rate||""}",STW="${it.stoneWt||""}",STU="${it.stoneUnit||""}",STR="${it.stoneRate||""}";
-function fmtR(n){return n==null?"—":"₹"+Math.round(n).toLocaleString("en-IN");}
-function recalcToday(){
-  if(!TODAY_RATE){alert("Live rate not loaded");return;}
-  var newGoldVal=NET_GOLD*TODAY_RATE,subT=newGoldVal+MAKING+DIA_TOTAL+MISC_TOTAL,newGst=APPLY_GST?subT*0.03:0,newTotal=subT+newGst;
-  var td=new Date().toLocaleDateString("en-IN",{day:"2-digit",month:"long",year:"numeric"});
-  var r=function(l,v){return "<tr><td style='padding:3px 6px;color:#444;font-size:13px;'>"+l+"</td><td style='padding:3px 6px;text-align:right;font-size:13px;'>"+v+"</td></tr>";};
-  var rows=[r("Purity",PURITY)];
-  if(GWGT)rows.push(r("Gross Weight",parseFloat(GWGT).toFixed(3)+" g"));
-  rows.push(r("Net Gold Weight",NGWGT+" g"));
-  rows.push(r("Gold Rate","₹"+TODAY_RATE.toLocaleString("en-IN")+"/g (today)"));
-  rows.push(r("Gold Value",fmtR(newGoldVal)));
-  if(MAKING>0)rows.push(r(MAKING_LBL,fmtR(MAKING)));
-  if(parseFloat(DIA1)>0&&DIA1R)rows.push(r("Diamond 1 ("+parseFloat(DIA1)+DIA1U+" @ ₹"+DIA1R+")",fmtR(parseFloat(DIA1)*parseFloat(DIA1R))));
-  if(parseFloat(DIA2)>0&&DIA2R)rows.push(r("Diamond 2 ("+parseFloat(DIA2)+DIA2U+" @ ₹"+DIA2R+")",fmtR(parseFloat(DIA2)*parseFloat(DIA2R))));
-  if(parseFloat(STW)>0&&STR)rows.push(r("Stone ("+parseFloat(STW)+STU+" @ ₹"+STR+")",fmtR(parseFloat(STW)*parseFloat(STR))));
-  var gstRow=APPLY_GST&&newGst>0?r("GST @ 3%",fmtR(newGst)):"";
-  var h='<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Estimate<\/title><style>'+document.head.querySelector("style").textContent+'<\/style><\/head><body><div class="wrap"><div class="om">ॐ<\/div><div class="title">ESTIMATE<\/div><div class="date">'+td+'<\/div>'+(CLIENT?'<div class="client">Prepared for: '+CLIENT+'<\/div>':'')+'<hr class="thick"\/><div class="item-header">'+(IMG?'<img class="item-img" src="'+IMG+'" alt="item"\/>':"")+(INAME?'<div class="item-name">'+INAME+'<\/div>':"")+
-  '<\/div><table>'+rows.join("")+gstRow+'<tr class="total-row"><td>GRAND TOTAL<\/td><td style="text-align:right;">'+fmtR(newTotal)+'<\/td><\/tr><\/table><div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill<\/div><div class="btnrow"><button class="printbtn" onclick="window.print()">🖨️ Print<\/button><\/div><\/div><\/body><\/html>';
-  var w=window.open("","_blank","width=500,height=750");if(w){w.document.write(h);w.document.close();}
-}`;
-    } else if (est.mode === "solitaire") {
-      const dRows = [];
-      if (it.shape) dRows.push(row("Shape", it.shape));
-      if (it.weight) dRows.push(row("Weight", `${it.weight} ct`));
-      if (it.color || it.clarity) dRows.push(row("Colour / Clarity", `${it.color||"—"} / ${it.clarity||"—"}`));
-      if (it.cut) dRows.push(row("Cut", it.cut));
-      if (it.cert) dRows.push(row("Certificate", it.cert));
-      if (it.sellPpc != null) dRows.push(row("Sell Price/ct", fmtN(it.sellPpc)));
-      if (it.sellTotal != null) dRows.push(row("Stone Total", fmtN(it.sellTotal)));
-      if (it.includeGold && (it.goldVal||0) + (it.making||0) > 0) dRows.push(row("Gold + Making", fmtN((it.goldVal||0)+(it.making||0))));
-      const stoneGst = it.applyGst && it.sellTotal ? it.sellTotal * 0.015 : 0;
-      const goldGst = it.applyGst && it.includeGold && it.goldVal ? ((it.goldVal||0)+(it.making||0)) * 0.03 : 0;
-      body = `<div class="om">ॐ</div><div class="title">ESTIMATE</div><div class="date">${date}</div>${clientName ? `<div class="client">Prepared for: ${clientName}</div>` : ""}<hr class="thick"/>
-      <table>${dRows.join("")}${stoneGst > 0 ? row("GST @ 1.5% (stone)", fmtN(stoneGst)) : ""}${goldGst > 0 ? row("GST @ 3% (gold setting)", fmtN(goldGst)) : ""}<tr class="total-row"><td>GRAND TOTAL</td><td style="text-align:right;">${fmtN(est.total_amount)}</td></tr></table>
-      <div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill</div>
-      <div class="btnrow"><button class="printbtn" onclick="window.print()">🖨️ Print</button></div>`;
-    } else {
-      const stoneRows = (est.items||[]).map((r, i) => `<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;font-size:12px;color:#888;">${i+1}</td><td style="padding:4px 6px;font-size:12px;">${r.shape||"—"}</td><td style="padding:4px 6px;font-size:12px;">${r.weight||"—"} ct</td><td style="padding:4px 6px;font-size:12px;">${r.color||"—"} / ${r.clarity||"—"}</td><td style="padding:4px 6px;font-size:12px;">${r.cert||"—"}</td><td style="padding:4px 6px;font-size:12px;text-align:right;font-weight:600;">${r.sellTotal != null ? fmtN(r.sellTotal) : "—"}</td></tr>`).join("");
-      body = `<div class="om">ॐ</div><div class="title">QUOTATION</div><div class="date">${date}</div>${clientName ? `<div class="client">Prepared for: ${clientName}</div>` : ""}<hr class="thick"/>
-      <table><thead><tr><th>#</th><th>Shape</th><th>Weight</th><th>Colour/Clarity</th><th>Cert</th><th style="text-align:right;">Price</th></tr></thead><tbody>${stoneRows}</tbody></table>
-      <div class="disclaimer">This is an estimate only · Prices subject to change · Not a final bill</div>
-      <div class="btnrow"><button class="printbtn" onclick="window.print()">🖨️ Print</button></div>`;
-    }
-    const prevChanges = est.metadata?.changes || [];
-    const changeHistoryHtml = prevChanges.length > 0 ? `<div style="margin-top:12px;border-top:1px solid #eee;padding-top:8px;"><div style="font-size:10px;font-weight:600;color:#888;margin-bottom:4px;">Edit history</div>${prevChanges.map(ch => `<div style="font-size:10px;color:#666;margin-bottom:3px;background:#fafafa;border-radius:3px;padding:3px 6px;"><strong>${ch.by||"?"}</strong> · ${new Date(ch.ts).toLocaleString("en-IN",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})} — ${(ch.fields||[]).map(f=>`${f.f}: ₹${Math.round(f.old||0).toLocaleString("en-IN")} → ₹${Math.round(f.new||0).toLocaleString("en-IN")}`).join(", ")}</div>`).join("")}</div>` : "";
-    body = body.replace(`<div class="btnrow">`, changeHistoryHtml + `<div class="btnrow">`);
-    const html = `<!DOCTYPE html><html><head><title>Estimate</title><style>${CSS}</style><script>function expandImg(src){var w=window.open('','_blank','width=600,height=600');w.document.write('<body style="margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh"><img src="'+src+'" style="max-width:100%;max-height:100vh;object-fit:contain"/></body>');w.document.close();}${extraScript}<\/script></head><body><div class="wrap">${body}</div></body></html>`;
-    const win = window.open("", "_blank", "width=500,height=750");
-    if (win) { win.document.write(html); win.document.close(); }
-  };
 
   const jewelleryTab = (
     <div>
@@ -11685,6 +11582,7 @@ function recalcToday(){
         <div><label style={lbl}>Vendor Code</label><input style={inp} value={jw.vendorCode} onChange={e => setJw(p => ({ ...p, vendorCode: e.target.value }))} placeholder="VC-123" /></div>
         <div><label style={lbl}>Size</label><input style={inp} value={jw.size} onChange={e => setJw(p => ({ ...p, size: e.target.value }))} placeholder="e.g. 14 (ring size)" /></div>
         <div><label style={lbl}>Gross Weight (g)</label><input style={inp} type="number" step="0.01" value={jw.grossWt} onChange={e => setJw(p => ({ ...p, grossWt: e.target.value }))} placeholder="0.00" /></div>
+        <div><label style={lbl}>Pcs (for bulk orders)</label><input style={inp} type="number" min="1" step="1" value={jw.qty} onChange={e => setJw(p => ({ ...p, qty: e.target.value }))} placeholder="1" /></div>
         <div>
           <label style={lbl}>Purity</label>
           <select style={inp} value={jw.purityIdx} onChange={e => { const idx = Number(e.target.value); setJw(p => ({ ...p, purityIdx: idx })); saveMakingMode(idx === 0 ? "pct" : "per_g"); }}>
@@ -11775,7 +11673,9 @@ function recalcToday(){
           </label>
           <span style={{ fontSize: 13 }}>{jw.applyGst ? fmt(jwCalc.gst) : "—"}</span>
         </div>
-        {resultRow("GRAND TOTAL", fmt(jwCalc.total), true)}
+        {jwCalc.qty > 1 && resultRow("Per-piece Total", fmt(jwCalc.perPieceTotal))}
+        {jwCalc.qty > 1 && resultRow("Pcs", jwCalc.qty)}
+        {resultRow(jwCalc.qty > 1 ? "GRAND TOTAL (all pcs)" : "GRAND TOTAL", fmt(jwCalc.total), true)}
       </div>
       {(() => {
         const jwPdfRows = [
@@ -11785,6 +11685,7 @@ function recalcToday(){
           ...(jwCalc.diaTotal > 0 ? [["Diamond/Stone", fmt(jwCalc.diaTotal)]] : []),
           ...(jwCalc.miscTotal > 0 ? [["Misc", fmt(jwCalc.miscTotal)]] : []),
           ...(jw.applyGst ? [["GST (3%)", fmt(jwCalc.gst)]] : []),
+          ...(jwCalc.qty > 1 ? [["Per-piece Total", fmt(jwCalc.perPieceTotal)], ["Pcs", String(jwCalc.qty)]] : []),
         ];
         const jwCaption = [
           `*ESTIMATE — Sun Sea Jewellers*`,
@@ -11794,6 +11695,7 @@ function recalcToday(){
           jwCalc.diaTotal > 0 ? `*Diamond/Stone:* ${fmt(jwCalc.diaTotal)}` : "",
           jwCalc.miscTotal > 0 ? `*Misc:* ${fmt(jwCalc.miscTotal)}` : "",
           jw.applyGst ? `*GST (3%):* ${fmt(jwCalc.gst)}` : "",
+          jwCalc.qty > 1 ? `\n*Per-piece Total:* ${fmt(jwCalc.perPieceTotal)}\n*Pcs:* ${jwCalc.qty}` : "",
           `\n*Total: ${fmt(jwCalc.total)}*`,
           `\n_Sun Sea Jewellers, Mumbai_`
         ].filter(Boolean).join("\n");
@@ -11812,7 +11714,7 @@ function recalcToday(){
                 setSendingEst(false);
               }} title={justSaved ? "Send this saved estimate as a PDF on WhatsApp" : "Save the estimate first"}>{sendingEst ? "Sending…" : "📤 Send Estimate"}</Btn>
             )}
-            <Btn small ghost color={C.gray} onClick={() => { setJw({ itemImage: "", itemName: "", vendorCode: "", size: "", notes: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true, makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "", dia2Wt: "", dia2Unit: "ct", dia2Rate: "", stoneWt: "", stoneUnit: "ct", stoneRate: "", misc1Lbl: "Gemstone", misc1Wt: "", misc1Unit: "g", misc1Rate: "", misc1Deduct: true, misc2Lbl: "Mala", misc2Wt: "", misc2Unit: "g", misc2Rate: "", misc2Deduct: false, misc3Lbl: "Lakh", misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false }); setJwShowMisc(false); setSaveContact(null); setContactSearch(""); setJustSaved(false); saveActiveVisit(null, null, null); try { localStorage.removeItem("calc_active_contact"); } catch {} }}>🔄 New</Btn>
+            <Btn small ghost color={C.gray} onClick={() => { setJw({ itemImage: "", itemName: "", vendorCode: "", size: "", notes: "", qty: "1", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true, makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "", dia2Wt: "", dia2Unit: "ct", dia2Rate: "", stoneWt: "", stoneUnit: "ct", stoneRate: "", misc1Lbl: "Gemstone", misc1Wt: "", misc1Unit: "g", misc1Rate: "", misc1Deduct: true, misc2Lbl: "Mala", misc2Wt: "", misc2Unit: "g", misc2Rate: "", misc2Deduct: false, misc3Lbl: "Lakh", misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false }); setJwShowMisc(false); setSaveContact(null); setContactSearch(""); setJustSaved(false); saveActiveVisit(null, null, null); try { localStorage.removeItem("calc_active_contact"); } catch {} }}>🔄 New</Btn>
           </div>
         );
       })()}
@@ -12016,7 +11918,7 @@ function recalcToday(){
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
           <thead>
             <tr style={{ background: "#f7f7f7", borderBottom: "2px solid #eee" }}>
-              {["#","Shape","Wt (ct)","Colour","Clarity","Cut","Cert","Rap INR/ct","Sell Disc%","Sell Price", ...(quotShowExtra ? ["Pcs","Notes"] : []), ""].map(h => (
+              {["#","Shape","Wt (ct)","Colour","Clarity","Cut","Cert","Rap INR/ct","Sell Disc%","Sell Price", ...(quotShowExtra ? ["Notes"] : []), ""].map(h => (
                 <th key={h} style={{ padding: "7px 8px", textAlign: "left", fontWeight: 600, color: "#555", fontSize: 11, whiteSpace: "nowrap" }}>{h}</th>
               ))}
             </tr>
@@ -12066,12 +11968,7 @@ function recalcToday(){
                   </td>
                   {quotShowExtra && (
                     <td style={{ padding: "4px 4px" }}>
-                      <input style={{ ...inp, width: 50, padding: "4px 6px", fontSize: 11 }} type="number" min="1" step="1" value={row.qty} onChange={e => setRows(p => p.map((r, i) => i === idx ? { ...r, qty: e.target.value } : r))} placeholder="1" />
-                    </td>
-                  )}
-                  {quotShowExtra && (
-                    <td style={{ padding: "4px 4px" }}>
-                      <input style={{ ...inp, width: 130, padding: "4px 6px", fontSize: 11 }} value={row.notes} onChange={e => setRows(p => p.map((r, i) => i === idx ? { ...r, notes: e.target.value } : r))} placeholder="e.g. bulk order remarks" />
+                      <input style={{ ...inp, width: 130, padding: "4px 6px", fontSize: 11 }} value={row.notes} onChange={e => setRows(p => p.map((r, i) => i === idx ? { ...r, notes: e.target.value } : r))} placeholder="e.g. remarks" />
                     </td>
                   )}
                   <td style={{ padding: "4px 4px" }}>
@@ -12089,13 +11986,12 @@ function recalcToday(){
         <button
           style={{ fontSize: 12, padding: "5px 12px", borderRadius: 6, border: "1px solid #ddd", background: "#f8f8f8", cursor: "pointer", color: "#555" }}
           onClick={() => setQuotShowExtra(v => !v)}
-        >{quotShowExtra ? "▲ Hide Extra" : "▼ Pcs / Notes (bulk orders)"}</button>
+        >{quotShowExtra ? "▲ Hide Notes" : "▼ Notes"}</button>
       </div>
       {(() => {
         const quotPdfRows = rows.map((r, i) => {
           const sc = solCalc(r);
-          const qty = parseInt(r.qty || "1", 10) || 1;
-          const label = `${i+1}. ${r.shape} ${r.weight}ct ${r.color}/${r.clarity} ${r.cert}${qty > 1 ? ` × ${qty} pcs` : ""}${r.notes ? `\n   📝 ${r.notes}` : ""}`;
+          const label = `${i+1}. ${r.shape} ${r.weight}ct ${r.color}/${r.clarity} ${r.cert}${r.notes ? `\n   📝 ${r.notes}` : ""}`;
           return [label, sc.sellTotal != null ? fmt(sc.sellTotal) : "—"];
         });
         const quotTotal = fmt(rows.reduce((s, r) => s + (solCalc(r).sellTotal || 0), 0));
