@@ -8,7 +8,12 @@
 //       weight (in `gold`), Sun Sea 995 (in `estimated`), MMTC 9999 (in "")
 //   - "Ginni 916 22kt" → 4g / 8g prices in `estimated`
 //   - Second "Sun Sea Jewellers" → silver coin block (same shape, pure silver)
-//   - "Silver Rate" → silver spot (price per kg in `gold`, gold MCX in `estimated`)
+//   - Row right after the silver coin table, marked "" === "ESTIMATED" →
+//     retail silver ₹/g (in `gold`) — THIS is the correct customer-facing
+//     silver rate. See "SILVER RATE SOURCE" note below before touching it.
+//   - "Silver Rate" header → a DIFFERENT, raw wholesale/MCX-linked ₹/kg
+//     spot value in `gold` — parsed as silverSpotWholesalePerGram but not
+//     used for quotes (see note below).
 //   - "Gifting Coins" → small gifts: name, weight, price
 //
 // Business rules (owner):
@@ -16,6 +21,21 @@
 //   - Gold-coin enquiries → MMTC 9999 column
 //   - Silver-coin enquiries → MMTC column of silver block
 //   - GST 3% already included in all coin prices
+//
+// ── SILVER RATE SOURCE (read before adding any new silver feature) ──────────
+// The sheet has TWO silver ₹/g-shaped numbers and they are NOT interchangeable:
+//   1. The "ESTIMATED"-marked row (`spot.silverPerGram`) — the shop's actual
+//      retail selling rate (~₹249-250/g as of 2026-07-04). USE THIS for any
+//      customer-facing silver price: bot quotes, calculator, estimates, PDFs.
+//   2. The row under the "Silver Rate" header (`spot.silverSpotWholesalePerGram`)
+//      — raw MCX/wholesale spot, no retail markup (~₹237/g same day, i.e.
+//      noticeably lower). Do NOT quote this to customers.
+// Both purities (999 fine and 92.5 sterling) bill at the SAME ₹/g — store
+// policy is no purity discount on silver, unlike gold. Do not add a `mult`/
+// discount for 92.5 unless the owner explicitly changes that policy again.
+// This mix-up already caused one real bug (src/App.jsx's calculator briefly
+// quoted the wholesale rate) — if you're parsing rates in a new module,
+// grep this file's history or SSJ_STABLE_FEATURES.md §21 first.
 
 import { APPS_SCRIPT_URL } from "./config.js";
 
@@ -42,7 +62,7 @@ export async function getRates() {
 
 function emptyParsed() {
   return {
-    spot: { gold24kt: null, gold22kt: null, gold18kt: null, gold14kt: null, silverPerGram: null },
+    spot: { gold24kt: null, gold22kt: null, gold18kt: null, gold14kt: null, silverPerGram: null, silverSpotWholesalePerGram: null },
     goldCoins: [],
     silverCoins: [],
     ginni916: [],
@@ -104,6 +124,17 @@ export function parseRates(rows) {
       continue;
     }
 
+    // ── Retail silver ₹/g — a row marked "ESTIMATED" in the 3rd column, sitting
+    // right after the silver coin table. THIS is the shop's actual retail rate
+    // for both 999 and 92.5 silver (store bills 92.5 at the same ₹/g as 999 —
+    // no purity discount). Must be checked before the silver-coin-row rule
+    // below, or this value gets misread as a coin weight.
+    // See SSJ_STABLE_FEATURES.md "SILVER RATE SOURCE" note before touching this.
+    if (mmtc === "ESTIMATED" && isNum(labelRaw)) {
+      out.spot.silverPerGram = labelRaw;
+      continue;
+    }
+
     // ── Silver coin rows ──
     if (section === "silver_coins" && isNum(labelRaw)) {
       out.silverCoins.push({
@@ -114,10 +145,12 @@ export function parseRates(rows) {
       continue;
     }
 
-    // ── Silver spot — "251115 | 153562" row (gold column = silver price per kg) ──
+    // ── Silver spot (raw MCX/wholesale ₹/kg under "Silver Rate" header) ──
+    // NOT used for retail pricing — see the "ESTIMATED" rule above instead.
+    // Kept parsed here only in case a future feature needs the wholesale
+    // reference rate; do not wire this into customer-facing quotes.
     if (section === "silver_spot" && isNum(labelRaw) && labelRaw > 10000) {
-      // 251115 → ₹251.115/g
-      out.spot.silverPerGram = Math.round(labelRaw / 1000 * 100) / 100;
+      out.spot.silverSpotWholesalePerGram = Math.round(labelRaw / 1000 * 100) / 100;
       continue;
     }
 
