@@ -10438,6 +10438,18 @@ function purityRatePg(purityIdx, liveRates) {
   return (liveRates[p.rateKey] || 0) * (p.mult || 1);
 }
 
+// "Gold" or "Silver" — drives every metal-value label (results, print, PDF, WA)
+// so choosing a silver purity doesn't leave "Gold Value" etc. on screen/output.
+function metalLabel(purityIdx) {
+  return /silver/i.test(PURITIES[purityIdx]?.l || "") ? "Silver" : "Gold";
+}
+
+// "₹1500/g" or "15%" — the making rate as configured, for showing alongside
+// (not instead of) the making total, so per-gram jobs show both figures.
+function makingRateLabel(makingR, mode) {
+  return mode === "per_g" ? `₹${Math.round(makingR).toLocaleString("en-IN")}/g` : `${makingR}%`;
+}
+
 // Parse per-gram gold rates + USD from live rates sheet.
 // Sheet columns: row.gold = col A, row.estimated = col B, row[""] = col C
 // Gold rates in col B. USD/INR: label "USD" in col C (C36), live value in col C next row (C37).
@@ -10828,13 +10840,20 @@ function openEstimateSlipWindow(est, liveRates = {}, clientPhone = "") {
     const diaTotal = parseFloat(it.diaTotal || 0);
     const miscTotal = parseFloat(it.miscTotal || 0);
     const applyGst = it.applyGst ? 1 : 0;
+    const metal = metalLabel(it.purityIdx);
     const dRows = [];
     dRows.push(row("Purity", PURITIES[it.purityIdx]?.l || "Custom"));
     if (it.grossWt) dRows.push(row("Gross Weight", `${parseFloat(it.grossWt||0).toFixed(3)} g`));
-    if (it.netGold != null) dRows.push(row("Net Gold Weight", `${netGold.toFixed(3)} g`));
-    if (it.gRate > 0) dRows.push(row("Gold Rate", `₹${Math.round(it.gRate).toLocaleString("en-IN")}/g`));
-    if (it.goldVal > 0) dRows.push(row("Gold Value", fmtN(it.goldVal)));
-    if (making > 0) dRows.push(row("Making", fmtN(making)));
+    if (it.netGold != null) dRows.push(row(`Net ${metal} Weight`, `${netGold.toFixed(3)} g`));
+    if (it.gRate > 0) dRows.push(row(`${metal} Rate`, `₹${Math.round(it.gRate).toLocaleString("en-IN")}/g`));
+    if (it.goldVal > 0) dRows.push(row(`${metal} Value`, fmtN(it.goldVal)));
+    if (making > 0) {
+      const makingRateTxt = it.makingMode
+        ? makingRateLabel(parseFloat(it.makingMode === "per_g" ? it.makingRatePg : it.makingRatePct) || 0, it.makingMode)
+        : (netGold > 0 ? `₹${Math.round(making / netGold).toLocaleString("en-IN")}/g (effective)` : "—");
+      dRows.push(row("Making Rate", makingRateTxt));
+      dRows.push(row("Making Total", fmtN(making)));
+    }
     if (parseFloat(it.dia1Wt||0) > 0 && it.dia1Rate > 0) dRows.push(row(`Diamond 1 (${parseFloat(it.dia1Wt)}${it.dia1Unit} @ ₹${it.dia1Rate})`, fmtN(parseFloat(it.dia1Wt||0)*parseFloat(it.dia1Rate||0))));
     if (parseFloat(it.dia2Wt||0) > 0 && it.dia2Rate > 0) dRows.push(row(`Diamond 2 (${parseFloat(it.dia2Wt)}${it.dia2Unit} @ ₹${it.dia2Rate})`, fmtN(parseFloat(it.dia2Wt||0)*parseFloat(it.dia2Rate||0))));
     if (parseFloat(it.stoneWt||0) > 0 && it.stoneRate > 0) dRows.push(row(`Stone (${parseFloat(it.stoneWt)}${it.stoneUnit} @ ₹${it.stoneRate})`, fmtN(parseFloat(it.stoneWt||0)*parseFloat(it.stoneRate||0))));
@@ -10859,8 +10878,8 @@ function openEstimateSlipWindow(est, liveRates = {}, clientPhone = "") {
     extraScript = `
 function sendWA(){window.open("https://wa.me/${waPhone}?text=${waMsg}","_blank");}
 var TODAY_RATE=${todayRate},NET_GOLD=${netGold},MAKING=${making},DIA_TOTAL=${diaTotal},MISC_TOTAL=${miscTotal},APPLY_GST=${applyGst},QTY=${qty};
-var CLIENT="${clientName.replace(/"/g,"'")}",IMG="${(it.itemImage||"").replace(/"/g,"'")}",INAME="${(it.itemName||"").replace(/"/g,"'")}",PURITY="${(PURITIES[it.purityIdx]?.l||"Custom").replace(/"/g,"'")}",GWGT="${(it.grossWt||"").toString().replace(/"/g,"'")}",NGWGT="${netGold.toFixed(3)}";
-var MAKING_LBL="Making",DIA1="${it.dia1Wt||""}",DIA1U="${it.dia1Unit||""}",DIA1R="${it.dia1Rate||""}",DIA2="${it.dia2Wt||""}",DIA2U="${it.dia2Unit||""}",DIA2R="${it.dia2Rate||""}",STW="${it.stoneWt||""}",STU="${it.stoneUnit||""}",STR="${it.stoneRate||""}";
+var CLIENT="${clientName.replace(/"/g,"'")}",IMG="${(it.itemImage||"").replace(/"/g,"'")}",INAME="${(it.itemName||"").replace(/"/g,"'")}",PURITY="${(PURITIES[it.purityIdx]?.l||"Custom").replace(/"/g,"'")}",GWGT="${(it.grossWt||"").toString().replace(/"/g,"'")}",NGWGT="${netGold.toFixed(3)}",METAL="${metal}";
+var MAKING_RATE_TXT="${(it.makingMode ? makingRateLabel(parseFloat(it.makingMode === "per_g" ? it.makingRatePg : it.makingRatePct) || 0, it.makingMode) : (netGold > 0 ? `₹${Math.round(making / netGold).toLocaleString("en-IN")}/g (effective)` : "—")).replace(/"/g,"'")}",DIA1="${it.dia1Wt||""}",DIA1U="${it.dia1Unit||""}",DIA1R="${it.dia1Rate||""}",DIA2="${it.dia2Wt||""}",DIA2U="${it.dia2Unit||""}",DIA2R="${it.dia2Rate||""}",STW="${it.stoneWt||""}",STU="${it.stoneUnit||""}",STR="${it.stoneRate||""}";
 function fmtR(n){return n==null?"—":"₹"+Math.round(n).toLocaleString("en-IN");}
 function expandImg(src){var w=window.open("","_blank","width=600,height=600");w.document.write("<body style='margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh'><img src='"+src+"' style='max-width:100%;max-height:100vh;object-fit:contain'/></body>");w.document.close();}
 function recalcToday(){
@@ -10870,10 +10889,10 @@ function recalcToday(){
   var r=function(l,v){return "<tr><td style='padding:3px 6px;color:#444;font-size:13px;'>"+l+"</td><td style='padding:3px 6px;text-align:right;font-size:13px;'>"+v+"</td></tr>";};
   var rows=[r("Purity",PURITY)];
   if(GWGT)rows.push(r("Gross Weight",parseFloat(GWGT).toFixed(3)+" g"));
-  rows.push(r("Net Gold Weight",NGWGT+" g"));
-  rows.push(r("Gold Rate","₹"+TODAY_RATE.toLocaleString("en-IN")+"/g (today)"));
-  rows.push(r("Gold Value",fmtR(newGoldVal)));
-  if(MAKING>0)rows.push(r(MAKING_LBL,fmtR(MAKING)));
+  rows.push(r("Net "+METAL+" Weight",NGWGT+" g"));
+  rows.push(r(METAL+" Rate","₹"+TODAY_RATE.toLocaleString("en-IN")+"/g (today)"));
+  rows.push(r(METAL+" Value",fmtR(newGoldVal)));
+  if(MAKING>0){rows.push(r("Making Rate",MAKING_RATE_TXT));rows.push(r("Making Total",fmtR(MAKING)));}
   if(parseFloat(DIA1)>0&&DIA1R)rows.push(r("Diamond 1 ("+parseFloat(DIA1)+DIA1U+" @ ₹"+DIA1R+")",fmtR(parseFloat(DIA1)*parseFloat(DIA1R))));
   if(parseFloat(DIA2)>0&&DIA2R)rows.push(r("Diamond 2 ("+parseFloat(DIA2)+DIA2U+" @ ₹"+DIA2R+")",fmtR(parseFloat(DIA2)*parseFloat(DIA2R))));
   if(parseFloat(STW)>0&&STR)rows.push(r("Stone ("+parseFloat(STW)+STU+" @ ₹"+STR+")",fmtR(parseFloat(STW)*parseFloat(STR))));
@@ -10892,7 +10911,7 @@ function recalcToday(){
     if (it.cert) dRows.push(row("Certificate", it.cert));
     if (it.sellPpc != null) dRows.push(row("Sell Price/ct", fmtN(it.sellPpc)));
     if (it.sellTotal != null) dRows.push(row("Stone Total", fmtN(it.sellTotal)));
-    if (it.includeGold && (it.goldVal||0) + (it.making||0) > 0) dRows.push(row("Gold + Making", fmtN((it.goldVal||0)+(it.making||0))));
+    if (it.includeGold && (it.goldVal||0) + (it.making||0) > 0) dRows.push(row(`${metalLabel(it.goldPurityIdx)} + Making`, fmtN((it.goldVal||0)+(it.making||0))));
     const stoneGst = it.applyGst && it.sellTotal ? it.sellTotal * 0.015 : 0;
     const goldGst = it.applyGst && it.includeGold && it.goldVal ? ((it.goldVal||0)+(it.making||0)) * 0.03 : 0;
     const waMsg = encodeURIComponent(`*ESTIMATE — Sun Sea Jewellers*\n${clientName ? "For: " + clientName + "\n" : ""}Date: ${date}\n\n${it.shape||""} ${it.weight||""}ct ${it.color||""} ${it.clarity||""} ${it.cert||""}\nTotal: ${fmtN(est.total_amount)}\n\n_This is an estimate only_`);
@@ -11144,7 +11163,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     const gst = jw.applyGst ? subTotal * 0.03 : 0;
     const qty = Math.max(1, parseInt(jw.qty || "1", 10) || 1);
     const perPieceTotal = subTotal + gst;
-    return { gross, gRate, netGold, goldVal, making, diaTotal, miscTotal, subTotal, gst, qty, perPieceTotal, total: perPieceTotal * qty };
+    return { gross, gRate, netGold, goldVal, making, makingR, makingMode, diaTotal, miscTotal, subTotal, gst, qty, perPieceTotal, total: perPieceTotal * qty };
   })();
 
   // ── Solitaire calculation ──
@@ -11317,12 +11336,14 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     const rows = [];
     const row = (label, value) => `<tr><td style="padding:3px 6px;color:#444;font-size:13px;">${label}</td><td style="padding:3px 6px;text-align:right;font-size:13px;">${value}</td></tr>`;
 
+    const metal = metalLabel(jw.purityIdx);
     rows.push(row("Purity", purityLabel));
     rows.push(row("Gross Weight", `${parseFloat(jw.grossWt||0).toFixed(3)} g`));
-    rows.push(row("Net Gold Weight", `${jwCalc.netGold.toFixed(3)} g`));
-    rows.push(row("Gold Rate", `₹${Math.round(jwCalc.gRate).toLocaleString("en-IN")}/g`));
-    rows.push(row("Gold Value", fmt(jwCalc.goldVal)));
-    rows.push(row(`Making`, fmt(jwCalc.making)));
+    rows.push(row(`Net ${metal} Weight`, `${jwCalc.netGold.toFixed(3)} g`));
+    rows.push(row(`${metal} Rate`, `₹${Math.round(jwCalc.gRate).toLocaleString("en-IN")}/g`));
+    rows.push(row(`${metal} Value`, fmt(jwCalc.goldVal)));
+    rows.push(row("Making Rate", makingRateLabel(jwCalc.makingR, jwCalc.makingMode)));
+    rows.push(row("Making Total", fmt(jwCalc.making)));
     if (parseFloat(jw.dia1Wt||0)) rows.push(row(`Diamond 1 (${parseFloat(jw.dia1Wt)}${jw.dia1Unit} @ ₹${jw.dia1Rate})`, fmt(parseFloat(jw.dia1Wt||0)*parseFloat(jw.dia1Rate||0))));
     if (parseFloat(jw.dia2Wt||0)) rows.push(row(`Diamond 2 (${parseFloat(jw.dia2Wt)}${jw.dia2Unit} @ ₹${jw.dia2Rate})`, fmt(parseFloat(jw.dia2Wt||0)*parseFloat(jw.dia2Rate||0))));
     if (parseFloat(jw.stoneWt||0)) rows.push(row(`Stone (${parseFloat(jw.stoneWt)}${jw.stoneUnit} @ ₹${jw.stoneRate})`, fmt(parseFloat(jw.stoneWt||0)*parseFloat(jw.stoneRate||0))));
@@ -11592,7 +11613,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
         {PURITIES[jw.purityIdx]?.rateKey === null && <div><label style={lbl}>Custom Rate ₹/g</label><input style={inp} type="number" step="0.01" value={jw.goldRateOverride} onChange={e => setJw(p => ({ ...p, goldRateOverride: e.target.value }))} placeholder="e.g. 13000" /></div>}
         <div>
           <label style={lbl}>
-            Gold Rate ₹/g — live: {(() => { const k = PURITIES[jw.purityIdx]?.rateKey; const r = purityRatePg(jw.purityIdx, liveRates); return k && r ? <span style={{ color: C.green, fontWeight: 600 }}>₹{Math.round(r).toLocaleString("en-IN")}</span> : <span style={{ color: C.orange }}>loading…</span>; })()}
+            {metalLabel(jw.purityIdx)} Rate ₹/g — live: {(() => { const k = PURITIES[jw.purityIdx]?.rateKey; const r = purityRatePg(jw.purityIdx, liveRates); return k && r ? <span style={{ color: C.green, fontWeight: 600 }}>₹{Math.round(r).toLocaleString("en-IN")}</span> : <span style={{ color: C.orange }}>loading…</span>; })()}
           </label>
           <input style={{ ...inp, background: jw.goldRateOverride ? "#fffbe6" : "#fff" }} type="number" step="1" value={jw.goldRateOverride} onChange={e => setJw(p => ({ ...p, goldRateOverride: e.target.value }))} placeholder={(() => { const k = PURITIES[jw.purityIdx]?.rateKey; const r = purityRatePg(jw.purityIdx, liveRates); return k && r ? String(Math.round(r)) : "e.g. 13346"; })()} />
           {jw.goldRateOverride && <div style={{ fontSize: 11, color: C.orange, marginTop: 2 }}>⚠ Override active — clear to use live rate</div>}
@@ -11661,9 +11682,10 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
 
       {/* Results */}
       <div style={{ ...card, background: "#f8faff", marginTop: 8 }}>
-        {resultRow("Net Gold Weight", `${jwCalc.netGold.toFixed(3)} g`)}
-        {resultRow("Gold Value", fmt(jwCalc.goldVal))}
-        {resultRow(`Making (${makingMode === "per_g" ? "₹/g" : "%"})`, fmt(jwCalc.making))}
+        {resultRow(`Net ${metalLabel(jw.purityIdx)} Weight`, `${jwCalc.netGold.toFixed(3)} g`)}
+        {resultRow(`${metalLabel(jw.purityIdx)} Value`, fmt(jwCalc.goldVal))}
+        {resultRow("Making Rate", makingRateLabel(jwCalc.makingR, jwCalc.makingMode))}
+        {resultRow("Making Total", fmt(jwCalc.making))}
         {resultRow("Diamond / Stone Total", fmt(jwCalc.diaTotal))}
         {jwCalc.miscTotal > 0 && resultRow("Misc Total", fmt(jwCalc.miscTotal))}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 0" }}>
@@ -11680,8 +11702,9 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
       {(() => {
         const jwPdfRows = [
           ["Item", jw.itemName || "—"],
-          [`Gold (${PURITIES[jw.purityIdx]?.l || "Custom"})`, fmt(jwCalc.goldVal)],
-          ["Making", fmt(jwCalc.making)],
+          [`${metalLabel(jw.purityIdx)} (${PURITIES[jw.purityIdx]?.l || "Custom"})`, fmt(jwCalc.goldVal)],
+          ["Making Rate", makingRateLabel(jwCalc.makingR, jwCalc.makingMode)],
+          ["Making Total", fmt(jwCalc.making)],
           ...(jwCalc.diaTotal > 0 ? [["Diamond/Stone", fmt(jwCalc.diaTotal)]] : []),
           ...(jwCalc.miscTotal > 0 ? [["Misc", fmt(jwCalc.miscTotal)]] : []),
           ...(jw.applyGst ? [["GST (3%)", fmt(jwCalc.gst)]] : []),
@@ -11690,8 +11713,9 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
         const jwCaption = [
           `*ESTIMATE — Sun Sea Jewellers*`,
           jw.itemName ? `\n*Item:* ${jw.itemName}` : "",
-          `\n*Gold (${PURITIES[jw.purityIdx]?.l || "Custom"}):* ${fmt(jwCalc.goldVal)}`,
-          `*Making:* ${fmt(jwCalc.making)}`,
+          `\n*${metalLabel(jw.purityIdx)} (${PURITIES[jw.purityIdx]?.l || "Custom"}):* ${fmt(jwCalc.goldVal)}`,
+          `*Making Rate:* ${makingRateLabel(jwCalc.makingR, jwCalc.makingMode)}`,
+          `*Making Total:* ${fmt(jwCalc.making)}`,
           jwCalc.diaTotal > 0 ? `*Diamond/Stone:* ${fmt(jwCalc.diaTotal)}` : "",
           jwCalc.miscTotal > 0 ? `*Misc:* ${fmt(jwCalc.miscTotal)}` : "",
           jw.applyGst ? `*GST (3%):* ${fmt(jwCalc.gst)}` : "",
