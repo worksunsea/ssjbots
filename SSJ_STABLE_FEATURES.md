@@ -485,3 +485,26 @@ These apps read the same Supabase project/`staff` table but each has its own sep
 4. ssj-hr already has a **different**, pre-existing **per-user** TOTP setup (`staff.totp_secret`, `staff.totp_enabled`, `api/verify-totp.js`) — that is unrelated to `tenant_security_settings` (the shared office secret) and both can coexist; don't conflate them.
 
 ---
+
+## 20. CALCULATOR — SILVER PURITY, "SEND ESTIMATE" GATED ON SAVE, PDF DOWNLOAD (2026-07-04)
+
+**Applies to all three CalculatorScreen tabs (jewellery, solitaire, quotation).**
+
+1. **Silver purity option.** `PURITIES` (module scope, near line 10419) now has `{ l: "Silver (999)", rateKey: "silver" }`. `parseLiveRatesForCalc` parses the same Google Sheet "Silver Rate" row already used by `api/_lib/rates.js` (`parseRates`) — looks for the `"Silver Rate"` label, then the next numeric row `> 10000` (price per kg) and divides by 1000 for ₹/g. `liveRates.silver` flows through the existing generic `getGoldRatePg` lookup unchanged — no separate silver code path needed downstream.
+2. **"📤 Send Estimate" button is now gated on `justSaved`** (new state, same scope as `saving`/`saveModal`). Previously the "📱 Send WA" button next to Save was active as soon as a contact was linked, even before the estimate was actually saved — it could send stale/unsaved numbers. Now:
+   - Clicking "💾 Save/Update Estimate" first sets `justSaved(false)`.
+   - A successful insert or update sets `justSaved(true)` — button turns solid green and enables.
+   - `loadEstimateForEdit` also sets `justSaved(true)` (loading an already-saved estimate is inherently "saved").
+   - "🔄 New" (jewellery tab) resets `justSaved(false)`.
+   - "📤 Send Estimate" itself now sends the generated PDF as a WhatsApp document (see point 4), not just text — same 8860866000 Baileys session either way, no server/session changes needed.
+3. **"📄 Download PDF" button** added next to Print in all three tabs. Uses `jspdf` (new dependency, `npm install jspdf`) via the module-level `downloadEstimatePdf({ title, clientName, rows, total })` helper (near `openEstimateSlipWindow`, ~line 10675) — draws a plain text A5 PDF and triggers a direct browser download (`doc.save(...)`), no print dialog. This is separate from the existing "🖨️ Print" button (which still opens a print window for the fancier styled slip / physical printing).
+4. **"📤 Send Estimate" attaches the PDF on WhatsApp (2026-07-04, same day follow-up).**
+   - `buildEstimatePdfDoc({ title, clientName, sections })` is the shared builder behind both the download and the WA-send path — `sections: [{ heading?, rows, total }]`. A single section with no `heading` renders like a plain one-estimate PDF (used by `downloadEstimatePdf`); multiple headed sections render a multi-estimate PDF (used by the multi-select send below).
+   - `sendEstimatePdfOnWA({ phone, clientName, title, sections, caption })` builds the PDF, gets it as a `Blob` (`doc.output("blob")`), wraps it in a `File`, and uploads via `secureNonImageUpload(file, sb, "estimates", ["application/pdf"], 10)` — lands under `uploads/estimates/*` in the `media` bucket (see migration `0053_estimates_storage_policy.sql`, already public-readable). Then POSTs to the new `/api/send-media` endpoint with the public URL.
+   - **New endpoint `api/send-media.js`** — mirrors `api/send.js` but calls `sendWhatsAppMedia` (`api/_lib/wa.js`) instead of `sendWhatsApp`, gated by `checkCrmSecret`. Always passes `client: "8860866000"` because wa-service (`wa-service/src/index.js`) only exposes `/clients/:id/send-media`, not a default-session `/send-media` route — omitting `client` would 404.
+   - `mediaType: "document"` → wa-service's `sendMediaForClient` (`wa-service/src/baileys.js`) builds a Baileys document message with `mimetype: "application/pdf"`, already supported before this change (used for other doc sends).
+   - Quotation tab's WA caption now includes the linked client's name (`For: {name}`), matching jewellery/solitaire — previously it didn't.
+   - The client-history "multi-select past estimates → send" feature (in the "Active client banner" → history panel) now builds one combined multi-section PDF (one section per selected estimate, headed by label + date) and sends it as a single WA document, instead of a text-only summary. Button renamed 📱→📤, disabled while sending (`sendingEst` state, shared across all three tabs + this panel).
+   - New state `sendingEst` (alongside `justSaved`) disables the Send button and shows "Sending…" while the PDF is being built/uploaded/sent, since this is now an async network round-trip instead of a synchronous `wa.me` open.
+
+---

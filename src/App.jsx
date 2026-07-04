@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 import QRCode from "qrcode";
+import { jsPDF } from "jspdf";
 import { secureImageUpload, secureNonImageUpload } from "./utils/imageUpload";
 import { getDeviceToken, shouldForceLogout, SESSION_POLL_MS } from "./utils/session-security";
 
@@ -10422,6 +10423,7 @@ const PURITIES = [
   { l: "14kt (58.5%)", rateKey: "g14" },
   { l: "9kt (37.5%)",  rateKey: "g9"  },
   { l: "24kt (99.5%)", rateKey: "g24" },
+  { l: "Silver (999)", rateKey: "silver" },
   { l: "Custom ₹/g",   rateKey: null  },
 ];
 
@@ -10429,13 +10431,20 @@ const PURITIES = [
 // Sheet columns: row.gold = col A, row.estimated = col B, row[""] = col C
 // Gold rates in col B. USD/INR: label "USD" in col C (C36), live value in col C next row (C37).
 function parseLiveRatesForCalc(rows) {
-  const out = { g24: null, g22: null, g18: null, g14: null, g9: null, usd: null };
+  const out = { g24: null, g22: null, g18: null, g14: null, g9: null, silver: null, usd: null };
   const isNum = v => typeof v === "number" && !isNaN(v);
   let nextColCisUSD = false;
+  let nextRowIsSilver = false;
   for (const r of rows) {
     const lbl = String(r.gold || "").trim();
     const est = r.estimated;
     const colC = r[""];
+    if (lbl === "Silver Rate") { nextRowIsSilver = true; continue; }
+    if (nextRowIsSilver && isNum(r.gold) && r.gold > 10000) {
+      out.silver = Math.round(r.gold / 1000 * 100) / 100;
+      nextRowIsSilver = false;
+      continue;
+    }
     if (lbl === "24KT 995" && isNum(est)) { out.g24 = est; nextColCisUSD = false; continue; }
     if (lbl === "22 KT"    && isNum(est)) { out.g22 = est; nextColCisUSD = false; continue; }
     if (lbl === "18KT"     && isNum(est)) { out.g18 = est; nextColCisUSD = false; continue; }
@@ -10663,6 +10672,108 @@ function WalkinDashboardScreen({ funnels = [], onEditEstimate }) {
   );
 }
 
+// Downloads a simple estimate PDF straight to disk (no print dialog).
+// Builds (but does not save/output) a jsPDF doc for one or more estimate sections.
+// sections: [{ heading?, rows: [[label, value], ...], total }, ...]
+// One section with no heading renders like a single plain estimate; multiple
+// sections (each with a heading) is used for the multi-estimate "send selected" flow.
+function buildEstimatePdfDoc({ title, clientName, sections }) {
+  const doc = new jsPDF({ unit: "pt", format: "a5" });
+  const marginX = 40, colR = 380;
+  let y = 50;
+
+  doc.setFont("times", "bold");
+  doc.setFontSize(18);
+  doc.text(title || "ESTIMATE", 210, y, { align: "center" });
+  y += 22;
+
+  doc.setFont("times", "normal");
+  doc.setFontSize(10);
+  const today = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" });
+  doc.text(today, 210, y, { align: "center" });
+  y += 16;
+  if (clientName) {
+    doc.setFont("times", "italic");
+    doc.text(`Prepared for: ${clientName}`, 210, y, { align: "center" });
+    y += 16;
+  }
+  y += 6;
+
+  const ensureRoom = (need = 20) => { if (y + need > 760) { doc.addPage(); y = 50; } };
+
+  sections.forEach((sec) => {
+    ensureRoom(30);
+    doc.setDrawColor(150);
+    doc.setLineWidth(1);
+    doc.line(marginX, y, colR, y);
+    y += 18;
+
+    if (sec.heading) {
+      doc.setFont("times", "bold");
+      doc.setFontSize(12);
+      doc.text(sec.heading, marginX, y);
+      y += 18;
+    }
+
+    doc.setFont("times", "normal");
+    doc.setFontSize(11);
+    sec.rows.forEach(([label, value]) => {
+      ensureRoom();
+      doc.text(String(label), marginX, y);
+      doc.text(String(value), colR, y, { align: "right" });
+      y += 20;
+    });
+
+    ensureRoom(30);
+    doc.setDrawColor(60);
+    doc.setLineWidth(1.2);
+    doc.line(marginX, y, colR, y);
+    y += 20;
+
+    doc.setFont("times", "bold");
+    doc.setFontSize(13);
+    doc.text(sec.heading ? "Subtotal" : "GRAND TOTAL", marginX, y);
+    doc.text(String(sec.total), colR, y, { align: "right" });
+    y += 26;
+  });
+
+  ensureRoom(30);
+  doc.setFont("times", "normal");
+  doc.setFontSize(8);
+  doc.setTextColor(130);
+  doc.text("This is an estimate only · Gold rates apply on full payment · Not a final bill", 210, y, { align: "center", maxWidth: 340 });
+
+  return doc;
+}
+
+function estimatePdfFilename(title, clientName) {
+  return `${(title || "estimate").toLowerCase().replace(/\s+/g, "-")}-${clientName ? clientName.replace(/[^a-z0-9]+/gi, "-") + "-" : ""}${Date.now()}.pdf`;
+}
+
+// Downloads a single-estimate PDF straight to disk (no print dialog).
+// rows: [[label, value], ...]
+function downloadEstimatePdf({ title, clientName, rows, total }) {
+  const doc = buildEstimatePdfDoc({ title, clientName, sections: [{ rows, total }] });
+  doc.save(estimatePdfFilename(title, clientName));
+}
+
+// Builds the PDF, uploads it to Supabase storage, and sends it as a WhatsApp
+// document via the Baileys wa-service (default session, 8860866000).
+// sections: same shape as buildEstimatePdfDoc.
+async function sendEstimatePdfOnWA({ phone, clientName, title, sections, caption }) {
+  const doc = buildEstimatePdfDoc({ title, clientName, sections });
+  const blob = doc.output("blob");
+  const filename = estimatePdfFilename(title, clientName);
+  const file = new File([blob], filename, { type: "application/pdf" });
+  const { publicUrl } = await secureNonImageUpload(file, sb, "estimates", ["application/pdf"], 10);
+  const res = await fetch("/api/send-media", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
+    body: JSON.stringify({ phone: normalizePhone(phone), mediaUrl: publicUrl, mediaType: "document", filename, caption: caption || "", client: "8860866000" }),
+  });
+  return await res.json();
+}
+
 // Module-level estimate slip opener — shared by CalculatorScreen and WalkinDashboardScreen
 function openEstimateSlipWindow(est, liveRates = {}, clientPhone = "") {
   const it = (est.items || [])[0] || {};
@@ -10824,13 +10935,15 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     reader.onerror = () => reject(reader.error || new Error("FileReader failed"));
     reader.readAsDataURL(file);
   });
-  const [liveRates, setLiveRates] = useState({ g24: null, g22: null, g18: null, g14: null, g9: null, usd: null });
+  const [liveRates, setLiveRates] = useState({ g24: null, g22: null, g18: null, g14: null, g9: null, silver: null, usd: null });
   const [usdInr, setUsdInr] = useState("");
   const [spread, setSpread] = useState(() => { try { return Number(localStorage.getItem("rap_spread") || 8); } catch { return 8; } });
   const [makingMode, setMakingMode] = useState(() => { try { return localStorage.getItem("making_mode") || "per_g"; } catch { return "per_g"; } });
   const [toast, setToast] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveModal, setSaveModal] = useState(false);
+  const [justSaved, setJustSaved] = useState(false); // gates "Send Estimate" — only active right after a save
+  const [sendingEst, setSendingEst] = useState(false); // true while PDF is building/uploading/sending
   const [editingEstId, setEditingEstId] = useState(null);
   const [editingEstOrig, setEditingEstOrig] = useState(null);
   const [walkinOpen, setWalkinOpen] = useState(false);
@@ -11117,6 +11230,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
           setSaveModal(false);
           setEditingEstId(null);
           setEditingEstOrig(null);
+          setJustSaved(true);
           refreshEstLists();
         }
       } else {
@@ -11125,6 +11239,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
         queueEstimate(payload);
         showToast("✅ Estimate saved");
         setSaveModal(false);
+        setJustSaved(true);
         const { error: insErr } = await sb.from("bullion_estimates").insert(payload);
         if (insErr) { showToast("⚠️ Local only — will sync later"); }
         else {
@@ -11410,6 +11525,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     if (est.metadata?.attended_by) setAttendedBy(est.metadata.attended_by);
     setEditingEstId(est.id);
     setEditingEstOrig(est);
+    setJustSaved(true);
     window.scrollTo({ top: 0, behavior: "smooth" });
     showToast("✏️ Estimate loaded — make changes and tap Update");
   };
@@ -11647,25 +11763,45 @@ function recalcToday(){
         </div>
         {resultRow("GRAND TOTAL", fmt(jwCalc.total), true)}
       </div>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <Btn small color={editingEstId ? C.orange : C.blue} onClick={() => setSaveModal(true)}>{editingEstId ? "💾 Update Estimate" : "💾 Save Estimate"}</Btn>
-        <Btn small ghost color={C.blue} onClick={handleJwPrint}>🖨️ Print</Btn>
-        {saveContact && <Btn small ghost color={C.green} onClick={() => {
-          const lines = [
-            `*ESTIMATE — Sun Sea Jewellers*`,
-            jw.itemName ? `\n*Item:* ${jw.itemName}` : "",
-            `\n*Gold (${PURITIES[jw.purityIdx]?.l || "Custom"}):* ${fmt(jwCalc.goldVal)}`,
-            `*Making:* ${fmt(jwCalc.making)}`,
-            jwCalc.diaTotal > 0 ? `*Diamond/Stone:* ${fmt(jwCalc.diaTotal)}` : "",
-            jwCalc.miscTotal > 0 ? `*Misc:* ${fmt(jwCalc.miscTotal)}` : "",
-            jw.applyGst ? `*GST (3%):* ${fmt(jwCalc.gst)}` : "",
-            `\n*Total: ${fmt(jwCalc.total)}*`,
-            `\n_Sun Sea Jewellers, Mumbai_`
-          ].filter(Boolean).join("\n");
-          sendWA(saveContact.phone, lines);
-        }}>📱 Send WA</Btn>}
-        <Btn small ghost color={C.gray} onClick={() => { setJw({ itemImage: "", itemName: "", vendorCode: "", size: "", notes: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true, makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "", dia2Wt: "", dia2Unit: "ct", dia2Rate: "", stoneWt: "", stoneUnit: "ct", stoneRate: "", misc1Lbl: "Gemstone", misc1Wt: "", misc1Unit: "g", misc1Rate: "", misc1Deduct: true, misc2Lbl: "Mala", misc2Wt: "", misc2Unit: "g", misc2Rate: "", misc2Deduct: false, misc3Lbl: "Lakh", misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false }); setJwShowMisc(false); setSaveContact(null); setContactSearch(""); saveActiveVisit(null, null, null); try { localStorage.removeItem("calc_active_contact"); } catch {} }}>🔄 New</Btn>
-      </div>
+      {(() => {
+        const jwPdfRows = [
+          ["Item", jw.itemName || "—"],
+          [`Gold (${PURITIES[jw.purityIdx]?.l || "Custom"})`, fmt(jwCalc.goldVal)],
+          ["Making", fmt(jwCalc.making)],
+          ...(jwCalc.diaTotal > 0 ? [["Diamond/Stone", fmt(jwCalc.diaTotal)]] : []),
+          ...(jwCalc.miscTotal > 0 ? [["Misc", fmt(jwCalc.miscTotal)]] : []),
+          ...(jw.applyGst ? [["GST (3%)", fmt(jwCalc.gst)]] : []),
+        ];
+        const jwCaption = [
+          `*ESTIMATE — Sun Sea Jewellers*`,
+          jw.itemName ? `\n*Item:* ${jw.itemName}` : "",
+          `\n*Gold (${PURITIES[jw.purityIdx]?.l || "Custom"}):* ${fmt(jwCalc.goldVal)}`,
+          `*Making:* ${fmt(jwCalc.making)}`,
+          jwCalc.diaTotal > 0 ? `*Diamond/Stone:* ${fmt(jwCalc.diaTotal)}` : "",
+          jwCalc.miscTotal > 0 ? `*Misc:* ${fmt(jwCalc.miscTotal)}` : "",
+          jw.applyGst ? `*GST (3%):* ${fmt(jwCalc.gst)}` : "",
+          `\n*Total: ${fmt(jwCalc.total)}*`,
+          `\n_Sun Sea Jewellers, Mumbai_`
+        ].filter(Boolean).join("\n");
+        return (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Btn small color={editingEstId ? C.orange : C.blue} onClick={() => { setJustSaved(false); setSaveModal(true); }}>{editingEstId ? "💾 Update Estimate" : "💾 Save Estimate"}</Btn>
+            <Btn small ghost color={C.blue} onClick={handleJwPrint}>🖨️ Print</Btn>
+            <Btn small ghost color={C.blue} onClick={() => downloadEstimatePdf({ title: "ESTIMATE", clientName: saveContact?.name, rows: jwPdfRows, total: fmt(jwCalc.total) })}>📄 Download PDF</Btn>
+            {saveContact && (
+              <Btn small ghost={!justSaved} color={C.green} disabled={!justSaved || sendingEst} style={justSaved ? { background: C.green, color: "#fff" } : undefined} onClick={async () => {
+                setSendingEst(true);
+                try {
+                  const r = await sendEstimatePdfOnWA({ phone: saveContact.phone, clientName: saveContact.name, title: "ESTIMATE", sections: [{ rows: jwPdfRows, total: fmt(jwCalc.total) }], caption: jwCaption });
+                  showToast(r.ok ? "✅ Estimate PDF sent on WhatsApp" : "❌ " + (r.error || "Send failed"));
+                } catch (e) { showToast("❌ " + e.message); }
+                setSendingEst(false);
+              }} title={justSaved ? "Send this saved estimate as a PDF on WhatsApp" : "Save the estimate first"}>{sendingEst ? "Sending…" : "📤 Send Estimate"}</Btn>
+            )}
+            <Btn small ghost color={C.gray} onClick={() => { setJw({ itemImage: "", itemName: "", vendorCode: "", size: "", notes: "", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true, makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "", dia2Wt: "", dia2Unit: "ct", dia2Rate: "", stoneWt: "", stoneUnit: "ct", stoneRate: "", misc1Lbl: "Gemstone", misc1Wt: "", misc1Unit: "g", misc1Rate: "", misc1Deduct: true, misc2Lbl: "Mala", misc2Wt: "", misc2Unit: "g", misc2Rate: "", misc2Deduct: false, misc3Lbl: "Lakh", misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false }); setJwShowMisc(false); setSaveContact(null); setContactSearch(""); setJustSaved(false); saveActiveVisit(null, null, null); try { localStorage.removeItem("calc_active_contact"); } catch {} }}>🔄 New</Btn>
+          </div>
+        );
+      })()}
     </div>
   );
 
@@ -11829,15 +11965,33 @@ function recalcToday(){
           </div>
         )}
       </div>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <Btn small color={editingEstId ? C.orange : C.blue} onClick={() => setSaveModal(true)}>{editingEstId ? "💾 Update Estimate" : "💾 Save Estimate"}</Btn>
-        <Btn small ghost color={C.blue} onClick={handleSolPrint}>🖨️ Print</Btn>
-        {saveContact && <Btn small ghost color={C.green} onClick={() => {
-          const sc = solCalc(sol);
-          const txt = `*ESTIMATE — Sun Sea Jewellers*\n\n*Stone:* ${sol.shape} ${sol.weight}ct ${sol.color}/${sol.clarity} ${sol.cut}\n*Certificate:* ${sol.cert}\n\n*Sell Price:* ${fmt(sc.sellTotal)}\n${sol.includeGold && solGoldCalc ? `*Setting:* ${fmt(solGoldCalc.total)}\n` : ""}*Total:* ${fmt(solGrandTotal)}\n\n_Sun Sea Jewellers, Mumbai_`;
-          sendWA(saveContact.phone, txt);
-        }}>📱 Send WA</Btn>}
-      </div>
+      {(() => {
+        const sc = solCalc(sol);
+        const solPdfRows = [
+          ["Stone", `${sol.shape} ${sol.weight}ct ${sol.color}/${sol.clarity} ${sol.cut}`],
+          ["Certificate", sol.cert],
+          ["Sell Price", fmt(sc.sellTotal)],
+          ...(sol.includeGold && solGoldCalc ? [["Setting", fmt(solGoldCalc.total)]] : []),
+        ];
+        const solCaption = `*ESTIMATE — Sun Sea Jewellers*\n\n*Stone:* ${sol.shape} ${sol.weight}ct ${sol.color}/${sol.clarity} ${sol.cut}\n*Certificate:* ${sol.cert}\n\n*Sell Price:* ${fmt(sc.sellTotal)}\n${sol.includeGold && solGoldCalc ? `*Setting:* ${fmt(solGoldCalc.total)}\n` : ""}*Total:* ${fmt(solGrandTotal)}\n\n_Sun Sea Jewellers, Mumbai_`;
+        return (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Btn small color={editingEstId ? C.orange : C.blue} onClick={() => { setJustSaved(false); setSaveModal(true); }}>{editingEstId ? "💾 Update Estimate" : "💾 Save Estimate"}</Btn>
+            <Btn small ghost color={C.blue} onClick={handleSolPrint}>🖨️ Print</Btn>
+            <Btn small ghost color={C.blue} onClick={() => downloadEstimatePdf({ title: "ESTIMATE", clientName: saveContact?.name, rows: solPdfRows, total: fmt(solGrandTotal) })}>📄 Download PDF</Btn>
+            {saveContact && (
+              <Btn small ghost={!justSaved} color={C.green} disabled={!justSaved || sendingEst} style={justSaved ? { background: C.green, color: "#fff" } : undefined} onClick={async () => {
+                setSendingEst(true);
+                try {
+                  const r = await sendEstimatePdfOnWA({ phone: saveContact.phone, clientName: saveContact.name, title: "ESTIMATE", sections: [{ rows: solPdfRows, total: fmt(solGrandTotal) }], caption: solCaption });
+                  showToast(r.ok ? "✅ Estimate PDF sent on WhatsApp" : "❌ " + (r.error || "Send failed"));
+                } catch (e) { showToast("❌ " + e.message); }
+                setSendingEst(false);
+              }} title={justSaved ? "Send this saved estimate as a PDF on WhatsApp" : "Save the estimate first"}>{sendingEst ? "Sending…" : "📤 Send Estimate"}</Btn>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 
@@ -11909,15 +12063,30 @@ function recalcToday(){
         <div style={{ fontSize: 12, color: "#888" }}>Buy disc default: <input style={{ ...inp, width: 60, display: "inline-block", padding: "4px 6px" }} type="number" value={spread} onChange={e => saveSpread(Number(e.target.value))} /> % spread from sell</div>
         <div style={{ fontSize: 12, color: "#888" }}>USD/INR: <input style={{ ...inp, width: 70, display: "inline-block", padding: "4px 6px" }} type="number" value={usdInr} onChange={e => setUsdInr(e.target.value)} /></div>
       </div>
-      <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-        <Btn small color={C.green} onClick={() => setRows(p => [...p, newSolRow()])}>+ Add Stone</Btn>
-        <Btn small color={C.blue} onClick={() => setSaveModal(true)}>💾 Save</Btn>
-        <Btn small ghost color={C.blue} onClick={handleQuotPrint}>🖨️ Print</Btn>
-        {saveContact && <Btn small ghost color={C.green} onClick={() => {
-          const lines = rows.map((r, i) => { const sc = solCalc(r); return `${i+1}. ${r.shape} ${r.weight}ct ${r.color}/${r.clarity} ${r.cert} — ${sc.sellTotal != null ? fmt(sc.sellTotal) : "—"}`; });
-          sendWA(saveContact.phone, `*QUOTATION — Sun Sea Jewellers*\n\n${lines.join("\n")}\n\n_Sun Sea Jewellers, Mumbai_`);
-        }}>📱 Send WA</Btn>}
-      </div>
+      {(() => {
+        const quotPdfRows = rows.map((r, i) => { const sc = solCalc(r); return [`${i+1}. ${r.shape} ${r.weight}ct ${r.color}/${r.clarity} ${r.cert}`, sc.sellTotal != null ? fmt(sc.sellTotal) : "—"]; });
+        const quotTotal = fmt(rows.reduce((s, r) => s + (solCalc(r).sellTotal || 0), 0));
+        const clientName = saveContact?.name || saveContact?.phone || "";
+        const quotCaption = `*QUOTATION — Sun Sea Jewellers*\n${clientName ? `For: ${clientName}\n` : ""}\n${quotPdfRows.map(([l, v]) => `${l} — ${v}`).join("\n")}\n\n_Sun Sea Jewellers, Mumbai_`;
+        return (
+          <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+            <Btn small color={C.green} onClick={() => setRows(p => [...p, newSolRow()])}>+ Add Stone</Btn>
+            <Btn small color={C.blue} onClick={() => { setJustSaved(false); setSaveModal(true); }}>💾 Save</Btn>
+            <Btn small ghost color={C.blue} onClick={handleQuotPrint}>🖨️ Print</Btn>
+            <Btn small ghost color={C.blue} onClick={() => downloadEstimatePdf({ title: "QUOTATION", clientName: saveContact?.name, rows: quotPdfRows, total: quotTotal })}>📄 Download PDF</Btn>
+            {saveContact && (
+              <Btn small ghost={!justSaved} color={C.green} disabled={!justSaved || sendingEst} style={justSaved ? { background: C.green, color: "#fff" } : undefined} onClick={async () => {
+                setSendingEst(true);
+                try {
+                  const r = await sendEstimatePdfOnWA({ phone: saveContact.phone, clientName: saveContact.name, title: "QUOTATION", sections: [{ rows: quotPdfRows, total: quotTotal }], caption: quotCaption });
+                  showToast(r.ok ? "✅ Quotation PDF sent on WhatsApp" : "❌ " + (r.error || "Send failed"));
+                } catch (e) { showToast("❌ " + e.message); }
+                setSendingEst(false);
+              }} title={justSaved ? "Send this saved quotation as a PDF on WhatsApp" : "Save the estimate first"}>{sendingEst ? "Sending…" : "📤 Send Estimate"}</Btn>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 
@@ -12149,19 +12318,29 @@ function recalcToday(){
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                 <div style={{ fontSize: 11, color: "#555", fontWeight: 600 }}>PREVIOUS ESTIMATES</div>
                 {selectedEstimates.size > 0 && (
-                  <button onClick={() => {
+                  <button disabled={sendingEst} onClick={async () => {
                     const sel = clientHistory.filter(e => selectedEstimates.has(e.id));
-                    const lines = sel.map((e, i) => {
+                    const labelFor = (e) => {
                       const item = e.items?.[0] || {};
-                      const label = e.mode === "jewellery" ? (item.itemName || "Jewellery") : e.mode === "solitaire" ? `${item.shape || "Solitaire"} ${item.weight || ""}ct ${item.color || ""}/${item.clarity || ""}`.trim() : "Quotation";
-                      const date = new Date(e.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
-                      return `*${i + 1}. ${label}* (${date})${e.total_amount ? `\n₹${Math.round(e.total_amount).toLocaleString("en-IN")}` : ""}`;
-                    }).join("\n\n");
-                    const msg = `*ESTIMATE SUMMARY — Sun Sea Jewellers*\n\n${lines}\n\n_For queries call us at Sun Sea Jewellers, Mumbai_`;
-                    sendWA(saveContact.phone, msg);
+                      return e.mode === "jewellery" ? (item.itemName || "Jewellery") : e.mode === "solitaire" ? `${item.shape || "Solitaire"} ${item.weight || ""}ct ${item.color || ""}/${item.clarity || ""}`.trim() : "Quotation";
+                    };
+                    const dateFor = (e) => new Date(e.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+                    const lines = sel.map((e, i) => `*${i + 1}. ${labelFor(e)}* (${dateFor(e)})${e.total_amount ? `\n₹${Math.round(e.total_amount).toLocaleString("en-IN")}` : ""}`).join("\n\n");
+                    const msg = `*ESTIMATE SUMMARY — Sun Sea Jewellers*\n${saveContact?.name ? `For: ${saveContact.name}\n` : ""}\n${lines}\n\n_For queries call us at Sun Sea Jewellers, Mumbai_`;
+                    const sections = sel.map((e) => ({
+                      heading: `${labelFor(e)} — ${dateFor(e)}`,
+                      rows: [["Total", e.total_amount ? fmt(e.total_amount) : "—"]],
+                      total: e.total_amount ? fmt(e.total_amount) : "—",
+                    }));
+                    setSendingEst(true);
+                    try {
+                      const r = await sendEstimatePdfOnWA({ phone: saveContact.phone, clientName: saveContact.name, title: "ESTIMATE SUMMARY", sections, caption: msg });
+                      showToast(r.ok ? "✅ Sent" : "❌ " + (r.error || "Send failed"));
+                    } catch (e) { showToast("❌ " + e.message); }
+                    setSendingEst(false);
                     setSelectedEstimates(new Set());
-                  }} style={{ background: "#25d366", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                    📱 Send {selectedEstimates.size} selected
+                  }} style={{ background: "#25d366", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 12, fontWeight: 600, cursor: sendingEst ? "not-allowed" : "pointer", opacity: sendingEst ? 0.6 : 1 }}>
+                    {sendingEst ? "Sending…" : `📤 Send ${selectedEstimates.size} selected`}
                   </button>
                 )}
               </div>
