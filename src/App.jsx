@@ -10416,16 +10416,26 @@ function rapLookup(rapData, weight, color, clarity, isRound) {
 
 const FANCY_SHAPES = ["Oval","Princess","Cushion","Pear","Marquise","Emerald","Radiant","Asscher","Heart","Trillion","Baguette","Tapered Baguette","Rose Cut","Old Mine Cut","Old European Cut","Briolette","Bullet","Half Moon","Kite","Shield","Trapezoid"];
 const ALL_SHAPES = ["Round", ...FANCY_SHAPES];
-// Purity options — rateKey maps to live rate field; null = manual
+// Purity options — rateKey maps to live rate field; null = manual.
+// mult (optional) scales the live rate for purities that share a base rate
+// (e.g. 92.5 silver is quoted off the same 999 fine-silver rate) — default 1.
 const PURITIES = [
   { l: "22kt (91.6%)", rateKey: "g22" },
   { l: "18kt (75%)",   rateKey: "g18" },
   { l: "14kt (58.5%)", rateKey: "g14" },
   { l: "9kt (37.5%)",  rateKey: "g9"  },
   { l: "24kt (99.5%)", rateKey: "g24" },
-  { l: "Silver (999)", rateKey: "silver" },
+  { l: "Silver (999)",   rateKey: "silver" },
+  { l: "Silver (92.5%)", rateKey: "silver", mult: 0.925 },
   { l: "Custom ₹/g",   rateKey: null  },
 ];
+
+// Per-gram rate for a purity index, live-rate-aware and mult-adjusted.
+function purityRatePg(purityIdx, liveRates) {
+  const p = PURITIES[purityIdx];
+  if (!p?.rateKey) return 0;
+  return (liveRates[p.rateKey] || 0) * (p.mult || 1);
+}
 
 // Parse per-gram gold rates + USD from live rates sheet.
 // Sheet columns: row.gold = col A, row.estimated = col B, row[""] = col C
@@ -10462,7 +10472,7 @@ function parseLiveRatesForCalc(rows) {
 }
 
 function newSolRow() {
-  return { id: Date.now() + Math.random(), cert: "IGI", color: "H", shape: "Round", clarity: "VS1", cut: "Excellent", weight: "", buyDisc: "", sellDisc: "", vendorCode: "", purchasePrice: "", notes: "", manualPrice: "" };
+  return { id: Date.now() + Math.random(), cert: "IGI", color: "H", shape: "Round", clarity: "VS1", cut: "Excellent", weight: "", buyDisc: "", sellDisc: "", vendorCode: "", purchasePrice: "", notes: "", manualPrice: "", qty: "1" };
 }
 
 // ─── Walk-in Dashboard Screen ─────────────────────────────────────────────────
@@ -10814,7 +10824,7 @@ function openEstimateSlipWindow(est, liveRates = {}, clientPhone = "") {
   let extraScript = "";
 
   if (est.mode === "jewellery") {
-    const todayRate = Math.round(liveRates[PURITIES[it.purityIdx]?.rateKey] || 0);
+    const todayRate = Math.round(purityRatePg(it.purityIdx, liveRates));
     const netGold = parseFloat(it.netGold || 0);
     const making = parseFloat(it.making || 0);
     const diaTotal = parseFloat(it.diaTotal || 0);
@@ -11042,6 +11052,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   });
 
   const [jwShowMisc, setJwShowMisc] = useState(false);
+  const [quotShowExtra, setQuotShowExtra] = useState(false); // Pcs / Notes columns — hidden by default, same pattern as jwShowMisc
 
   // Solitaire (single stone) state
   const [sol, setSol] = useState({ ...newSolRow(), includeGold: false, goldGrossWt: "", goldPurityIdx: 2, goldCustomPurity: "", goldRateOverride: "", goldMakingRatePg: "1500", goldMakingRatePct: "15", settingDiaWt: "", settingDiaRate: "", settingGemVal: "", applyGst: true });
@@ -11097,10 +11108,10 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   // ── Jewellery calculations ──
   const ctToG = (w, unit) => unit === "ct" ? parseFloat(w || 0) * 0.2 : parseFloat(w || 0);
   // Get per-gram gold rate for current purity — live rate is already purity-adjusted
+  // (except purities with an explicit `mult`, e.g. 92.5 silver off the 999 rate).
   const getGoldRatePg = (purityIdx, override) => {
     if (override) return parseFloat(override);
-    const key = PURITIES[purityIdx]?.rateKey;
-    return key ? (liveRates[key] || 0) : 0;
+    return purityRatePg(purityIdx, liveRates);
   };
 
   const jwCalc = (() => {
@@ -11430,14 +11441,17 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     const clientName = saveContact?.name || saveContact?.phone || "";
     const stoneRows = rows.map((r, i) => {
       const sc = solCalc(r);
-      return `<tr style="border-bottom:1px solid #eee;">
+      const mainRow = `<tr style="border-bottom:${r.notes ? "none" : "1px solid #eee"};">
         <td style="padding:4px 6px;font-size:12px;color:#888;">${i + 1}</td>
         <td style="padding:4px 6px;font-size:12px;">${r.shape}</td>
         <td style="padding:4px 6px;font-size:12px;">${r.weight} ct</td>
         <td style="padding:4px 6px;font-size:12px;">${r.color} / ${r.clarity}</td>
         <td style="padding:4px 6px;font-size:12px;">${r.cert}</td>
+        <td style="padding:4px 6px;font-size:12px;text-align:center;">${r.qty || "1"}</td>
         <td style="padding:4px 6px;font-size:12px;text-align:right;font-weight:600;">${sc.sellTotal != null ? fmt(sc.sellTotal) : "—"}</td>
       </tr>`;
+      const notesRow = r.notes ? `<tr style="border-bottom:1px solid #eee;"><td colspan="7" style="padding:0 6px 6px;font-size:11px;color:#777;">📝 ${r.notes}</td></tr>` : "";
+      return mainRow + notesRow;
     }).join("");
     const html = `<!DOCTYPE html><html><head><title>Quotation</title>
 <style>
@@ -11562,7 +11576,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     let body = "";
     let extraScript = "";
     if (est.mode === "jewellery") {
-      const todayRate = Math.round(liveRates[PURITIES[it.purityIdx]?.rateKey] || 0);
+      const todayRate = Math.round(purityRatePg(it.purityIdx, liveRates));
       const netGold = parseFloat(it.netGold || 0);
       const making = parseFloat(it.making || 0);
       const diaTotal = parseFloat(it.diaTotal || 0);
@@ -11680,9 +11694,9 @@ function recalcToday(){
         {PURITIES[jw.purityIdx]?.rateKey === null && <div><label style={lbl}>Custom Rate ₹/g</label><input style={inp} type="number" step="0.01" value={jw.goldRateOverride} onChange={e => setJw(p => ({ ...p, goldRateOverride: e.target.value }))} placeholder="e.g. 13000" /></div>}
         <div>
           <label style={lbl}>
-            Gold Rate ₹/g — live: {(() => { const k = PURITIES[jw.purityIdx]?.rateKey; return k && liveRates[k] ? <span style={{ color: C.green, fontWeight: 600 }}>₹{Math.round(liveRates[k]).toLocaleString("en-IN")}</span> : <span style={{ color: C.orange }}>loading…</span>; })()}
+            Gold Rate ₹/g — live: {(() => { const k = PURITIES[jw.purityIdx]?.rateKey; const r = purityRatePg(jw.purityIdx, liveRates); return k && r ? <span style={{ color: C.green, fontWeight: 600 }}>₹{Math.round(r).toLocaleString("en-IN")}</span> : <span style={{ color: C.orange }}>loading…</span>; })()}
           </label>
-          <input style={{ ...inp, background: jw.goldRateOverride ? "#fffbe6" : "#fff" }} type="number" step="1" value={jw.goldRateOverride} onChange={e => setJw(p => ({ ...p, goldRateOverride: e.target.value }))} placeholder={(() => { const k = PURITIES[jw.purityIdx]?.rateKey; return k && liveRates[k] ? String(Math.round(liveRates[k])) : "e.g. 13346"; })()} />
+          <input style={{ ...inp, background: jw.goldRateOverride ? "#fffbe6" : "#fff" }} type="number" step="1" value={jw.goldRateOverride} onChange={e => setJw(p => ({ ...p, goldRateOverride: e.target.value }))} placeholder={(() => { const k = PURITIES[jw.purityIdx]?.rateKey; const r = purityRatePg(jw.purityIdx, liveRates); return k && r ? String(Math.round(r)) : "e.g. 13346"; })()} />
           {jw.goldRateOverride && <div style={{ fontSize: 11, color: C.orange, marginTop: 2 }}>⚠ Override active — clear to use live rate</div>}
         </div>
         <div>
@@ -11916,7 +11930,7 @@ function recalcToday(){
             <div><label style={lbl}>Gold Gross Weight (g)</label><input style={inp} type="number" step="0.01" value={sol.goldGrossWt} onChange={e => setSol(p => ({ ...p, goldGrossWt: e.target.value }))} /></div>
             <div><label style={lbl}>Purity</label><select style={inp} value={sol.goldPurityIdx} onChange={e => { const idx = Number(e.target.value); setSol(p => ({ ...p, goldPurityIdx: idx })); saveMakingMode(idx === 0 ? "pct" : "per_g"); }}>{PURITIES.map((p2, i) => <option key={i} value={i}>{p2.l}</option>)}</select></div>
             {PURITIES[sol.goldPurityIdx]?.rateKey === null && <div><label style={lbl}>Custom Rate ₹/g</label><input style={inp} type="number" step="0.01" value={sol.goldRateOverride} onChange={e => setSol(p => ({ ...p, goldRateOverride: e.target.value }))} placeholder="e.g. 13000" /></div>}
-            <div><label style={lbl}>Gold Rate ₹/g {(() => { const k = PURITIES[sol.goldPurityIdx]?.rateKey; return k && liveRates[k] ? <span style={{ color: C.green }}>₹{Math.round(liveRates[k]).toLocaleString("en-IN")}</span> : null; })()}</label><input style={{ ...inp, background: sol.goldRateOverride ? "#fffbe6" : "#fff" }} type="number" step="1" value={sol.goldRateOverride} onChange={e => setSol(p => ({ ...p, goldRateOverride: e.target.value }))} placeholder={(() => { const k = PURITIES[sol.goldPurityIdx]?.rateKey; return k && liveRates[k] ? String(Math.round(liveRates[k])) : "e.g. 13346"; })()} /></div>
+            <div><label style={lbl}>Gold Rate ₹/g {(() => { const k = PURITIES[sol.goldPurityIdx]?.rateKey; const r = purityRatePg(sol.goldPurityIdx, liveRates); return k && r ? <span style={{ color: C.green }}>₹{Math.round(r).toLocaleString("en-IN")}</span> : null; })()}</label><input style={{ ...inp, background: sol.goldRateOverride ? "#fffbe6" : "#fff" }} type="number" step="1" value={sol.goldRateOverride} onChange={e => setSol(p => ({ ...p, goldRateOverride: e.target.value }))} placeholder={(() => { const k = PURITIES[sol.goldPurityIdx]?.rateKey; const r = purityRatePg(sol.goldPurityIdx, liveRates); return k && r ? String(Math.round(r)) : "e.g. 13346"; })()} /></div>
             <div><label style={lbl}>Making — <button onClick={() => saveMakingMode(makingMode === "per_g" ? "pct" : "per_g")} style={{ fontSize: 11, padding: "2px 8px", border: "1px solid #ddd", borderRadius: 4, cursor: "pointer", background: "#f5f5f5" }}>{makingMode === "per_g" ? "₹/g ↔" : "% ↔"}</button></label>
               {makingMode === "per_g"
                 ? <input style={inp} type="number" value={sol.goldMakingRatePg} onChange={e => setSol(p => ({ ...p, goldMakingRatePg: e.target.value }))} placeholder="1500" />
@@ -12002,7 +12016,7 @@ function recalcToday(){
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
           <thead>
             <tr style={{ background: "#f7f7f7", borderBottom: "2px solid #eee" }}>
-              {["#","Shape","Wt (ct)","Colour","Clarity","Cut","Cert","Rap INR/ct","Sell Disc%","Sell Price",""].map(h => (
+              {["#","Shape","Wt (ct)","Colour","Clarity","Cut","Cert","Rap INR/ct","Sell Disc%","Sell Price", ...(quotShowExtra ? ["Pcs","Notes"] : []), ""].map(h => (
                 <th key={h} style={{ padding: "7px 8px", textAlign: "left", fontWeight: 600, color: "#555", fontSize: 11, whiteSpace: "nowrap" }}>{h}</th>
               ))}
             </tr>
@@ -12050,6 +12064,16 @@ function recalcToday(){
                   <td style={{ padding: "4px 8px", fontWeight: 600, color: C.blue, whiteSpace: "nowrap" }}>
                     {rc.sellPpc != null ? "₹" + Math.round(rc.sellPpc * parseFloat(row.weight || 0)).toLocaleString("en-IN") : "—"}
                   </td>
+                  {quotShowExtra && (
+                    <td style={{ padding: "4px 4px" }}>
+                      <input style={{ ...inp, width: 50, padding: "4px 6px", fontSize: 11 }} type="number" min="1" step="1" value={row.qty} onChange={e => setRows(p => p.map((r, i) => i === idx ? { ...r, qty: e.target.value } : r))} placeholder="1" />
+                    </td>
+                  )}
+                  {quotShowExtra && (
+                    <td style={{ padding: "4px 4px" }}>
+                      <input style={{ ...inp, width: 130, padding: "4px 6px", fontSize: 11 }} value={row.notes} onChange={e => setRows(p => p.map((r, i) => i === idx ? { ...r, notes: e.target.value } : r))} placeholder="e.g. bulk order remarks" />
+                    </td>
+                  )}
                   <td style={{ padding: "4px 4px" }}>
                     <button onClick={() => setRows(p => p.filter((_, i) => i !== idx))} style={{ background: "none", border: "none", color: "#ccc", cursor: "pointer", fontSize: 16 }}>×</button>
                   </td>
@@ -12062,9 +12086,18 @@ function recalcToday(){
       <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap", alignItems: "center" }}>
         <div style={{ fontSize: 12, color: "#888" }}>Buy disc default: <input style={{ ...inp, width: 60, display: "inline-block", padding: "4px 6px" }} type="number" value={spread} onChange={e => saveSpread(Number(e.target.value))} /> % spread from sell</div>
         <div style={{ fontSize: 12, color: "#888" }}>USD/INR: <input style={{ ...inp, width: 70, display: "inline-block", padding: "4px 6px" }} type="number" value={usdInr} onChange={e => setUsdInr(e.target.value)} /></div>
+        <button
+          style={{ fontSize: 12, padding: "5px 12px", borderRadius: 6, border: "1px solid #ddd", background: "#f8f8f8", cursor: "pointer", color: "#555" }}
+          onClick={() => setQuotShowExtra(v => !v)}
+        >{quotShowExtra ? "▲ Hide Extra" : "▼ Pcs / Notes (bulk orders)"}</button>
       </div>
       {(() => {
-        const quotPdfRows = rows.map((r, i) => { const sc = solCalc(r); return [`${i+1}. ${r.shape} ${r.weight}ct ${r.color}/${r.clarity} ${r.cert}`, sc.sellTotal != null ? fmt(sc.sellTotal) : "—"]; });
+        const quotPdfRows = rows.map((r, i) => {
+          const sc = solCalc(r);
+          const qty = parseInt(r.qty || "1", 10) || 1;
+          const label = `${i+1}. ${r.shape} ${r.weight}ct ${r.color}/${r.clarity} ${r.cert}${qty > 1 ? ` × ${qty} pcs` : ""}${r.notes ? `\n   📝 ${r.notes}` : ""}`;
+          return [label, sc.sellTotal != null ? fmt(sc.sellTotal) : "—"];
+        });
         const quotTotal = fmt(rows.reduce((s, r) => s + (solCalc(r).sellTotal || 0), 0));
         const clientName = saveContact?.name || saveContact?.phone || "";
         const quotCaption = `*QUOTATION — Sun Sea Jewellers*\n${clientName ? `For: ${clientName}\n` : ""}\n${quotPdfRows.map(([l, v]) => `${l} — ${v}`).join("\n")}\n\n_Sun Sea Jewellers, Mumbai_`;

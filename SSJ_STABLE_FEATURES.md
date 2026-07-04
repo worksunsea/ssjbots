@@ -508,3 +508,12 @@ These apps read the same Supabase project/`staff` table but each has its own sep
    - New state `sendingEst` (alongside `justSaved`) disables the Send button and shows "Sending…" while the PDF is being built/uploaded/sent, since this is now an async network round-trip instead of a synchronous `wa.me` open.
 
 ---
+
+## 21. CALCULATOR — 92.5 SILVER, QUOTATION PCS/NOTES FOR BULK ORDERS (2026-07-04, same-day follow-up)
+
+1. **92.5 (sterling) silver purity added alongside 999.** `PURITIES` now has two silver entries sharing `rateKey: "silver"` — `{ l: "Silver (999)" }` (full rate) and `{ l: "Silver (92.5%)", mult: 0.925 }`. New optional `mult` field on `PURITIES` entries scales the live rate for purities that are quoted off a shared base rate. `purityRatePg(purityIdx, liveRates)` (module scope, right after `PURITIES`) is the one place that applies `mult` — every rate lookup that used to do `liveRates[PURITIES[idx]?.rateKey]` directly (jewellery `getGoldRatePg`, the live-rate hints/placeholders in both jewellery and solitaire gold-setting forms, and the two `todayRate` calcs in `openEstimateSlipWindow`/print) now goes through `purityRatePg` instead, so 92.5 silver (and any future `mult`-based purity) is correct everywhere without per-call arithmetic. Existing gold purities are unaffected (`mult` defaults to `1` — the sheet's g22/g18/etc. rates are already purity-adjusted, unlike silver which the sheet only quotes at fine/999).
+2. **Quotation tab: Pcs + Notes for bulk-manufacture items.** `newSolRow()` now includes `qty: "1"` alongside the existing `notes` field (was already in the row shape but never surfaced in the quotation UI). Both are **hidden by default** behind a "▼ Pcs / Notes (bulk orders)" toggle (`quotShowExtra` state, same collapse pattern as jewellery's `jwShowMisc`/"▼ Extra Weights") — keeps the table uncluttered for ordinary single-stone quotes, expand only when quoting a bulk manufacturing order.
+   - Printed quotation (`handleQuotPrint`) always includes Pcs + a notes sub-row (small, italic-gray, full width) per item when `notes` is set, regardless of whether the on-screen toggle is open — the toggle only affects the editing table, not the output.
+   - Download PDF and the WA send caption also always include qty (as `× N pcs` when > 1) and notes (as an indented `📝` line) per item, same reasoning.
+
+---
