@@ -1,26 +1,20 @@
 // GET /api/digest-ping?mode=morning|evening — fired by cron-job.org at 9am/10pm IST.
-// No AI here: just plain counts + a link to ssj-hr's /reporting dashboard.
-// Also refreshes the email-digest cache (the one place AI is used) so the
-// dashboard has a same-day summary ready when Saurav opens it.
+// No AI here beyond the email summary (already generated earlier by
+// emailDigest.js and just read back) — plain counts + a link to ssj-hr's
+// /reporting dashboard.
 
 import { supa } from "./_lib/supabase.js";
 import { sendWhatsApp } from "./_lib/wa.js";
 import { runEmailDigest } from "./_lib/emailDigest.js";
 import { getUpcomingEvents, formatEventsLine } from "./_lib/birthdays.js";
-import { TENANT_ID, OWNER_PHONE, DIGEST_CRON_SECRET, REPORTING_URL, WA_SESSION_CLIENT_ID } from "./_lib/config.js";
+import { getOverdueDelegations, getOpenHelpSlips, getPendingLeaves, getWalkinStats } from "./_lib/reportQueries.js";
+import { OWNER_PHONE, DIGEST_CRON_SECRET, REPORTING_URL, WA_SESSION_CLIENT_ID } from "./_lib/config.js";
 
 function checkAuth(req) {
   if (!DIGEST_CRON_SECRET) return true; // dev mode
   const header = req.headers["x-cron-secret"] || req.headers["x-vercel-cron"] || "";
   const query = req.query?.secret || "";
   return header === DIGEST_CRON_SECRET || query === DIGEST_CRON_SECRET || Boolean(req.headers["x-vercel-cron"]);
-}
-
-async function count(sb, table, build) {
-  let q = sb.from(table).select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID);
-  if (build) q = build(q);
-  const { count: n } = await q;
-  return n || 0;
 }
 
 export default async function handler(req, res) {
@@ -31,21 +25,23 @@ export default async function handler(req, res) {
   const sb = supa();
 
   try {
-    const [pendingDelegations, pendingSlips, pendingLeaves] = await Promise.all([
-      count(sb, "tasks", (q) => q.ilike("assigned_by", "Saurav").in("status", ["Pending", "In Progress", "Pending Approval"])),
-      count(sb, "help_slips", (q) => q.ilike("assigned_to", "Saurav").neq("status", "Resolved")),
-      count(sb, "leaves", (q) => q.eq("status", "Pending")),
+    // Shared with the on-demand "give me reporting" WA command and the
+    // /reporting dashboard, so these three surfaces can't drift apart again.
+    const [delegations, slips, leaves, walkins] = await Promise.all([
+      getOverdueDelegations(sb),
+      getOpenHelpSlips(sb),
+      getPendingLeaves(sb),
+      getWalkinStats(sb),
     ]);
-    // petty_cash_txns has no tenant_id column — count separately, unfiltered.
     const { count: pendingPettyCash } = await sb
       .from("petty_cash_txns")
       .select("id", { count: "exact", head: true })
       .eq("status", "pending");
 
     const parts = [];
-    if (pendingDelegations) parts.push(`${pendingDelegations} task${pendingDelegations > 1 ? "s" : ""}`);
-    if (pendingSlips) parts.push(`${pendingSlips} help slip${pendingSlips > 1 ? "s" : ""}`);
-    if (pendingLeaves) parts.push(`${pendingLeaves} leave${pendingLeaves > 1 ? "s" : ""}`);
+    if (delegations.length) parts.push(`${delegations.length} overdue delegation${delegations.length > 1 ? "s" : ""}`);
+    if (slips.length) parts.push(`${slips.length} help slip${slips.length > 1 ? "s" : ""}`);
+    if (leaves.length) parts.push(`${leaves.length} leave${leaves.length > 1 ? "s" : ""}`);
     if (pendingPettyCash) parts.push(`${pendingPettyCash} petty cash`);
 
     const events = await getUpcomingEvents(sb, 2).catch((err) => {
@@ -53,18 +49,28 @@ export default async function handler(req, res) {
       return [];
     });
     const eventsLine = formatEventsLine(events);
+    const walkinLine = `🏪 Walk-ins: ${walkins.today} today, ${walkins.yesterday} yesterday`;
 
     const greeting = mode === "morning" ? "🔔 Morning check-in" : "🌙 Evening check-in";
     const teaser = parts.length ? `${parts.join(" + ")} pending` : "all clear";
-    const msg = [`${greeting} — ${teaser} → ${REPORTING_URL}`, eventsLine].filter(Boolean).join("\n");
-
-    const wa = await sendWhatsApp({ phone: OWNER_PHONE, msg, client: WA_SESSION_CLIENT_ID });
-    if (wa.status !== 1) console.error("digest-ping: WhatsApp send failed", wa.message);
 
     const emailResults = await runEmailDigest(sb).catch((err) => {
       console.error("digest-ping: email digest failed", err);
       return [];
     });
+    const emailLines = emailResults
+      .filter((r) => r.status === "ok" && r.summaryText && r.summaryText !== "Nothing urgent.")
+      .map((r) => `📧 ${r.email}:\n${r.summaryText}`);
+
+    const msg = [
+      `${greeting} — ${teaser} → ${REPORTING_URL}`,
+      walkinLine,
+      eventsLine,
+      ...emailLines,
+    ].filter(Boolean).join("\n\n");
+
+    const wa = await sendWhatsApp({ phone: OWNER_PHONE, msg, client: WA_SESSION_CLIENT_ID });
+    if (wa.status !== 1) console.error("digest-ping: WhatsApp send failed", wa.message);
 
     return res.status(200).json({
       ok: true,
@@ -73,6 +79,8 @@ export default async function handler(req, res) {
       sendError: wa.status === 1 ? null : wa.message,
       emailAccountsChecked: emailResults.length,
       upcomingEvents: events.length,
+      overdueDelegations: delegations.length,
+      walkinsToday: walkins.today,
     });
   } catch (err) {
     console.error("digest-ping error", err);
