@@ -62,7 +62,7 @@ export async function getRates() {
 
 function emptyParsed() {
   return {
-    spot: { gold24kt: null, gold22kt: null, gold18kt: null, gold14kt: null, silverPerGram: null, silverSpotWholesalePerGram: null },
+    spot: { gold24kt: null, gold22kt: null, gold18kt: null, gold14kt: null, gold9kt: null, silverPerGram: null, silverSpotWholesalePerGram: null },
     goldCoins: [],
     silverCoins: [],
     ginni916: [],
@@ -107,6 +107,7 @@ export function parseRates(rows) {
     if (label === "22 KT" && isNum(est)) { out.spot.gold22kt = est; continue; }
     if (label === "18KT" && isNum(est)) { out.spot.gold18kt = est; continue; }
     if (label === "14KT" && isNum(est)) { out.spot.gold14kt = est; continue; }
+    if (label === "9 KT" && isNum(est)) { out.spot.gold9kt = est; continue; }
 
     // ── Gold coin rows (numeric weight in `gold`) ──
     if (section === "gold_coins" && isNum(labelRaw)) {

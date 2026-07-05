@@ -28,7 +28,7 @@ const SERVICE_SECRET = process.env.SERVICE_SECRET || "";
 const PUBLIC_URL = (process.env.PUBLIC_URL || "https://media.gemtre.in").replace(/\/$/, "");
 
 // Ensure base folders exist
-const FOLDERS = ["social", "ads", "videos", "blog", "misc"];
+const FOLDERS = ["social", "ads", "videos", "blog", "misc", "catalogue", "catalogue-backup", "backups"];
 for (const f of FOLDERS) fs.mkdirSync(path.join(MEDIA_DIR, f), { recursive: true });
 
 const app = Fastify({ logger: { level: "warn" } });
@@ -57,11 +57,13 @@ app.post("/upload", async (req, reply) => {
   if (!data) return reply.code(400).send({ ok: false, error: "no file" });
 
   const folder = req.query?.folder || "misc";
-  const allowedFolders = ["social", "ads", "videos", "blog", "misc"];
-  const safeFolder = allowedFolders.includes(folder) ? folder : "misc";
+  const safeFolder = FOLDERS.includes(folder) ? folder : "misc";
 
   const ext = path.extname(data.filename || "file.jpg").toLowerCase() || ".jpg";
-  const name = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}${ext}`;
+  // Optional explicit filename (e.g. SKU-based, "CKGAT-0001_1") so catalogue
+  // photos stay identifiable on disk — falls back to the timestamp+random name.
+  const requestedName = req.query?.name ? String(req.query.name).replace(/[^a-zA-Z0-9._-]/g, "_") : null;
+  const name = requestedName ? `${requestedName}${path.extname(requestedName) ? "" : ext}` : `${Date.now()}-${crypto.randomBytes(4).toString("hex")}${ext}`;
   const destPath = path.join(MEDIA_DIR, safeFolder, name);
 
   await pipeline(data.file, fs.createWriteStream(destPath));
@@ -77,8 +79,7 @@ app.post("/upload-url", async (req, reply) => {
   const { url: sourceUrl, folder = "misc", filename } = req.body || {};
   if (!sourceUrl) return reply.code(400).send({ ok: false, error: "url required" });
 
-  const allowedFolders = ["social", "ads", "videos", "blog", "misc"];
-  const safeFolder = allowedFolders.includes(folder) ? folder : "misc";
+  const safeFolder = FOLDERS.includes(folder) ? folder : "misc";
 
   const res = await fetch(sourceUrl);
   if (!res.ok) return reply.code(502).send({ ok: false, error: `fetch failed: ${res.status}` });
@@ -93,6 +94,23 @@ app.post("/upload-url", async (req, reply) => {
 
   const publicUrl = `${PUBLIC_URL}/media/${safeFolder}/${name}`;
   return reply.send({ ok: true, url: publicUrl, folder: safeFolder, name });
+});
+
+// ── Upload a JSON blob directly (e.g. nightly catalogue table snapshots) ──
+app.post("/upload-json", async (req, reply) => {
+  if (requireSecret(req, reply)?.sent) return;
+
+  const { folder = "misc", filename, content } = req.body || {};
+  if (!filename || content === undefined) return reply.code(400).send({ ok: false, error: "filename and content required" });
+
+  const safeFolder = FOLDERS.includes(folder) ? folder : "misc";
+  const safeName = String(filename).replace(/[^a-zA-Z0-9._-]/g, "_");
+  const destPath = path.join(MEDIA_DIR, safeFolder, safeName);
+
+  fs.writeFileSync(destPath, typeof content === "string" ? content : JSON.stringify(content, null, 2));
+
+  const publicUrl = `${PUBLIC_URL}/media/${safeFolder}/${safeName}`;
+  return reply.send({ ok: true, url: publicUrl, folder: safeFolder, name: safeName });
 });
 
 // ── List files ─────────────────────────────────────────────────────────────

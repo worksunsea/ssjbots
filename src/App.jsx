@@ -146,12 +146,13 @@ const CRM_ALL_TABS = [
   { k: "staff",       l: "Staff & Access",icon: "👥" },
   { k: "calculator",  l: "Calculator",     icon: "💎" },
   { k: "walkin",      l: "Walk-ins",       icon: "🏪" },
+  { k: "catalogue",   l: "Catalogue",      icon: "🗂️" },
 ];
 const CRM_ROLE_DEFAULT_TABS = {
   superadmin: CRM_ALL_TABS.map((t) => t.k),
   admin:      CRM_ALL_TABS.map((t) => t.k),
-  manager:    ["demands", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin"],
-  staff:      ["demands", "contacts", "upcoming", "calculator", "walkin"],
+  manager:    ["demands", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue"],
+  staff:      ["demands", "contacts", "upcoming", "calculator", "walkin", "catalogue"],
   telecaller: ["queue", "demands"],
 };
 
@@ -10104,6 +10105,8 @@ export default function App() {
   if (profileToken) return <ContactUpdateForm token={profileToken} />;
   const isProfilePage = typeof window !== "undefined" && window.location.pathname === "/profile";
   if (isProfilePage) return <GenericProfileForm />;
+  const catalogueMatch = typeof window !== "undefined" && window.location.pathname.match(/^\/c\/([0-9a-f-]{36})$/);
+  if (catalogueMatch) return <PublicCatalogueScreen token={catalogueMatch[1]} />;
 
   const [user, setUser] = useState(() => {
     const u = loadUser();
@@ -10261,14 +10264,15 @@ export default function App() {
     { k: "staff",      l: "Staff & Access", icon: "👥" },
     { k: "calculator", l: "Calculator",    icon: "💎" },
     { k: "walkin",     l: "Walk-ins",       icon: "🏪" },
+    { k: "catalogue",  l: "Catalogue",      icon: "🗂️" },
   ];
 
   // Role-based defaults when app_permissions.crm is not set
   const ROLE_DEFAULT_TABS = {
     superadmin: ALL_TABS.map((t) => t.k),
     admin:      ALL_TABS.map((t) => t.k),
-    manager:    ["demands", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin"],
-    staff:      ["demands", "contacts", "upcoming", "calculator", "walkin"],
+    manager:    ["demands", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue"],
+    staff:      ["demands", "contacts", "upcoming", "calculator", "walkin", "catalogue"],
     telecaller: ["queue", "demands"],
   };
 
@@ -10348,6 +10352,7 @@ export default function App() {
         try { localStorage.setItem("calc_pending_edit", JSON.stringify(est)); } catch {}
         setActiveScreen("calculator");
       }} />}
+      {activeScreen === "catalogue" && <CatalogueScreen />}
     </div>
     </ContactFieldsContext.Provider>
   );
@@ -10969,6 +10974,646 @@ function recalcToday(){
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CATALOGUE SCREEN — collections (item type/material/style), products, SKUs,
+// send-to-client links, per-client selections
+// ─────────────────────────────────────────────────────────────────────────────
+
+const EMPTY_PRODUCT_FORM = {
+  itemTypeId: "", materialId: "", styleId: "", name: "", oldSku: "", description: "", weightGrams: "",
+  priceMode: "manual", rateSource: "jewellery_purity", purityIdx: "2", netGoldWeightGrams: "", coinWeightG: "",
+  makingAmount: "0", diaTotal: "0", miscTotal: "0", applyGst: true, qty: "1", manualPrice: "",
+  priceVisible: true, status: "draft", stockStatus: "in_stock",
+};
+
+function productFormFromRow(p) {
+  return {
+    itemTypeId: p.item_type_id, materialId: p.material_id, styleId: p.style_id || "",
+    name: p.name || "", oldSku: p.old_sku || "", description: p.description || "", weightGrams: p.weight_grams ?? "",
+    priceMode: p.price_mode, rateSource: p.rate_source || "jewellery_purity",
+    purityIdx: p.purity_idx != null ? String(p.purity_idx) : "2",
+    netGoldWeightGrams: p.net_gold_weight_grams ?? "", coinWeightG: p.coin_weight_g ?? "",
+    makingAmount: p.making_amount ?? "0", diaTotal: p.dia_total ?? "0", miscTotal: p.misc_total ?? "0",
+    applyGst: p.apply_gst !== false, qty: p.qty ?? "1", manualPrice: p.manual_price ?? "",
+    priceVisible: p.price_visible !== false, status: p.status, stockStatus: p.stock_status,
+  };
+}
+
+function CatalogueScreen() {
+  const tid = getTenantId();
+  const [itemTypes, setItemTypes] = useState([]);
+  const [materials, setMaterials] = useState([]);
+  const [styles, setStyles] = useState([]);
+  const [itemTypeCounts, setItemTypeCounts] = useState({});
+  const [view, setView] = useState("collections"); // collections | products | selections
+  const [activeItemType, setActiveItemType] = useState(null);
+  const [products, setProducts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editingProduct, setEditingProduct] = useState(null); // null | {} (new) | row (edit)
+  const [productForm, setProductForm] = useState(EMPTY_PRODUCT_FORM);
+  const [sendModal, setSendModal] = useState(false);
+  const [sendForm, setSendForm] = useState({ shareType: "collection", phone: "", priceMin: "", priceMax: "", daysBack: "", pickedIds: new Set() });
+  const [newCollForm, setNewCollForm] = useState(null); // { name, code, parentId }
+  const [selections, setSelections] = useState([]);
+  const [toast, setToast] = useState("");
+  const showToast = (m) => { setToast(m); setTimeout(() => setToast(""), 3000); };
+
+  const loadTaxonomy = useCallback(() => {
+    Promise.all([
+      sb.from("catalogue_item_types").select("*").eq("tenant_id", tid).eq("active", true).order("sort_order"),
+      sb.from("catalogue_materials").select("*").eq("tenant_id", tid).eq("active", true).order("sort_order"),
+      sb.from("catalogue_styles").select("*").eq("tenant_id", tid).eq("active", true).order("sort_order"),
+      sb.from("catalogue_product_collections").select("item_type_id"),
+    ]).then(([it, mat, sty, members]) => {
+      setItemTypes(it.data || []);
+      setMaterials(mat.data || []);
+      setStyles(sty.data || []);
+      const counts = {};
+      (members.data || []).forEach((r) => { counts[r.item_type_id] = (counts[r.item_type_id] || 0) + 1; });
+      setItemTypeCounts(counts);
+      setLoading(false);
+    });
+  }, [tid]);
+
+  useEffect(() => { loadTaxonomy(); }, [loadTaxonomy]);
+
+  const loadProducts = useCallback(async (itemTypeId) => {
+    setLoading(true);
+    const { data: members } = await sb.from("catalogue_product_collections").select("product_id").eq("item_type_id", itemTypeId);
+    const ids = (members || []).map((m) => m.product_id);
+    if (!ids.length) { setProducts([]); setLoading(false); return; }
+    const { data } = await sb.from("catalogue_products")
+      .select("*, catalogue_materials(name,code), catalogue_styles(name,code), catalogue_product_images(id,url,is_cover,sort_order)")
+      .in("id", ids).order("created_at", { ascending: false });
+    setProducts(data || []);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    if (view === "selections") {
+      sb.from("catalogue_selections")
+        .select("id, phone, updated_at, bullion_leads(name,phone), catalogue_selection_items(added_at, catalogue_products(sku,name))")
+        .eq("tenant_id", tid).order("updated_at", { ascending: false }).limit(50)
+        .then(({ data }) => setSelections(data || []));
+    }
+  }, [view, tid]);
+
+  const openCollection = (it) => { setActiveItemType(it); setView("products"); loadProducts(it.id); };
+
+  const topLevel = itemTypes.filter((t) => !t.parent_id);
+  const childrenOf = (id) => itemTypes.filter((t) => t.parent_id === id);
+
+  const addCollection = async () => {
+    if (!newCollForm?.name || !newCollForm?.code) return;
+    const { error } = await sb.from("catalogue_item_types").insert({
+      tenant_id: tid, name: newCollForm.name, code: newCollForm.code.toUpperCase(),
+      parent_id: newCollForm.parentId || null, created_by: loadUser()?.name || null,
+    });
+    if (error) { showToast("❌ " + error.message); return; }
+    setNewCollForm(null);
+    showToast("✓ Collection added");
+    loadTaxonomy();
+  };
+
+  const openNewProduct = () => {
+    setProductForm({ ...EMPTY_PRODUCT_FORM, itemTypeId: activeItemType?.id || "", materialId: materials[0]?.id || "" });
+    setEditingProduct({});
+  };
+  const openEditProduct = (p) => { setProductForm(productFormFromRow(p)); setEditingProduct(p); };
+
+  const buildPayload = (f) => ({
+    tenant_id: tid,
+    item_type_id: f.itemTypeId, material_id: f.materialId, style_id: f.styleId || null,
+    name: f.name || null, old_sku: f.oldSku || null, description: f.description || null,
+    weight_grams: f.weightGrams !== "" ? Number(f.weightGrams) : null,
+    price_mode: f.priceMode,
+    rate_source: f.priceMode === "live_gold" ? f.rateSource : null,
+    purity_idx: f.priceMode === "live_gold" && f.rateSource === "jewellery_purity" ? Number(f.purityIdx) : null,
+    net_gold_weight_grams: f.priceMode === "live_gold" && f.rateSource === "jewellery_purity" ? Number(f.netGoldWeightGrams || 0) : null,
+    coin_weight_g: f.priceMode === "live_gold" && f.rateSource === "mmtc_coin" ? Number(f.coinWeightG || 0) : null,
+    making_amount: Number(f.makingAmount || 0), dia_total: Number(f.diaTotal || 0), misc_total: Number(f.miscTotal || 0),
+    apply_gst: !!f.applyGst, qty: Number(f.qty || 1),
+    manual_price: f.priceMode === "manual" && f.manualPrice !== "" ? Number(f.manualPrice) : null,
+    price_visible: !!f.priceVisible, status: f.status, stock_status: f.stockStatus,
+    created_by: loadUser()?.name || loadUser()?.username || null,
+  });
+
+  const saveProduct = async () => {
+    if (!productForm.itemTypeId || !productForm.materialId) { showToast("❌ Item type + material required"); return; }
+    const payload = buildPayload(productForm);
+    if (editingProduct?.id) {
+      const { error } = await sb.from("catalogue_products").update(payload).eq("id", editingProduct.id);
+      if (error) { showToast("❌ " + error.message); return; }
+      showToast("✓ Saved");
+      loadProducts(activeItemType.id);
+    } else {
+      const { data, error } = await sb.from("catalogue_products").insert(payload)
+        .select("*, catalogue_materials(name,code), catalogue_styles(name,code), catalogue_product_images(id,url,is_cover,sort_order)").single();
+      if (error) { showToast("❌ " + error.message); return; }
+      setEditingProduct(data);
+      showToast("✓ Created — " + data.sku);
+      loadProducts(activeItemType.id);
+    }
+  };
+
+  const uploadProductImage = async (file) => {
+    if (!file || !editingProduct?.id) return;
+    const existing = editingProduct.catalogue_product_images || [];
+    if (existing.length >= 5) { showToast("❌ Max 5 photos per product"); return; }
+    try {
+      const { publicUrl } = await secureImageUpload(file, sb, "catalogue", {
+        maxDim: 1600, quality: 0.82, fileNameOverride: `${editingProduct.sku}_${existing.length + 1}`,
+      });
+      const { data, error } = await sb.from("catalogue_product_images")
+        .insert({ tenant_id: tid, product_id: editingProduct.id, url: publicUrl, is_cover: existing.length === 0, sort_order: existing.length })
+        .select().single();
+      if (error) { showToast("❌ " + error.message); return; }
+      setEditingProduct((p) => ({ ...p, catalogue_product_images: [...(p.catalogue_product_images || []), data] }));
+    } catch (e) { showToast("❌ " + e.message); }
+  };
+  const removeProductImage = async (imgId) => {
+    await sb.from("catalogue_product_images").delete().eq("id", imgId);
+    setEditingProduct((p) => ({ ...p, catalogue_product_images: (p.catalogue_product_images || []).filter((i) => i.id !== imgId) }));
+  };
+
+  const closeProductModal = () => { setEditingProduct(null); loadProducts(activeItemType.id); };
+
+  const submitSend = async () => {
+    const body = {
+      shareType: sendForm.shareType, itemTypeId: activeItemType?.id, tenantId: tid,
+      createdBy: loadUser()?.name || null, phone: sendForm.phone,
+    };
+    if (sendForm.shareType === "filtered") {
+      body.filters = {
+        priceMin: sendForm.priceMin !== "" ? Number(sendForm.priceMin) : null,
+        priceMax: sendForm.priceMax !== "" ? Number(sendForm.priceMax) : null,
+        createdAfter: sendForm.daysBack ? new Date(Date.now() - Number(sendForm.daysBack) * 86400000).toISOString() : null,
+      };
+    }
+    if (sendForm.shareType === "custom") body.productIds = Array.from(sendForm.pickedIds);
+    const res = await fetch("/api/catalogue?action=share", {
+      method: "POST", headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
+      body: JSON.stringify(body),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (d.ok) { showToast(`✅ Sent — ${d.productCount} item${d.productCount > 1 ? "s" : ""}`); setSendModal(false); }
+    else showToast("❌ " + (d.error || "Send failed"));
+  };
+
+  if (loading && view === "collections") return <div style={{ color: "#aaa", fontSize: 13, padding: 20 }}>Loading…</div>;
+
+  return (
+    <div style={{ maxWidth: 1000, margin: "0 auto" }}>
+      {toast && <div style={{ position: "fixed", bottom: 24, right: 24, background: "#333", color: "#fff", padding: "10px 18px", borderRadius: 8, fontSize: 13, zIndex: 9999 }}>{toast}</div>}
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div style={{ fontWeight: 700, fontSize: 18 }}>🗂️ Catalogue</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Btn small ghost color={view === "collections" ? C.blue : C.gray} onClick={() => setView("collections")}>Collections</Btn>
+          <Btn small ghost color={view === "selections" ? C.blue : C.gray} onClick={() => setView("selections")}>Client Selections</Btn>
+        </div>
+      </div>
+
+      {view === "collections" && (
+        <>
+          <div style={{ marginBottom: 12 }}>
+            <Btn small onClick={() => setNewCollForm({ name: "", code: "", parentId: "" })}>+ New Collection</Btn>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
+            {topLevel.map((it) => (
+              <div key={it.id} style={{ background: "#fff", border: "1px solid #eee", borderRadius: 12, padding: 14 }}>
+                <div onClick={() => openCollection(it)} style={{ cursor: "pointer", fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{it.name}</div>
+                <div style={{ fontSize: 11, color: "#888", marginBottom: 8 }}>{itemTypeCounts[it.id] || 0} products · code {it.code}</div>
+                {childrenOf(it.id).length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                    {childrenOf(it.id).map((c) => (
+                      <span key={c.id} onClick={() => openCollection(c)} style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "#f0f4ff", color: "#1565c0", cursor: "pointer" }}>
+                        {c.name} ({itemTypeCounts[c.id] || 0})
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {view === "products" && activeItemType && (
+        <>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div>
+              <button onClick={() => setView("collections")} style={{ background: "none", border: "none", color: "#1565c0", cursor: "pointer", fontSize: 12, marginBottom: 4 }}>← All collections</button>
+              <div style={{ fontWeight: 700, fontSize: 16 }}>{activeItemType.name}</div>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <Btn small ghost onClick={() => { setSendForm({ shareType: "collection", phone: "", priceMin: "", priceMax: "", daysBack: "", pickedIds: new Set() }); setSendModal(true); }}>📤 Send to client</Btn>
+              <Btn small onClick={openNewProduct}>+ Add product</Btn>
+            </div>
+          </div>
+          {loading ? <div style={{ color: "#aaa", fontSize: 13 }}>Loading…</div> : products.length === 0 ? (
+            <div style={{ textAlign: "center", padding: 40, color: "#aaa" }}>No products in this collection yet.</div>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 12 }}>
+              {products.map((p) => {
+                const images = (p.catalogue_product_images || []).slice().sort((a, b) => a.sort_order - b.sort_order);
+                const cover = images.find((i) => i.is_cover) || images[0];
+                return (
+                  <div key={p.id} onClick={() => openEditProduct(p)} style={{ cursor: "pointer", background: "#fff", border: "1px solid #eee", borderRadius: 10, overflow: "hidden" }}>
+                    <div style={{ height: 120, background: "#f5f5f5", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      {cover ? <img src={cover.url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <span style={{ fontSize: 24 }}>💎</span>}
+                    </div>
+                    <div style={{ padding: 8 }}>
+                      <div style={{ fontSize: 11, fontFamily: "monospace", color: "#888" }}>{p.sku}</div>
+                      <div style={{ fontSize: 12, fontWeight: 600 }}>{p.name || p.sku}</div>
+                      <div style={{ fontSize: 10, color: p.status === "published" ? C.green : "#aaa", marginTop: 2 }}>{p.status}{p.stock_status !== "in_stock" ? ` · ${p.stock_status}` : ""}</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+
+      {view === "selections" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {selections.length === 0 && <div style={{ textAlign: "center", padding: 40, color: "#aaa" }}>No client selections yet.</div>}
+          {selections.map((s) => (
+            <div key={s.id} style={{ background: "#fff", border: "1px solid #eee", borderRadius: 10, padding: 12 }}>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>{s.bullion_leads?.name || s.bullion_leads?.phone || s.phone || "Unknown"}</div>
+              <div style={{ fontSize: 11, color: "#888", marginBottom: 6 }}>{(s.catalogue_selection_items || []).length} item{(s.catalogue_selection_items || []).length === 1 ? "" : "s"} selected</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {(s.catalogue_selection_items || []).map((it, i) => (
+                  <span key={i} style={{ fontSize: 11, padding: "3px 8px", borderRadius: 8, background: "#f5f5f5" }}>
+                    {it.catalogue_products?.sku} {it.catalogue_products?.name ? `— ${it.catalogue_products.name}` : ""}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ── New collection modal ── */}
+      {newCollForm && (
+        <Modal title="New Collection" onClose={() => setNewCollForm(null)} width={420}>
+          <Field label="Name"><Input value={newCollForm.name} onChange={(e) => setNewCollForm((f) => ({ ...f, name: e.target.value }))} placeholder="e.g. Anklets" /></Field>
+          <Field label="Code (2 letters, used in SKUs)"><Input value={newCollForm.code} onChange={(e) => setNewCollForm((f) => ({ ...f, code: e.target.value.toUpperCase().slice(0, 3) }))} placeholder="e.g. AN" /></Field>
+          <Field label="Parent collection (optional — makes this a sub-collection)">
+            <Select value={newCollForm.parentId} onChange={(e) => setNewCollForm((f) => ({ ...f, parentId: e.target.value }))}>
+              <option value="">— none (top-level) —</option>
+              {topLevel.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </Select>
+          </Field>
+          <Btn onClick={addCollection}>Create</Btn>
+        </Modal>
+      )}
+
+      {/* ── Send-to-client modal ── */}
+      {sendModal && (
+        <Modal title={`Send "${activeItemType?.name}" to client`} onClose={() => setSendModal(false)} width={480}>
+          <Field label="Mode">
+            <Select value={sendForm.shareType} onChange={(e) => setSendForm((f) => ({ ...f, shareType: e.target.value }))}>
+              <option value="collection">Whole collection</option>
+              <option value="filtered">Filtered (price / recency)</option>
+              <option value="custom">Hand-picked from this collection</option>
+            </Select>
+          </Field>
+          {sendForm.shareType === "filtered" && (
+            <>
+              <Field label="Price range (₹)">
+                <div style={{ display: "flex", gap: 8 }}>
+                  <Input type="number" placeholder="Min" value={sendForm.priceMin} onChange={(e) => setSendForm((f) => ({ ...f, priceMin: e.target.value }))} />
+                  <Input type="number" placeholder="Max" value={sendForm.priceMax} onChange={(e) => setSendForm((f) => ({ ...f, priceMax: e.target.value }))} />
+                </div>
+              </Field>
+              <Field label="Only items added in the last N days (optional)"><Input type="number" value={sendForm.daysBack} onChange={(e) => setSendForm((f) => ({ ...f, daysBack: e.target.value }))} placeholder="e.g. 90" /></Field>
+            </>
+          )}
+          {sendForm.shareType === "custom" && (
+            <Field label={`Pick products (${sendForm.pickedIds.size} selected)`}>
+              <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid #eee", borderRadius: 8, padding: 8 }}>
+                {products.map((p) => (
+                  <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, padding: "3px 0", cursor: "pointer" }}>
+                    <input type="checkbox" checked={sendForm.pickedIds.has(p.id)} onChange={() => setSendForm((f) => {
+                      const s = new Set(f.pickedIds); s.has(p.id) ? s.delete(p.id) : s.add(p.id); return { ...f, pickedIds: s };
+                    })} />
+                    {p.sku} {p.name ? `— ${p.name}` : ""}
+                  </label>
+                ))}
+              </div>
+            </Field>
+          )}
+          <Field label="Client phone (10 digits)"><Input value={sendForm.phone} onChange={(e) => setSendForm((f) => ({ ...f, phone: e.target.value }))} placeholder="9876543210" /></Field>
+          <Btn onClick={submitSend} disabled={sendForm.shareType === "custom" && sendForm.pickedIds.size === 0}>Send via WhatsApp</Btn>
+        </Modal>
+      )}
+
+      {/* ── Add/Edit product modal ── */}
+      {editingProduct && (
+        <Modal title={editingProduct.sku ? `Edit ${editingProduct.sku}` : "New Product"} onClose={closeProductModal} width={620}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+            <Field label="Item Type" required>
+              <Select value={productForm.itemTypeId} onChange={(e) => setProductForm((f) => ({ ...f, itemTypeId: e.target.value }))}>
+                <option value="">—</option>
+                {topLevel.map((t) => (
+                  <optgroup key={t.id} label={t.name}>
+                    <option value={t.id}>{t.name} (generic)</option>
+                    {childrenOf(t.id).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </optgroup>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Material" required>
+              <Select value={productForm.materialId} onChange={(e) => setProductForm((f) => ({ ...f, materialId: e.target.value }))}>
+                <option value="">—</option>
+                {materials.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+              </Select>
+            </Field>
+            <Field label="Style (optional)">
+              <Select value={productForm.styleId} onChange={(e) => setProductForm((f) => ({ ...f, styleId: e.target.value }))}>
+                <option value="">— none —</option>
+                {styles.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </Select>
+            </Field>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="Name (optional)"><Input value={productForm.name} onChange={(e) => setProductForm((f) => ({ ...f, name: e.target.value }))} placeholder="Falls back to SKU if blank" /></Field>
+            <Field label="Old / Vendor SKU (optional)"><Input value={productForm.oldSku} onChange={(e) => setProductForm((f) => ({ ...f, oldSku: e.target.value }))} placeholder="e.g. VC-123" /></Field>
+          </div>
+          <Field label="Description (optional)"><Textarea rows={2} value={productForm.description} onChange={(e) => setProductForm((f) => ({ ...f, description: e.target.value }))} /></Field>
+
+          <div style={{ background: "#f8faff", border: "1px solid #dbeafe", borderRadius: 10, padding: 12, marginBottom: 12 }}>
+            <Field label="Pricing">
+              <Select value={productForm.priceMode} onChange={(e) => setProductForm((f) => ({ ...f, priceMode: e.target.value }))}>
+                <option value="manual">Fixed price</option>
+                <option value="live_gold">Live gold/silver rate</option>
+              </Select>
+            </Field>
+            {productForm.priceMode === "manual" ? (
+              <Field label="Price (₹)"><Input type="number" value={productForm.manualPrice} onChange={(e) => setProductForm((f) => ({ ...f, manualPrice: e.target.value }))} /></Field>
+            ) : (
+              <>
+                <Field label="Rate source">
+                  <Select value={productForm.rateSource} onChange={(e) => setProductForm((f) => ({ ...f, rateSource: e.target.value }))}>
+                    <option value="jewellery_purity">Jewellery (weight × purity rate)</option>
+                    <option value="mmtc_coin">MMTC Coin (weight-matched coin rate)</option>
+                  </Select>
+                </Field>
+                {productForm.rateSource === "jewellery_purity" ? (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <Field label="Purity">
+                      <Select value={productForm.purityIdx} onChange={(e) => setProductForm((f) => ({ ...f, purityIdx: e.target.value }))}>
+                        {PURITIES.filter((p) => p.rateKey).map((p, i) => <option key={i} value={i}>{p.l}</option>)}
+                      </Select>
+                    </Field>
+                    <Field label="Net weight (g)"><Input type="number" value={productForm.netGoldWeightGrams} onChange={(e) => setProductForm((f) => ({ ...f, netGoldWeightGrams: e.target.value }))} /></Field>
+                  </div>
+                ) : (
+                  <Field label="Coin weight (g)"><Input type="number" value={productForm.coinWeightG} onChange={(e) => setProductForm((f) => ({ ...f, coinWeightG: e.target.value }))} placeholder="e.g. 8" /></Field>
+                )}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+                  <Field label="Making (₹)"><Input type="number" value={productForm.makingAmount} onChange={(e) => setProductForm((f) => ({ ...f, makingAmount: e.target.value }))} /></Field>
+                  <Field label="Diamond/stone (₹)"><Input type="number" value={productForm.diaTotal} onChange={(e) => setProductForm((f) => ({ ...f, diaTotal: e.target.value }))} /></Field>
+                  <Field label="Misc (₹)"><Input type="number" value={productForm.miscTotal} onChange={(e) => setProductForm((f) => ({ ...f, miscTotal: e.target.value }))} /></Field>
+                </div>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, marginTop: 4 }}>
+                  <input type="checkbox" checked={productForm.applyGst} onChange={(e) => setProductForm((f) => ({ ...f, applyGst: e.target.checked }))} /> Apply 3% GST
+                </label>
+              </>
+            )}
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, marginTop: 6 }}>
+              <input type="checkbox" checked={productForm.priceVisible} onChange={(e) => setProductForm((f) => ({ ...f, priceVisible: e.target.checked }))} /> Show price to clients on public page
+            </label>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="Status">
+              <Select value={productForm.status} onChange={(e) => setProductForm((f) => ({ ...f, status: e.target.value }))}>
+                <option value="draft">Draft</option><option value="published">Published</option><option value="archived">Archived</option>
+              </Select>
+            </Field>
+            <Field label="Stock">
+              <Select value={productForm.stockStatus} onChange={(e) => setProductForm((f) => ({ ...f, stockStatus: e.target.value }))}>
+                <option value="in_stock">In stock</option><option value="reserved">Reserved</option><option value="sold">Sold</option><option value="out_of_stock">Out of stock</option>
+              </Select>
+            </Field>
+          </div>
+
+          <Btn onClick={saveProduct}>{editingProduct.id ? "Save changes" : "Create product"}</Btn>
+
+          {editingProduct.id && (
+            <div style={{ marginTop: 16, borderTop: "1px solid #eee", paddingTop: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>Photos ({(editingProduct.catalogue_product_images || []).length}/5)</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {(editingProduct.catalogue_product_images || []).map((img) => (
+                  <div key={img.id} style={{ position: "relative", width: 70, height: 70 }}>
+                    <img src={img.url} alt="" style={{ width: 70, height: 70, objectFit: "cover", borderRadius: 6 }} />
+                    <button onClick={() => removeProductImage(img.id)} style={{ position: "absolute", top: -6, right: -6, width: 18, height: 18, borderRadius: "50%", border: "none", background: "#c0392b", color: "#fff", fontSize: 11, cursor: "pointer" }}>×</button>
+                  </div>
+                ))}
+                {(editingProduct.catalogue_product_images || []).length < 5 && (
+                  <label style={{ width: 70, height: 70, borderRadius: 6, border: "1px dashed #bbb", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 20, color: "#aaa" }}>
+                    +<input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => uploadProductImage(e.target.files?.[0])} />
+                  </label>
+                )}
+              </div>
+            </div>
+          )}
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PUBLIC CATALOGUE PAGE — /c/:token (no login)
+// Style: "Luxury Serif" editorial direction — Cormorant + Montserrat, warm
+// charcoal/gold palette, generous whitespace. Not CRM chrome.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CATALOGUE_FONTS_CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Cormorant:wght@400;500;600;700&family=Montserrat:wght@300;400;500;600;700&display=swap');
+:root {
+  --cat-bg: #FAFAF9; --cat-surface: #FFFFFF; --cat-text: #1C1917; --cat-muted: #57534E;
+  --cat-border: #E7E5E4; --cat-gold: #CA8A04; --cat-gold-soft: #FEF3C7;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --cat-bg: #17140F; --cat-surface: #211D18; --cat-text: #F5F0E8; --cat-muted: #C9C2B6;
+    --cat-border: #3A342A; --cat-gold: #E0A72E; --cat-gold-soft: #3A2E12;
+  }
+}
+.cat-page * { box-sizing: border-box; }
+.cat-page img { -webkit-touch-callout: none; user-select: none; }
+.cat-card { transition: border-color 200ms ease, box-shadow 200ms ease; }
+.cat-card:hover { border-color: var(--cat-gold) !important; box-shadow: 0 4px 24px rgba(0,0,0,0.08); }
+.cat-card:hover .cat-card-img { transform: scale(1.04); }
+.cat-card-img { transition: transform 400ms ease; }
+@media (prefers-reduced-motion: reduce) {
+  .cat-card, .cat-card-img, .cat-drawer { transition: none !important; }
+}
+.cat-drawer { transition: transform 300ms ease; }
+`;
+
+function PublicCatalogueScreen({ token }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [selectionIds, setSelectionIds] = useState(new Set());
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [busyId, setBusyId] = useState(null);
+
+  useEffect(() => {
+    fetch(`/api/catalogue?action=view&token=${token}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (!d.ok) { setError(d.error || "not_found"); return; }
+        setData(d);
+        setSelectionIds(new Set(d.selectionProductIds || []));
+      })
+      .catch(() => setError("network_error"));
+  }, [token]);
+
+  const toggleSelect = async (productId, currentlyIn) => {
+    setBusyId(productId);
+    try {
+      const res = await fetch("/api/catalogue?action=select", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, productId, mode: currentlyIn ? "remove" : "add" }),
+      });
+      const d = await res.json();
+      if (d.ok) setSelectionIds(new Set(d.selectionProductIds));
+    } finally { setBusyId(null); }
+  };
+
+  const fmt = (n) => n == null ? null : `₹${Math.round(n).toLocaleString("en-IN")}`;
+
+  if (error) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Montserrat, sans-serif", color: "#57534E" }}>
+        This link isn't available anymore.
+      </div>
+    );
+  }
+  if (!data) {
+    return <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Montserrat, sans-serif", color: "#57534E" }}>Loading collection…</div>;
+  }
+
+  const selectedProducts = data.products.filter((p) => selectionIds.has(p.id));
+  const selectedTotal = selectedProducts.reduce((s, p) => s + (p.price || 0), 0);
+
+  const waMsg = () => {
+    const lines = selectedProducts.map((p, i) => `${i + 1}. ${p.name}${p.sku ? ` (Ref: ${p.sku})` : ""}${p.price ? ` — ₹${Math.round(p.price).toLocaleString("en-IN")}` : ""}`);
+    return encodeURIComponent([`Hi, I'd like to enquire about these pieces from your catalogue:`, ``, ...lines, ``, `Total: ${fmt(selectedTotal) || "on request"}`].join("\n"));
+  };
+
+  return (
+    <div className="cat-page" style={{ minHeight: "100vh", background: "var(--cat-bg)", fontFamily: "Montserrat, sans-serif" }}>
+      <style>{CATALOGUE_FONTS_CSS}</style>
+      <div onContextMenu={(e) => e.preventDefault()} style={{ maxWidth: 1080, margin: "0 auto", padding: "48px 20px 120px" }}>
+        <div style={{ textAlign: "center", marginBottom: 40 }}>
+          <div style={{ fontFamily: "Cormorant, serif", fontWeight: 600, fontSize: "clamp(28px, 5vw, 44px)", color: "var(--cat-text)", letterSpacing: 0.5 }}>Sun Sea Jewellers</div>
+          <div style={{ width: 48, height: 2, background: "var(--cat-gold)", margin: "12px auto" }} />
+          <div style={{ fontSize: 13, color: "var(--cat-muted)", letterSpacing: 1 }}>A COLLECTION CURATED FOR YOU</div>
+        </div>
+
+        {data.products.length === 0 ? (
+          <div style={{ textAlign: "center", color: "var(--cat-muted)", padding: 60 }}>No pieces available in this collection right now.</div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 28 }}>
+            {data.products.map((p) => {
+              const inSelection = selectionIds.has(p.id);
+              return (
+                <div key={p.id} className="cat-card" style={{ background: "var(--cat-surface)", border: "1px solid var(--cat-border)", borderRadius: 4, overflow: "hidden" }}>
+                  <div style={{ aspectRatio: "1", background: "var(--cat-border)", overflow: "hidden" }}>
+                    {p.coverImage ? (
+                      <img draggable={false} className="cat-card-img" src={p.coverImage} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    ) : (
+                      <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--cat-muted)", fontSize: 12 }}>No photo</div>
+                    )}
+                  </div>
+                  <div style={{ padding: 16 }}>
+                    <div style={{ fontFamily: "Cormorant, serif", fontSize: 19, fontWeight: 600, color: "var(--cat-text)" }}>{p.name}</div>
+                    <div style={{ fontSize: 11, color: "var(--cat-muted)", marginTop: 2 }}>{[p.itemType, p.material, p.style].filter(Boolean).join(" · ")}</div>
+                    <div style={{ marginTop: 10, fontSize: 15, fontWeight: 600, color: p.priceVisible && p.price != null ? "var(--cat-gold)" : "var(--cat-muted)", fontStyle: p.priceVisible && p.price != null ? "normal" : "italic" }}>
+                      {p.priceVisible && p.price != null ? fmt(p.price) : "Enquire for price"}
+                    </div>
+                    {p.stockStatus !== "in_stock" && <div style={{ fontSize: 11, color: "#b91c1c", marginTop: 2, textTransform: "capitalize" }}>{p.stockStatus.replace("_", " ")}</div>}
+                    <button
+                      onClick={() => toggleSelect(p.id, inSelection)}
+                      disabled={busyId === p.id}
+                      style={{
+                        marginTop: 12, width: "100%", minHeight: 44, borderRadius: 3, cursor: busyId === p.id ? "wait" : "pointer",
+                        border: inSelection ? "1px solid var(--cat-gold)" : "1px solid var(--cat-border)",
+                        background: inSelection ? "var(--cat-gold-soft)" : "transparent",
+                        color: "var(--cat-text)", fontSize: 12, letterSpacing: 0.5, fontWeight: 500,
+                        transition: "background 200ms ease, border-color 200ms ease",
+                      }}
+                    >
+                      {inSelection ? "✓ In your selection" : "+ Add to selection"}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* ── Selection bar ── */}
+      {selectedProducts.length > 0 && (
+        <button
+          onClick={() => setDrawerOpen(true)}
+          style={{
+            position: "fixed", bottom: 20, right: 20, minHeight: 48, padding: "0 20px", borderRadius: 24,
+            background: "var(--cat-text)", color: "var(--cat-bg)", border: "none", cursor: "pointer",
+            fontSize: 13, fontWeight: 600, letterSpacing: 0.5, boxShadow: "0 6px 20px rgba(0,0,0,0.25)", zIndex: 40,
+          }}
+        >
+          My Selection ({selectedProducts.length}) · {fmt(selectedTotal) || "—"}
+        </button>
+      )}
+
+      {/* ── Selection drawer ── */}
+      {drawerOpen && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 50, display: "flex", justifyContent: "flex-end" }} onClick={() => setDrawerOpen(false)}>
+          <div className="cat-drawer" onClick={(e) => e.stopPropagation()} style={{ width: "min(400px, 92vw)", height: "100%", background: "var(--cat-surface)", padding: 24, overflowY: "auto" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+              <div style={{ fontFamily: "Cormorant, serif", fontSize: 24, fontWeight: 600, color: "var(--cat-text)" }}>My Selection</div>
+              <button onClick={() => setDrawerOpen(false)} style={{ background: "none", border: "none", fontSize: 22, color: "var(--cat-muted)", cursor: "pointer", minWidth: 44, minHeight: 44 }}>×</button>
+            </div>
+            {selectedProducts.map((p) => (
+              <div key={p.id} style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "center" }}>
+                <div style={{ width: 56, height: 56, borderRadius: 3, overflow: "hidden", background: "var(--cat-border)", flexShrink: 0 }}>
+                  {p.coverImage && <img draggable={false} src={p.coverImage} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--cat-text)" }}>{p.name}</div>
+                  <div style={{ fontSize: 12, color: "var(--cat-gold)" }}>{fmt(p.price) || "Enquire for price"}</div>
+                </div>
+                <button onClick={() => toggleSelect(p.id, true)} style={{ background: "none", border: "none", color: "var(--cat-muted)", cursor: "pointer", fontSize: 18, minWidth: 44, minHeight: 44 }}>×</button>
+              </div>
+            ))}
+            <div style={{ borderTop: "1px solid var(--cat-border)", paddingTop: 14, marginTop: 8, display: "flex", justifyContent: "space-between", fontSize: 14, fontWeight: 600, color: "var(--cat-text)" }}>
+              <span>Total</span><span>{fmt(selectedTotal) || "On request"}</span>
+            </div>
+            <a
+              href={`https://wa.me/918860866000?text=${waMsg()}`} target="_blank" rel="noreferrer"
+              style={{
+                display: "block", textAlign: "center", marginTop: 20, padding: "13px 0", borderRadius: 3,
+                background: "var(--cat-gold)", color: "#1C1917", textDecoration: "none", fontWeight: 600, fontSize: 13, letterSpacing: 0.5,
+              }}
+            >
+              Send via WhatsApp
+            </a>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CalculatorScreen({ funnels = [], allTags = [] }) {
   const [tab, setTab] = useState("jewellery");
   const [rapData, setRapData] = useState(RAP_SEED);
@@ -11093,7 +11738,25 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     misc1Lbl: "Gemstone", misc1Wt: "", misc1Unit: "g", misc1Rate: "", misc1Deduct: true,
     misc2Lbl: "Mala",     misc2Wt: "", misc2Unit: "g", misc2Rate: "", misc2Deduct: false,
     misc3Lbl: "Lakh",     misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false,
+    catalogueItemTypeId: "", catalogueMaterialId: "", catalogueStyleId: "",
+    catalogueProductId: "", catalogueSku: "", catalogueImages: [],
   });
+
+  const [catalogueItemTypes, setCatalogueItemTypes] = useState([]);
+  const [catalogueMaterials, setCatalogueMaterials] = useState([]);
+  const [catalogueStyles, setCatalogueStyles] = useState([]);
+  useEffect(() => {
+    const tid = getTenantId();
+    Promise.all([
+      sb.from("catalogue_item_types").select("*").eq("tenant_id", tid).eq("active", true).order("sort_order"),
+      sb.from("catalogue_materials").select("*").eq("tenant_id", tid).eq("active", true).order("sort_order"),
+      sb.from("catalogue_styles").select("*").eq("tenant_id", tid).eq("active", true).order("sort_order"),
+    ]).then(([it, mat, sty]) => {
+      setCatalogueItemTypes(it.data || []);
+      setCatalogueMaterials(mat.data || []);
+      setCatalogueStyles(sty.data || []);
+    });
+  }, []);
 
   const [jwShowMisc, setJwShowMisc] = useState(false);
   const [quotShowExtra, setQuotShowExtra] = useState(false); // Notes column — hidden by default, same pattern as jwShowMisc
@@ -11254,6 +11917,37 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     sb.from("bullion_estimates").select("id,mode,total_amount,created_at,lead_id,items,bullion_leads(name,phone)").not("lead_id", "is", null).gte("created_at", since).order("created_at", { ascending: false }).limit(60).then(({ data }) => setPendingFollowups(data || []));
   };
 
+  // Creates/updates the linked catalogue_products row when a collection was
+  // picked in the Jewellery tab. First save creates (SKU assigned by the DB
+  // trigger); re-saving the same estimate updates the same product rather
+  // than creating a duplicate. Scoped to the Jewellery tab only.
+  const syncCatalogueProduct = async (estimateId) => {
+    if (tab !== "jewellery" || !jw.catalogueItemTypeId || !jw.catalogueMaterialId) return;
+    const tid = getTenantId();
+    const payload = {
+      tenant_id: tid, item_type_id: jw.catalogueItemTypeId, material_id: jw.catalogueMaterialId, style_id: jw.catalogueStyleId || null,
+      name: jw.itemName || null, old_sku: jw.vendorCode || null, weight_grams: jw.grossWt ? Number(jw.grossWt) : null,
+      price_mode: "live_gold", rate_source: "jewellery_purity", purity_idx: jw.purityIdx,
+      net_gold_weight_grams: jwCalc.netGold, making_amount: jwCalc.making, dia_total: jwCalc.diaTotal, misc_total: jwCalc.miscTotal,
+      apply_gst: !!jw.applyGst, qty: Number(jw.qty || 1),
+      source_estimate_id: estimateId || null,
+      created_by: user?.name || user?.username || null,
+    };
+    if (jw.catalogueProductId) {
+      await sb.from("catalogue_products").update(payload).eq("id", jw.catalogueProductId);
+      return;
+    }
+    const { data, error } = await sb.from("catalogue_products").insert(payload).select("id, sku").single();
+    if (error) { showToast("⚠️ Catalogue link failed: " + error.message); return; }
+    setJw(p => ({ ...p, catalogueProductId: data.id, catalogueSku: data.sku }));
+    const pending = jw.catalogueImages.filter(i => i._pending);
+    for (let i = 0; i < pending.length; i++) {
+      const { data: imgRow } = await sb.from("catalogue_product_images")
+        .insert({ tenant_id: tid, product_id: data.id, url: pending[i].url, is_cover: i === 0, sort_order: i }).select().single();
+      if (imgRow) setJw(p => ({ ...p, catalogueImages: p.catalogueImages.map(img => img === pending[i] ? imgRow : img) }));
+    }
+  };
+
   const saveEstimate = async () => {
     setSaving(true);
     try {
@@ -11284,6 +11978,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
         const { error } = await sb.from("bullion_estimates").update({ items, total_amount: total || null, lead_id: saveContact?.id || editingEstOrig?.lead_id || null, metadata: newMeta }).eq("id", editingEstId);
         if (error) { showToast("❌ Update failed: " + error.message); }
         else {
+          await syncCatalogueProduct(editingEstId);
           showToast("✓ Estimate updated");
           setSaveModal(false);
           setEditingEstId(null);
@@ -11298,7 +11993,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
         showToast("✅ Estimate saved");
         setSaveModal(false);
         setJustSaved(true);
-        const { error: insErr } = await sb.from("bullion_estimates").insert(payload);
+        const { data: insData, error: insErr } = await sb.from("bullion_estimates").insert(payload).select("id").single();
         if (insErr) { showToast("⚠️ Local only — will sync later"); }
         else {
           try {
@@ -11306,6 +12001,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
             const last = q[q.length - 1];
             if (last) { const updated = q.map((e, i) => i === q.length - 1 ? { ...e, _synced: true } : e); localStorage.setItem(EST_QUEUE, JSON.stringify(updated)); setSyncPending(updated.filter(e => !e._synced).length); }
           } catch {}
+          await syncCatalogueProduct(insData?.id);
           refreshEstLists();
         }
       }
@@ -11350,6 +12046,38 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     } finally {
       setJwImgUploading(false);
     }
+  };
+
+  // Extra catalogue photos (up to 5 total, alongside the estimate-slip itemImage).
+  // Only meaningful once a catalogue collection is picked — uploaded immediately
+  // to Supabase if the product already exists (edit), otherwise queued and
+  // flushed to catalogue_product_images right after the product is created.
+  const [jwCatalogueImgUploading, setJwCatalogueImgUploading] = useState(false);
+  const handleJwCatalogueImagePick = async (file) => {
+    if (!file || jw.catalogueImages.length >= 5) return;
+    setJwCatalogueImgUploading(true);
+    try {
+      const skuForName = jw.catalogueSku || "pending";
+      const { publicUrl } = await secureImageUpload(file, sb, "catalogue", {
+        maxDim: 1600, quality: 0.82, fileNameOverride: `${skuForName}_${jw.catalogueImages.length + 1}`,
+      });
+      if (jw.catalogueProductId) {
+        const { data } = await sb.from("catalogue_product_images")
+          .insert({ tenant_id: getTenantId(), product_id: jw.catalogueProductId, url: publicUrl, is_cover: jw.catalogueImages.length === 0, sort_order: jw.catalogueImages.length })
+          .select().single();
+        setJw(p => ({ ...p, catalogueImages: [...p.catalogueImages, data] }));
+      } else {
+        setJw(p => ({ ...p, catalogueImages: [...p.catalogueImages, { url: publicUrl, _pending: true }] }));
+      }
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      setJwCatalogueImgUploading(false);
+    }
+  };
+  const removeJwCatalogueImage = async (img, idx) => {
+    if (img.id) await sb.from("catalogue_product_images").delete().eq("id", img.id);
+    setJw(p => ({ ...p, catalogueImages: p.catalogueImages.filter((_, i) => i !== idx) }));
   };
 
   const handleJwPrint = () => {
@@ -11559,9 +12287,15 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
         misc1Lbl: it.misc1Lbl || "Gemstone", misc1Wt: it.misc1Wt || "", misc1Unit: it.misc1Unit || "g", misc1Rate: it.misc1Rate || "", misc1Deduct: it.misc1Deduct !== false,
         misc2Lbl: it.misc2Lbl || "Mala",     misc2Wt: it.misc2Wt || "", misc2Unit: it.misc2Unit || "g", misc2Rate: it.misc2Rate || "", misc2Deduct: it.misc2Deduct !== false,
         misc3Lbl: it.misc3Lbl || "Lakh",     misc3Wt: it.misc3Wt || "", misc3Unit: it.misc3Unit || "g", misc3Rate: it.misc3Rate || "", misc3Deduct: it.misc3Deduct !== false,
+        catalogueItemTypeId: it.catalogueItemTypeId || "", catalogueMaterialId: it.catalogueMaterialId || "", catalogueStyleId: it.catalogueStyleId || "",
+        catalogueProductId: it.catalogueProductId || "", catalogueSku: it.catalogueSku || "", catalogueImages: [],
       });
       if (it.misc1Wt || it.misc2Wt || it.misc3Wt) setJwShowMisc(true);
       setTab("jewellery");
+      if (it.catalogueProductId) {
+        sb.from("catalogue_product_images").select("*").eq("product_id", it.catalogueProductId).order("sort_order")
+          .then(({ data }) => setJw(p => ({ ...p, catalogueImages: data || [] })));
+      }
     } else if (est.mode === "solitaire") {
       setSol({
         cert: it.cert || "IGI", color: it.color || "H", shape: it.shape || "Round",
@@ -11618,6 +12352,52 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
           {jw.itemImage && <button style={{ fontSize: 11, padding: "4px 8px", borderRadius: 6, border: "1px solid #fcc", background: "#fff8f8", cursor: "pointer", marginLeft: 6 }} onClick={() => setJw(p => ({ ...p, itemImage: "" }))}>✕</button>}
         </div>
         <input ref={jwImgRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={e => handleJwImagePick(e.target.files?.[0])} />
+      </div>
+
+      {/* Catalogue linking — optional. Picking item type + material is enough
+          to create a draft product; everything else can be filled in later
+          from the Catalogue tab. */}
+      <div style={{ background: "#f8faff", border: "1px solid #dbeafe", borderRadius: 8, padding: 10, marginBottom: 12 }}>
+        <div style={{ fontSize: 11, color: "#1565c0", fontWeight: 600, marginBottom: 6 }}>🗂️ Add to Catalogue (optional)</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: jw.catalogueItemTypeId ? 8 : 0 }}>
+          <select style={inp} value={jw.catalogueItemTypeId} onChange={e => setJw(p => ({ ...p, catalogueItemTypeId: e.target.value }))}>
+            <option value="">— none —</option>
+            {catalogueItemTypes.filter(t => !t.parent_id).map(top => (
+              <optgroup key={top.id} label={top.name}>
+                <option value={top.id}>{top.name} (generic)</option>
+                {catalogueItemTypes.filter(c => c.parent_id === top.id).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </optgroup>
+            ))}
+          </select>
+          <select style={inp} value={jw.catalogueMaterialId} onChange={e => setJw(p => ({ ...p, catalogueMaterialId: e.target.value }))} disabled={!jw.catalogueItemTypeId}>
+            <option value="">Material —</option>
+            {catalogueMaterials.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+          <select style={inp} value={jw.catalogueStyleId} onChange={e => setJw(p => ({ ...p, catalogueStyleId: e.target.value }))} disabled={!jw.catalogueItemTypeId}>
+            <option value="">Style (optional) —</option>
+            {catalogueStyles.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        </div>
+        {jw.catalogueItemTypeId && (
+          <div>
+            {jw.catalogueSku && <div style={{ fontSize: 11, fontFamily: "monospace", color: "#555", marginBottom: 6 }}>SKU: {jw.catalogueSku}</div>}
+            <div style={{ fontSize: 10, color: "#888", marginBottom: 4 }}>Catalogue photos ({jw.catalogueImages.length}/5) — in addition to the item photo above</div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {jw.catalogueImages.map((img, i) => (
+                <div key={i} style={{ position: "relative", width: 44, height: 44 }}>
+                  <img src={img.url} alt="" style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 4 }} />
+                  <button onClick={() => removeJwCatalogueImage(img, i)} style={{ position: "absolute", top: -5, right: -5, width: 15, height: 15, borderRadius: "50%", border: "none", background: "#c0392b", color: "#fff", fontSize: 9, cursor: "pointer" }}>×</button>
+                </div>
+              ))}
+              {jw.catalogueImages.length < 5 && (
+                <label style={{ width: 44, height: 44, borderRadius: 4, border: "1px dashed #bbb", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 16, color: "#aaa" }}>
+                  {jwCatalogueImgUploading ? "⏳" : "+"}
+                  <input type="file" accept="image/*" style={{ display: "none" }} disabled={jwCatalogueImgUploading} onChange={e => handleJwCatalogueImagePick(e.target.files?.[0])} />
+                </label>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 12 }}>

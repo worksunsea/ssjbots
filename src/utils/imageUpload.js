@@ -90,10 +90,12 @@ async function compressImage(file, detectedType, maxDim = 1920, quality = 0.85) 
  * @param {number} [opts.maxDim=1920] - Max width/height in pixels
  * @param {number} [opts.quality=0.85] - JPEG quality 0-1
  * @param {number} [opts.maxFileMB=10] - Max original file size in MB
+ * @param {string} [opts.fileNameOverride] - Use this instead of {timestamp}_{original name}
+ *   (extension is still derived from the detected image type). e.g. "CKGAT-0001_1".
  * @returns {Promise<{publicUrl: string, compressedSize: number}>}
  */
 export async function secureImageUpload(file, supabase, folder, opts = {}) {
-  const { maxDim = 1920, quality = 0.85, maxFileMB = 10 } = opts;
+  const { maxDim = 1920, quality = 0.85, maxFileMB = 10, fileNameOverride } = opts;
 
   // 1. Size guard
   if (file.size > maxFileMB * 1024 * 1024) {
@@ -113,9 +115,11 @@ export async function secureImageUpload(file, supabase, folder, opts = {}) {
   const compressed = await compressImage(file, detectedType, maxDim, quality);
 
   // 4. Build safe path under uploads/
-  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
   const ext = detectedType === "png" ? "png" : detectedType === "gif" ? "gif" : "jpg";
-  const path = `uploads/${folder}/${Date.now()}_${safeName.replace(/\.[^.]+$/, "")}.${ext}`;
+  const baseName = fileNameOverride
+    ? fileNameOverride.replace(/[^a-zA-Z0-9._-]/g, "_")
+    : `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/\.[^.]+$/, "")}`;
+  const path = `uploads/${folder}/${baseName}.${ext}`;
 
   // 5. Upload
   const { error } = await supabase.storage
