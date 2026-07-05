@@ -11075,11 +11075,13 @@ function CatalogueScreen() {
     loadTaxonomy();
   };
 
+  const [pendingImages, setPendingImages] = useState([]); // photos picked before the product is first saved
   const openNewProduct = () => {
     setProductForm({ ...EMPTY_PRODUCT_FORM, itemTypeId: activeItemType?.id || "", materialId: materials[0]?.id || "" });
+    setPendingImages([]);
     setEditingProduct({});
   };
-  const openEditProduct = (p) => { setProductForm(productFormFromRow(p)); setEditingProduct(p); };
+  const openEditProduct = (p) => { setProductForm(productFormFromRow(p)); setPendingImages([]); setEditingProduct(p); };
 
   const buildPayload = (f) => ({
     tenant_id: tid,
@@ -11110,6 +11112,12 @@ function CatalogueScreen() {
       const { data, error } = await sb.from("catalogue_products").insert(payload)
         .select("*, catalogue_materials(name,code), catalogue_styles(name,code), catalogue_product_images(id,url,is_cover,sort_order)").single();
       if (error) { showToast("❌ " + error.message); return; }
+      // Flush any photos picked before this product existed.
+      for (let i = 0; i < pendingImages.length; i++) {
+        await sb.from("catalogue_product_images")
+          .insert({ tenant_id: tid, product_id: data.id, url: pendingImages[i].url, is_cover: i === 0, sort_order: i });
+      }
+      setPendingImages([]);
       setEditingProduct(data);
       showToast("✓ Created — " + data.sku);
       loadProducts(activeItemType.id);
@@ -11117,23 +11125,35 @@ function CatalogueScreen() {
   };
 
   const uploadProductImage = async (file) => {
-    if (!file || !editingProduct?.id) return;
-    const existing = editingProduct.catalogue_product_images || [];
+    if (!file) return;
+    const existing = editingProduct?.id ? (editingProduct.catalogue_product_images || []) : pendingImages;
     if (existing.length >= 5) { showToast("❌ Max 5 photos per product"); return; }
     try {
+      // Before the product exists yet, name by a temp placeholder — renamed
+      // implicitly next time (filename only matters for on-disk findability,
+      // not correctness).
+      const nameBase = editingProduct?.id ? editingProduct.sku : `pending_${Date.now()}`;
       const { publicUrl } = await secureImageUpload(file, sb, "catalogue", {
-        maxDim: 1600, quality: 0.82, fileNameOverride: `${editingProduct.sku}_${existing.length + 1}`,
+        maxDim: 1600, quality: 0.82, fileNameOverride: `${nameBase}_${existing.length + 1}`,
       });
-      const { data, error } = await sb.from("catalogue_product_images")
-        .insert({ tenant_id: tid, product_id: editingProduct.id, url: publicUrl, is_cover: existing.length === 0, sort_order: existing.length })
-        .select().single();
-      if (error) { showToast("❌ " + error.message); return; }
-      setEditingProduct((p) => ({ ...p, catalogue_product_images: [...(p.catalogue_product_images || []), data] }));
+      if (editingProduct?.id) {
+        const { data, error } = await sb.from("catalogue_product_images")
+          .insert({ tenant_id: tid, product_id: editingProduct.id, url: publicUrl, is_cover: existing.length === 0, sort_order: existing.length })
+          .select().single();
+        if (error) { showToast("❌ " + error.message); return; }
+        setEditingProduct((p) => ({ ...p, catalogue_product_images: [...(p.catalogue_product_images || []), data] }));
+      } else {
+        setPendingImages((p) => [...p, { url: publicUrl }]);
+      }
     } catch (e) { showToast("❌ " + e.message); }
   };
-  const removeProductImage = async (imgId) => {
-    await sb.from("catalogue_product_images").delete().eq("id", imgId);
-    setEditingProduct((p) => ({ ...p, catalogue_product_images: (p.catalogue_product_images || []).filter((i) => i.id !== imgId) }));
+  const removeProductImage = async (img) => {
+    if (img.id) {
+      await sb.from("catalogue_product_images").delete().eq("id", img.id);
+      setEditingProduct((p) => ({ ...p, catalogue_product_images: (p.catalogue_product_images || []).filter((i) => i.id !== img.id) }));
+    } else {
+      setPendingImages((p) => p.filter((i) => i.url !== img.url));
+    }
   };
 
   const closeProductModal = () => { setEditingProduct(null); loadProducts(activeItemType.id); };
@@ -11403,24 +11423,27 @@ function CatalogueScreen() {
 
           <Btn onClick={saveProduct}>{editingProduct.id ? "Save changes" : "Create product"}</Btn>
 
-          {editingProduct.id && (
+          {(() => {
+            const photos = editingProduct.id ? (editingProduct.catalogue_product_images || []) : pendingImages;
+            return (
             <div style={{ marginTop: 16, borderTop: "1px solid #eee", paddingTop: 12 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>Photos ({(editingProduct.catalogue_product_images || []).length}/5)</div>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>Photos ({photos.length}/5)</div>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {(editingProduct.catalogue_product_images || []).map((img) => (
-                  <div key={img.id} style={{ position: "relative", width: 70, height: 70 }}>
+                {photos.map((img, i) => (
+                  <div key={img.id || img.url || i} style={{ position: "relative", width: 70, height: 70 }}>
                     <img src={img.url} alt="" style={{ width: 70, height: 70, objectFit: "cover", borderRadius: 6 }} />
-                    <button onClick={() => removeProductImage(img.id)} style={{ position: "absolute", top: -6, right: -6, width: 18, height: 18, borderRadius: "50%", border: "none", background: "#c0392b", color: "#fff", fontSize: 11, cursor: "pointer" }}>×</button>
+                    <button onClick={() => removeProductImage(img)} style={{ position: "absolute", top: -6, right: -6, width: 18, height: 18, borderRadius: "50%", border: "none", background: "#c0392b", color: "#fff", fontSize: 11, cursor: "pointer" }}>×</button>
                   </div>
                 ))}
-                {(editingProduct.catalogue_product_images || []).length < 5 && (
+                {photos.length < 5 && (
                   <label style={{ width: 70, height: 70, borderRadius: 6, border: "1px dashed #bbb", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 20, color: "#aaa" }}>
                     +<input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => uploadProductImage(e.target.files?.[0])} />
                   </label>
                 )}
               </div>
             </div>
-          )}
+            );
+          })()}
         </Modal>
       )}
     </div>
