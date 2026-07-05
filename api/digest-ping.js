@@ -69,14 +69,29 @@ export default async function handler(req, res) {
       ...emailLines,
     ].filter(Boolean).join("\n\n");
 
-    const wa = await sendWhatsApp({ phone: OWNER_PHONE, msg, client: WA_SESSION_CLIENT_ID });
-    if (wa.status !== 1) console.error("digest-ping: WhatsApp send failed", wa.message);
+    // OWNER_PHONE may be a comma-separated list to ping multiple people.
+    // Known extra recipients get a name greeting; the primary owner doesn't need one.
+    const RECIPIENT_NAMES = { "9810442333": "Sanjeev sir", "9990942333": "Seema mam" };
+    const recipients = OWNER_PHONE.split(",").map((p) => p.trim()).filter(Boolean);
+    const results = await Promise.all(
+      recipients.map((phone) => {
+        const name = RECIPIENT_NAMES[phone.replace(/\D/g, "").slice(-10)];
+        return sendWhatsApp({ phone, msg: name ? `Hi ${name},\n\n${msg}` : msg, client: WA_SESSION_CLIENT_ID });
+      })
+    );
+    const sendErrors = [];
+    results.forEach((wa, i) => {
+      if (wa.status !== 1) {
+        console.error(`digest-ping: WhatsApp send failed for ${recipients[i]}`, wa.message);
+        sendErrors.push({ phone: recipients[i], error: wa.message });
+      }
+    });
 
     return res.status(200).json({
       ok: true,
       mode,
-      sent: wa.status === 1,
-      sendError: wa.status === 1 ? null : wa.message,
+      sent: results.some((wa) => wa.status === 1),
+      sendErrors,
       emailAccountsChecked: emailResults.length,
       upcomingEvents: events.length,
       overdueDelegations: delegations.length,

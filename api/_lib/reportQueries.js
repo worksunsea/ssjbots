@@ -80,9 +80,12 @@ export async function getPendingPettyCash(sb) {
 
 export async function getWalkinStats(sb) {
   const todayStart = istMidnightOffset(0), yestStart = istMidnightOffset(1);
+  // Counts come from bullion_visits (every walk-in form entry) — bullion_demands
+  // only gets a row when staff also ticked "create demand" with a description,
+  // which under-counted actual walk-in traffic.
   const [{ count: today }, { count: yesterday }, { data: recent }] = await Promise.all([
-    sb.from("bullion_demands").select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).eq("crm_source", "walkin").gte("created_at", todayStart),
-    sb.from("bullion_demands").select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).eq("crm_source", "walkin").gte("created_at", yestStart).lt("created_at", todayStart),
+    sb.from("bullion_visits").select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).gte("visited_at", todayStart),
+    sb.from("bullion_visits").select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).gte("visited_at", yestStart).lt("visited_at", todayStart),
     sb.from("bullion_demands").select("outcome").eq("tenant_id", TENANT_ID).eq("crm_source", "walkin").gte("created_at", yestStart),
   ]);
   const converted = (recent || []).filter((r) => r.outcome === "converted").length;
