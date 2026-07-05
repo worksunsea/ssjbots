@@ -1745,8 +1745,8 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
 
   const save = async () => {
     setErr("");
-    const phone = String(form.phone || "").replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, "");
-    if (!phone) return setErr("Phone number is required.");
+    const phone = normPhoneJS(form.phone);
+    if (!phone) return setErr("Enter a valid 10-digit mobile number.");
     if (!form.description) return setErr("Description is required.");
     setSaving(true);
     try {
@@ -2242,8 +2242,8 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved, prefill = n
   const save = async () => {
     setErr("");
     setDupContact(null);
-    const phone = String(form.phone || "").replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, "");
-    if (!phone) return setErr("Phone number is required.");
+    const phone = normPhoneJS(form.phone);
+    if (!phone) return setErr("Enter a valid 10-digit mobile number.");
     if (createDemand && !form.description) return setErr("Description is required when creating a demand.");
     setSaving(true);
 
@@ -5172,11 +5172,12 @@ function ContactEditModal({ contact, allTags = [], customFields = [], onClose, o
 
   const save = async () => {
     setErr("");
-    if (!form.phone) return setErr("Phone is required.");
+    const phone = normPhoneJS(form.phone);
+    if (!phone) return setErr("Enter a valid 10-digit mobile number.");
     setSaving(true);
     const payload = {
       tenant_id: getTenantId(),
-      phone: String(form.phone).replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, ""),
+      phone,
       name: form.name || null,
       mobile2: form.mobile2 || null,
       spouse_mobile: form.spouse_mobile || null,
@@ -10446,7 +10447,8 @@ function metalLabel(purityIdx) {
 
 // "₹1500/g" or "15%" — the making rate as configured, for showing alongside
 // (not instead of) the making total, so per-gram jobs show both figures.
-function makingRateLabel(makingR, mode) {
+function makingRateLabel(makingR, mode, isBelow1g) {
+  if (isBelow1g) return "Fixed (< 1g)";
   return mode === "per_g" ? `₹${Math.round(makingR).toLocaleString("en-IN")}/g` : `${makingR}%`;
 }
 
@@ -10510,17 +10512,36 @@ function WalkinDashboardScreen({ funnels = [], onEditEstimate }) {
     else if (dateFilter === "week") { since = new Date(now - 7 * 86400000); }
     else { since = new Date(now - 30 * 86400000); }
 
-    // Primary: estimates with a linked client saved in this period
+    const tid = getTenantId();
+
+    // Primary: every walk-in form entry logged in this period (bullion_visits) —
+    // a card must show up here even if staff never went on to save a Calculator estimate.
+    let vq = sb.from("bullion_visits")
+      .select("id,visited_at,lead_id,bullion_leads(id,name,phone,city,is_client,client_rating)")
+      .eq("tenant_id", tid)
+      .gte("visited_at", since.toISOString());
+    if (until) vq = vq.lte("visited_at", until.toISOString());
+    const { data: visits } = await vq.order("visited_at", { ascending: false });
+
+    const byLead = {};
+    for (const v of (visits || [])) {
+      const lid = v.lead_id;
+      if (!lid) continue;
+      if (!byLead[lid]) byLead[lid] = { lead: v.bullion_leads || {}, estimates: [], firstAt: v.visited_at, lastAt: v.visited_at };
+      if (v.visited_at < byLead[lid].firstAt) byLead[lid].firstAt = v.visited_at;
+      if (v.visited_at > byLead[lid].lastAt) byLead[lid].lastAt = v.visited_at;
+    }
+
+    // Secondary: estimates saved in this period — attached to the matching visit's card,
+    // or forming their own card when saved directly (no walk-in form entry for that lead).
     let q = sb.from("bullion_estimates")
       .select("id,mode,total_amount,created_at,items,lead_id,visit_id,bullion_leads(id,name,phone,city,is_client,client_rating)")
-      .eq("tenant_id", getTenantId())
+      .eq("tenant_id", tid)
       .not("lead_id", "is", null)
       .gte("created_at", since.toISOString());
     if (until) q = q.lte("created_at", until.toISOString());
     const { data: ests } = await q.order("created_at", { ascending: false });
 
-    // Group by lead_id
-    const byLead = {};
     for (const e of (ests || [])) {
       const lid = e.lead_id;
       if (!byLead[lid]) byLead[lid] = { lead: e.bullion_leads || {}, estimates: [], firstAt: e.created_at, lastAt: e.created_at };
@@ -10593,8 +10614,8 @@ function WalkinDashboardScreen({ funnels = [], onEditEstimate }) {
       {loading ? <div style={{ textAlign: "center", padding: 40, color: "#aaa" }}>Loading…</div> : cards.length === 0 ? (
         <div style={{ textAlign: "center", padding: 40, color: "#aaa" }}>
           <div style={{ fontSize: 32, marginBottom: 10 }}>🏪</div>
-          No estimates saved for this period.<br />
-          <span style={{ fontSize: 12 }}>Estimates saved in the 💎 Calculator with a client linked show here automatically.</span>
+          No walk-ins recorded for this period.<br />
+          <span style={{ fontSize: 12 }}>Walk-in form entries show here automatically; any 💎 Calculator estimates saved for that client attach to the same card.</span>
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -10618,8 +10639,8 @@ function WalkinDashboardScreen({ funnels = [], onEditEstimate }) {
                     </div>
                   </div>
                   <div style={{ textAlign: "right" }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: "#1565c0" }}>
-                      📋 {estimates.length} estimate{estimates.length > 1 ? "s" : ""}
+                    <div style={{ fontSize: 13, fontWeight: 700, color: estimates.length ? "#1565c0" : "#e65100" }}>
+                      {estimates.length ? `📋 ${estimates.length} estimate${estimates.length > 1 ? "s" : ""}` : "⏳ No estimate yet"}
                     </div>
                     {total > 0 && <div style={{ fontSize: 12, color: "#2e7d32", fontWeight: 600 }}>₹{Math.round(total).toLocaleString("en-IN")}</div>}
                   </div>
@@ -10849,7 +10870,7 @@ function openEstimateSlipWindow(est, liveRates = {}, clientPhone = "") {
     if (it.goldVal > 0) dRows.push(row(`${metal} Value`, fmtN(it.goldVal)));
     if (making > 0) {
       const makingRateTxt = it.makingMode
-        ? makingRateLabel(parseFloat(it.makingMode === "per_g" ? it.makingRatePg : it.makingRatePct) || 0, it.makingMode)
+        ? makingRateLabel(parseFloat(it.makingMode === "per_g" ? it.makingRatePg : it.makingRatePct) || 0, it.makingMode, it.isBelow1g)
         : (netGold > 0 ? `₹${Math.round(making / netGold).toLocaleString("en-IN")}/g (effective)` : "—");
       dRows.push(row("Making Rate", makingRateTxt));
       dRows.push(row("Making Total", fmtN(making)));
@@ -10879,7 +10900,7 @@ function openEstimateSlipWindow(est, liveRates = {}, clientPhone = "") {
 function sendWA(){window.open("https://wa.me/${waPhone}?text=${waMsg}","_blank");}
 var TODAY_RATE=${todayRate},NET_GOLD=${netGold},MAKING=${making},DIA_TOTAL=${diaTotal},MISC_TOTAL=${miscTotal},APPLY_GST=${applyGst},QTY=${qty};
 var CLIENT="${clientName.replace(/"/g,"'")}",IMG="${(it.itemImage||"").replace(/"/g,"'")}",INAME="${(it.itemName||"").replace(/"/g,"'")}",PURITY="${(PURITIES[it.purityIdx]?.l||"Custom").replace(/"/g,"'")}",GWGT="${(it.grossWt||"").toString().replace(/"/g,"'")}",NGWGT="${netGold.toFixed(3)}",METAL="${metal}";
-var MAKING_RATE_TXT="${(it.makingMode ? makingRateLabel(parseFloat(it.makingMode === "per_g" ? it.makingRatePg : it.makingRatePct) || 0, it.makingMode) : (netGold > 0 ? `₹${Math.round(making / netGold).toLocaleString("en-IN")}/g (effective)` : "—")).replace(/"/g,"'")}",DIA1="${it.dia1Wt||""}",DIA1U="${it.dia1Unit||""}",DIA1R="${it.dia1Rate||""}",DIA2="${it.dia2Wt||""}",DIA2U="${it.dia2Unit||""}",DIA2R="${it.dia2Rate||""}",STW="${it.stoneWt||""}",STU="${it.stoneUnit||""}",STR="${it.stoneRate||""}";
+var MAKING_RATE_TXT="${(it.makingMode ? makingRateLabel(parseFloat(it.makingMode === "per_g" ? it.makingRatePg : it.makingRatePct) || 0, it.makingMode, it.isBelow1g) : (netGold > 0 ? `₹${Math.round(making / netGold).toLocaleString("en-IN")}/g (effective)` : "—")).replace(/"/g,"'")}",DIA1="${it.dia1Wt||""}",DIA1U="${it.dia1Unit||""}",DIA1R="${it.dia1Rate||""}",DIA2="${it.dia2Wt||""}",DIA2U="${it.dia2Unit||""}",DIA2R="${it.dia2Rate||""}",STW="${it.stoneWt||""}",STU="${it.stoneUnit||""}",STR="${it.stoneRate||""}";
 function fmtR(n){return n==null?"—":"₹"+Math.round(n).toLocaleString("en-IN");}
 function expandImg(src){var w=window.open("","_blank","width=600,height=600");w.document.write("<body style='margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh'><img src='"+src+"' style='max-width:100%;max-height:100vh;object-fit:contain'/></body>");w.document.close();}
 function recalcToday(){
@@ -11149,7 +11170,8 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     const netGold = Math.max(0, gross - d1g - d2g - stg - misc1g - misc2g - misc3g);
     const goldVal = netGold * gRate;
     const makingR = makingMode === "per_g" ? parseFloat(jw.makingRatePg || 0) : parseFloat(jw.makingRatePct || 0);
-    const making = makingMode === "per_g" ? netGold * makingR : goldVal * (makingR / 100);
+    const isBelow1g = gross > 0 && gross < 1;
+    const making = isBelow1g ? 2000 : (makingMode === "per_g" ? netGold * makingR : goldVal * (makingR / 100));
     const d1raw = parseFloat(jw.dia1Wt || 0);
     const d2raw = parseFloat(jw.dia2Wt || 0);
     const straw = parseFloat(jw.stoneWt || 0);
@@ -11163,7 +11185,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     const gst = jw.applyGst ? subTotal * 0.03 : 0;
     const qty = Math.max(1, parseInt(jw.qty || "1", 10) || 1);
     const perPieceTotal = subTotal + gst;
-    return { gross, gRate, netGold, goldVal, making, makingR, makingMode, diaTotal, miscTotal, subTotal, gst, qty, perPieceTotal, total: perPieceTotal * qty };
+    return { gross, gRate, netGold, goldVal, making, makingR, makingMode, isBelow1g, diaTotal, miscTotal, subTotal, gst, qty, perPieceTotal, total: perPieceTotal * qty };
   })();
 
   // ── Solitaire calculation ──
@@ -11342,7 +11364,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     rows.push(row(`Net ${metal} Weight`, `${jwCalc.netGold.toFixed(3)} g`));
     rows.push(row(`${metal} Rate`, `₹${Math.round(jwCalc.gRate).toLocaleString("en-IN")}/g`));
     rows.push(row(`${metal} Value`, fmt(jwCalc.goldVal)));
-    rows.push(row("Making Rate", makingRateLabel(jwCalc.makingR, jwCalc.makingMode)));
+    rows.push(row("Making Rate", makingRateLabel(jwCalc.makingR, jwCalc.makingMode, jwCalc.isBelow1g)));
     rows.push(row("Making Total", fmt(jwCalc.making)));
     if (parseFloat(jw.dia1Wt||0)) rows.push(row(`Diamond 1 (${parseFloat(jw.dia1Wt)}${jw.dia1Unit} @ ₹${jw.dia1Rate})`, fmt(parseFloat(jw.dia1Wt||0)*parseFloat(jw.dia1Rate||0))));
     if (parseFloat(jw.dia2Wt||0)) rows.push(row(`Diamond 2 (${parseFloat(jw.dia2Wt)}${jw.dia2Unit} @ ₹${jw.dia2Rate})`, fmt(parseFloat(jw.dia2Wt||0)*parseFloat(jw.dia2Rate||0))));
@@ -11684,7 +11706,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
       <div style={{ ...card, background: "#f8faff", marginTop: 8 }}>
         {resultRow(`Net ${metalLabel(jw.purityIdx)} Weight`, `${jwCalc.netGold.toFixed(3)} g`)}
         {resultRow(`${metalLabel(jw.purityIdx)} Value`, fmt(jwCalc.goldVal))}
-        {resultRow("Making Rate", makingRateLabel(jwCalc.makingR, jwCalc.makingMode))}
+        {resultRow("Making Rate", makingRateLabel(jwCalc.makingR, jwCalc.makingMode, jwCalc.isBelow1g))}
         {resultRow("Making Total", fmt(jwCalc.making))}
         {resultRow("Diamond / Stone Total", fmt(jwCalc.diaTotal))}
         {jwCalc.miscTotal > 0 && resultRow("Misc Total", fmt(jwCalc.miscTotal))}
@@ -11703,7 +11725,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
         const jwPdfRows = [
           ["Item", jw.itemName || "—"],
           [`${metalLabel(jw.purityIdx)} (${PURITIES[jw.purityIdx]?.l || "Custom"})`, fmt(jwCalc.goldVal)],
-          ["Making Rate", makingRateLabel(jwCalc.makingR, jwCalc.makingMode)],
+          ["Making Rate", makingRateLabel(jwCalc.makingR, jwCalc.makingMode, jwCalc.isBelow1g)],
           ["Making Total", fmt(jwCalc.making)],
           ...(jwCalc.diaTotal > 0 ? [["Diamond/Stone", fmt(jwCalc.diaTotal)]] : []),
           ...(jwCalc.miscTotal > 0 ? [["Misc", fmt(jwCalc.miscTotal)]] : []),
@@ -11714,7 +11736,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
           `*ESTIMATE — Sun Sea Jewellers*`,
           jw.itemName ? `\n*Item:* ${jw.itemName}` : "",
           `\n*${metalLabel(jw.purityIdx)} (${PURITIES[jw.purityIdx]?.l || "Custom"}):* ${fmt(jwCalc.goldVal)}`,
-          `*Making Rate:* ${makingRateLabel(jwCalc.makingR, jwCalc.makingMode)}`,
+          `*Making Rate:* ${makingRateLabel(jwCalc.makingR, jwCalc.makingMode, jwCalc.isBelow1g)}`,
           `*Making Total:* ${fmt(jwCalc.making)}`,
           jwCalc.diaTotal > 0 ? `*Diamond/Stone:* ${fmt(jwCalc.diaTotal)}` : "",
           jwCalc.miscTotal > 0 ? `*Misc:* ${fmt(jwCalc.miscTotal)}` : "",
@@ -12045,7 +12067,12 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
 
   const addNewClient = async () => {
     if (!newClientName.trim() && !newClientPhone.trim()) return;
-    const { data, error } = await sb.from("bullion_leads").insert({ name: newClientName.trim() || null, phone: newClientPhone.trim() || null, source: "walk_in", tenant_id: getTenantId() }).select("id,name,phone").single();
+    let phone = null;
+    if (newClientPhone.trim()) {
+      phone = normPhoneJS(newClientPhone);
+      if (!phone) { showToast("❌ Enter a valid 10-digit mobile number"); return; }
+    }
+    const { data, error } = await sb.from("bullion_leads").insert({ name: newClientName.trim() || null, phone, source: "walk_in", tenant_id: getTenantId() }).select("id,name,phone").single();
     if (error) { showToast("❌ Add failed: " + error.message); return; }
     setSaveContact(data); setContactSearch(data.name + (data.phone ? ` (${data.phone})` : ""));
     try { localStorage.setItem("calc_active_contact", JSON.stringify(data)); } catch {}
