@@ -18,9 +18,14 @@ export const WBIZTOOL_DEFAULT_CLIENT = process.env.WBIZTOOL_DEFAULT_CLIENT || "7
 export const HARD_EXCHANGE_CAP = Number(process.env.HARD_EXCHANGE_CAP || 100);
 export const OWNER_ALERT_PHONE = process.env.OWNER_ALERT_PHONE || "8860866000";
 
-// Saurav's personal number — the only sender trusted to issue WhatsApp task
-// commands, and the recipient of the morning/evening digest pings.
+// Saurav's personal number — the ONLY sender trusted to issue WhatsApp task
+// commands (webhook.js does a strict equality check against this single
+// number). Must stay a single number, never comma-joined — use
+// DIGEST_EXTRA_RECIPIENTS below to add more people to the digest ping only.
 export const OWNER_PHONE = process.env.OWNER_PHONE || "";
+// Additional people who should also receive the morning/evening digest ping
+// (comma-separated), without being trusted for owner WA commands.
+export const DIGEST_EXTRA_RECIPIENTS = process.env.DIGEST_EXTRA_RECIPIENTS || "";
 export const DIGEST_CRON_SECRET = process.env.DIGEST_CRON_SECRET || process.env.CRON_SECRET || "";
 export const REPORTING_URL = process.env.REPORTING_URL || "https://hr.gemtre.in/reporting";
 

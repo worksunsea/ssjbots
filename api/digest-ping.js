@@ -8,7 +8,7 @@ import { sendWhatsApp } from "./_lib/wa.js";
 import { runEmailDigest } from "./_lib/emailDigest.js";
 import { getUpcomingEvents, formatEventsLine } from "./_lib/birthdays.js";
 import { getOverdueDelegations, getOpenHelpSlips, getPendingLeaves, getWalkinStats } from "./_lib/reportQueries.js";
-import { OWNER_PHONE, DIGEST_CRON_SECRET, REPORTING_URL, WA_SESSION_CLIENT_ID } from "./_lib/config.js";
+import { OWNER_PHONE, DIGEST_EXTRA_RECIPIENTS, DIGEST_CRON_SECRET, REPORTING_URL, WA_SESSION_CLIENT_ID } from "./_lib/config.js";
 
 function checkAuth(req) {
   if (!DIGEST_CRON_SECRET) return true; // dev mode
@@ -69,10 +69,11 @@ export default async function handler(req, res) {
       ...emailLines,
     ].filter(Boolean).join("\n\n");
 
-    // OWNER_PHONE may be a comma-separated list to ping multiple people.
-    // Known extra recipients get a name greeting; the primary owner doesn't need one.
+    // OWNER_PHONE stays a single trusted number (webhook.js depends on strict
+    // equality for owner WA commands) — extra digest recipients come from a
+    // separate env var instead. Known extras get a name greeting.
     const RECIPIENT_NAMES = { "9810442333": "Sanjeev sir", "9990942333": "Seema mam" };
-    const recipients = OWNER_PHONE.split(",").map((p) => p.trim()).filter(Boolean);
+    const recipients = [OWNER_PHONE, ...DIGEST_EXTRA_RECIPIENTS.split(",")].map((p) => p.trim()).filter(Boolean);
     const results = await Promise.all(
       recipients.map((phone) => {
         const name = RECIPIENT_NAMES[phone.replace(/\D/g, "").slice(-10)];
