@@ -354,7 +354,10 @@ export async function buildReportText(sb, topic, opts = {}) {
         `- Petty cash pending: ${petty.count}`,
         `- Absent today: ${absent.length}${absent.length ? " (" + absent.slice(0, 5).join(", ") + (absent.length > 5 ? "…" : "") + ")" : ""}`,
         `- Walk-ins: ${walkins.today} today, ${walkins.yesterday} yesterday`,
-        `Full detail: https://hr.gemtre.in/reporting`,
+        // Cache-busting date param — WhatsApp caches link previews per exact
+        // URL, so a static link kept showing the stale first-ever preview
+        // (the page's "Loading…" skeleton, scraped before og tags existed).
+        `Full detail: https://hr.gemtre.in/reporting?d=${todayIST()}`,
       ].join("\n");
     }
   }

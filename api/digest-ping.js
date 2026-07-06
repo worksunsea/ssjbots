@@ -62,8 +62,14 @@ export default async function handler(req, res) {
       .filter((r) => r.status === "ok" && r.summaryText && r.summaryText !== "Nothing urgent.")
       .map((r) => `📧 ${r.email}:\n${r.summaryText}`);
 
+    // Cache-busting param — WhatsApp caches link previews per exact URL, so a
+    // static link kept showing the stale first-ever preview (the page's
+    // "Loading…" skeleton, scraped before og tags existed on the page).
+    const cacheBust = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10) + "-" + mode;
+    const reportLink = `${REPORTING_URL}${REPORTING_URL.includes("?") ? "&" : "?"}d=${cacheBust}`;
+
     const msg = [
-      `${greeting} — ${teaser} → ${REPORTING_URL}`,
+      `${greeting} — ${teaser} → ${reportLink}`,
       walkinLine,
       eventsLine,
       ...emailLines,
