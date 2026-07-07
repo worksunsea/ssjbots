@@ -1,0 +1,83 @@
+# WA session watchdog - runs locally on the NUC via Task Scheduler every 5 min.
+#
+# Why this exists: the Reception WA session got stuck in a broken reconnect
+# loop (closed code=500, repeating every ~50min) for ~56h straight
+# (2026-07-05 to 2026-07-07), silently failing every outbound WhatsApp
+# message for every recipient until someone noticed and manually re-paired.
+# Nothing detected it automatically. This script closes that gap: it polls
+# wa-service's own /clients status, and if any session has been disconnected
+# for 2 consecutive checks (~10 min), it restarts the container (cheap,
+# fixes most stuck-reconnect cases) and pushes a notification via ssj-hr's
+# existing PWA push endpoint - which works even when WhatsApp itself is the
+# thing that's broken, unlike alerting over WA.
+
+$ErrorActionPreference = "Stop"
+$stateFile = "C:\docker-data\wa-watchdog-state.json"
+$healthUrl = "http://localhost:3021/clients"
+$pushUrl = "https://hr.gemtre.in/api/push"
+$containerName = "ssj-wa-service"
+$restartCooldownMin = 60   # don't restart more than once per hour even if still broken
+
+function Load-State {
+    if (Test-Path $stateFile) {
+        try { return Get-Content $stateFile -Raw | ConvertFrom-Json } catch {}
+    }
+    return @{ fails = @{}; lastRestart = $null }
+}
+
+function Save-State($state) {
+    $state | ConvertTo-Json -Depth 5 | Set-Content -Path $stateFile -Encoding utf8
+}
+
+function Send-Alert($title, $body) {
+    try {
+        $payload = @{ user_id = "admin"; title = $title; body = $body; url = "/reporting" } | ConvertTo-Json
+        Invoke-RestMethod -Uri $pushUrl -Method Post -Body $payload -ContentType "application/json" -TimeoutSec 15 | Out-Null
+    } catch {
+        Write-Output ("wa-watchdog: push alert failed - {0}" -f $_)
+    }
+}
+
+$state = Load-State
+if (-not $state.fails) { $state | Add-Member -NotePropertyName fails -NotePropertyValue @{} -Force }
+
+try {
+    $health = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 15
+} catch {
+    Write-Output ("wa-watchdog: could not reach wa-service at all - {0}" -f $_)
+    Send-Alert "WA service unreachable" ("wa-service did not respond on {0} - check Docker Desktop / the NUC is on." -f $healthUrl)
+    exit 0
+}
+
+$downClients = @()
+foreach ($c in $health.clients) {
+    $id = $c.client_id
+    $prevFails = if ($state.fails.$id) { $state.fails.$id } else { 0 }
+    if ($c.connected) {
+        $state.fails.$id = 0
+    } else {
+        $state.fails.$id = $prevFails + 1
+        if ($state.fails.$id -ge 2) { $downClients += $id }
+    }
+}
+
+if ($downClients.Count -gt 0) {
+    $now = Get-Date
+    $canRestart = $true
+    if ($state.lastRestart) {
+        $last = [datetime]$state.lastRestart
+        if (($now - $last).TotalMinutes -lt $restartCooldownMin) { $canRestart = $false }
+    }
+    $names = $downClients -join ", "
+    if ($canRestart) {
+        Write-Output ("wa-watchdog: {0} disconnected 2+ checks in a row - restarting {1}" -f $names, $containerName)
+        docker restart $containerName | Out-Null
+        $state.lastRestart = $now.ToString("o")
+        Send-Alert "WhatsApp session dropped" ("{0} disconnected - auto-restarted the wa-service container. If messages still show waiting after a few minutes, it needs a manual re-pair (scan QR again)." -f $names)
+    } else {
+        Write-Output ("wa-watchdog: {0} still down but restarted within the last {1} min - skipping restart, still alerting" -f $names, $restartCooldownMin)
+        Send-Alert "WhatsApp session still down" ("{0} still disconnected after a recent auto-restart - likely needs a manual re-pair (scan QR again)." -f $names)
+    }
+}
+
+Save-State $state
