@@ -6,8 +6,13 @@ services:
     ports:
       - "3021:3000"
     volumes:
-      # Auth lives OUTSIDE the repo so re-deploys don't wipe the paired session.
-      - /volume1/docker/wa-auth:/app/auth
+      # Named Docker volume (not a host bind-mount) — Baileys writes many
+      # small session-key files constantly, and a Windows-host bind-mount
+      # (NTFS <-> container filesystem translation) is a known corruption
+      # risk for that write pattern. This caused a ~56h broken session
+      # (2026-07-05 to 2026-07-07) that silently failed every outbound
+      # message until manually re-paired. See wa-auth-data volume below.
+      - wa-auth-data:/app/auth
     environment:
       PORT: 3000
       AUTH_DIR: /app/auth
@@ -16,3 +21,7 @@ services:
       VERCEL_WEBHOOK_SECRET: ${VERCEL_WEBHOOK_SECRET}
       WA_CLIENT_ID: ${WA_CLIENT_ID:-main}
       BAILEYS_LOG: ${BAILEYS_LOG:-warn}
+
+volumes:
+  wa-auth-data:
+    external: true
