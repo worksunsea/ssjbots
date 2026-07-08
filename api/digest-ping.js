@@ -5,6 +5,7 @@
 
 import { supa } from "./_lib/supabase.js";
 import { sendWhatsApp } from "./_lib/wa.js";
+import { sendPushNotification } from "./_lib/pushNotify.js";
 import { runEmailDigest } from "./_lib/emailDigest.js";
 import { getUpcomingEvents, formatEventsLine } from "./_lib/birthdays.js";
 import { getOverdueDelegations, getOpenHelpSlips, getPendingLeaves, getWalkinStats } from "./_lib/reportQueries.js";
@@ -93,6 +94,21 @@ export default async function handler(req, res) {
         sendErrors.push({ phone: recipients[i], error: wa.message });
       }
     });
+
+    // App push for the owner — pending help slips and delegations, in
+    // addition to the WhatsApp text above, so it also shows on the
+    // installed app's lock screen.
+    if (delegations.length || slips.length) {
+      const pushParts = [];
+      if (slips.length) pushParts.push(`${slips.length} pending help slip${slips.length > 1 ? "s" : ""}`);
+      if (delegations.length) pushParts.push(`${delegations.length} pending delegation${delegations.length > 1 ? "s" : ""}`);
+      await sendPushNotification({
+        userId: "admin",
+        title: mode === "morning" ? "🔔 Morning check-in" : "🌙 Evening check-in",
+        body: pushParts.join(" + "),
+        url: "/reporting",
+      });
+    }
 
     return res.status(200).json({
       ok: true,
