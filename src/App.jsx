@@ -4,6 +4,7 @@ import QRCode from "qrcode";
 import { jsPDF } from "jspdf";
 import { secureImageUpload, secureNonImageUpload } from "./utils/imageUpload";
 import { getDeviceToken, shouldForceLogout, SESSION_POLL_MS } from "./utils/session-security";
+import { sendPushNotification } from "./utils/pushNotify";
 
 // ── SUPABASE (shared Sun Sea project — same as ssj-hr / fms-tracker) ──
 const SUPABASE_URL = "https://uppyxzellmuissdlxsmy.supabase.co";
@@ -773,6 +774,14 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
     setReassignOpen(false);
     // Optimistic update — reflect new name immediately without waiting for reload
     if (demand) { demand.assigned_to = newName; demand.assigned_staff_id = staffId || null; }
+    if (staffId) {
+      sendPushNotification({
+        userId: staffId,
+        title: "📇 New Demand Assigned",
+        body: `${lead?.name || lead?.phone || "A lead"} — ${demand?.description || demand?.product_category || "demand"}`,
+        url: "/",
+      });
+    }
     onChanged && onChanged();
   };
 
@@ -1356,6 +1365,12 @@ function DemandsScreen({ funnels, allTags }) {
       assigned_to: picked?.name || picked?.username || null,
       updated_at: new Date().toISOString(),
     }).in("id", ids);
+    sendPushNotification({
+      userId: bulkStaffId,
+      title: "📇 New Demands Assigned",
+      body: `${ids.length} demand${ids.length > 1 ? "s" : ""} assigned to you`,
+      url: "/",
+    });
     setBulkSelected(new Set());
     setBulkStaffId("");
     setBulkBusy(false);

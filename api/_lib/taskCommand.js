@@ -8,6 +8,7 @@
 // the deterministic resolve → insert → notify steps.
 
 import { sendWhatsApp } from "./wa.js";
+import { sendPushNotification } from "./pushNotify.js";
 import { TENANT_ID, WA_SESSION_CLIENT_ID } from "./config.js";
 
 const nameEq = (a, b) => String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
@@ -16,13 +17,18 @@ function todayIST() {
   return new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
 }
 
+// Karigars (type=artisan) are not staff and never get app logins or task
+// assignments — see feedback_karigars_not_staff. Filtered client-side
+// (not .neq("type", "artisan") in the query) because SQL's <> against a
+// NULL type column would silently exclude legitimate staff rows that
+// predate this field.
 export async function getActiveStaff(sb) {
   const { data } = await sb
     .from("staff")
-    .select("name,phone")
+    .select("id,name,phone,type")
     .eq("tenant_id", TENANT_ID)
     .eq("active", true);
-  return (data || []).filter((s) => s.name);
+  return (data || []).filter((s) => s.name && s.type !== "artisan");
 }
 
 // Inserts a task row matching ssj-hr's createTask shape (App.jsx createTask).
@@ -94,6 +100,15 @@ export async function executeCreateTask(sb, staff, { assignee, title, due_date }
   } else {
     notifyNote = ` (${matchedStaff.name} has no phone on file — not notified)`;
   }
+  // App push — this task-creation path only ever sent the WhatsApp text
+  // above, never a push, so it never showed up as a lock-screen/app
+  // notification like in-app-created tasks do.
+  await sendPushNotification({
+    userId: String(matchedStaff.id),
+    title: "📋 New Task Assigned",
+    body: `${title}${dueText}`,
+    url: "/",
+  });
 
   return `✅ Task assigned to ${matchedStaff.name}: ${title}${dueText}${notifyNote}`;
 }
