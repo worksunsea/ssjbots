@@ -44,7 +44,10 @@ function Send-Alert($title, $body) {
         # QR for every session) instead of ssj-hr's reporting page - tapping
         # the notification should go directly to where you fix it, not to a
         # dashboard you then have to navigate away from.
-        $payload = @{ user_id = "admin"; title = $title; body = $body; url = "https://ssjbot.gemtre.in/?screen=connections" } | ConvertTo-Json
+        # notif_type makes this also show up as a clickable card in the HR
+        # app's Notifications feed (not just an OS push toast that's easy to
+        # dismiss/miss), same place leave/help-slip alerts already show.
+        $payload = @{ user_id = "admin"; title = $title; body = $body; url = "https://ssjbot.gemtre.in/?screen=connections"; notif_type = "wa_session_down" } | ConvertTo-Json
         Invoke-RestMethod -Uri $pushUrl -Method Post -Body $payload -ContentType "application/json" -TimeoutSec 15 | Out-Null
     } catch {
         Write-Output ("wa-watchdog: push alert failed - {0}" -f $_)
