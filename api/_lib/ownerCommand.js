@@ -130,8 +130,9 @@ function anyWordFilter(columns, words) {
   return conds.join(",");
 }
 
-// Returns { text } for a text reply, or { text, mediaUrl, caption } if a
-// matching document image should be sent.
+// Returns { text } for a single text reply, or { items: [{text}|{mediaUrl,
+// mediaType, filename, caption}, ...] } when one or more documents match —
+// callers must send every item, not just the first.
 async function searchResources(sb, query) {
   const words = significantWords(query);
   if (!words.length) return { text: `Couldn't find anything matching "${query}" in Resources or Business Docs.` };
@@ -165,21 +166,21 @@ async function searchResources(sb, query) {
   }
 
   if (docMatches?.length) {
-    const doc = docMatches[0];
-    if (doc.front_image_url) {
-      // The upload form accepts images AND PDFs into this same column
-      // (accept="image/*,.pdf") — sending a PDF as mediaType "image" fails
-      // to render in WhatsApp, so detect it from the URL/extension.
-      const isPdf = /\.pdf(\?|$)/i.test(doc.front_image_url);
-      return {
-        text: null,
-        mediaUrl: doc.front_image_url,
-        mediaType: isPdf ? "document" : "image",
-        filename: isPdf ? `${doc.title}.pdf` : undefined,
-        caption: `📋 ${doc.title}${doc.notes ? "\n" + doc.notes : ""}`,
-      };
-    }
-    return { text: `📋 *${doc.title}*\n${doc.text_content || doc.notes || "(no details on file)"}` };
+    // Multiple docs can legitimately match one query (e.g. 3 bank accounts
+    // for "Sun Sea Jewellers") — send every match, not just the first.
+    const items = docMatches.map((doc) => {
+      if (doc.front_image_url) {
+        const isPdf = /\.pdf(\?|$)/i.test(doc.front_image_url);
+        return {
+          mediaUrl: doc.front_image_url,
+          mediaType: isPdf ? "document" : "image",
+          filename: isPdf ? `${doc.title}.pdf` : undefined,
+          caption: `📋 ${doc.title}${doc.notes ? "\n" + doc.notes : ""}`,
+        };
+      }
+      return { text: `📋 *${doc.title}*\n${doc.text_content || doc.notes || "(no details on file)"}` };
+    });
+    return { items };
   }
 
   return { text: `Couldn't find anything matching "${query}" in Resources or Business Docs.` };
@@ -205,7 +206,7 @@ async function diagnoseWrongAnswer(lastCommand) {
 }
 
 // Full pipeline for any WhatsApp message from Saurav's number. Returns
-// { replyText } and/or { mediaUrl, caption } for webhook.js to send.
+// { replyText }, { mediaUrl, caption }, or { items: [...] } for webhook.js to send.
 export async function handleOwnerMessage(sb, messageText) {
   const [staff, corrections] = await Promise.all([getActiveStaff(sb), getRecentCorrections(sb)]);
   const parsed = await classifyOwnerMessage(messageText, staff.map((s) => s.name), corrections);
@@ -235,7 +236,7 @@ export async function handleOwnerMessage(sb, messageText) {
     result = { replyText: await buildReportText(sb, topic, { staffName: resolvedStaffName, query: parsed.query }) };
   } else if (parsed.intent === "search_resources") {
     const r = await searchResources(sb, parsed.query || messageText);
-    result = { replyText: r.text, mediaUrl: r.mediaUrl, mediaType: r.mediaType, filename: r.filename, caption: r.caption };
+    result = r.items ? { items: r.items } : { replyText: r.text };
   } else if (parsed.intent === "dev_task") {
     try {
       await queueDevTask(sb, { taskText: parsed.task || messageText, repoHint: parsed.repo_hint });
@@ -253,7 +254,7 @@ export async function handleOwnerMessage(sb, messageText) {
     topic: parsed.topic || parsed.repo_hint,
     staffName: parsed.staff_name || parsed.assignee,
     searchQuery: parsed.query || parsed.task,
-    replyText: result.replyText || result.caption,
+    replyText: result.replyText || result.items?.map((i) => i.caption || i.text).join(" | "),
   }).catch((err) => console.error("ownerCommand: logCommand failed", err));
 
   return result;

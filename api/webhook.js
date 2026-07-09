@@ -91,10 +91,22 @@ export default async function handler(req, res) {
   if (OWNER_PHONE && normalizePhone(phone) === normalizePhone(OWNER_PHONE)) {
     try {
       const sb = supa();
-      const { replyText, mediaUrl, mediaType, filename, caption } = await handleOwnerMessage(sb, msg);
+      const { replyText, mediaUrl, mediaType, filename, caption, items } = await handleOwnerMessage(sb, msg);
       const sendTarget = jid || phone;
       const client = waClient || WA_SESSION_CLIENT_ID;
-      if (mediaUrl) {
+      if (items?.length) {
+        // Multiple matches (e.g. 3 bank accounts for one entity) — send each,
+        // small gap between so WhatsApp doesn't collapse/reorder them.
+        for (let i = 0; i < items.length; i++) {
+          const it = items[i];
+          if (it.mediaUrl) {
+            await sendWhatsAppMedia({ phone: sendTarget, mediaUrl: it.mediaUrl, mediaType: it.mediaType || "image", filename: it.filename, caption: it.caption || "", client });
+          } else if (it.text) {
+            await sendWhatsApp({ phone: sendTarget, msg: it.text, client });
+          }
+          if (i < items.length - 1) await sleep(1200);
+        }
+      } else if (mediaUrl) {
         await sendWhatsAppMedia({ phone: sendTarget, mediaUrl, mediaType: mediaType || "image", filename, caption: caption || "", client });
       } else if (replyText) {
         await sendWhatsApp({ phone: sendTarget, msg: replyText, client });
