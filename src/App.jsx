@@ -10621,6 +10621,98 @@ function metalLabel(purityIdx) {
   return /silver/i.test(PURITIES[purityIdx]?.l || "") ? "Silver" : "Gold";
 }
 
+// Shared jewellery pricing input block — used verbatim by both the
+// Calculator's jewellery tab and the Catalogue product form, so there is
+// exactly one place these fields are laid out and one formula
+// (computeJewelleryEstimate) that reads them. Caller owns the `jw` state,
+// the name/vendor-code/size row, and the photo — this covers gross weight,
+// purity, making charges, GST, and the diamond/stone/misc block (collapsed
+// by default — most items have none, no need to show them up front).
+function JewelleryPricingFields({ jw, setJw, makingMode, onMakingModeChange, liveRates, detailsOpen, setDetailsOpen, lbl, inp }) {
+  return (
+    <>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 12 }}>
+        <div><label style={lbl}>Gross Weight (g)</label><input style={inp} type="number" step="0.01" value={jw.grossWt} onChange={(e) => setJw((p) => ({ ...p, grossWt: e.target.value }))} placeholder="0.00" /></div>
+        <div><label style={lbl}>Pcs (for bulk orders)</label><input style={inp} type="number" min="1" step="1" value={jw.qty} onChange={(e) => setJw((p) => ({ ...p, qty: e.target.value }))} placeholder="1" /></div>
+        <div>
+          <label style={lbl}>Purity</label>
+          <select style={inp} value={jw.purityIdx} onChange={(e) => { const idx = Number(e.target.value); setJw((p) => ({ ...p, purityIdx: idx })); onMakingModeChange(idx === 0 ? "pct" : "per_g"); }}>
+            {PURITIES.map((p2, i) => <option key={i} value={i}>{p2.l}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={lbl}>
+            {metalLabel(jw.purityIdx)} Rate ₹/g — live: {(() => { const k = PURITIES[jw.purityIdx]?.rateKey; const r = purityRatePg(jw.purityIdx, liveRates); return k && r ? <span style={{ color: C.green, fontWeight: 600 }}>₹{Math.round(r).toLocaleString("en-IN")}</span> : <span style={{ color: C.orange }}>loading…</span>; })()}
+          </label>
+          <input style={{ ...inp, background: jw.goldRateOverride ? "#fffbe6" : "#fff" }} type="number" step="1" value={jw.goldRateOverride} onChange={(e) => setJw((p) => ({ ...p, goldRateOverride: e.target.value }))} placeholder={(() => { const k = PURITIES[jw.purityIdx]?.rateKey; const r = purityRatePg(jw.purityIdx, liveRates); return k && r ? String(Math.round(r)) : "e.g. 13346"; })()} />
+          {jw.goldRateOverride && <div style={{ fontSize: 11, color: C.orange, marginTop: 2 }}>⚠ Override active — clear to use live rate</div>}
+        </div>
+        <div>
+          <label style={lbl}>Making Charges — mode: <button type="button" onClick={() => onMakingModeChange(makingMode === "per_g" ? "pct" : "per_g")} style={{ fontSize: 11, padding: "2px 8px", border: "1px solid #ddd", borderRadius: 4, cursor: "pointer", background: "#f5f5f5" }}>{makingMode === "per_g" ? "₹/g ↔" : "% ↔"}</button></label>
+          {makingMode === "per_g"
+            ? <input style={inp} type="number" value={jw.makingRatePg} onChange={(e) => setJw((p) => ({ ...p, makingRatePg: e.target.value }))} placeholder="1500" />
+            : <input style={inp} type="number" value={jw.makingRatePct} onChange={(e) => setJw((p) => ({ ...p, makingRatePct: e.target.value }))} placeholder="15" />}
+        </div>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, alignSelf: "end", paddingBottom: 8 }}>
+          <input type="checkbox" checked={jw.applyGst} onChange={(e) => setJw((p) => ({ ...p, applyGst: e.target.checked }))} /> Apply 3% GST
+        </label>
+      </div>
+
+      <div style={{ marginBottom: 8 }}>
+        <button type="button" onClick={() => setDetailsOpen((v) => !v)} style={{ fontSize: 12, padding: "6px 14px", borderRadius: 6, border: "1px solid #ddd", background: "#f8f8f8", cursor: "pointer", color: "#555" }}>
+          {detailsOpen ? "▲ Hide diamond / stone / extra charges" : "▼ Diamond / stone / extra charges (if any)"}
+        </button>
+      </div>
+
+      {detailsOpen && (
+        <>
+          {[
+            { key: "dia1", label: "Diamond 1", wtK: "dia1Wt", unitK: "dia1Unit", rateK: "dia1Rate" },
+            { key: "dia2", label: "Diamond 2", wtK: "dia2Wt", unitK: "dia2Unit", rateK: "dia2Rate" },
+            { key: "stone", label: "Stone", wtK: "stoneWt", unitK: "stoneUnit", rateK: "stoneRate" },
+          ].map(({ key, label, wtK, unitK, rateK }) => (
+            <div key={key} style={{ display: "grid", gridTemplateColumns: "1fr 80px 1fr", gap: 8, marginBottom: 8, alignItems: "end" }}>
+              <div><label style={lbl}>{label} Weight</label><input style={inp} type="number" step="0.001" value={jw[wtK]} onChange={(e) => setJw((p) => ({ ...p, [wtK]: e.target.value }))} placeholder="0.000" /></div>
+              <div><label style={lbl}>Unit</label><select style={inp} value={jw[unitK]} onChange={(e) => setJw((p) => ({ ...p, [unitK]: e.target.value }))}><option value="ct">ct</option><option value="g">g</option></select></div>
+              <div><label style={lbl}>{label} Rate (₹/g)</label><input style={inp} type="number" value={jw[rateK]} onChange={(e) => setJw((p) => ({ ...p, [rateK]: e.target.value }))} placeholder="0" /></div>
+            </div>
+          ))}
+          <div style={{ marginBottom: 8 }}>
+            <button type="button" style={{ fontSize: 12, padding: "5px 12px", borderRadius: 6, border: "1px solid #c9a0dc", background: "#fdf4ff", cursor: "pointer", color: "#7b2d8b", marginBottom: 8 }}
+              onClick={() => setJw((p) => ({ ...p, misc1Lbl: "Kundan", misc1Deduct: true }))}
+            >+ Add Kundan Weight</button>
+            {[
+              { lblK: "misc1Lbl", wtK: "misc1Wt", unitK: "misc1Unit", rateK: "misc1Rate", dK: "misc1Deduct", def: "Gemstone" },
+              { lblK: "misc2Lbl", wtK: "misc2Wt", unitK: "misc2Unit", rateK: "misc2Rate", dK: "misc2Deduct", def: "Mala" },
+              { lblK: "misc3Lbl", wtK: "misc3Wt", unitK: "misc3Unit", rateK: "misc3Rate", dK: "misc3Deduct", def: "Lakh" },
+            ].map(({ lblK, wtK, unitK, rateK, dK, def }) => (
+              <div key={wtK} style={{ marginBottom: 8 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 8, alignItems: "end" }}>
+                  <div><label style={lbl}>Label</label><input style={inp} value={jw[lblK]} onChange={(e) => setJw((p) => ({ ...p, [lblK]: e.target.value }))} placeholder={def} /></div>
+                  <div>
+                    <label style={lbl}>Weight</label>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <input style={{ ...inp, flex: 1 }} type="number" step="0.001" value={jw[wtK]} onChange={(e) => setJw((p) => ({ ...p, [wtK]: e.target.value }))} placeholder="0.00" />
+                      <button type="button" style={{ ...inp, width: 40, cursor: "pointer", background: "#f0f0f0", fontWeight: 600, padding: "0 4px" }} onClick={() => setJw((p) => ({ ...p, [unitK]: p[unitK] === "ct" ? "g" : "ct" }))}>{jw[unitK]}</button>
+                    </div>
+                  </div>
+                  <div><label style={lbl}>Rate (₹)</label><input style={inp} type="number" step="1" value={jw[rateK]} onChange={(e) => setJw((p) => ({ ...p, [rateK]: e.target.value }))} placeholder="0" /></div>
+                  <div style={{ paddingBottom: 6 }}><label style={{ fontSize: 11, color: "#888", display: "block", marginBottom: 4 }}>Deduct</label><input type="checkbox" checked={jw[dK]} onChange={(e) => setJw((p) => ({ ...p, [dK]: e.target.checked }))} /></div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      <div style={{ marginBottom: 8 }}>
+        <label style={lbl}>Notes</label>
+        <textarea style={{ ...inp, minHeight: 50, resize: "vertical", fontFamily: "inherit" }} value={jw.notes} onChange={(e) => setJw((p) => ({ ...p, notes: e.target.value }))} placeholder="Any remarks about the item..." />
+      </div>
+    </>
+  );
+}
+
 // "₹1500/g" or "15%" — the making rate as configured, for showing alongside
 // (not instead of) the making total, so per-gram jobs show both figures.
 function makingRateLabel(makingR, mode, isBelow1g) {
@@ -11157,7 +11249,7 @@ function recalcToday(){
 const EMPTY_PRODUCT_FORM = {
   itemTypeId: "", materialId: "", styleId: "",
   priceMode: "live_gold", rateSource: "jewellery_purity",
-  itemName: "", oldSku: "", size: "", notes: "", qty: "1",
+  itemName: "", vendorCode: "", size: "", notes: "", qty: "1",
   grossWt: "", purityIdx: 2, goldRateOverride: "", applyGst: true,
   makingMode: "per_g", makingRatePg: "1500", makingRatePct: "15",
   dia1Wt: "", dia1Unit: "ct", dia1Rate: "",
@@ -11176,7 +11268,7 @@ function productFormFromRow(p) {
   return {
     itemTypeId: p.item_type_id, materialId: p.material_id, styleId: p.style_id || "",
     priceMode: p.price_mode, rateSource: p.rate_source || "jewellery_purity",
-    itemName: p.name || "", oldSku: p.old_sku || "", size: pd.size || "", notes: p.description || "",
+    itemName: p.name || "", vendorCode: p.old_sku || "", size: pd.size || "", notes: p.description || "",
     qty: p.qty != null ? String(p.qty) : "1",
     grossWt: pd.grossWt || "", purityIdx: p.purity_idx ?? 2, goldRateOverride: pd.goldRateOverride || "",
     applyGst: p.apply_gst !== false,
@@ -11299,18 +11391,27 @@ function CatalogueScreen() {
   const catGoldRatePg = (purityIdx, override) => override ? parseFloat(override) : purityRatePg(purityIdx, catLiveRates);
 
   const [pendingImages, setPendingImages] = useState([]); // photos picked before the product is first saved
+  const [catDetailsOpen, setCatDetailsOpen] = useState(false); // diamond/stone/misc section — collapsed by default
   const openNewProduct = () => {
     setProductForm({ ...EMPTY_PRODUCT_FORM, itemTypeId: activeItemType?.id || "", materialId: materials[0]?.id || "" });
     setPendingImages([]);
+    setCatDetailsOpen(false);
     setEditingProduct({});
   };
-  const openEditProduct = (p) => { setProductForm(productFormFromRow(p)); setPendingImages([]); setEditingProduct(p); };
+  const openEditProduct = (p) => {
+    const f = productFormFromRow(p);
+    setProductForm(f);
+    setPendingImages([]);
+    // Auto-open the details section if this product already has diamond/stone/misc data, so editing doesn't hide existing values.
+    setCatDetailsOpen(Boolean(f.dia1Wt || f.dia2Wt || f.stoneWt || f.misc1Wt || f.misc2Wt || f.misc3Wt));
+    setEditingProduct(p);
+  };
 
   const buildPayload = (f) => {
     const base = {
       tenant_id: tid,
       item_type_id: f.itemTypeId, material_id: f.materialId, style_id: f.styleId || null,
-      name: f.itemName || null, old_sku: f.oldSku || null, description: f.notes || null,
+      name: f.itemName || null, old_sku: f.vendorCode || null, description: f.notes || null,
       price_mode: f.priceMode, rate_source: f.priceMode === "live_gold" ? f.rateSource : null,
       apply_gst: !!f.applyGst, qty: Number(f.qty || 1),
       price_visible: !!f.priceVisible, status: f.status, stock_status: f.stockStatus,
@@ -11645,7 +11746,7 @@ function CatalogueScreen() {
           {/* Item Name / Vendor Code / Size — same row as the Calculator's jewellery tab */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, margin: "12px 0" }}>
             <div><label style={lbl}>Item Name / Tag</label><input style={inp} value={productForm.itemName} onChange={(e) => setProductForm((f) => ({ ...f, itemName: e.target.value }))} placeholder="e.g. Necklace S-204" /></div>
-            <div><label style={lbl}>Old / Vendor Code</label><input style={inp} value={productForm.oldSku} onChange={(e) => setProductForm((f) => ({ ...f, oldSku: e.target.value }))} placeholder="VC-123" /></div>
+            <div><label style={lbl}>Old / Vendor Code</label><input style={inp} value={productForm.vendorCode} onChange={(e) => setProductForm((f) => ({ ...f, vendorCode: e.target.value }))} placeholder="VC-123" /></div>
             <div><label style={lbl}>Size</label><input style={inp} value={productForm.size} onChange={(e) => setProductForm((f) => ({ ...f, size: e.target.value }))} placeholder="e.g. 14 (ring size)" /></div>
           </div>
 
@@ -11678,61 +11779,16 @@ function CatalogueScreen() {
           )}
 
           {isJewellery && (
-            <>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginTop: 12 }}>
-                <div><label style={lbl}>Gross Weight (g)</label><input style={inp} type="number" step="0.01" value={productForm.grossWt} onChange={(e) => setProductForm((f) => ({ ...f, grossWt: e.target.value }))} placeholder="0.00" /></div>
-                <div>
-                  <label style={lbl}>Purity</label>
-                  <select style={inp} value={productForm.purityIdx} onChange={(e) => setProductForm((f) => ({ ...f, purityIdx: Number(e.target.value) }))}>
-                    {PURITIES.map((p, i) => <option key={i} value={i}>{p.l}</option>)}
-                  </select>
-                </div>
-                <div><label style={lbl}>Gold Rate Override (₹/g, optional)</label><input style={inp} type="number" value={productForm.goldRateOverride} onChange={(e) => setProductForm((f) => ({ ...f, goldRateOverride: e.target.value }))} placeholder="live rate used if blank" /></div>
-              </div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 8 }}>
-                <div>
-                  <label style={lbl}>Making Charges — mode: <button type="button" onClick={() => setProductForm((f) => ({ ...f, makingMode: f.makingMode === "per_g" ? "pct" : "per_g" }))} style={{ fontSize: 11, padding: "2px 8px", border: "1px solid #ddd", borderRadius: 4, cursor: "pointer", background: "#f5f5f5" }}>{productForm.makingMode === "per_g" ? "₹/g ↔" : "% ↔"}</button></label>
-                  {productForm.makingMode === "per_g"
-                    ? <input style={inp} type="number" value={productForm.makingRatePg} onChange={(e) => setProductForm((f) => ({ ...f, makingRatePg: e.target.value }))} placeholder="1500" />
-                    : <input style={inp} type="number" value={productForm.makingRatePct} onChange={(e) => setProductForm((f) => ({ ...f, makingRatePct: e.target.value }))} placeholder="15" />}
-                </div>
-                <div style={{ display: "flex", alignItems: "flex-end", paddingBottom: 8 }}>
-                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-                    <input type="checkbox" checked={productForm.applyGst} onChange={(e) => setProductForm((f) => ({ ...f, applyGst: e.target.checked }))} /> Apply 3% GST
-                  </label>
-                </div>
-              </div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginTop: 8 }}>
-                <div><label style={lbl}>Diamond 1 Wt</label><div style={{ display: "flex", gap: 4 }}><input style={inp} type="number" value={productForm.dia1Wt} onChange={(e) => setProductForm((f) => ({ ...f, dia1Wt: e.target.value }))} /><select style={{ ...inp, width: 60 }} value={productForm.dia1Unit} onChange={(e) => setProductForm((f) => ({ ...f, dia1Unit: e.target.value }))}><option value="ct">ct</option><option value="g">g</option></select></div></div>
-                <div><label style={lbl}>Rate (₹/g)</label><input style={inp} type="number" value={productForm.dia1Rate} onChange={(e) => setProductForm((f) => ({ ...f, dia1Rate: e.target.value }))} /></div>
-                <div />
-                <div><label style={lbl}>Diamond 2 Wt</label><div style={{ display: "flex", gap: 4 }}><input style={inp} type="number" value={productForm.dia2Wt} onChange={(e) => setProductForm((f) => ({ ...f, dia2Wt: e.target.value }))} /><select style={{ ...inp, width: 60 }} value={productForm.dia2Unit} onChange={(e) => setProductForm((f) => ({ ...f, dia2Unit: e.target.value }))}><option value="ct">ct</option><option value="g">g</option></select></div></div>
-                <div><label style={lbl}>Rate (₹/g)</label><input style={inp} type="number" value={productForm.dia2Rate} onChange={(e) => setProductForm((f) => ({ ...f, dia2Rate: e.target.value }))} /></div>
-                <div />
-                <div><label style={lbl}>Stone Wt</label><div style={{ display: "flex", gap: 4 }}><input style={inp} type="number" value={productForm.stoneWt} onChange={(e) => setProductForm((f) => ({ ...f, stoneWt: e.target.value }))} /><select style={{ ...inp, width: 60 }} value={productForm.stoneUnit} onChange={(e) => setProductForm((f) => ({ ...f, stoneUnit: e.target.value }))}><option value="ct">ct</option><option value="g">g</option></select></div></div>
-                <div><label style={lbl}>Rate (₹/g)</label><input style={inp} type="number" value={productForm.stoneRate} onChange={(e) => setProductForm((f) => ({ ...f, stoneRate: e.target.value }))} /></div>
-              </div>
-
-              {[1, 2, 3].map((n) => (
-                <div key={n} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr auto", gap: 8, alignItems: "end", marginTop: 6 }}>
-                  <div><label style={lbl}>{productForm[`misc${n}Lbl`]} label</label><input style={inp} value={productForm[`misc${n}Lbl`]} onChange={(e) => setProductForm((f) => ({ ...f, [`misc${n}Lbl`]: e.target.value }))} /></div>
-                  <div><label style={lbl}>Weight</label><input style={inp} type="number" value={productForm[`misc${n}Wt`]} onChange={(e) => setProductForm((f) => ({ ...f, [`misc${n}Wt`]: e.target.value }))} /></div>
-                  <div>
-                    <label style={lbl}>Unit</label>
-                    <select style={inp} value={productForm[`misc${n}Unit`]} onChange={(e) => setProductForm((f) => ({ ...f, [`misc${n}Unit`]: e.target.value }))}><option value="g">g</option><option value="ct">ct</option></select>
-                  </div>
-                  <div><label style={lbl}>Rate</label><input style={inp} type="number" value={productForm[`misc${n}Rate`]} onChange={(e) => setProductForm((f) => ({ ...f, [`misc${n}Rate`]: e.target.value }))} /></div>
-                  <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, paddingBottom: 8 }}>
-                    <input type="checkbox" checked={productForm[`misc${n}Deduct`]} onChange={(e) => setProductForm((f) => ({ ...f, [`misc${n}Deduct`]: e.target.checked }))} /> Deduct
-                  </label>
-                </div>
-              ))}
-            </>
+            <JewelleryPricingFields
+              jw={productForm} setJw={setProductForm} makingMode={productForm.makingMode}
+              onMakingModeChange={(m) => setProductForm((f) => ({ ...f, makingMode: m }))}
+              liveRates={catLiveRates} detailsOpen={catDetailsOpen} setDetailsOpen={setCatDetailsOpen}
+              lbl={lbl} inp={inp}
+            />
           )}
-
-          <Field label="Notes (optional)"><Textarea rows={2} value={productForm.notes} onChange={(e) => setProductForm((f) => ({ ...f, notes: e.target.value }))} style={{ marginTop: 10 }} /></Field>
+          {!isJewellery && (
+            <Field label="Notes (optional)"><Textarea rows={2} value={productForm.notes} onChange={(e) => setProductForm((f) => ({ ...f, notes: e.target.value }))} style={{ marginTop: 10 }} /></Field>
+          )}
 
           {previewCalc && (
             <div style={{ background: "#f8faff", border: "1px solid #dbeafe", borderRadius: 8, padding: 10, marginBottom: 12, fontSize: 12 }}>
@@ -12728,83 +12784,12 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
         <div><label style={lbl}>Item Name / Tag</label><input style={inp} value={jw.itemName} onChange={e => setJw(p => ({ ...p, itemName: e.target.value }))} placeholder="e.g. Necklace S-204" /></div>
         <div><label style={lbl}>Vendor Code</label><input style={inp} value={jw.vendorCode} onChange={e => setJw(p => ({ ...p, vendorCode: e.target.value }))} placeholder="VC-123" /></div>
         <div><label style={lbl}>Size</label><input style={inp} value={jw.size} onChange={e => setJw(p => ({ ...p, size: e.target.value }))} placeholder="e.g. 14 (ring size)" /></div>
-        <div><label style={lbl}>Gross Weight (g)</label><input style={inp} type="number" step="0.01" value={jw.grossWt} onChange={e => setJw(p => ({ ...p, grossWt: e.target.value }))} placeholder="0.00" /></div>
-        <div><label style={lbl}>Pcs (for bulk orders)</label><input style={inp} type="number" min="1" step="1" value={jw.qty} onChange={e => setJw(p => ({ ...p, qty: e.target.value }))} placeholder="1" /></div>
-        <div>
-          <label style={lbl}>Purity</label>
-          <select style={inp} value={jw.purityIdx} onChange={e => { const idx = Number(e.target.value); setJw(p => ({ ...p, purityIdx: idx })); saveMakingMode(idx === 0 ? "pct" : "per_g"); }}>
-            {PURITIES.map((p2, i) => <option key={i} value={i}>{p2.l}</option>)}
-          </select>
-        </div>
-        {PURITIES[jw.purityIdx]?.rateKey === null && <div><label style={lbl}>Custom Rate ₹/g</label><input style={inp} type="number" step="0.01" value={jw.goldRateOverride} onChange={e => setJw(p => ({ ...p, goldRateOverride: e.target.value }))} placeholder="e.g. 13000" /></div>}
-        <div>
-          <label style={lbl}>
-            {metalLabel(jw.purityIdx)} Rate ₹/g — live: {(() => { const k = PURITIES[jw.purityIdx]?.rateKey; const r = purityRatePg(jw.purityIdx, liveRates); return k && r ? <span style={{ color: C.green, fontWeight: 600 }}>₹{Math.round(r).toLocaleString("en-IN")}</span> : <span style={{ color: C.orange }}>loading…</span>; })()}
-          </label>
-          <input style={{ ...inp, background: jw.goldRateOverride ? "#fffbe6" : "#fff" }} type="number" step="1" value={jw.goldRateOverride} onChange={e => setJw(p => ({ ...p, goldRateOverride: e.target.value }))} placeholder={(() => { const k = PURITIES[jw.purityIdx]?.rateKey; const r = purityRatePg(jw.purityIdx, liveRates); return k && r ? String(Math.round(r)) : "e.g. 13346"; })()} />
-          {jw.goldRateOverride && <div style={{ fontSize: 11, color: C.orange, marginTop: 2 }}>⚠ Override active — clear to use live rate</div>}
-        </div>
-        <div>
-          <label style={lbl}>Making Charges — mode: <button onClick={() => saveMakingMode(makingMode === "per_g" ? "pct" : "per_g")} style={{ fontSize: 11, padding: "2px 8px", border: "1px solid #ddd", borderRadius: 4, cursor: "pointer", background: "#f5f5f5" }}>{makingMode === "per_g" ? "₹/g ↔" : "% ↔"}</button></label>
-          {makingMode === "per_g"
-            ? <input style={inp} type="number" value={jw.makingRatePg} onChange={e => setJw(p => ({ ...p, makingRatePg: e.target.value }))} placeholder="1500" />
-            : <input style={inp} type="number" value={jw.makingRatePct} onChange={e => setJw(p => ({ ...p, makingRatePct: e.target.value }))} placeholder="15" />
-          }
-        </div>
       </div>
 
-      {/* Diamonds & Stone */}
-      {[
-        { key: "dia1", label: "Diamond 1", wtK: "dia1Wt", unitK: "dia1Unit", rateK: "dia1Rate" },
-        { key: "dia2", label: "Diamond 2", wtK: "dia2Wt", unitK: "dia2Unit", rateK: "dia2Rate" },
-        { key: "stone", label: "Stone", wtK: "stoneWt", unitK: "stoneUnit", rateK: "stoneRate" },
-      ].map(({ key, label, wtK, unitK, rateK }) => (
-        <div key={key} style={{ display: "grid", gridTemplateColumns: "1fr 80px 1fr", gap: 8, marginBottom: 8, alignItems: "end" }}>
-          <div><label style={lbl}>{label} Weight</label><input style={inp} type="number" step="0.001" value={jw[wtK]} onChange={e => setJw(p => ({ ...p, [wtK]: e.target.value }))} placeholder="0.000" /></div>
-          <div><label style={lbl}>Unit</label><select style={inp} value={jw[unitK]} onChange={e => setJw(p => ({ ...p, [unitK]: e.target.value }))}><option value="ct">ct</option><option value="g">g</option></select></div>
-          <div><label style={lbl}>{label} Rate (₹/g)</label><input style={inp} type="number" value={jw[rateK]} onChange={e => setJw(p => ({ ...p, [rateK]: e.target.value }))} placeholder="0" /></div>
-        </div>
-      ))}
-
-      {/* Misc deductions — collapsed by default */}
-      <div style={{ marginBottom: 8 }}>
-        <div style={{ display: "flex", gap: 8, marginBottom: jwShowMisc ? 8 : 0 }}>
-          <button
-            style={{ fontSize: 12, padding: "5px 12px", borderRadius: 6, border: "1px solid #c9a0dc", background: "#fdf4ff", cursor: "pointer", color: "#7b2d8b" }}
-            onClick={() => { setJw(p => ({ ...p, misc1Lbl: "Kundan", misc1Deduct: true })); setJwShowMisc(true); }}
-          >+ Add Kundan Weight</button>
-          <button
-            style={{ fontSize: 12, padding: "5px 12px", borderRadius: 6, border: "1px solid #ddd", background: "#f8f8f8", cursor: "pointer", color: "#555" }}
-            onClick={() => setJwShowMisc(v => !v)}
-          >{jwShowMisc ? "▲ Hide Extra" : "▼ Extra Weights"}</button>
-        </div>
-        {jwShowMisc && [
-          { lblK: "misc1Lbl", wtK: "misc1Wt", unitK: "misc1Unit", rateK: "misc1Rate", dK: "misc1Deduct", def: "Gemstone" },
-          { lblK: "misc2Lbl", wtK: "misc2Wt", unitK: "misc2Unit", rateK: "misc2Rate", dK: "misc2Deduct", def: "Mala" },
-          { lblK: "misc3Lbl", wtK: "misc3Wt", unitK: "misc3Unit", rateK: "misc3Rate", dK: "misc3Deduct", def: "Lakh" },
-        ].map(({ lblK, wtK, unitK, rateK, dK, def }) => (
-          <div key={wtK} style={{ marginBottom: 8 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 8, alignItems: "end" }}>
-              <div><label style={lbl}>Label</label><input style={inp} value={jw[lblK]} onChange={e => setJw(p => ({ ...p, [lblK]: e.target.value }))} placeholder={def} /></div>
-              <div>
-                <label style={lbl}>Weight</label>
-                <div style={{ display: "flex", gap: 4 }}>
-                  <input style={{ ...inp, flex: 1 }} type="number" step="0.001" value={jw[wtK]} onChange={e => setJw(p => ({ ...p, [wtK]: e.target.value }))} placeholder="0.00" />
-                  <button style={{ ...inp, width: 40, cursor: "pointer", background: "#f0f0f0", fontWeight: 600, padding: "0 4px" }} onClick={() => setJw(p => ({ ...p, [unitK]: p[unitK] === "ct" ? "g" : "ct" }))}>{jw[unitK]}</button>
-                </div>
-              </div>
-              <div><label style={lbl}>Rate (₹)</label><input style={inp} type="number" step="1" value={jw[rateK]} onChange={e => setJw(p => ({ ...p, [rateK]: e.target.value }))} placeholder="0" /></div>
-              <div style={{ paddingBottom: 6 }}><label style={{ fontSize: 11, color: "#888", display: "block", marginBottom: 4 }}>Deduct</label><input type="checkbox" checked={jw[dK]} onChange={e => setJw(p => ({ ...p, [dK]: e.target.checked }))} /></div>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Notes */}
-      <div style={{ marginBottom: 8 }}>
-        <label style={lbl}>Notes</label>
-        <textarea style={{ ...inp, minHeight: 50, resize: "vertical", fontFamily: "inherit" }} value={jw.notes} onChange={e => setJw(p => ({ ...p, notes: e.target.value }))} placeholder="Any remarks about the item..." />
-      </div>
+      <JewelleryPricingFields
+        jw={jw} setJw={setJw} makingMode={makingMode} onMakingModeChange={saveMakingMode}
+        liveRates={liveRates} detailsOpen={jwShowMisc} setDetailsOpen={setJwShowMisc} lbl={lbl} inp={inp}
+      />
 
       {/* Results */}
       <div style={{ ...card, background: "#f8faff", marginTop: 8 }}>
