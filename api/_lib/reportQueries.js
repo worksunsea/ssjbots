@@ -162,7 +162,22 @@ export async function findLeads(sb, query) {
     .select("name,phone,city,status,last_msg,last_msg_at")
     .eq("tenant_id", TENANT_ID)
     .or(`name.ilike.${q},phone.ilike.${q}`)
-    .limit(5);
+    .limit(15);
+  return data || [];
+}
+
+// Same lookup as findLeads but returns the fields needed to send an
+// edit-contact form link (id, form_token) instead of a display summary.
+export async function findLeadsForForm(sb, query) {
+  const cleaned = String(query || "").replace(/[,()]/g, " ").trim();
+  const q = `%${cleaned}%`;
+  const { data } = await sb
+    .from("bullion_leads")
+    .select("id,name,phone,form_token")
+    .eq("tenant_id", TENANT_ID)
+    .or(`name.ilike.${q},phone.ilike.${q}`)
+    .is("deleted_at", null)
+    .limit(10);
   return data || [];
 }
 

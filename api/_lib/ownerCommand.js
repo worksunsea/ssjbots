@@ -4,11 +4,64 @@
 // initial "what is this message asking for" step does.
 
 import { askAI, parseBotJson } from "./ai.js";
-import { TENANT_ID, OPENAI_MODEL } from "./config.js";
+import { TENANT_ID, OPENAI_MODEL, normalizePhone } from "./config.js";
 import { getActiveStaff, executeCreateTask } from "./taskCommand.js";
-import { buildReportText } from "./reportQueries.js";
+import { buildReportText, findLeadsForForm } from "./reportQueries.js";
 import { logCommand, getLastCommand, markFeedback, getRecentCorrections } from "./ownerLog.js";
 import { queueDevTask } from "./devAgent.js";
+
+const FORM_BASE_URL = "https://ssjbot.gemtre.in";
+
+// Resolves (or creates) a form_token for a lead and returns the edit link.
+// form_token defaults to gen_random_uuid() on the column, so existing rows
+// already have one — this only backfills the rare row that somehow doesn't.
+async function ensureFormLink(sb, lead) {
+  let token = lead.form_token;
+  if (!token) {
+    const { data } = await sb.from("bullion_leads").update({ form_token: crypto.randomUUID() }).eq("id", lead.id).select("form_token").single();
+    token = data?.form_token;
+  }
+  return `${FORM_BASE_URL}/update?t=${token}`;
+}
+
+// "edit contact Pooja" / "update Rohit Sharma's details" — finds the
+// matching lead(s) and sends back the same personalised form link used
+// elsewhere (drip campaigns, referrals) so Saurav can fill in bday,
+// anniversary, address etc. himself, no new form needed.
+async function editContact(sb, query) {
+  if (!query) return { text: "Which contact? Give me a name or phone number." };
+  const rows = await findLeadsForForm(sb, query);
+  if (!rows.length) return { text: `Couldn't find a contact matching "${query}".` };
+  if (rows.length > 1) {
+    const list = rows.map((r) => `- ${r.name || "Unknown"} · ${r.phone || "no phone"}`).join("\n");
+    return { text: `Found ${rows.length} matches for "${query}" — reply with the phone number to pick one:\n${list}` };
+  }
+  const lead = rows[0];
+  const link = await ensureFormLink(sb, lead);
+  return { text: `✏️ Edit link for *${lead.name || lead.phone}*:\n${link}` };
+}
+
+// "add new contact Pooja 9811123456" — pre-creates a minimal lead (phone is
+// mandatory, it's the table's dedup key) then sends the same edit-form link
+// so Saurav can fill in the rest (address, bday, anniversary...) himself.
+async function addContact(sb, name, phone) {
+  const cleanPhone = normalizePhone(phone);
+  if (!cleanPhone || cleanPhone.length < 10) {
+    return { text: "What's their phone number? e.g. \"add contact Pooja 9811123456\"." };
+  }
+  const { data: existing } = await sb.from("bullion_leads").select("id,name,phone,form_token").eq("tenant_id", TENANT_ID).eq("phone", cleanPhone).maybeSingle();
+  let lead = existing;
+  if (!lead) {
+    const ins = { tenant_id: TENANT_ID, phone: cleanPhone, status: "new", source: "owner_wa_command" };
+    if (name) ins.name = String(name).slice(0, 100);
+    const { data: newLead, error } = await sb.from("bullion_leads").insert(ins).select("id,name,phone,form_token").single();
+    if (error) return { text: `Couldn't create that contact — ${error.message}` };
+    lead = newLead;
+  }
+  const link = await ensureFormLink(sb, lead);
+  const verb = existing ? "already exists — here's their edit link" : "added";
+  return { text: `✅ Contact ${lead.name || lead.phone} ${verb}:\n${link}` };
+}
 
 function todayIST() {
   return new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
@@ -47,7 +100,7 @@ async function classifyOwnerMessage(messageText, staffNames, corrections) {
     "   - \"attendance_today\" = who is absent/not present today, e.g. \"who's absent today\", \"who hasn't come in\".",
     "   - \"low_stock\" = inventory items below minimum stock level, e.g. \"what needs reordering\", \"low stock items\".",
     "   - \"fms_jobs\" = field/job tracker status, e.g. \"how many jobs today\", \"any pending job edit approvals\".",
-    "   - \"lead_lookup\" = looking up a specific CUSTOMER by name or phone (not a staff member), e.g. \"who is Rohit Sharma\", \"find customer 98111...\" -> put the name/phone in \"query\".",
+    "   - \"lead_lookup\" = looking up a specific CUSTOMER by name or phone (not a staff member), e.g. \"who is Rohit Sharma\", \"find customer 98111...\", \"give me number for Pooja\", \"pooja ka number do\" -> put ONLY the name/phone in \"query\" (e.g. \"Pooja\", not the whole sentence). If multiple customers share that name, ALL of them will be returned — that's expected, not an error.",
     "   - \"staff_contact\" = a NAMED staff member's phone number/role, e.g. \"what's Priya's number\" -> extract staff_name.",
     "   - \"expiring_docs\" = business documents (license, GST, etc.) expiring soon, e.g. \"any documents expiring\", \"license renewals due\".",
     "   - \"recent_completions\" = tasks completed today by anyone, e.g. \"what got done today\", \"who finished their tasks\".",
@@ -61,7 +114,13 @@ async function classifyOwnerMessage(messageText, staffNames, corrections) {
     `5. Asking for an actual CODE/APP CHANGE — a bug fix, a new feature, a UI tweak, "add a button that...", "fix the bug where...", "change the code so that...". This is different from #2 (which only reads data) — #5 is when he wants the SOFTWARE itself modified: {"intent":"dev_task","task":"<the coding request, cleaned up but keep his intent/details>","repo_hint":"<one of: ssj-hr|ssjbots|fms-tracker|unsure>"}`,
     "   ssj-hr = the HR app (tasks/leaves/help slips/petty cash/staff). ssjbots = the WhatsApp bot/CRM (this bot, leads, demands, walk-ins). fms-tracker = the field/job tracker (jobs, FMS). Guess from context; use \"unsure\" if genuinely unclear.",
     "",
-    `6. Anything else (chit-chat, unclear, not matching the above): {"intent":"none"}`,
+    `6. Wanting to EDIT an existing customer/contact's details (add birthday, anniversary, address, email, etc. — NOT just looking them up): {"intent":"edit_contact","query":"<name or phone to find them by>"}`,
+    "   e.g. \"edit Pooja's contact\", \"update Rohit Sharma's details\", \"add birthday for customer Anjali\", \"I want to edit a contact\" (query may be empty if no name given — will ask).",
+    "",
+    `7. Wanting to ADD a brand-new customer/contact to the database (NOT editing one that already exists): {"intent":"add_contact","name":"<name if given, else omit>","phone":"<10-digit phone if given, else omit>"}`,
+    "   e.g. \"add new contact Pooja 9811123456\", \"naya contact add karo\", \"add a client Rohit, number 98111...\".",
+    "",
+    `8. Anything else (chit-chat, unclear, not matching the above): {"intent":"none"}`,
     "",
     "The message may be in English, Hindi, or Hinglish (Devanagari or Latin script, or mixed) for any of the above.",
     ...correctionsBlock,
@@ -237,6 +296,10 @@ export async function handleOwnerMessage(sb, messageText) {
   } else if (parsed.intent === "search_resources") {
     const r = await searchResources(sb, parsed.query || messageText);
     result = r.items ? { items: r.items } : { replyText: r.text };
+  } else if (parsed.intent === "edit_contact") {
+    result = { replyText: (await editContact(sb, parsed.query)).text };
+  } else if (parsed.intent === "add_contact") {
+    result = { replyText: (await addContact(sb, parsed.name, parsed.phone)).text };
   } else if (parsed.intent === "dev_task") {
     try {
       await queueDevTask(sb, { taskText: parsed.task || messageText, repoHint: parsed.repo_hint });
