@@ -5,7 +5,6 @@
 //
 // Body: {
 //   demandId:       uuid (required),
-//   staffId:        uuid (the telecaller — typically currentUser.id),
 //   disposition:    text (required, see allowed below),
 //   openedAt?:      iso8601 — when telecaller opened the Log Call modal (for lag tracking),
 //   notes?:         text,
@@ -13,10 +12,17 @@
 //   nextCallbackAt?: iso8601 (only for 'callback_requested' | 'answered_not_now'),
 // }
 //
+// staffId comes from the verified session token (Authorization: Bearer
+// <token>, issued by api/login.js), not the request body — previously a
+// telecaller could pass any staffId here, misattributing calls to a
+// coworker. Telecallers may only log calls against demands assigned to
+// them; admin/superadmin can log against any demand in their tenant.
+//
 // Returns: { ok, callLogId, attemptNo, nextAction, outcome?, nextCallAt? }
 
 import { supa } from "./_lib/supabase.js";
 import { transitionLeadToFunnel } from "./_lib/drip.js";
+import { requireStaffSession } from "./_lib/session.js";
 
 export const config = { maxDuration: 30 };
 
@@ -119,12 +125,15 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ ok: false, error: "method_not_allowed" });
 
+  const session = requireStaffSession(req, res);
+  if (!session) return;
+  const { staffId, tenantId, role } = session;
+
   let body = req.body;
   if (typeof body === "string") { try { body = JSON.parse(body); } catch { body = {}; } }
   body = body || {};
 
   const demandId   = body.demandId;
-  const staffId    = body.staffId || null;
   const disposition = String(body.disposition || "");
   if (!demandId || !disposition) {
     return res.status(400).json({ ok: false, error: "missing_demandId_or_disposition" });
@@ -135,13 +144,18 @@ export default async function handler(req, res) {
   const { data: demand, error: dErr } = await sb.from("bullion_demands")
     .select(`
       id, tenant_id, lead_id, funnel_id, fms_step_id,
-      call_attempts, next_call_at,
+      call_attempts, next_call_at, assigned_staff_id,
       crm_source, is_callback_promised, occasion_date,
       lead:bullion_leads(id, phone)
     `)
     .eq("id", demandId)
     .single();
   if (dErr || !demand) return res.status(404).json({ ok: false, error: "demand_not_found" });
+  if (demand.tenant_id !== tenantId) return res.status(404).json({ ok: false, error: "demand_not_found" });
+  const isAdminRole = role === "superadmin" || role === "admin";
+  if (!isAdminRole && demand.assigned_staff_id && demand.assigned_staff_id !== staffId) {
+    return res.status(403).json({ ok: false, error: "not_your_demand" });
+  }
 
   // 'busy' retries quickly and doesn't count toward the 6-attempt budget
   const isBusy   = disposition === "busy";

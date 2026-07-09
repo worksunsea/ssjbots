@@ -252,9 +252,24 @@ function LoginScreen({ onLogin }) {
   const submit = async () => {
     if (!u || !p) return;
     setLoading(true); setErr("");
-    const { data, error } = await sb.from("staff").select("*").eq("tenant_id", getTenantId()).eq("username", u.trim()).eq("password", p).single();
-    if (error || !data) { setErr("Incorrect username or password."); setLoading(false); return; }
-    if (data.active === false) { setErr("This account has been deactivated. Contact your administrator."); setLoading(false); return; }
+    let res;
+    try {
+      res = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
+        body: JSON.stringify({ tenantId: getTenantId(), username: u.trim(), password: p }),
+      }).then((r) => r.json());
+    } catch {
+      setErr("Couldn't reach the server — check your connection and try again.");
+      setLoading(false);
+      return;
+    }
+    if (!res?.ok) {
+      setErr(res?.error === "account_deactivated" ? "This account has been deactivated. Contact your administrator." : "Incorrect username or password.");
+      setLoading(false);
+      return;
+    }
+    const data = { ...res.user, sessionToken: res.token };
 
     try {
       const res = await fetch("/api/device-check", {
@@ -2880,10 +2895,13 @@ function LogCallModal({ demand, lead, funnel, onClose, onSaved }) {
       const durationSec = Math.round((Date.now() - openedAtRef.current) / 1000);
       const r = await fetch("/api/log-call", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-crm-secret": window.__CRM_SECRET__ || "" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-crm-secret": window.__CRM_SECRET__ || "",
+          "Authorization": `Bearer ${me?.sessionToken || ""}`,
+        },
         body: JSON.stringify({
           demandId: demand.id,
-          staffId: me?.id || null,
           disposition,
           notes: notes || null,
           durationSec,
@@ -2891,6 +2909,7 @@ function LogCallModal({ demand, lead, funnel, onClose, onSaved }) {
           nextCallbackAt: nextCallback ? new Date(nextCallback).toISOString() : null,
         }),
       });
+      if (r.status === 401) { setErr("Your session has expired — please log out and log back in."); setSaving(false); return; }
       const data = await r.json();
       setSaving(false);
       if (!data.ok) { setErr(data.error || "Failed to log call"); return; }
@@ -9845,12 +9864,13 @@ function TelecallerQueueScreen({ funnels }) {
     setLoading(true);
     setErr("");
     try {
-      const r = await fetch(`/api/demand-queue?staffId=${me.id}&limit=50`, {
-        headers: { "x-crm-secret": CRM_SECRET },
+      const r = await fetch(`/api/demand-queue?limit=50`, {
+        headers: { "x-crm-secret": CRM_SECRET, "Authorization": `Bearer ${me.sessionToken || ""}` },
       });
       const text = await r.text();
       let data;
       try { data = JSON.parse(text); } catch { setErr(`Server error (${r.status}). Check Vercel logs.`); setLoading(false); return; }
+      if (r.status === 401) { setErr("Your session has expired — please log out and log back in."); setLoading(false); return; }
       if (!data.ok) { setErr(data.error || "Failed to load queue"); setLoading(false); return; }
       setDemands(data.demands || []);
       setIdx(0);

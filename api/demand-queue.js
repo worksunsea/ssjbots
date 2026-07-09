@@ -3,9 +3,12 @@
 // Returns the priority-ordered call queue for the authenticated telecaller.
 //
 // Query params:
-//   staffId   — required, UUID of the telecaller
-//   tenantId  — optional, defaults to DEFAULT_TENANT_ID
 //   limit     — optional, max rows (default 30)
+//
+// staffId/tenantId come from the verified session token (Authorization:
+// Bearer <token>, issued by api/login.js) — NOT from query params anymore.
+// Previously staffId was a plain query param, so any telecaller could view
+// any other telecaller's queue just by editing the URL.
 //
 // Returns demands that:
 //   - are assigned to this telecaller
@@ -18,8 +21,7 @@
 
 import { supa } from "./_lib/supabase.js";
 import { SUPABASE_SERVICE_KEY } from "./_lib/config.js";
-
-const DEFAULT_TENANT_ID = "a1b2c3d4-0000-0000-0000-000000000001";
+import { requireStaffSession } from "./_lib/session.js";
 
 // ── Priority score formula ────────────────────────────────────────────────────
 // (temperature_weight × 40) + (days_overdue × 15, cap 45)
@@ -49,10 +51,11 @@ export default async function handler(req, res) {
 
   if (!SUPABASE_SERVICE_KEY) return res.status(500).json({ ok: false, error: "missing_env" });
 
-  const { staffId, tenantId, limit: rawLimit } = req.query;
-  if (!staffId) return res.status(400).json({ ok: false, error: "staffId is required" });
+  const session = requireStaffSession(req, res);
+  if (!session) return;
 
-  const tid = tenantId || DEFAULT_TENANT_ID;
+  const { staffId, tenantId: tid } = session;
+  const { limit: rawLimit } = req.query;
   const limit = Math.min(parseInt(rawLimit || "30", 10), 100);
   const now = new Date().toISOString();
 
