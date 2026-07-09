@@ -74,12 +74,18 @@ const REPORT_TOPICS = [
   "lead_lookup", "staff_contact", "expiring_docs", "recent_completions", "full",
 ];
 
-async function classifyOwnerMessage(messageText, staffNames, corrections) {
+async function classifyOwnerMessage(messageText, staffNames, corrections, lastCommand) {
   const correctionsBlock = corrections?.length
     ? [
         "",
         "Past mistakes to avoid — these exact-ish messages were previously misclassified and the owner flagged the reply as wrong. Don't repeat the same error on similar messages:",
         ...corrections.map((c) => `- "${c.message_text}" was classified as intent=${c.intent}${c.topic ? ` topic=${c.topic}` : ""}, which was WRONG. Why: ${c.correction_note}`),
+      ]
+    : [];
+  const lastCommandBlock = lastCommand?.intent === "get_report" && lastCommand?.topic
+    ? [
+        "",
+        `Context: his PREVIOUS message was "${lastCommand.message_text}", classified as intent=get_report topic=${lastCommand.topic}. If THIS message is a short vague follow-up with no topic of its own (e.g. "total how many", "and yesterday?", "what about overall", "aur kitne"), assume he means the SAME topic (${lastCommand.topic}) — do NOT fall back to "full" just because this message alone doesn't name a topic.`,
       ]
     : [];
   const system = [
@@ -123,6 +129,7 @@ async function classifyOwnerMessage(messageText, staffNames, corrections) {
     `8. Anything else (chit-chat, unclear, not matching the above): {"intent":"none"}`,
     "",
     "The message may be in English, Hindi, or Hinglish (Devanagari or Latin script, or mixed) for any of the above.",
+    ...lastCommandBlock,
     ...correctionsBlock,
   ].join("\n");
   try {
@@ -267,13 +274,13 @@ async function diagnoseWrongAnswer(lastCommand) {
 // Full pipeline for any WhatsApp message from Saurav's number. Returns
 // { replyText }, { mediaUrl, caption }, or { items: [...] } for webhook.js to send.
 export async function handleOwnerMessage(sb, messageText) {
-  const [staff, corrections] = await Promise.all([getActiveStaff(sb), getRecentCorrections(sb)]);
-  const parsed = await classifyOwnerMessage(messageText, staff.map((s) => s.name), corrections);
+  const [staff, corrections, lastCommand] = await Promise.all([getActiveStaff(sb), getRecentCorrections(sb), getLastCommand(sb)]);
+  const parsed = await classifyOwnerMessage(messageText, staff.map((s) => s.name), corrections, lastCommand);
 
   // Feedback on the previous reply — doesn't get logged as its own command,
   // it annotates the one it's rating.
   if (parsed.intent === "feedback") {
-    const last = await getLastCommand(sb);
+    const last = lastCommand;
     if (!last) return { replyText: "Nothing recent to rate." };
     if (parsed.rating === "wrong") {
       const diagnosis = await diagnoseWrongAnswer(last);

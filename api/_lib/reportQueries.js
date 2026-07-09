@@ -78,19 +78,32 @@ export async function getPendingPettyCash(sb) {
   return { rows: data || [], count: count || 0 };
 }
 
+// Matches the app's own "Walk-ins" screen (WalkinDashboardScreen, App.jsx):
+// a client counts as seen if they have a bullion_visits row OR a
+// bullion_estimates row in the window, deduped by lead_id — NOT a raw row
+// count, which double-counts repeat visits and misses estimate-only walk-ins.
+async function countWalkinClients(sb, sinceISO, untilISO) {
+  let vq = sb.from("bullion_visits").select("lead_id").eq("tenant_id", TENANT_ID).gte("visited_at", sinceISO);
+  if (untilISO) vq = vq.lt("visited_at", untilISO);
+  let eq = sb.from("bullion_estimates").select("lead_id").eq("tenant_id", TENANT_ID).not("lead_id", "is", null).gte("created_at", sinceISO);
+  if (untilISO) eq = eq.lt("created_at", untilISO);
+  const [{ data: visits }, { data: ests }] = await Promise.all([vq, eq]);
+  const ids = new Set();
+  for (const v of visits || []) if (v.lead_id) ids.add(v.lead_id);
+  for (const e of ests || []) if (e.lead_id) ids.add(e.lead_id);
+  return ids.size;
+}
+
 export async function getWalkinStats(sb) {
   const todayStart = istMidnightOffset(0), yestStart = istMidnightOffset(1);
-  // Counts come from bullion_visits (every walk-in form entry) — bullion_demands
-  // only gets a row when staff also ticked "create demand" with a description,
-  // which under-counted actual walk-in traffic.
-  const [{ count: today }, { count: yesterday }, { data: recent }] = await Promise.all([
-    sb.from("bullion_visits").select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).gte("visited_at", todayStart),
-    sb.from("bullion_visits").select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).gte("visited_at", yestStart).lt("visited_at", todayStart),
+  const [today, yesterday, { data: recent }] = await Promise.all([
+    countWalkinClients(sb, todayStart, null),
+    countWalkinClients(sb, yestStart, todayStart),
     sb.from("bullion_demands").select("outcome").eq("tenant_id", TENANT_ID).eq("crm_source", "walkin").gte("created_at", yestStart),
   ]);
   const converted = (recent || []).filter((r) => r.outcome === "converted").length;
   const notConverted = (recent || []).filter((r) => r.outcome === "lost" || r.outcome === "junk").length;
-  return { today: today || 0, yesterday: yesterday || 0, converted, notConverted };
+  return { today, yesterday, converted, notConverted };
 }
 
 export async function getPendingDemands(sb) {
@@ -133,11 +146,18 @@ export async function getLowStock(sb) {
 
 export async function getFmsJobStats(sb) {
   const todayStart = istMidnightOffset(0);
-  const [{ count: todayJobs }, { count: editApprovals }] = await Promise.all([
+  // "running" mirrors fms-tracker's own getStatus() (App.jsx): a job is
+  // running unless cancelled or every step is complete. That logic only
+  // exists client-side, so this calls a matching server-side RPC
+  // (fms_running_job_count) rather than re-deriving it with a plain count
+  // query, which previously only counted jobs *created today* — massively
+  // undercounting "how many orders are running".
+  const [{ count: todayJobs }, { count: editApprovals }, { data: runningCount }] = await Promise.all([
     sb.from("jobs").select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).gte("created_at", todayStart),
     sb.from("job_edit_approvals").select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).eq("status", "pending"),
+    sb.rpc("fms_running_job_count", { p_tenant_id: TENANT_ID }),
   ]);
-  return { todayJobs: todayJobs || 0, editApprovals: editApprovals || 0 };
+  return { todayJobs: todayJobs || 0, editApprovals: editApprovals || 0, running: runningCount || 0 };
 }
 
 // A named staff member's open (not-yet-closed) CRM demands.
@@ -319,7 +339,7 @@ export async function buildReportText(sb, topic, opts = {}) {
     }
     case "fms_jobs": {
       const s = await getFmsJobStats(sb);
-      return `⚙️ FMS: ${s.todayJobs} jobs today, ${s.editApprovals} edit approval${s.editApprovals === 1 ? "" : "s"} pending.`;
+      return `⚙️ FMS: ${s.running} order${s.running === 1 ? "" : "s"} running, ${s.todayJobs} new today, ${s.editApprovals} edit approval${s.editApprovals === 1 ? "" : "s"} pending.`;
     }
     case "staff_contact": {
       if (!opts.staffName) return "Couldn't match that name against the staff list. Check the spelling?";
