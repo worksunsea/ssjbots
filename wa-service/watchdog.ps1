@@ -40,7 +40,11 @@ function Save-State($state) {
 
 function Send-Alert($title, $body) {
     try {
-        $payload = @{ user_id = "admin"; title = $title; body = $body; url = "/reporting" } | ConvertTo-Json
+        # Deep-links straight to ssjbots' Connections screen (list + re-pair
+        # QR for every session) instead of ssj-hr's reporting page - tapping
+        # the notification should go directly to where you fix it, not to a
+        # dashboard you then have to navigate away from.
+        $payload = @{ user_id = "admin"; title = $title; body = $body; url = "https://ssjbot.gemtre.in/?screen=connections" } | ConvertTo-Json
         Invoke-RestMethod -Uri $pushUrl -Method Post -Body $payload -ContentType "application/json" -TimeoutSec 15 | Out-Null
     } catch {
         Write-Output ("wa-watchdog: push alert failed - {0}" -f $_)

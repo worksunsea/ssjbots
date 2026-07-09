@@ -10142,7 +10142,15 @@ export default function App() {
     if (!p || typeof p !== "object") return false;
     return Object.values(p).some((v) => Array.isArray(v) && v.includes("telecaller"));
   })();
-  const [screen, setScreen] = useState(isTelecallerUser ? "queue" : "demands");
+  const [screen, setScreen] = useState(() => {
+    // ?screen=connections deep link — used by e.g. the WA watchdog's push
+    // notification so tapping it goes straight to the re-pair screen.
+    try {
+      const goto = new URLSearchParams(window.location.search).get("screen");
+      if (goto) return goto;
+    } catch {}
+    return isTelecallerUser ? "queue" : "demands";
+  });
   const [, forceNavRefresh] = useState(0); // re-render after localStorage-only pinned-tabs changes
   const [moreTabsOpen, setMoreTabsOpen] = useState(false);
   const [draggingTabKey, setDraggingTabKey] = useState(null);
