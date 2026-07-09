@@ -98,6 +98,7 @@ async function classifyOwnerMessage(messageText, staffNames, corrections, lastCo
     "   Hindi/Hinglish task commands are common and verb-final, e.g. \"Ramesh ko bolo ki invoice fix kare Friday tak\" -> assignee Ramesh, title \"fix invoice\", due_date resolved. Strip postpositions (ko/se/ne) from the name.",
     "",
     `2. Asking for a status report / numbers / status on something: {"intent":"get_report","topic":"<one of: ${REPORT_TOPICS.join("|")}>","staff_name":"<exact roster name, ONLY for staff_tasks/staff_demands>","query":"<free text, ONLY for lead_lookup>"}`,
+    "   IMPORTANT: the top-level \"intent\" is ALWAYS the literal string \"get_report\" for this case — NEVER put the topic name (e.g. \"lead_lookup\", \"staff_contact\") directly in the \"intent\" field. The topic name goes ONLY in \"topic\".",
     "   - \"delegations\" = tasks he assigned to others (overdue). \"my_tasks\" = his own tasks.",
     "   - \"staff_tasks\" = a NAMED staff member's pending tasks, e.g. \"Naveen's pending tasks\", \"what does Priya have to do\" -> extract staff_name from the roster.",
     "   - \"help_slips\" = help slips assigned to him. \"leaves\" = pending/upcoming leave approvals. \"petty_cash\" = pending petty cash approvals.",
@@ -276,6 +277,17 @@ async function diagnoseWrongAnswer(lastCommand) {
 export async function handleOwnerMessage(sb, messageText) {
   const [staff, corrections, lastCommand] = await Promise.all([getActiveStaff(sb), getRecentCorrections(sb), getLastCommand(sb)]);
   const parsed = await classifyOwnerMessage(messageText, staff.map((s) => s.name), corrections, lastCommand);
+
+  // The classifier occasionally emits a REPORT_TOPICS value as the
+  // top-level intent itself instead of nesting it under get_report — e.g.
+  // {"intent":"lead_lookup"} instead of {"intent":"get_report","topic":"lead_lookup"}.
+  // Confirmed for real via owner_command_log ("Give sanjeev garg number" ->
+  // intent="lead_lookup", never handled, fell through to "Didn't catch
+  // that"). Normalize defensively rather than trusting prompt wording alone.
+  if (parsed.intent !== "get_report" && REPORT_TOPICS.includes(parsed.intent)) {
+    parsed.topic = parsed.intent;
+    parsed.intent = "get_report";
+  }
 
   // Feedback on the previous reply — doesn't get logged as its own command,
   // it annotates the one it's rating.
