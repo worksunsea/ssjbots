@@ -10143,6 +10143,9 @@ export default function App() {
     return Object.values(p).some((v) => Array.isArray(v) && v.includes("telecaller"));
   })();
   const [screen, setScreen] = useState(isTelecallerUser ? "queue" : "demands");
+  const [, forceNavRefresh] = useState(0); // re-render after localStorage-only pinned-tabs changes
+  const [moreTabsOpen, setMoreTabsOpen] = useState(false);
+  const [draggingTabKey, setDraggingTabKey] = useState(null);
   const [funnels, setFunnels] = useState([]);
   const [personas, setPersonas] = useState([]);
   const [allTags, setAllTags] = useState([]);
@@ -10304,6 +10307,35 @@ export default function App() {
   // silently redirect to the first allowed tab.
   const activeScreen = tabs.find((t) => t.k === screen) ? screen : (tabs[0]?.k || "demands");
 
+  // Primary tab bar shows only the daily-use tabs; everything else lives in
+  // a "More" dropdown. Which tabs are primary + their order is a personal,
+  // per-browser preference (localStorage), adjustable via drag-drop reorder
+  // and pin/unpin — not tied to app_permissions (that still gates visibility).
+  const tabKeySet = new Set(tabs.map((t) => t.k));
+  const DEFAULT_PINNED_TABS = ["demands", "upcoming", "calculator", "walkin", "catalogue"];
+  const savedPinned = (() => {
+    try {
+      const p = JSON.parse(localStorage.getItem("ssj_pinned_tabs") || "null");
+      return Array.isArray(p) && p.length ? p : null;
+    } catch { return null; }
+  })();
+  const primaryKeys = (savedPinned || DEFAULT_PINNED_TABS).filter((k) => tabKeySet.has(k));
+  const effectivePrimaryKeys = primaryKeys.length ? primaryKeys : tabs.slice(0, 6).map((t) => t.k);
+  const primaryTabs = effectivePrimaryKeys.map((k) => tabs.find((t) => t.k === k)).filter(Boolean);
+  const overflowTabs = tabs.filter((t) => !effectivePrimaryKeys.includes(t.k));
+  const savePinnedTabs = (keys) => { try { localStorage.setItem("ssj_pinned_tabs", JSON.stringify(keys)); } catch {} forceNavRefresh((n) => n + 1); };
+  const pinTab = (k) => savePinnedTabs([...effectivePrimaryKeys, k]);
+  const unpinTab = (k) => savePinnedTabs(effectivePrimaryKeys.filter((x) => x !== k));
+  const reorderPrimaryTab = (fromKey, toKey) => {
+    if (fromKey === toKey) return;
+    const arr = [...effectivePrimaryKeys];
+    const fromIdx = arr.indexOf(fromKey), toIdx = arr.indexOf(toKey);
+    if (fromIdx === -1 || toIdx === -1) return;
+    arr.splice(fromIdx, 1);
+    arr.splice(toIdx, 0, fromKey);
+    savePinnedTabs(arr);
+  };
+
   // Embed mode (iframed from fms-tracker): hide outer header/tabs, render only
   // the requested screen. Keeps login chrome out of the embedded view.
   const embedScreen = (() => {
@@ -10336,10 +10368,60 @@ export default function App() {
     <ContactFieldsContext.Provider value={cfCtx}>
     <div style={{ maxWidth: 1280, margin: "0 auto", padding: "1rem" }}>
       {header}
-      <div style={{ display: "flex", gap: 6, marginBottom: 16, borderBottom: "1px solid #eee", paddingBottom: 10, flexWrap: "wrap" }}>
-        {tabs.map((t) => (
-          <button key={t.k} onClick={() => setScreen(t.k)} style={{ fontSize: 13, padding: "6px 14px", borderRadius: 8, border: `1px solid ${activeScreen === t.k ? C.blue : "#ddd"}`, background: activeScreen === t.k ? C.blue : "transparent", color: activeScreen === t.k ? "#fff" : "#333", cursor: "pointer" }}>{t.icon} {t.l}</button>
+      <div style={{ display: "flex", gap: 6, marginBottom: 16, borderBottom: "1px solid #eee", paddingBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
+        {primaryTabs.map((t) => (
+          <button
+            key={t.k}
+            draggable
+            onDragStart={() => setDraggingTabKey(t.k)}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => { e.preventDefault(); if (draggingTabKey) reorderPrimaryTab(draggingTabKey, t.k); setDraggingTabKey(null); }}
+            onDragEnd={() => setDraggingTabKey(null)}
+            onClick={() => setScreen(t.k)}
+            title="Drag to reorder"
+            style={{ fontSize: 13, padding: "6px 8px 6px 14px", borderRadius: 8, border: `1px solid ${activeScreen === t.k ? C.blue : "#ddd"}`, background: activeScreen === t.k ? C.blue : "transparent", color: activeScreen === t.k ? "#fff" : "#333", cursor: "grab", display: "flex", alignItems: "center", gap: 6, opacity: draggingTabKey === t.k ? 0.4 : 1 }}
+          >
+            {t.icon} {t.l}
+            {overflowTabs.length > 0 && (
+              <span
+                onClick={(e) => { e.stopPropagation(); unpinTab(t.k); }}
+                title="Move to More menu"
+                style={{ fontSize: 10, opacity: 0.6, cursor: "pointer", marginLeft: 2, lineHeight: 1 }}
+              >✕</span>
+            )}
+          </button>
         ))}
+        {overflowTabs.length > 0 && (
+          <div style={{ position: "relative" }}>
+            <button
+              onClick={() => setMoreTabsOpen((o) => !o)}
+              style={{ fontSize: 13, padding: "6px 14px", borderRadius: 8, border: `1px solid ${overflowTabs.some((t) => t.k === activeScreen) ? C.blue : "#ddd"}`, background: moreTabsOpen ? "#f0f4ff" : (overflowTabs.some((t) => t.k === activeScreen) ? "#eff6ff" : "transparent"), color: "#333", cursor: "pointer" }}
+            >
+              ⋯ More
+            </button>
+            {moreTabsOpen && (
+              <div
+                onMouseLeave={() => setMoreTabsOpen(false)}
+                style={{ position: "absolute", top: "100%", left: 0, marginTop: 4, background: "#fff", border: "1px solid #ddd", borderRadius: 8, boxShadow: "0 6px 20px rgba(0,0,0,0.14)", zIndex: 50, minWidth: 210, padding: 6, maxHeight: 360, overflowY: "auto" }}
+              >
+                {overflowTabs.map((t) => (
+                  <div
+                    key={t.k}
+                    onClick={() => { setScreen(t.k); setMoreTabsOpen(false); }}
+                    style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 8px", borderRadius: 6, cursor: "pointer", background: activeScreen === t.k ? "#f0f4ff" : "transparent", fontSize: 13 }}
+                  >
+                    <span>{t.icon} {t.l}</span>
+                    <span
+                      onClick={(e) => { e.stopPropagation(); pinTab(t.k); }}
+                      title="Pin to main bar"
+                      style={{ fontSize: 12, color: "#1565c0", cursor: "pointer", padding: "2px 4px" }}
+                    >📌</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {activeScreen === "queue" && <TelecallerQueueScreen funnels={funnels} />}
