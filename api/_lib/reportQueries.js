@@ -3,6 +3,8 @@
 // plain rows/counts — formatting into WhatsApp text happens in the caller.
 
 import { TENANT_ID } from "./config.js";
+import { getActiveStaff } from "./taskCommand.js";
+import { getUpcomingEvents, formatEventsLine } from "./birthdays.js";
 
 const nameEq = (a, b) => String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
 
@@ -146,18 +148,94 @@ export async function getLowStock(sb) {
 
 export async function getFmsJobStats(sb) {
   const todayStart = istMidnightOffset(0);
-  // "running" mirrors fms-tracker's own getStatus() (App.jsx): a job is
-  // running unless cancelled or every step is complete. That logic only
-  // exists client-side, so this calls a matching server-side RPC
-  // (fms_running_job_count) rather than re-deriving it with a plain count
-  // query, which previously only counted jobs *created today* — massively
-  // undercounting "how many orders are running".
-  const [{ count: todayJobs }, { count: editApprovals }, { data: runningCount }] = await Promise.all([
+  // "running"/"delayed" mirror fms-tracker's own getStatus() (App.jsx): a
+  // job is running unless cancelled or every step is complete; delayed is
+  // running + current step's planDate has passed. That logic only exists
+  // client-side, so this calls matching server-side RPCs rather than
+  // re-deriving it with a plain count query, which previously only counted
+  // jobs *created today* — massively undercounting "how many orders are running".
+  const [{ count: todayJobs }, { count: editApprovals }, { data: runningCount }, { data: delayedCount }] = await Promise.all([
     sb.from("jobs").select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).gte("created_at", todayStart),
     sb.from("job_edit_approvals").select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).eq("status", "pending"),
     sb.rpc("fms_running_job_count", { p_tenant_id: TENANT_ID }),
+    sb.rpc("fms_delayed_job_count", { p_tenant_id: TENANT_ID }),
   ]);
-  return { todayJobs: todayJobs || 0, editApprovals: editApprovals || 0, running: runningCount || 0 };
+  return { todayJobs: todayJobs || 0, editApprovals: editApprovals || 0, running: runningCount || 0, delayed: delayedCount || 0 };
+}
+
+// Find a specific order by serial number or client name — mirrors the
+// dashboard search box (App.jsx: ilike on serial/client_name/item_name/contact_no).
+export async function findFmsJobs(sb, query) {
+  const q = `%${String(query || "").trim()}%`;
+  const { data } = await sb
+    .from("jobs")
+    .select("serial,client_name,item_name,current_step,steps,cancelled,delivery_date")
+    .eq("tenant_id", TENANT_ID)
+    .or(`serial.ilike.${q},client_name.ilike.${q},item_name.ilike.${q},contact_no.ilike.${q}`)
+    .limit(5);
+  return (data || []).map((j) => {
+    const steps = Array.isArray(j.steps) ? j.steps : [];
+    let status;
+    if (j.cancelled) status = "Cancelled";
+    else if (j.current_step >= steps.length) status = "Done";
+    else {
+      const cur = steps[j.current_step];
+      if (!cur) status = "Pending";
+      else status = cur.planDate && new Date() > new Date(cur.planDate) ? "Delayed" : "In Progress";
+    }
+    const curStepName = !j.cancelled && j.current_step < steps.length ? steps[j.current_step]?.stepName : null;
+    return { serial: j.serial, clientName: j.client_name, itemName: j.item_name, status, curStepName, deliveryDate: j.delivery_date };
+  });
+}
+
+// Mirrors the dashboard's Due filter exactly (App.jsx filterDue: today /
+// rolling-7-day / overdue-but-still-running) via a matching server-side RPC
+// (needs the same jsonb steps traversal as running/delayed counts).
+export async function getFmsDeliveryStats(sb) {
+  const { data } = await sb.rpc("fms_delivery_stats", { p_tenant_id: TENANT_ID }).maybeSingle();
+  return data || { due_today: 0, due_week: 0, overdue: 0 };
+}
+
+// Gold melting workflow snapshot — mirrors GoldMelting.jsx's own Dashboard
+// tab math (goldMeltingMath.js): pool = unbatched intake, pending = batches
+// not yet melted, awaiting_close = melted/exchanged but not posted, aging =
+// pool items or pending batches sitting 30+ days.
+export async function getGoldMeltingStats(sb) {
+  const aging30 = new Date(Date.now() - 30 * 86400000).toISOString();
+  const [{ count: pool }, { count: pendingBatches }, { count: awaitingClose }, { count: pendingApprovals }, { count: agingPool }, { count: agingBatches }] = await Promise.all([
+    sb.from("melting_items").select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).is("batch_id", null),
+    sb.from("melting_batches").select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).eq("status", "pending"),
+    sb.from("melting_batches").select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).in("status", ["melted", "exchanged"]),
+    sb.from("melting_edit_approvals").select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).eq("status", "pending"),
+    sb.from("melting_items").select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).is("batch_id", null).lt("created_at", aging30),
+    sb.from("melting_batches").select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).eq("status", "pending").lt("created_at", aging30),
+  ]);
+  return {
+    pool: pool || 0, pendingBatches: pendingBatches || 0, awaitingClose: awaitingClose || 0,
+    pendingApprovals: pendingApprovals || 0, aging: (agingPool || 0) + (agingBatches || 0),
+  };
+}
+
+// Today's net revenue — mirrors SalesDashboard's kpis reducer (App.jsx):
+// jobs (excluding cancelled + GemTre NDR returns, net-of-discount amount)
+// UNIONED with fms_submissions (external sales forms) — querying jobs alone
+// undercounts vs what the Sales screen shows if submissions exist that day.
+export async function getFmsRevenueToday(sb) {
+  const todayStart = istMidnightOffset(0);
+  const [{ data: jobs }, { data: submissions }] = await Promise.all([
+    sb.from("jobs").select("total_amount,estimate_amount,advance,after_discount_value,cancelled,type").eq("tenant_id", TENANT_ID).gte("created_at", todayStart),
+    sb.from("fms_submissions").select("revenue_total,fulfillment_status").eq("tenant_id", TENANT_ID).gte("submitted_at", todayStart),
+  ]);
+  const jobsRevenue = (jobs || []).reduce((sum, j) => {
+    if (j.cancelled || j.type === "GemTre NDR") return sum;
+    const netAmt = parseFloat(j.after_discount_value || j.total_amount || j.estimate_amount || j.advance || 0);
+    return sum + netAmt;
+  }, 0);
+  const submissionsRevenue = (submissions || []).reduce((sum, s) => {
+    if (s.fulfillment_status === "cancelled") return sum;
+    return sum + parseFloat(s.revenue_total || 0);
+  }, 0);
+  return { jobsRevenue, submissionsRevenue, total: jobsRevenue + submissionsRevenue, jobsCount: (jobs || []).length, submissionsCount: (submissions || []).length };
 }
 
 // A named staff member's open (not-yet-closed) CRM demands.
@@ -253,6 +331,118 @@ export async function getLeaveBalance(sb, staffName) {
   return { rows: data || [], totalDays, quarterStart: qStart };
 }
 
+// Warnings per staff (all-time, all severities) — mirrors the People screen's
+// roster badge (App.jsx: warnings.filter(w=>w.staff_name===s.name).length).
+// NOTE: the app has no "recent"/"active" concept for warnings at all — this
+// is genuinely all-time, matching the app, not a limitation of this query.
+export async function getWarningsSummary(sb) {
+  const { data } = await sb
+    .from("warnings")
+    .select("staff_name,warning_type,created_at")
+    .eq("tenant_id", TENANT_ID)
+    .order("created_at", { ascending: false });
+  const byStaff = {};
+  for (const w of data || []) {
+    const k = w.staff_name || "Unknown";
+    if (!byStaff[k]) byStaff[k] = { count: 0, latest: w.created_at, types: {} };
+    byStaff[k].count++;
+    byStaff[k].types[w.warning_type] = (byStaff[k].types[w.warning_type] || 0) + 1;
+  }
+  return Object.entries(byStaff)
+    .map(([staffName, v]) => ({ staffName, ...v }))
+    .sort((a, b) => b.count - a.count);
+}
+
+// Company assets not yet returned — mirrors People screen's exact filter
+// (App.jsx: assets.filter(a=>a.staff_name===s.name&&!a.returned)). `returned`
+// is never explicitly set false on insert, only set true on return — treat
+// NULL the same as false, matching the app's JS truthiness check.
+export async function getPendingAssets(sb) {
+  const { data } = await sb
+    .from("company_assets")
+    .select("staff_name,asset_name,issued_date")
+    .eq("tenant_id", TENANT_ID)
+    .or("returned.eq.false,returned.is.null")
+    .order("issued_date", { ascending: true });
+  return data || [];
+}
+
+// Staff docs uploaded (App.jsx DOC_FIELDS, 8 columns) — every column here
+// must be a real base64/image column on employee_docs, not the stale
+// aadhar_url/pan_url names from older docs.
+const DOC_FIELDS = ["aadhaar_front", "aadhaar_back", "pan_card", "photo", "cross_cheque", "last_salary_slip", "driving_license", "police_verification_form"];
+const DOC_CHECKS = ["police_verification_done", "home_visit_done", "nda_signed", "rules_acknowledged"];
+
+// Staff with incomplete onboarding — mirrors the exact hasDocGap logic used
+// for both the own-profile banner and the People-screen roster badge
+// (App.jsx: missing any of the 8 DOC_FIELDS or any of the 4 DOC_CHECKS).
+export async function getIncompleteProfiles(sb, activeStaffNames) {
+  const { data: docs } = await sb.from("employee_docs").select("*").eq("tenant_id", TENANT_ID);
+  const byName = {};
+  for (const d of docs || []) byName[(d.staff_name || "").trim().toLowerCase()] = d;
+  const out = [];
+  for (const name of activeStaffNames) {
+    const d = byName[name.trim().toLowerCase()];
+    const missingDocs = DOC_FIELDS.filter((f) => !d?.[f]);
+    const missingChecks = DOC_CHECKS.filter((f) => !d?.[f]);
+    if (missingDocs.length || missingChecks.length) {
+      out.push({ name, missingDocsCount: missingDocs.length, missingChecksCount: missingChecks.length });
+    }
+  }
+  return out;
+}
+
+// Training completion — per-staff if staffName given, else company-wide
+// top-5 leaderboard by xp (mirrors the admin Staff Progress tab's grouping,
+// App.jsx, but joins staff.name where the app itself only shows a raw id).
+export async function getTrainingStatus(sb, staffName, totalModules) {
+  if (staffName) {
+    const staff = await sb.from("staff").select("id").eq("tenant_id", TENANT_ID).ilike("name", staffName).maybeSingle();
+    if (!staff.data) return null;
+    const { data } = await sb.from("training_progress").select("completed").eq("staff_id", staff.data.id);
+    const completed = (data || []).filter((r) => r.completed).length;
+    const inProgress = (data || []).filter((r) => !r.completed).length;
+    return { staffName, completed, inProgress, notStarted: Math.max(0, totalModules - (data || []).length) };
+  }
+  const { data } = await sb.from("training_progress").select("staff_id,xp,completed");
+  const map = {};
+  for (const r of data || []) {
+    if (!map[r.staff_id]) map[r.staff_id] = { xp: 0, modules: 0 };
+    map[r.staff_id].xp += r.xp || 0;
+    if (r.completed) map[r.staff_id].modules++;
+  }
+  const ids = Object.keys(map);
+  if (!ids.length) return { leaderboard: [] };
+  const { data: staffRows } = await sb.from("staff").select("id,name").in("id", ids);
+  const nameById = Object.fromEntries((staffRows || []).map((s) => [s.id, s.name]));
+  const leaderboard = ids
+    .map((id) => ({ name: nameById[id] || `Staff #${id}`, xp: map[id].xp, modules: map[id].modules }))
+    .sort((a, b) => b.xp - a.xp)
+    .slice(0, 5);
+  return { leaderboard };
+}
+
+// Per-funnel lead breakdown — reads the bullion_funnel_metrics SQL view
+// directly (already does the GROUP BY tenant/funnel/status server-side) so
+// this doesn't need to re-derive the grouping client-side.
+export async function getFunnelBreakdown(sb) {
+  const { data } = await sb.from("bullion_funnel_metrics").select("*").eq("tenant_id", TENANT_ID).order("total_leads", { ascending: false });
+  return data || [];
+}
+
+// Drip campaign backlog — mirrors the Approvals screen's pending queue plus
+// today's sent/failed counts. `canceled` is expected/benign (lead replied or
+// converted) and is deliberately NOT counted as a problem here.
+export async function getDripStatus(sb) {
+  const todayStart = istMidnightOffset(0);
+  const [{ count: pending }, { count: sentToday }, { count: failed }] = await Promise.all([
+    sb.from("bullion_scheduled_messages").select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).eq("status", "pending"),
+    sb.from("bullion_scheduled_messages").select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).eq("status", "sent").gte("sent_at", todayStart),
+    sb.from("bullion_scheduled_messages").select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).eq("status", "failed"),
+  ]);
+  return { pending: pending || 0, sentToday: sentToday || 0, failed: failed || 0 };
+}
+
 // ── WhatsApp text formatting for the on-demand "get report" command ────────
 function fmtList(items, empty) {
   return items.length ? items.join("\n") : empty;
@@ -339,7 +529,76 @@ export async function buildReportText(sb, topic, opts = {}) {
     }
     case "fms_jobs": {
       const s = await getFmsJobStats(sb);
-      return `⚙️ FMS: ${s.running} order${s.running === 1 ? "" : "s"} running, ${s.todayJobs} new today, ${s.editApprovals} edit approval${s.editApprovals === 1 ? "" : "s"} pending.`;
+      return `⚙️ FMS: ${s.running} order${s.running === 1 ? "" : "s"} running (${s.delayed} delayed), ${s.todayJobs} new today, ${s.editApprovals} edit approval${s.editApprovals === 1 ? "" : "s"} pending.`;
+    }
+    case "job_lookup": {
+      if (!opts.query) return "Which order? Give me a serial number or client name.";
+      const rows = await findFmsJobs(sb, opts.query);
+      return `🔎 Orders matching "${opts.query}" (${rows.length}):\n` + fmtList(
+        rows.map((r) => `- #${r.serial} ${r.clientName || ""} — ${r.itemName || ""} — ${r.status}${r.curStepName ? ` (${r.curStepName})` : ""}${r.deliveryDate ? `, due ${r.deliveryDate.slice(0, 10)}` : ""}`),
+        "No matching order found."
+      );
+    }
+    case "deliveries_due": {
+      const s = await getFmsDeliveryStats(sb);
+      return `📦 Deliveries: ${s.due_today} due today, ${s.due_week} due within 7 days, ${s.overdue} overdue (still running).`;
+    }
+    case "gold_melting": {
+      const s = await getGoldMeltingStats(sb);
+      return `🔥 Gold melting: ${s.pool} item${s.pool === 1 ? "" : "s"} in pool (unbatched), ${s.pendingBatches} batch${s.pendingBatches === 1 ? "" : "es"} pending melt, ${s.awaitingClose} awaiting close, ${s.pendingApprovals} edit approval${s.pendingApprovals === 1 ? "" : "s"} pending${s.aging ? `, ⚠️ ${s.aging} sitting 30+ days` : ""}.`;
+    }
+    case "fms_revenue": {
+      const s = await getFmsRevenueToday(sb);
+      return `💰 Today's revenue: ₹${Math.round(s.total).toLocaleString("en-IN")} (${s.jobsCount} orders + ${s.submissionsCount} sales forms). Note: excludes cancelled orders/returns.`;
+    }
+    case "warnings": {
+      const rows = await getWarningsSummary(sb);
+      return `⚠️ Staff with warnings on file (${rows.length}), all-time:\n` + fmtList(
+        rows.slice(0, 15).map((r) => `- ${r.staffName}: ${r.count} (${Object.entries(r.types).map(([t, c]) => `${c} ${t}`).join(", ")})`),
+        "No warnings on file. 🎉"
+      );
+    }
+    case "pending_assets": {
+      const rows = await getPendingAssets(sb);
+      return `📋 Company assets not yet returned (${rows.length}):\n` + fmtList(
+        rows.map((r) => `- ${r.asset_name} → ${r.staff_name} (issued ${r.issued_date})`),
+        "All assets returned. 🎉"
+      );
+    }
+    case "incomplete_profiles": {
+      const activeStaff = await getActiveStaff(sb);
+      const rows = await getIncompleteProfiles(sb, activeStaff.map((s) => s.name));
+      return `📁 Staff with incomplete onboarding docs (${rows.length}):\n` + fmtList(
+        rows.map((r) => `- ${r.name}: ${r.missingDocsCount} doc(s), ${r.missingChecksCount} check(s) missing`),
+        "Everyone's docs are complete. 🎉"
+      );
+    }
+    case "training_status": {
+      const { count: totalModules } = await sb.from("training_modules").select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID);
+      const s = await getTrainingStatus(sb, opts.staffName, totalModules || 28);
+      if (opts.staffName) {
+        if (!s) return `Couldn't find ${opts.staffName} in staff.`;
+        return `🎓 ${s.staffName}: ${s.completed} completed, ${s.inProgress} in progress, ${s.notStarted} not started.`;
+      }
+      if (!s.leaderboard.length) return "No training activity logged yet.";
+      return `🎓 Training leaderboard (top 5 by XP):\n` + s.leaderboard.map((r, i) => `${i + 1}. ${r.name} — ${r.xp} XP, ${r.modules} modules done`).join("\n");
+    }
+    case "funnel_breakdown": {
+      const rows = await getFunnelBreakdown(sb);
+      return `🔀 Funnel breakdown:\n` + fmtList(
+        rows.map((r) => `- ${r.funnel_name || "Unassigned"}: ${r.total_leads} leads — ${r.active} active, ${r.handoff} handoff, ${r.converted} converted (${r.conversion_pct || 0}%), ${r.dead} dead`),
+        "No leads in any funnel yet."
+      );
+    }
+    case "drip_status": {
+      const s = await getDripStatus(sb);
+      return `📨 Drip campaigns: ${s.pending} pending, ${s.sentToday} sent today${s.failed ? `, ⚠️ ${s.failed} failed` : ""}.`;
+    }
+    case "upcoming_events": {
+      const events = await getUpcomingEvents(sb, opts.query && /\d+/.test(opts.query) ? parseInt(opts.query, 10) : 7);
+      if (!events.length) return "No birthdays or anniversaries coming up in this window.";
+      const text = formatEventsLine(events);
+      return `🎉 Upcoming events:\n${text}`;
     }
     case "staff_contact": {
       if (!opts.staffName) return "Couldn't match that name against the staff list. Check the spelling?";

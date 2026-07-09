@@ -71,7 +71,10 @@ const nameEq = (a, b) => String(a || "").trim().toLowerCase() === String(b || ""
 const REPORT_TOPICS = [
   "delegations", "my_tasks", "staff_tasks", "help_slips", "leaves", "leave_balance", "petty_cash",
   "walkins", "demands", "staff_demands", "attendance_today", "low_stock", "fms_jobs",
-  "lead_lookup", "staff_contact", "expiring_docs", "recent_completions", "full",
+  "lead_lookup", "staff_contact", "expiring_docs", "recent_completions",
+  "job_lookup", "deliveries_due", "gold_melting", "fms_revenue",
+  "warnings", "pending_assets", "incomplete_profiles", "training_status",
+  "funnel_breakdown", "drip_status", "upcoming_events", "full",
 ];
 
 async function classifyOwnerMessage(messageText, staffNames, corrections, lastCommand) {
@@ -97,7 +100,7 @@ async function classifyOwnerMessage(messageText, staffNames, corrections, lastCo
     "   Match misspelled/phonetic names to the closest roster name (e.g. \"Vineet\" -> \"Vinit\"). Set assignee to null if no plausible match.",
     "   Hindi/Hinglish task commands are common and verb-final, e.g. \"Ramesh ko bolo ki invoice fix kare Friday tak\" -> assignee Ramesh, title \"fix invoice\", due_date resolved. Strip postpositions (ko/se/ne) from the name.",
     "",
-    `2. Asking for a status report / numbers / status on something: {"intent":"get_report","topic":"<one of: ${REPORT_TOPICS.join("|")}>","staff_name":"<exact roster name, ONLY for staff_tasks/staff_demands>","query":"<free text, ONLY for lead_lookup>"}`,
+    `2. Asking for a status report / numbers / status on something: {"intent":"get_report","topic":"<one of: ${REPORT_TOPICS.join("|")}>","staff_name":"<exact roster name, ONLY for staff_tasks/staff_demands/leave_balance/training_status>","query":"<free text, ONLY for lead_lookup/job_lookup/upcoming_events>"}`,
     "   IMPORTANT: the top-level \"intent\" is ALWAYS the literal string \"get_report\" for this case — NEVER put the topic name (e.g. \"lead_lookup\", \"staff_contact\") directly in the \"intent\" field. The topic name goes ONLY in \"topic\".",
     "   - \"delegations\" = tasks he assigned to others (overdue). \"my_tasks\" = his own tasks.",
     "   - \"staff_tasks\" = a NAMED staff member's pending tasks, e.g. \"Naveen's pending tasks\", \"what does Priya have to do\" -> extract staff_name from the roster.",
@@ -112,6 +115,17 @@ async function classifyOwnerMessage(messageText, staffNames, corrections, lastCo
     "   - \"expiring_docs\" = business documents (license, GST, etc.) expiring soon, e.g. \"any documents expiring\", \"license renewals due\".",
     "   - \"recent_completions\" = tasks completed today by anyone, e.g. \"what got done today\", \"who finished their tasks\".",
     "   - \"leave_balance\" = a NAMED staff member's leave days taken this quarter, e.g. \"how many leaves has Akshat taken\" -> extract staff_name.",
+    "   - \"job_lookup\" = finding a SPECIFIC FMS order by serial number or client name, e.g. \"status of order 1234\", \"find Rohit's order\" -> put the serial/client name in \"query\".",
+    "   - \"deliveries_due\" = orders due for delivery, e.g. \"what's due today\", \"deliveries this week\", \"any overdue deliveries\".",
+    "   - \"gold_melting\" = gold melting workflow status, e.g. \"melting status\", \"how much gold in the pool\", \"pending melt batches\".",
+    "   - \"fms_revenue\" = today's sales/revenue figure, e.g. \"today's revenue\", \"how much did we sell today\".",
+    "   - \"warnings\" = staff disciplinary warnings, e.g. \"any warnings issued\", \"who has warnings\".",
+    "   - \"pending_assets\" = company assets (phones, tools, etc.) not yet returned, e.g. \"assets not returned\", \"who has company property\".",
+    "   - \"incomplete_profiles\" = staff who haven't finished uploading their onboarding documents, e.g. \"who hasn't completed their profile\", \"missing documents\".",
+    "   - \"training_status\" = training module completion, e.g. \"training leaderboard\", \"how's everyone doing on training\" (no staff_name = company-wide top 5), or \"has Priya finished training\" -> extract staff_name.",
+    "   - \"funnel_breakdown\" = CRM lead counts per funnel/pipeline, e.g. \"funnel breakdown\", \"how many leads in each funnel\", \"conversion rates\".",
+    "   - \"drip_status\" = automated WhatsApp drip campaign backlog, e.g. \"drip campaign status\", \"how many follow-up messages pending\".",
+    "   - \"upcoming_events\" = customer birthdays/anniversaries coming up, e.g. \"any birthdays coming up\", \"whose anniversary is this week\" -> if he gives a number of days put it in \"query\" (e.g. \"14\"), else omit (defaults to 7).",
     "   - \"full\" = general \"give me the report\"/\"how are things\" with no specific topic.",
     "",
     `3. Asking to look something up / retrieve company information or a document (bank details, passwords, licenses, templates — NOT a customer): {"intent":"search_resources","query":"<the key search terms only — person/company name, bank name, document type — space separated, drop filler words like 'I need', 'please', 'card', 'details'. e.g. 'Sanjeev Garg Aadhaar' not 'I need the aadhar card of Sanjeev Garg'>"}`,
