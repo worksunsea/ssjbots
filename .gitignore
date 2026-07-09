@@ -29,6 +29,9 @@ dist-ssr
 .env*.local
 .vercel
 
+# Supabase CLI local link cache (contains project ref/pooler URL)
+supabase/.temp/
+
 # Credentials / local downloads
 downloads/
 .claude/

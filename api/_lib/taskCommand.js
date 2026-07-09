@@ -4,7 +4,7 @@
 // Saurav created the task from the app himself.
 //
 // Classification (is this a task command, what's the assignee/title/date)
-// happens once in ownerCommand.js's single Claude call — this file only does
+// happens once in ownerCommand.js's single AI call — this file only does
 // the deterministic resolve → insert → notify steps.
 
 import { sendWhatsApp } from "./wa.js";

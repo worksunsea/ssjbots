@@ -5,7 +5,7 @@
 
 import { supa } from "./_lib/supabase.js";
 import { sendWhatsApp, sendWhatsAppMedia } from "./_lib/wa.js";
-import { askClaude, parseBotJson } from "./_lib/claude.js";
+import { askAI, parseBotJson } from "./_lib/ai.js";
 import { getRates, ratesForPrompt } from "./_lib/rates.js";
 import { getFaqs, faqsForPrompt } from "./_lib/faqs.js";
 import { buildSystemPrompt, buildMessages } from "./_lib/prompt.js";
@@ -17,8 +17,8 @@ import {
   OWNER_PHONE,
   WA_SESSION_CLIENT_ID,
   SUPABASE_SERVICE_KEY,
-  ANTHROPIC_API_KEY,
-  CLAUDE_MODEL,
+  OPENAI_API_KEY,
+  OPENAI_MODEL,
   HARD_EXCHANGE_CAP,
   TENANT_ID,
 } from "./_lib/config.js";
@@ -57,8 +57,8 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: false, reason: "bad_secret" });
   }
 
-  if (!SUPABASE_SERVICE_KEY || !ANTHROPIC_API_KEY) {
-    console.error("Missing env: SUPABASE_SERVICE_KEY or ANTHROPIC_API_KEY");
+  if (!SUPABASE_SERVICE_KEY || !OPENAI_API_KEY) {
+    console.error("Missing env: SUPABASE_SERVICE_KEY or OPENAI_API_KEY");
     return res.status(200).json({ ok: false, reason: "missing_env" });
   }
 
@@ -239,13 +239,13 @@ export default async function handler(req, res) {
     const system = buildSystemPrompt({ ratesText: ratesForPrompt(rates), faqsText: faqsForPrompt(faqs), lead: leadRow });
     const messages = buildMessages({ history: priorMessages, inboundBody: msg });
 
-    console.log("webhook:claude_model", CLAUDE_MODEL);
+    console.log("webhook:ai_model", OPENAI_MODEL);
     let parsed;
     try {
-      const claude = await askClaude({ system, messages, model: CLAUDE_MODEL });
-      parsed = parseBotJson(claude.text) || { reply: claude.text.slice(0, 300) || "Thanks! Will get back shortly.", action: "CONTINUE" };
+      const ai = await askAI({ system, messages, model: OPENAI_MODEL });
+      parsed = parseBotJson(ai.text) || { reply: ai.text.slice(0, 300) || "Thanks! Will get back shortly.", action: "CONTINUE" };
     } catch (err) {
-      console.error("webhook:claude_err", String(err?.message || err));
+      console.error("webhook:ai_err", String(err?.message || err));
       parsed = { reply: "Thanks for your message! Our team will get back to you shortly. 🙏", action: "CONTINUE" };
     }
 

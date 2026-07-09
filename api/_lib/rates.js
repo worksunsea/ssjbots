@@ -169,7 +169,7 @@ export function parseRates(rows) {
   return out;
 }
 
-// Render a Claude-friendly block with the live rates.
+// Render an AI-prompt-friendly block with the live rates.
 export function ratesForPrompt(parsed) {
   if (!parsed) return "(rates unavailable)";
   const s = parsed.spot;

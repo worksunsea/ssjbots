@@ -5,8 +5,8 @@
 // email_digest_accounts table, editable from the ssj-hr settings UI — not env vars.
 
 import { ImapFlow } from "imapflow";
-import { askClaude } from "./claude.js";
-import { TENANT_ID, CLAUDE_MODEL } from "./config.js";
+import { askAI } from "./ai.js";
+import { TENANT_ID, OPENAI_MODEL } from "./config.js";
 
 const WINDOW_MS = 13 * 60 * 60 * 1000; // covers the gap between the 9am/10pm runs
 const RETENTION_DAYS = 15;
@@ -68,11 +68,11 @@ async function summarize(email, headers) {
     "No preamble, no markdown headers — just the bullets or that one line.",
   ].join("\n");
   try {
-    const { text } = await askClaude({
+    const { text } = await askAI({
       system,
       messages: [{ role: "user", content: `Inbox: ${email}\n\n${list}` }],
       maxTokens: 300,
-      model: CLAUDE_MODEL,
+      model: OPENAI_MODEL,
     });
     return text.trim() || "Nothing urgent.";
   } catch (err) {

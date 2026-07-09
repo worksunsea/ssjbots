@@ -3,8 +3,8 @@
 // deterministic — data queries and resource search never touch AI, only the
 // initial "what is this message asking for" step does.
 
-import { askClaude, parseBotJson } from "./claude.js";
-import { TENANT_ID, CLAUDE_MODEL } from "./config.js";
+import { askAI, parseBotJson } from "./ai.js";
+import { TENANT_ID, OPENAI_MODEL } from "./config.js";
 import { getActiveStaff, executeCreateTask } from "./taskCommand.js";
 import { buildReportText } from "./reportQueries.js";
 import { logCommand, getLastCommand, markFeedback, getRecentCorrections } from "./ownerLog.js";
@@ -67,11 +67,11 @@ async function classifyOwnerMessage(messageText, staffNames, corrections) {
     ...correctionsBlock,
   ].join("\n");
   try {
-    const { text } = await askClaude({
+    const { text } = await askAI({
       system,
       messages: [{ role: "user", content: messageText }],
       maxTokens: 250,
-      model: CLAUDE_MODEL,
+      model: OPENAI_MODEL,
     });
     return parseBotJson(text) || { intent: "none" };
   } catch {
@@ -142,7 +142,7 @@ async function diagnoseWrongAnswer(lastCommand) {
     "In 1-2 short sentences: explain why the classification likely went wrong, and what intent/topic it should have been instead. No preamble, plain text only.",
   ].join("\n");
   try {
-    const { text } = await askClaude({ system, messages: [{ role: "user", content: "Diagnose it." }], maxTokens: 150, model: CLAUDE_MODEL });
+    const { text } = await askAI({ system, messages: [{ role: "user", content: "Diagnose it." }], maxTokens: 150, model: OPENAI_MODEL });
     return text.trim() || "Couldn't pin down why — logged for review.";
   } catch {
     return "Couldn't self-diagnose — logged for review.";

@@ -3,11 +3,12 @@
 
 export const SUPABASE_URL = process.env.SUPABASE_URL || "https://uppyxzellmuissdlxsmy.supabase.co";
 export const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
-export const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+// Switched from Anthropic to OpenAI (2026-07-09) — see api/_lib/ai.js.
+export const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 export const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL || "https://script.google.com/macros/s/AKfycbxGazdRhKxkjOLkqxN4kPoInDuBnlWy5Azmzq-FX9mt5OIfZLbhqfFEO0AufrOWE6n49Q/exec";
 export const TENANT_ID = process.env.TENANT_ID || "a1b2c3d4-0000-0000-0000-000000000001";
-export const CLAUDE_MODEL = process.env.CLAUDE_MODEL || "claude-haiku-4-5-20251001";
-export const CLAUDE_MODEL_ESCALATION = process.env.CLAUDE_MODEL_ESCALATION || "claude-haiku-4-5-20251001";
+export const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+export const OPENAI_MODEL_ESCALATION = process.env.OPENAI_MODEL_ESCALATION || "gpt-4o-mini";
 
 // WbizTool — used for all outbound messages except bot replies (which use Baileys).
 export const WBIZTOOL_API_KEY = process.env.WBIZTOOL_API_KEY || "";
@@ -64,7 +65,7 @@ export function checkCrmSecret(req, res) {
 export function requireEnv() {
   const missing = [];
   if (!SUPABASE_SERVICE_KEY) missing.push("SUPABASE_SERVICE_KEY");
-  if (!ANTHROPIC_API_KEY) missing.push("ANTHROPIC_API_KEY");
+  if (!OPENAI_API_KEY) missing.push("OPENAI_API_KEY");
   if (!process.env.WA_SERVICE_URL) missing.push("WA_SERVICE_URL");
   if (missing.length) throw new Error(`Missing env: ${missing.join(", ")}`);
 }

@@ -10,9 +10,9 @@
 
 import { supa } from "./_lib/supabase.js";
 import { sendWhatsAppWbiz } from "./_lib/wa.js";
-import { askClaude } from "./_lib/claude.js";
+import { askAI } from "./_lib/ai.js";
 import { assignNextTelecaller } from "./_lib/assign.js";
-import { normalizePhone, SUPABASE_SERVICE_KEY, ANTHROPIC_API_KEY, CLAUDE_MODEL_ESCALATION } from "./_lib/config.js";
+import { normalizePhone, SUPABASE_SERVICE_KEY, OPENAI_API_KEY, OPENAI_MODEL_ESCALATION } from "./_lib/config.js";
 
 export const config = { maxDuration: 60 };
 
@@ -50,7 +50,7 @@ export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ ok: false, error: "method_not_allowed" });
   }
-  if (!SUPABASE_SERVICE_KEY || !ANTHROPIC_API_KEY) {
+  if (!SUPABASE_SERVICE_KEY || !OPENAI_API_KEY) {
     return res.status(500).json({ ok: false, error: "missing_env" });
   }
 
@@ -227,15 +227,15 @@ export default async function handler(req, res) {
 
     let openingMsg = "";
     try {
-      const claude = await askClaude({
+      const ai = await askAI({
         system: openingSystem,
         messages: [{ role: "user", content: `Write the opening WhatsApp message for this demand:\n\n${openingContext}` }],
         maxTokens: 200,
-        model: CLAUDE_MODEL_ESCALATION,
+        model: OPENAI_MODEL_ESCALATION,
       });
-      openingMsg = (claude?.text || "").trim();
+      openingMsg = (ai?.text || "").trim();
     } catch (e) {
-      console.error("Claude opening message failed", e);
+      console.error("AI opening message failed", e);
     }
 
     // Fallback if Claude fails

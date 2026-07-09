@@ -10,9 +10,9 @@
 import { supa } from "./_lib/supabase.js";
 import { sendWhatsApp, sendWhatsAppWbiz, sendWhatsAppMediaWbiz } from "./_lib/wa.js";
 import { transitionLeadToFunnel, enrollLeadInDrip } from "./_lib/drip.js";
-import { askClaude } from "./_lib/claude.js";
+import { askAI } from "./_lib/ai.js";
 import { getFaqs, faqsForPrompt } from "./_lib/faqs.js";
-import { OWNER_ALERT_PHONE, CLAUDE_MODEL, CRM_SECRET } from "./_lib/config.js";
+import { OWNER_ALERT_PHONE, OPENAI_MODEL, CRM_SECRET } from "./_lib/config.js";
 
 export const config = { maxDuration: 60 };
 
@@ -63,9 +63,9 @@ async function generatePreview(sb, row) {
     faqs?.length ? `Store info:\n${faqsForPrompt(faqs)}` : "",
     "Template hint (do NOT copy verbatim):", row.body,
   ].filter(Boolean).join("\n");
-  const claude = await askClaude({ system: aiSystem, messages: [{ role: "user", content: "Write the message now." }], maxTokens: 200, model: CLAUDE_MODEL });
-  if (claude?.text?.trim()) {
-    await sb.from("bullion_scheduled_messages").update({ edited_body: claude.text.trim() }).eq("id", row.id);
+  const ai = await askAI({ system: aiSystem, messages: [{ role: "user", content: "Write the message now." }], maxTokens: 200, model: OPENAI_MODEL });
+  if (ai?.text?.trim()) {
+    await sb.from("bullion_scheduled_messages").update({ edited_body: ai.text.trim() }).eq("id", row.id);
     return true;
   }
   return false;
@@ -269,13 +269,13 @@ export default async function handler(req, res) {
           "Template hint (do NOT copy verbatim, just use as context):",
           row.body,
         ].filter(Boolean).join("\n");
-        const claude = await askClaude({
+        const ai = await askAI({
           system: aiSystem,
           messages: [{ role: "user", content: "Write the personalized message now." }],
           maxTokens: 150,
-          model: CLAUDE_MODEL,
+          model: OPENAI_MODEL,
         });
-        if (claude?.text?.trim()) msgBody = claude.text.trim();
+        if (ai?.text?.trim()) msgBody = ai.text.trim();
       } catch (e) {
         console.error("AI message generation failed, using template", e);
       }
