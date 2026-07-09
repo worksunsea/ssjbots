@@ -4,7 +4,7 @@
 // initial "what is this message asking for" step does.
 
 import { askAI, parseBotJson } from "./ai.js";
-import { TENANT_ID, OPENAI_MODEL, normalizePhone } from "./config.js";
+import { TENANT_ID, OPENAI_MODEL, normalizePhone, sanitizeErrorForWA } from "./config.js";
 import { getActiveStaff, executeCreateTask } from "./taskCommand.js";
 import { buildReportText, findLeadsForForm } from "./reportQueries.js";
 import { logCommand, getLastCommand, markFeedback, getRecentCorrections } from "./ownerLog.js";
@@ -55,7 +55,7 @@ async function addContact(sb, name, phone) {
     const ins = { tenant_id: TENANT_ID, phone: cleanPhone, status: "new", source: "owner_wa_command" };
     if (name) ins.name = String(name).slice(0, 100);
     const { data: newLead, error } = await sb.from("bullion_leads").insert(ins).select("id,name,phone,form_token").single();
-    if (error) return { text: `Couldn't create that contact — ${error.message}` };
+    if (error) return { text: `Couldn't create that contact — ${sanitizeErrorForWA(error)}` };
     lead = newLead;
   }
   const link = await ensureFormLink(sb, lead);
@@ -338,7 +338,7 @@ export async function handleOwnerMessage(sb, messageText) {
       await queueDevTask(sb, { taskText: parsed.task || messageText, repoHint: parsed.repo_hint });
       result = { replyText: "🖥️ Sent to your dev agent — check your PC. It'll wait for your approval on each step, same as a normal Claude Code chat. (Only works if your PC and the dev-agent listener are on.)" };
     } catch (err) {
-      result = { replyText: `Couldn't queue that — ${String(err.message || err)}` };
+      result = { replyText: `Couldn't queue that — ${sanitizeErrorForWA(err)}` };
     }
   } else {
     result = { replyText: "Didn't catch that. You can: assign a task, ask for a report (e.g. \"give me reporting\"), or ask me to look something up (e.g. \"bank details for ICICI\")." };

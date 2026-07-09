@@ -9,7 +9,7 @@
 
 import { sendWhatsApp } from "./wa.js";
 import { sendPushNotification } from "./pushNotify.js";
-import { TENANT_ID, WA_SESSION_CLIENT_ID } from "./config.js";
+import { TENANT_ID, WA_SESSION_CLIENT_ID, sanitizeErrorForWA } from "./config.js";
 
 const nameEq = (a, b) => String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
 
@@ -85,7 +85,7 @@ export async function executeCreateTask(sb, staff, { assignee, title, due_date }
   try {
     await createTaskFromCommand(sb, { assignedToName: matchedStaff.name, title, dueDate: due_date });
   } catch (err) {
-    return `Couldn't create the task — ${String(err.message || err)}`;
+    return `Couldn't create the task — ${sanitizeErrorForWA(err)}`;
   }
 
   const dueText = due_date ? `, due ${due_date}` : "";

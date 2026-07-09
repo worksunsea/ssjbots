@@ -50,6 +50,18 @@ export const CRM_SECRET = process.env.CRM_SECRET || "";
 export const normalizePhone = (p) =>
   String(p || "").replace(/:\d+$/, "").replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, "");
 
+// Supabase/Cloudflare occasionally return an HTML error page (e.g. a 522
+// "Connection timed out" during a Supabase-side outage) instead of a JSON
+// error — supabase-js then surfaces that raw HTML as error.message. Sending
+// a multi-KB HTML page as a WhatsApp reply is unreadable and looks broken.
+// Confirmed for real: 2026-07-09, a Supabase edge outage produced exactly
+// this in a "Couldn't queue that — <!DOCTYPE html>..." WA message.
+export function sanitizeErrorForWA(err) {
+  const raw = String(err?.message || err || "");
+  if (/<html|<!DOCTYPE/i.test(raw)) return "the database/hosting service is temporarily unreachable — try again in a few minutes.";
+  return raw.length > 200 ? raw.slice(0, 200) + "…" : raw;
+}
+
 // Returns a 401 response object if the x-crm-secret header is missing/wrong.
 // Returns null if the request is allowed.
 export function checkCrmSecret(req, res) {
