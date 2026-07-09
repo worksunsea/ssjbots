@@ -54,7 +54,7 @@ async function classifyOwnerMessage(messageText, staffNames, corrections) {
     "   - \"leave_balance\" = a NAMED staff member's leave days taken this quarter, e.g. \"how many leaves has Akshat taken\" -> extract staff_name.",
     "   - \"full\" = general \"give me the report\"/\"how are things\" with no specific topic.",
     "",
-    `3. Asking to look something up / retrieve company information or a document (bank details, passwords, licenses, templates — NOT a customer): {"intent":"search_resources","query":"<short search keywords, e.g. 'ICICI bank details'>"}`,
+    `3. Asking to look something up / retrieve company information or a document (bank details, passwords, licenses, templates — NOT a customer): {"intent":"search_resources","query":"<the key search terms only — person/company name, bank name, document type — space separated, drop filler words like 'I need', 'please', 'card', 'details'. e.g. 'Sanjeev Garg Aadhaar' not 'I need the aadhar card of Sanjeev Garg'>"}`,
     "",
     `4. Commenting on the PREVIOUS reply the bot just sent (e.g. "wrong answer", "galat jawab tha", "that's not right", "no that's wrong", or conversely "yes correct", "sahi hai", "thanks that's right"): {"intent":"feedback","rating":"wrong"|"correct"}`,
     "",
@@ -81,19 +81,72 @@ async function classifyOwnerMessage(messageText, staffNames, corrections) {
 
 // Searches resources (plain text, e.g. bank details, passwords, templates)
 // and business_docs (uploaded document images with optional OCR'd text) by
-// keyword. No AI — plain ILIKE search. Returns { text } for a text reply, or
-// { text, mediaUrl, caption } if a matching document image should be sent.
-async function searchResources(sb, query) {
-  // Strip characters that would break PostgREST's comma-separated .or() filter syntax.
-  const cleaned = String(query || "").replace(/[,()]/g, " ").trim();
-  const q = `%${cleaned}%`;
+// keyword. No AI — plain ILIKE search.
+//
+// Was a single ILIKE match on the WHOLE query phrase, requiring it to
+// appear as one literal contiguous substring — e.g. "adhar card Saurav
+// Garg" never matched a title like "SANJEEV GARG AADHAR CARD" (different
+// word order, and the person's name is often reversed relative to how
+// someone would type it). Now splits into significant words and requires
+// each one to appear SOMEWHERE across the searched columns (any order, any
+// column) — chaining multiple .or() calls in supabase-js ANDs them
+// together, which is what makes per-word matching possible without a
+// separate full-text-search column. Falls back to ANY single word matching
+// (still capped low) if the strict pass finds nothing, so a misremembered
+// detail still surfaces a plausible candidate instead of "nothing found".
+//
+// keywords (business_docs/resources column) lets an admin add extra
+// findable terms — bank name, alternate spellings, a name in a different
+// order — without renaming the actual document title.
+const SEARCH_STOPWORDS = new Set([
+  "of", "the", "for", "a", "an", "and", "to", "is", "in", "on", "my", "i", "me", "need",
+  "give", "please", "pls", "send", "share", "find", "get", "chk", "check", "details", "detail",
+  "card", "document", "doc", "copy", "ka", "ki", "ke", "hai", "chahiye", "chaiye", "bhejo", "bhej", "do", "dena",
+]);
 
-  const { data: resourceMatches } = await sb
-    .from("resources")
-    .select("title,content,section")
-    .eq("tenant_id", TENANT_ID)
-    .or(`title.ilike.${q},content.ilike.${q},section.ilike.${q}`)
-    .limit(3);
+function significantWords(query) {
+  return String(query || "")
+    .replace(/[,()]/g, " ")
+    .split(/\s+/)
+    .map((w) => w.trim())
+    .filter((w) => w.length >= 3 && !SEARCH_STOPWORDS.has(w.toLowerCase()));
+}
+
+function requireAllWords(baseQuery, columns, words) {
+  let q = baseQuery;
+  for (const w of words) {
+    const p = `%${w}%`;
+    q = q.or(columns.map((c) => `${c}.ilike.${p}`).join(","));
+  }
+  return q;
+}
+
+function anyWordFilter(columns, words) {
+  const conds = [];
+  for (const w of words) {
+    const p = `%${w}%`;
+    for (const c of columns) conds.push(`${c}.ilike.${p}`);
+  }
+  return conds.join(",");
+}
+
+// Returns { text } for a text reply, or { text, mediaUrl, caption } if a
+// matching document image should be sent.
+async function searchResources(sb, query) {
+  const words = significantWords(query);
+  if (!words.length) return { text: `Couldn't find anything matching "${query}" in Resources or Business Docs.` };
+
+  const resCols = ["title", "content", "section"];
+  const docCols = ["title", "doc_type", "notes", "text_content", "keywords"];
+
+  let { data: resourceMatches } = await requireAllWords(
+    sb.from("resources").select("title,content,section").eq("tenant_id", TENANT_ID), resCols, words
+  ).limit(3);
+  if (!resourceMatches?.length && words.length > 1) {
+    const fallback = await sb.from("resources").select("title,content,section").eq("tenant_id", TENANT_ID)
+      .or(anyWordFilter(resCols, words)).limit(3);
+    resourceMatches = fallback.data;
+  }
 
   if (resourceMatches?.length) {
     const text = resourceMatches
@@ -102,12 +155,14 @@ async function searchResources(sb, query) {
     return { text };
   }
 
-  const { data: docMatches } = await sb
-    .from("business_docs")
-    .select("title,doc_type,notes,text_content,front_image_url")
-    .eq("tenant_id", TENANT_ID)
-    .or(`title.ilike.${q},doc_type.ilike.${q},notes.ilike.${q},text_content.ilike.${q}`)
-    .limit(1);
+  let { data: docMatches } = await requireAllWords(
+    sb.from("business_docs").select("title,doc_type,notes,text_content,keywords,front_image_url").eq("tenant_id", TENANT_ID), docCols, words
+  ).limit(3);
+  if (!docMatches?.length && words.length > 1) {
+    const fallback = await sb.from("business_docs").select("title,doc_type,notes,text_content,keywords,front_image_url").eq("tenant_id", TENANT_ID)
+      .or(anyWordFilter(docCols, words)).limit(3);
+    docMatches = fallback.data;
+  }
 
   if (docMatches?.length) {
     const doc = docMatches[0];
