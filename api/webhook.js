@@ -10,6 +10,7 @@ import { getRates, ratesForPrompt } from "./_lib/rates.js";
 import { getFaqs, faqsForPrompt } from "./_lib/faqs.js";
 import { buildSystemPrompt, buildMessages } from "./_lib/prompt.js";
 import { handleOwnerMessage } from "./_lib/ownerCommand.js";
+import { sendPushNotification } from "./_lib/pushNotify.js";
 import {
   normalizePhone,
   BOT_NUMBERS,
@@ -195,6 +196,12 @@ export default async function handler(req, res) {
         leadRow = refetch;
       } else {
         leadRow = inserted;
+        sendPushNotification({
+          userId: "admin",
+          title: "🆕 New Lead",
+          body: `${name || phone} messaged in — unassigned, no funnel yet.`,
+          url: "/",
+        }).catch(() => {});
       }
     }
 
@@ -318,6 +325,12 @@ export default async function handler(req, res) {
           created_by: "bot",
         }), (e) => console.error("demand create failed", e));
         console.log("webhook:demand_created", { leadId: leadRow.id, summary: parsed.demand_summary });
+        sendPushNotification({
+          userId: "admin",
+          title: "📇 New Demand",
+          body: `${leadRow.name || leadRow.phone} — ${parsed.demand_summary} (unassigned)`,
+          url: "/",
+        }).catch(() => {});
       }
     }
 

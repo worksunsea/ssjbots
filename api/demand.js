@@ -12,6 +12,7 @@ import { supa } from "./_lib/supabase.js";
 import { sendWhatsAppWbiz } from "./_lib/wa.js";
 import { askAI } from "./_lib/ai.js";
 import { assignNextTelecaller } from "./_lib/assign.js";
+import { sendPushNotification } from "./_lib/pushNotify.js";
 import { normalizePhone, SUPABASE_SERVICE_KEY, OPENAI_API_KEY, OPENAI_MODEL_ESCALATION } from "./_lib/config.js";
 
 export const config = { maxDuration: 60 };
@@ -191,6 +192,14 @@ export default async function handler(req, res) {
       console.error("demand insert failed", demandErr);
       return res.status(500).json({ ok: false, error: demandErr.message });
     }
+
+    const demandDesc = body.description || body.productCategory || "demand";
+    const demandClientName = lead.name || body.name || lead.phone || "A lead";
+    sendPushNotification(
+      body.assignedStaffId
+        ? { userId: body.assignedStaffId, title: "📇 New Demand Assigned", body: `${demandClientName} — ${demandDesc}`, url: "/" }
+        : { userId: "admin", title: "📇 New Demand", body: `${demandClientName} — ${demandDesc} (unassigned)`, url: "/" }
+    ).catch(() => {});
 
     // Staff assignment is manual-only — no auto round-robin
     const assignedStaff = null;
