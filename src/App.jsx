@@ -11168,7 +11168,7 @@ const EMPTY_PRODUCT_FORM = {
   misc3Lbl: "Lakh",     misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false,
   coinWeightG: "", coinMakingAmount: "0", coinMiscAmount: "0", // rateSource === "mmtc_coin"
   manualPrice: "", // priceMode === "manual"
-  priceVisible: true, status: "draft", stockStatus: "in_stock",
+  priceVisible: true, status: "published", stockStatus: "in_stock",
 };
 
 function productFormFromRow(p) {
@@ -11607,7 +11607,7 @@ function CatalogueScreen() {
                       {img
                         ? <img src={img.url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                         : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: i === 0 ? 26 : 18, color: "#aaa" }}>📷</div>}
-                      <input type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={(e) => replaceProductImage(e.target.files?.[0], i, img)} />
+                      <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => replaceProductImage(e.target.files?.[0], i, img)} />
                     </label>
                     {img && <button onClick={() => removeProductImage(img)} style={{ position: "absolute", top: -6, right: -6, width: 18, height: 18, borderRadius: "50%", border: "none", background: "#c0392b", color: "#fff", fontSize: 11, cursor: "pointer" }}>×</button>}
                   </div>
