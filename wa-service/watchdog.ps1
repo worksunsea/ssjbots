@@ -10,6 +10,15 @@
 # fixes most stuck-reconnect cases) and pushes a notification via ssj-hr's
 # existing PWA push endpoint - which works even when WhatsApp itself is the
 # thing that's broken, unlike alerting over WA.
+#
+# Alerts go to user_id "admin", which ssj-hr's /api/push resolves to every
+# superadmin + admin staff member (not just Saurav) - see api/push.js.
+#
+# Disconnected sessions report me=null (no phone number), which made past
+# alerts say only "production disconnected" with no way to know which real
+# WA number that is without digging through logs. State now remembers the
+# last-seen phone number per client_id while it WAS connected, and includes
+# it in the alert even after the session drops.
 
 $ErrorActionPreference = "Stop"
 $stateFile = "C:\docker-data\wa-watchdog-state.json"
@@ -22,7 +31,7 @@ function Load-State {
     if (Test-Path $stateFile) {
         try { return Get-Content $stateFile -Raw | ConvertFrom-Json } catch {}
     }
-    return @{ fails = @{}; lastRestart = $null }
+    return @{ fails = @{}; lastRestart = $null; knownMe = @{} }
 }
 
 function Save-State($state) {
@@ -38,8 +47,15 @@ function Send-Alert($title, $body) {
     }
 }
 
+# "919311777591:48@s.whatsapp.net" -> "919311777591"
+function Clean-Phone($me) {
+    if (-not $me) { return $null }
+    return ($me -split ':')[0]
+}
+
 $state = Load-State
 if (-not $state.fails) { $state | Add-Member -NotePropertyName fails -NotePropertyValue @{} -Force }
+if (-not $state.knownMe) { $state | Add-Member -NotePropertyName knownMe -NotePropertyValue @{} -Force }
 
 try {
     $health = Invoke-RestMethod -Uri $healthUrl -TimeoutSec 15
@@ -55,6 +71,8 @@ foreach ($c in $health.clients) {
     $prevFails = if ($state.fails.$id) { $state.fails.$id } else { 0 }
     if ($c.connected) {
         $state.fails.$id = 0
+        $phone = Clean-Phone $c.me
+        if ($phone) { $state.knownMe.$id = $phone }
     } else {
         $state.fails.$id = $prevFails + 1
         if ($state.fails.$id -ge 2) { $downClients += $id }
@@ -68,7 +86,11 @@ if ($downClients.Count -gt 0) {
         $last = [datetime]$state.lastRestart
         if (($now - $last).TotalMinutes -lt $restartCooldownMin) { $canRestart = $false }
     }
-    $names = $downClients -join ", "
+    # e.g. "production (919311777591), Reception (918860866000)"
+    $names = ($downClients | ForEach-Object {
+        $phone = $state.knownMe.$_
+        if ($phone) { "$_ ($phone)" } else { $_ }
+    }) -join ", "
     if ($canRestart) {
         Write-Output ("wa-watchdog: {0} disconnected 2+ checks in a row - restarting {1}" -f $names, $containerName)
         docker restart $containerName | Out-Null
