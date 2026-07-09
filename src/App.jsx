@@ -10580,6 +10580,41 @@ function purityRatePg(purityIdx, liveRates) {
   return (liveRates[p.rateKey] || 0) * (p.mult || 1);
 }
 
+// Pure jewellery pricing formula — shared by CalculatorScreen (live estimate)
+// and CatalogueScreen (direct product entry via the same form), so the two
+// never drift apart. `jw` is the calculator's item-state shape (grossWt,
+// purityIdx, dia1/dia2/stone, misc1/2/3, applyGst, qty, ...). `gRate` is the
+// already-resolved per-gram rate for the chosen purity (live or overridden).
+function computeJewelleryEstimate(jw, makingMode, gRate) {
+  const ctToG = (w, unit) => unit === "ct" ? parseFloat(w || 0) * 0.2 : parseFloat(w || 0);
+  const gross = parseFloat(jw.grossWt || 0);
+  const d1g = ctToG(jw.dia1Wt, jw.dia1Unit);
+  const d2g = ctToG(jw.dia2Wt, jw.dia2Unit);
+  const stg = ctToG(jw.stoneWt, jw.stoneUnit);
+  const misc1g = jw.misc1Deduct ? ctToG(jw.misc1Wt, jw.misc1Unit) : 0;
+  const misc2g = jw.misc2Deduct ? ctToG(jw.misc2Wt, jw.misc2Unit) : 0;
+  const misc3g = jw.misc3Deduct ? ctToG(jw.misc3Wt, jw.misc3Unit) : 0;
+  const netGold = Math.max(0, gross - d1g - d2g - stg - misc1g - misc2g - misc3g);
+  const goldVal = netGold * gRate;
+  const makingR = makingMode === "per_g" ? parseFloat(jw.makingRatePg || 0) : parseFloat(jw.makingRatePct || 0);
+  const isBelow1g = gross > 0 && gross < 1;
+  const making = isBelow1g ? 2000 : (makingMode === "per_g" ? netGold * makingR : goldVal * (makingR / 100));
+  const d1raw = parseFloat(jw.dia1Wt || 0);
+  const d2raw = parseFloat(jw.dia2Wt || 0);
+  const straw = parseFloat(jw.stoneWt || 0);
+  const diaTotal = d1raw * parseFloat(jw.dia1Rate || 0) + d2raw * parseFloat(jw.dia2Rate || 0) + straw * parseFloat(jw.stoneRate || 0);
+  const miscVal = (wt, rate) => { const w = parseFloat(wt || 0), r = parseFloat(rate || 0); return w > 0 ? w * r : r; };
+  const misc1Val = miscVal(jw.misc1Wt, jw.misc1Rate);
+  const misc2Val = miscVal(jw.misc2Wt, jw.misc2Rate);
+  const misc3Val = miscVal(jw.misc3Wt, jw.misc3Rate);
+  const miscTotal = misc1Val + misc2Val + misc3Val;
+  const subTotal = goldVal + making + diaTotal + miscTotal;
+  const gst = jw.applyGst ? subTotal * 0.03 : 0;
+  const qty = Math.max(1, parseInt(jw.qty || "1", 10) || 1);
+  const perPieceTotal = subTotal + gst;
+  return { gross, gRate, netGold, goldVal, making, makingR, makingMode, isBelow1g, diaTotal, miscTotal, subTotal, gst, qty, perPieceTotal, total: perPieceTotal * qty };
+}
+
 // "Gold" or "Silver" — drives every metal-value label (results, print, PDF, WA)
 // so choosing a silver purity doesn't leave "Gold Value" etc. on screen/output.
 function metalLabel(purityIdx) {
@@ -11115,22 +11150,45 @@ function recalcToday(){
 // send-to-client links, per-client selections
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Product form mirrors the Calculator's jewellery-tab `jw` shape exactly
+// (same field names) when rateSource==="jewellery_purity", so the same
+// computeJewelleryEstimate() function and the same input layout can be
+// reused verbatim — no separate simplified pricing UI to keep in sync.
 const EMPTY_PRODUCT_FORM = {
-  itemTypeId: "", materialId: "", styleId: "", name: "", oldSku: "", description: "", weightGrams: "",
-  priceMode: "manual", rateSource: "jewellery_purity", purityIdx: "2", netGoldWeightGrams: "", coinWeightG: "",
-  makingAmount: "0", diaTotal: "0", miscTotal: "0", applyGst: true, qty: "1", manualPrice: "",
+  itemTypeId: "", materialId: "", styleId: "",
+  priceMode: "live_gold", rateSource: "jewellery_purity",
+  itemName: "", oldSku: "", size: "", notes: "", qty: "1",
+  grossWt: "", purityIdx: 2, goldRateOverride: "", applyGst: true,
+  makingMode: "per_g", makingRatePg: "1500", makingRatePct: "15",
+  dia1Wt: "", dia1Unit: "ct", dia1Rate: "",
+  dia2Wt: "", dia2Unit: "ct", dia2Rate: "",
+  stoneWt: "", stoneUnit: "ct", stoneRate: "",
+  misc1Lbl: "Gemstone", misc1Wt: "", misc1Unit: "g", misc1Rate: "", misc1Deduct: true,
+  misc2Lbl: "Mala",     misc2Wt: "", misc2Unit: "g", misc2Rate: "", misc2Deduct: false,
+  misc3Lbl: "Lakh",     misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false,
+  coinWeightG: "", coinMakingAmount: "0", coinMiscAmount: "0", // rateSource === "mmtc_coin"
+  manualPrice: "", // priceMode === "manual"
   priceVisible: true, status: "draft", stockStatus: "in_stock",
 };
 
 function productFormFromRow(p) {
+  const pd = p.pricing_detail || {};
   return {
     itemTypeId: p.item_type_id, materialId: p.material_id, styleId: p.style_id || "",
-    name: p.name || "", oldSku: p.old_sku || "", description: p.description || "", weightGrams: p.weight_grams ?? "",
     priceMode: p.price_mode, rateSource: p.rate_source || "jewellery_purity",
-    purityIdx: p.purity_idx != null ? String(p.purity_idx) : "2",
-    netGoldWeightGrams: p.net_gold_weight_grams ?? "", coinWeightG: p.coin_weight_g ?? "",
-    makingAmount: p.making_amount ?? "0", diaTotal: p.dia_total ?? "0", miscTotal: p.misc_total ?? "0",
-    applyGst: p.apply_gst !== false, qty: p.qty ?? "1", manualPrice: p.manual_price ?? "",
+    itemName: p.name || "", oldSku: p.old_sku || "", size: pd.size || "", notes: p.description || "",
+    qty: p.qty != null ? String(p.qty) : "1",
+    grossWt: pd.grossWt || "", purityIdx: p.purity_idx ?? 2, goldRateOverride: pd.goldRateOverride || "",
+    applyGst: p.apply_gst !== false,
+    makingMode: pd.makingMode || "per_g", makingRatePg: pd.makingRatePg || "1500", makingRatePct: pd.makingRatePct || "15",
+    dia1Wt: pd.dia1Wt || "", dia1Unit: pd.dia1Unit || "ct", dia1Rate: pd.dia1Rate || "",
+    dia2Wt: pd.dia2Wt || "", dia2Unit: pd.dia2Unit || "ct", dia2Rate: pd.dia2Rate || "",
+    stoneWt: pd.stoneWt || "", stoneUnit: pd.stoneUnit || "ct", stoneRate: pd.stoneRate || "",
+    misc1Lbl: pd.misc1Lbl || "Gemstone", misc1Wt: pd.misc1Wt || "", misc1Unit: pd.misc1Unit || "g", misc1Rate: pd.misc1Rate || "", misc1Deduct: pd.misc1Deduct !== false,
+    misc2Lbl: pd.misc2Lbl || "Mala", misc2Wt: pd.misc2Wt || "", misc2Unit: pd.misc2Unit || "g", misc2Rate: pd.misc2Rate || "", misc2Deduct: pd.misc2Deduct === true,
+    misc3Lbl: pd.misc3Lbl || "Lakh", misc3Wt: pd.misc3Wt || "", misc3Unit: pd.misc3Unit || "g", misc3Rate: pd.misc3Rate || "", misc3Deduct: pd.misc3Deduct === true,
+    coinWeightG: p.coin_weight_g ?? "", coinMakingAmount: p.making_amount ?? "0", coinMiscAmount: p.misc_total ?? "0",
+    manualPrice: p.manual_price ?? "",
     priceVisible: p.price_visible !== false, status: p.status, stockStatus: p.stock_status,
   };
 }
@@ -11199,17 +11257,46 @@ function CatalogueScreen() {
   const topLevel = itemTypes.filter((t) => !t.parent_id);
   const childrenOf = (id) => itemTypes.filter((t) => t.parent_id === id);
 
+  // Auto-derive a short code from the collection name — avoids staff having
+  // to invent+remember a 2-letter code and risking a silent collision.
+  // Tries initials of the first two words, then first two letters, then
+  // falls back to a numbered variant until something's free.
+  const deriveItemTypeCode = (name, existingCodes) => {
+    const words = name.trim().toUpperCase().split(/\s+/).filter(Boolean);
+    const letters = words.join("").replace(/[^A-Z]/g, "");
+    const candidates = [];
+    if (words.length >= 2 && words[0][0] && words[1][0]) candidates.push(words[0][0] + words[1][0]);
+    if (letters.length >= 2) candidates.push(letters.slice(0, 2));
+    if (words[0]) candidates.push(words[0].slice(0, 2));
+    for (const c of candidates) if (c && c.length >= 2 && !existingCodes.has(c)) return c;
+    const base = candidates[0] || "XX";
+    for (let n = 2; n < 50; n++) { const c = base[0] + n; if (!existingCodes.has(c)) return c; }
+    return base + Date.now().toString().slice(-3);
+  };
+  const existingCodes = new Set(itemTypes.map((t) => t.code));
+  const newCollCodePreview = newCollForm?.name ? deriveItemTypeCode(newCollForm.name, existingCodes) : "";
+
   const addCollection = async () => {
-    if (!newCollForm?.name || !newCollForm?.code) return;
+    if (!newCollForm?.name) return;
+    const code = deriveItemTypeCode(newCollForm.name, existingCodes);
     const { error } = await sb.from("catalogue_item_types").insert({
-      tenant_id: tid, name: newCollForm.name, code: newCollForm.code.toUpperCase(),
+      tenant_id: tid, name: newCollForm.name, code,
       parent_id: newCollForm.parentId || null, created_by: loadUser()?.name || null,
     });
     if (error) { showToast("❌ " + error.message); return; }
     setNewCollForm(null);
-    showToast("✓ Collection added");
+    showToast(`✓ Collection added — code ${code}`);
     loadTaxonomy();
   };
+
+  // Live gold/silver rates for the replicated jewellery pricing form.
+  const [catLiveRates, setCatLiveRates] = useState({ g24: null, g22: null, g18: null, g14: null, g9: null, silver: null, usd: null });
+  useEffect(() => {
+    fetch(`${APPS_SCRIPT_URL}?action=rates`).then((r) => r.json()).then((d) => {
+      setCatLiveRates(parseLiveRatesForCalc(d.rates || d.rows || []));
+    }).catch(() => {});
+  }, []);
+  const catGoldRatePg = (purityIdx, override) => override ? parseFloat(override) : purityRatePg(purityIdx, catLiveRates);
 
   const [pendingImages, setPendingImages] = useState([]); // photos picked before the product is first saved
   const openNewProduct = () => {
@@ -11219,22 +11306,50 @@ function CatalogueScreen() {
   };
   const openEditProduct = (p) => { setProductForm(productFormFromRow(p)); setPendingImages([]); setEditingProduct(p); };
 
-  const buildPayload = (f) => ({
-    tenant_id: tid,
-    item_type_id: f.itemTypeId, material_id: f.materialId, style_id: f.styleId || null,
-    name: f.name || null, old_sku: f.oldSku || null, description: f.description || null,
-    weight_grams: f.weightGrams !== "" ? Number(f.weightGrams) : null,
-    price_mode: f.priceMode,
-    rate_source: f.priceMode === "live_gold" ? f.rateSource : null,
-    purity_idx: f.priceMode === "live_gold" && f.rateSource === "jewellery_purity" ? Number(f.purityIdx) : null,
-    net_gold_weight_grams: f.priceMode === "live_gold" && f.rateSource === "jewellery_purity" ? Number(f.netGoldWeightGrams || 0) : null,
-    coin_weight_g: f.priceMode === "live_gold" && f.rateSource === "mmtc_coin" ? Number(f.coinWeightG || 0) : null,
-    making_amount: Number(f.makingAmount || 0), dia_total: Number(f.diaTotal || 0), misc_total: Number(f.miscTotal || 0),
-    apply_gst: !!f.applyGst, qty: Number(f.qty || 1),
-    manual_price: f.priceMode === "manual" && f.manualPrice !== "" ? Number(f.manualPrice) : null,
-    price_visible: !!f.priceVisible, status: f.status, stock_status: f.stockStatus,
-    created_by: loadUser()?.name || loadUser()?.username || null,
-  });
+  const buildPayload = (f) => {
+    const base = {
+      tenant_id: tid,
+      item_type_id: f.itemTypeId, material_id: f.materialId, style_id: f.styleId || null,
+      name: f.itemName || null, old_sku: f.oldSku || null, description: f.notes || null,
+      price_mode: f.priceMode, rate_source: f.priceMode === "live_gold" ? f.rateSource : null,
+      apply_gst: !!f.applyGst, qty: Number(f.qty || 1),
+      price_visible: !!f.priceVisible, status: f.status, stock_status: f.stockStatus,
+      created_by: loadUser()?.name || loadUser()?.username || null,
+    };
+    if (f.priceMode === "live_gold" && f.rateSource === "jewellery_purity") {
+      const gRate = catGoldRatePg(Number(f.purityIdx), f.goldRateOverride);
+      const calc = computeJewelleryEstimate(f, f.makingMode, gRate);
+      return {
+        ...base,
+        weight_grams: f.grossWt !== "" ? Number(f.grossWt) : null,
+        purity_idx: Number(f.purityIdx),
+        net_gold_weight_grams: calc.netGold, making_amount: calc.making, dia_total: calc.diaTotal, misc_total: calc.miscTotal,
+        coin_weight_g: null, manual_price: null,
+        pricing_detail: {
+          size: f.size, grossWt: f.grossWt, goldRateOverride: f.goldRateOverride,
+          makingMode: f.makingMode, makingRatePg: f.makingRatePg, makingRatePct: f.makingRatePct,
+          dia1Wt: f.dia1Wt, dia1Unit: f.dia1Unit, dia1Rate: f.dia1Rate,
+          dia2Wt: f.dia2Wt, dia2Unit: f.dia2Unit, dia2Rate: f.dia2Rate,
+          stoneWt: f.stoneWt, stoneUnit: f.stoneUnit, stoneRate: f.stoneRate,
+          misc1Lbl: f.misc1Lbl, misc1Wt: f.misc1Wt, misc1Unit: f.misc1Unit, misc1Rate: f.misc1Rate, misc1Deduct: f.misc1Deduct,
+          misc2Lbl: f.misc2Lbl, misc2Wt: f.misc2Wt, misc2Unit: f.misc2Unit, misc2Rate: f.misc2Rate, misc2Deduct: f.misc2Deduct,
+          misc3Lbl: f.misc3Lbl, misc3Wt: f.misc3Wt, misc3Unit: f.misc3Unit, misc3Rate: f.misc3Rate, misc3Deduct: f.misc3Deduct,
+        },
+      };
+    }
+    if (f.priceMode === "live_gold" && f.rateSource === "mmtc_coin") {
+      return {
+        ...base, weight_grams: null, purity_idx: null, net_gold_weight_grams: null,
+        making_amount: Number(f.coinMakingAmount || 0), dia_total: 0, misc_total: Number(f.coinMiscAmount || 0),
+        coin_weight_g: f.coinWeightG !== "" ? Number(f.coinWeightG) : null, manual_price: null, pricing_detail: null,
+      };
+    }
+    return {
+      ...base, weight_grams: null, purity_idx: null, net_gold_weight_grams: null,
+      making_amount: 0, dia_total: 0, misc_total: 0, coin_weight_g: null,
+      manual_price: f.manualPrice !== "" ? Number(f.manualPrice) : null, pricing_detail: null,
+    };
+  };
 
   const saveProduct = async () => {
     if (!productForm.itemTypeId || !productForm.materialId) { showToast("❌ Item type + material required"); return; }
@@ -11260,24 +11375,27 @@ function CatalogueScreen() {
     }
   };
 
-  const uploadProductImage = async (file) => {
+  // Click directly on any photo slot (empty placeholder OR an existing
+  // image) to add/replace it — same tap-to-change UX as the Calculator's
+  // item photo tile, just with 5 slots instead of 1.
+  const replaceProductImage = async (file, index, existingImg) => {
     if (!file) return;
-    const existing = editingProduct?.id ? (editingProduct.catalogue_product_images || []) : pendingImages;
-    if (existing.length >= 5) { showToast("❌ Max 5 photos per product"); return; }
     try {
-      // Before the product exists yet, name by a temp placeholder — renamed
-      // implicitly next time (filename only matters for on-disk findability,
-      // not correctness).
       const nameBase = editingProduct?.id ? editingProduct.sku : `pending_${Date.now()}`;
       const { publicUrl } = await secureImageUpload(file, sb, "catalogue", {
-        maxDim: 1600, quality: 0.82, fileNameOverride: `${nameBase}_${existing.length + 1}`,
+        maxDim: 1600, quality: 0.82, fileNameOverride: `${nameBase}_${index + 1}`,
       });
-      if (editingProduct?.id) {
+      if (editingProduct?.id && existingImg?.id) {
+        await sb.from("catalogue_product_images").update({ url: publicUrl }).eq("id", existingImg.id);
+        setEditingProduct((p) => ({ ...p, catalogue_product_images: (p.catalogue_product_images || []).map((i) => i.id === existingImg.id ? { ...i, url: publicUrl } : i) }));
+      } else if (editingProduct?.id) {
         const { data, error } = await sb.from("catalogue_product_images")
-          .insert({ tenant_id: tid, product_id: editingProduct.id, url: publicUrl, is_cover: existing.length === 0, sort_order: existing.length })
+          .insert({ tenant_id: tid, product_id: editingProduct.id, url: publicUrl, is_cover: index === 0, sort_order: index })
           .select().single();
         if (error) { showToast("❌ " + error.message); return; }
         setEditingProduct((p) => ({ ...p, catalogue_product_images: [...(p.catalogue_product_images || []), data] }));
+      } else if (existingImg) {
+        setPendingImages((p) => p.map((img, i) => i === index ? { url: publicUrl } : img));
       } else {
         setPendingImages((p) => [...p, { url: publicUrl }]);
       }
@@ -11333,12 +11451,12 @@ function CatalogueScreen() {
       {view === "collections" && (
         <>
           <div style={{ marginBottom: 12 }}>
-            <Btn small onClick={() => setNewCollForm({ name: "", code: "", parentId: "" })}>+ New Collection</Btn>
+            <Btn small onClick={() => setNewCollForm({ name: "", parentId: "" })}>+ New Collection</Btn>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
             {topLevel.map((it) => (
               <div key={it.id} style={{ background: "#fff", border: "1px solid #eee", borderRadius: 12, padding: 14 }}>
-                <div onClick={() => openCollection(it)} style={{ cursor: "pointer", fontWeight: 700, fontSize: 14, marginBottom: 4 }}>{it.name}</div>
+                <div onClick={() => openCollection(it)} style={{ cursor: "pointer", fontWeight: 700, fontSize: 19, marginBottom: 4 }}>{it.name}</div>
                 <div style={{ fontSize: 11, color: "#888", marginBottom: 8 }}>{itemTypeCounts[it.id] || 0} products · code {it.code}</div>
                 {childrenOf(it.id).length > 0 && (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
@@ -11415,7 +11533,7 @@ function CatalogueScreen() {
       {newCollForm && (
         <Modal title="New Collection" onClose={() => setNewCollForm(null)} width={420}>
           <Field label="Name"><Input value={newCollForm.name} onChange={(e) => setNewCollForm((f) => ({ ...f, name: e.target.value }))} placeholder="e.g. Anklets" /></Field>
-          <Field label="Code (2 letters, used in SKUs)"><Input value={newCollForm.code} onChange={(e) => setNewCollForm((f) => ({ ...f, code: e.target.value.toUpperCase().slice(0, 3) }))} placeholder="e.g. AN" /></Field>
+          {newCollCodePreview && <div style={{ fontSize: 11, color: "#888", marginTop: -6, marginBottom: 12 }}>SKU code (auto): <strong style={{ fontFamily: "monospace", color: "#1565c0" }}>{newCollCodePreview}</strong></div>}
           <Field label="Parent collection (optional — makes this a sub-collection)">
             <Select value={newCollForm.parentId} onChange={(e) => setNewCollForm((f) => ({ ...f, parentId: e.target.value }))}>
               <option value="">— none (top-level) —</option>
@@ -11467,8 +11585,37 @@ function CatalogueScreen() {
       )}
 
       {/* ── Add/Edit product modal ── */}
-      {editingProduct && (
-        <Modal title={editingProduct.sku ? `Edit ${editingProduct.sku}` : "New Product"} onClose={closeProductModal} width={620}>
+      {editingProduct && (() => {
+        const photos = editingProduct.id ? (editingProduct.catalogue_product_images || []) : pendingImages;
+        const slots = [0, 1, 2, 3, 4];
+        const isJewellery = productForm.priceMode === "live_gold" && productForm.rateSource === "jewellery_purity";
+        const previewCalc = isJewellery ? computeJewelleryEstimate(productForm, productForm.makingMode, catGoldRatePg(Number(productForm.purityIdx), productForm.goldRateOverride)) : null;
+        const lbl = { fontSize: 11, color: "#888", marginBottom: 3, display: "block" };
+        const inp = { padding: "6px 10px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13, width: "100%", boxSizing: "border-box" };
+        return (
+        <Modal title={editingProduct.sku ? `Edit ${editingProduct.sku}` : "New Product"} onClose={closeProductModal} width={680}>
+          {/* Photos — on top, click any slot (empty or filled) to add/change */}
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Photos ({photos.length}/5)</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {slots.map((i) => {
+                const img = photos[i];
+                const size = i === 0 ? 84 : 60;
+                return (
+                  <div key={i} style={{ position: "relative", width: size, height: size }}>
+                    <label style={{ display: "block", width: size, height: size, borderRadius: 8, border: img ? "1px solid #ddd" : "2px dashed #ccc", cursor: "pointer", overflow: "hidden", background: "#fafafa" }}>
+                      {img
+                        ? <img src={img.url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                        : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: i === 0 ? 26 : 18, color: "#aaa" }}>📷</div>}
+                      <input type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={(e) => replaceProductImage(e.target.files?.[0], i, img)} />
+                    </label>
+                    {img && <button onClick={() => removeProductImage(img)} style={{ position: "absolute", top: -6, right: -6, width: 18, height: 18, borderRadius: "50%", border: "none", background: "#c0392b", color: "#fff", fontSize: 11, cursor: "pointer" }}>×</button>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
             <Field label="Item Type" required>
               <Select value={productForm.itemTypeId} onChange={(e) => setProductForm((f) => ({ ...f, itemTypeId: e.target.value }))}>
@@ -11494,57 +11641,113 @@ function CatalogueScreen() {
               </Select>
             </Field>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <Field label="Name (optional)"><Input value={productForm.name} onChange={(e) => setProductForm((f) => ({ ...f, name: e.target.value }))} placeholder="Falls back to SKU if blank" /></Field>
-            <Field label="Old / Vendor SKU (optional)"><Input value={productForm.oldSku} onChange={(e) => setProductForm((f) => ({ ...f, oldSku: e.target.value }))} placeholder="e.g. VC-123" /></Field>
-          </div>
-          <Field label="Description (optional)"><Textarea rows={2} value={productForm.description} onChange={(e) => setProductForm((f) => ({ ...f, description: e.target.value }))} /></Field>
 
-          <div style={{ background: "#f8faff", border: "1px solid #dbeafe", borderRadius: 10, padding: 12, marginBottom: 12 }}>
-            <Field label="Pricing">
-              <Select value={productForm.priceMode} onChange={(e) => setProductForm((f) => ({ ...f, priceMode: e.target.value }))}>
-                <option value="manual">Fixed price</option>
-                <option value="live_gold">Live gold/silver rate</option>
+          {/* Item Name / Vendor Code / Size — same row as the Calculator's jewellery tab */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, margin: "12px 0" }}>
+            <div><label style={lbl}>Item Name / Tag</label><input style={inp} value={productForm.itemName} onChange={(e) => setProductForm((f) => ({ ...f, itemName: e.target.value }))} placeholder="e.g. Necklace S-204" /></div>
+            <div><label style={lbl}>Old / Vendor Code</label><input style={inp} value={productForm.oldSku} onChange={(e) => setProductForm((f) => ({ ...f, oldSku: e.target.value }))} placeholder="VC-123" /></div>
+            <div><label style={lbl}>Size</label><input style={inp} value={productForm.size} onChange={(e) => setProductForm((f) => ({ ...f, size: e.target.value }))} placeholder="e.g. 14 (ring size)" /></div>
+          </div>
+
+          <Field label="Pricing mode">
+            <Select value={productForm.priceMode} onChange={(e) => setProductForm((f) => ({ ...f, priceMode: e.target.value }))}>
+              <option value="live_gold">Live gold/silver rate</option>
+              <option value="manual">Fixed price</option>
+            </Select>
+          </Field>
+
+          {productForm.priceMode === "live_gold" && (
+            <Field label="Rate source">
+              <Select value={productForm.rateSource} onChange={(e) => setProductForm((f) => ({ ...f, rateSource: e.target.value }))}>
+                <option value="jewellery_purity">Jewellery (full breakdown — same as Calculator)</option>
+                <option value="mmtc_coin">MMTC Coin (weight-matched coin rate)</option>
               </Select>
             </Field>
-            {productForm.priceMode === "manual" ? (
-              <Field label="Price (₹)"><Input type="number" value={productForm.manualPrice} onChange={(e) => setProductForm((f) => ({ ...f, manualPrice: e.target.value }))} /></Field>
-            ) : (
-              <>
-                <Field label="Rate source">
-                  <Select value={productForm.rateSource} onChange={(e) => setProductForm((f) => ({ ...f, rateSource: e.target.value }))}>
-                    <option value="jewellery_purity">Jewellery (weight × purity rate)</option>
-                    <option value="mmtc_coin">MMTC Coin (weight-matched coin rate)</option>
-                  </Select>
-                </Field>
-                {productForm.rateSource === "jewellery_purity" ? (
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                    <Field label="Purity">
-                      <Select value={productForm.purityIdx} onChange={(e) => setProductForm((f) => ({ ...f, purityIdx: e.target.value }))}>
-                        {PURITIES.filter((p) => p.rateKey).map((p, i) => <option key={i} value={i}>{p.l}</option>)}
-                      </Select>
-                    </Field>
-                    <Field label="Net weight (g)"><Input type="number" value={productForm.netGoldWeightGrams} onChange={(e) => setProductForm((f) => ({ ...f, netGoldWeightGrams: e.target.value }))} /></Field>
-                  </div>
-                ) : (
-                  <Field label="Coin weight (g)"><Input type="number" value={productForm.coinWeightG} onChange={(e) => setProductForm((f) => ({ ...f, coinWeightG: e.target.value }))} placeholder="e.g. 8" /></Field>
-                )}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-                  <Field label="Making (₹)"><Input type="number" value={productForm.makingAmount} onChange={(e) => setProductForm((f) => ({ ...f, makingAmount: e.target.value }))} /></Field>
-                  <Field label="Diamond/stone (₹)"><Input type="number" value={productForm.diaTotal} onChange={(e) => setProductForm((f) => ({ ...f, diaTotal: e.target.value }))} /></Field>
-                  <Field label="Misc (₹)"><Input type="number" value={productForm.miscTotal} onChange={(e) => setProductForm((f) => ({ ...f, miscTotal: e.target.value }))} /></Field>
-                </div>
-                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, marginTop: 4 }}>
-                  <input type="checkbox" checked={productForm.applyGst} onChange={(e) => setProductForm((f) => ({ ...f, applyGst: e.target.checked }))} /> Apply 3% GST
-                </label>
-              </>
-            )}
-            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, marginTop: 6 }}>
-              <input type="checkbox" checked={productForm.priceVisible} onChange={(e) => setProductForm((f) => ({ ...f, priceVisible: e.target.checked }))} /> Show price to clients on public page
-            </label>
-          </div>
+          )}
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          {productForm.priceMode === "manual" && (
+            <Field label="Price (₹)"><input style={inp} type="number" value={productForm.manualPrice} onChange={(e) => setProductForm((f) => ({ ...f, manualPrice: e.target.value }))} /></Field>
+          )}
+
+          {productForm.priceMode === "live_gold" && productForm.rateSource === "mmtc_coin" && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+              <div><label style={lbl}>Coin Weight (g)</label><input style={inp} type="number" value={productForm.coinWeightG} onChange={(e) => setProductForm((f) => ({ ...f, coinWeightG: e.target.value }))} placeholder="e.g. 8" /></div>
+              <div><label style={lbl}>Making (₹, optional)</label><input style={inp} type="number" value={productForm.coinMakingAmount} onChange={(e) => setProductForm((f) => ({ ...f, coinMakingAmount: e.target.value }))} /></div>
+              <div><label style={lbl}>Misc (₹, optional)</label><input style={inp} type="number" value={productForm.coinMiscAmount} onChange={(e) => setProductForm((f) => ({ ...f, coinMiscAmount: e.target.value }))} /></div>
+            </div>
+          )}
+
+          {isJewellery && (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginTop: 12 }}>
+                <div><label style={lbl}>Gross Weight (g)</label><input style={inp} type="number" step="0.01" value={productForm.grossWt} onChange={(e) => setProductForm((f) => ({ ...f, grossWt: e.target.value }))} placeholder="0.00" /></div>
+                <div>
+                  <label style={lbl}>Purity</label>
+                  <select style={inp} value={productForm.purityIdx} onChange={(e) => setProductForm((f) => ({ ...f, purityIdx: Number(e.target.value) }))}>
+                    {PURITIES.map((p, i) => <option key={i} value={i}>{p.l}</option>)}
+                  </select>
+                </div>
+                <div><label style={lbl}>Gold Rate Override (₹/g, optional)</label><input style={inp} type="number" value={productForm.goldRateOverride} onChange={(e) => setProductForm((f) => ({ ...f, goldRateOverride: e.target.value }))} placeholder="live rate used if blank" /></div>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 8 }}>
+                <div>
+                  <label style={lbl}>Making Charges — mode: <button type="button" onClick={() => setProductForm((f) => ({ ...f, makingMode: f.makingMode === "per_g" ? "pct" : "per_g" }))} style={{ fontSize: 11, padding: "2px 8px", border: "1px solid #ddd", borderRadius: 4, cursor: "pointer", background: "#f5f5f5" }}>{productForm.makingMode === "per_g" ? "₹/g ↔" : "% ↔"}</button></label>
+                  {productForm.makingMode === "per_g"
+                    ? <input style={inp} type="number" value={productForm.makingRatePg} onChange={(e) => setProductForm((f) => ({ ...f, makingRatePg: e.target.value }))} placeholder="1500" />
+                    : <input style={inp} type="number" value={productForm.makingRatePct} onChange={(e) => setProductForm((f) => ({ ...f, makingRatePct: e.target.value }))} placeholder="15" />}
+                </div>
+                <div style={{ display: "flex", alignItems: "flex-end", paddingBottom: 8 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                    <input type="checkbox" checked={productForm.applyGst} onChange={(e) => setProductForm((f) => ({ ...f, applyGst: e.target.checked }))} /> Apply 3% GST
+                  </label>
+                </div>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginTop: 8 }}>
+                <div><label style={lbl}>Diamond 1 Wt</label><div style={{ display: "flex", gap: 4 }}><input style={inp} type="number" value={productForm.dia1Wt} onChange={(e) => setProductForm((f) => ({ ...f, dia1Wt: e.target.value }))} /><select style={{ ...inp, width: 60 }} value={productForm.dia1Unit} onChange={(e) => setProductForm((f) => ({ ...f, dia1Unit: e.target.value }))}><option value="ct">ct</option><option value="g">g</option></select></div></div>
+                <div><label style={lbl}>Rate (₹/g)</label><input style={inp} type="number" value={productForm.dia1Rate} onChange={(e) => setProductForm((f) => ({ ...f, dia1Rate: e.target.value }))} /></div>
+                <div />
+                <div><label style={lbl}>Diamond 2 Wt</label><div style={{ display: "flex", gap: 4 }}><input style={inp} type="number" value={productForm.dia2Wt} onChange={(e) => setProductForm((f) => ({ ...f, dia2Wt: e.target.value }))} /><select style={{ ...inp, width: 60 }} value={productForm.dia2Unit} onChange={(e) => setProductForm((f) => ({ ...f, dia2Unit: e.target.value }))}><option value="ct">ct</option><option value="g">g</option></select></div></div>
+                <div><label style={lbl}>Rate (₹/g)</label><input style={inp} type="number" value={productForm.dia2Rate} onChange={(e) => setProductForm((f) => ({ ...f, dia2Rate: e.target.value }))} /></div>
+                <div />
+                <div><label style={lbl}>Stone Wt</label><div style={{ display: "flex", gap: 4 }}><input style={inp} type="number" value={productForm.stoneWt} onChange={(e) => setProductForm((f) => ({ ...f, stoneWt: e.target.value }))} /><select style={{ ...inp, width: 60 }} value={productForm.stoneUnit} onChange={(e) => setProductForm((f) => ({ ...f, stoneUnit: e.target.value }))}><option value="ct">ct</option><option value="g">g</option></select></div></div>
+                <div><label style={lbl}>Rate (₹/g)</label><input style={inp} type="number" value={productForm.stoneRate} onChange={(e) => setProductForm((f) => ({ ...f, stoneRate: e.target.value }))} /></div>
+              </div>
+
+              {[1, 2, 3].map((n) => (
+                <div key={n} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr auto", gap: 8, alignItems: "end", marginTop: 6 }}>
+                  <div><label style={lbl}>{productForm[`misc${n}Lbl`]} label</label><input style={inp} value={productForm[`misc${n}Lbl`]} onChange={(e) => setProductForm((f) => ({ ...f, [`misc${n}Lbl`]: e.target.value }))} /></div>
+                  <div><label style={lbl}>Weight</label><input style={inp} type="number" value={productForm[`misc${n}Wt`]} onChange={(e) => setProductForm((f) => ({ ...f, [`misc${n}Wt`]: e.target.value }))} /></div>
+                  <div>
+                    <label style={lbl}>Unit</label>
+                    <select style={inp} value={productForm[`misc${n}Unit`]} onChange={(e) => setProductForm((f) => ({ ...f, [`misc${n}Unit`]: e.target.value }))}><option value="g">g</option><option value="ct">ct</option></select>
+                  </div>
+                  <div><label style={lbl}>Rate</label><input style={inp} type="number" value={productForm[`misc${n}Rate`]} onChange={(e) => setProductForm((f) => ({ ...f, [`misc${n}Rate`]: e.target.value }))} /></div>
+                  <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, paddingBottom: 8 }}>
+                    <input type="checkbox" checked={productForm[`misc${n}Deduct`]} onChange={(e) => setProductForm((f) => ({ ...f, [`misc${n}Deduct`]: e.target.checked }))} /> Deduct
+                  </label>
+                </div>
+              ))}
+            </>
+          )}
+
+          <Field label="Notes (optional)"><Textarea rows={2} value={productForm.notes} onChange={(e) => setProductForm((f) => ({ ...f, notes: e.target.value }))} style={{ marginTop: 10 }} /></Field>
+
+          {previewCalc && (
+            <div style={{ background: "#f8faff", border: "1px solid #dbeafe", borderRadius: 8, padding: 10, marginBottom: 12, fontSize: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between" }}><span>Net weight</span><strong>{previewCalc.netGold.toFixed(3)} g</strong></div>
+              <div style={{ display: "flex", justifyContent: "space-between" }}><span>Rate used</span><strong>₹{Math.round(previewCalc.gRate).toLocaleString("en-IN")}/g</strong></div>
+              <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, paddingTop: 4, borderTop: "1px solid #dbeafe", fontWeight: 700 }}><span>Estimated total</span><span>₹{Math.round(previewCalc.total).toLocaleString("en-IN")}</span></div>
+            </div>
+          )}
+
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, marginBottom: 12 }}>
+            <input type="checkbox" checked={productForm.priceVisible} onChange={(e) => setProductForm((f) => ({ ...f, priceVisible: e.target.checked }))} /> Show price to clients on public page
+          </label>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+            <Field label="Quantity"><input style={inp} type="number" min="1" value={productForm.qty} onChange={(e) => setProductForm((f) => ({ ...f, qty: e.target.value }))} /></Field>
             <Field label="Status">
               <Select value={productForm.status} onChange={(e) => setProductForm((f) => ({ ...f, status: e.target.value }))}>
                 <option value="draft">Draft</option><option value="published">Published</option><option value="archived">Archived</option>
@@ -11557,31 +11760,10 @@ function CatalogueScreen() {
             </Field>
           </div>
 
-          <Btn onClick={saveProduct}>{editingProduct.id ? "Save changes" : "Create product"}</Btn>
-
-          {(() => {
-            const photos = editingProduct.id ? (editingProduct.catalogue_product_images || []) : pendingImages;
-            return (
-            <div style={{ marginTop: 16, borderTop: "1px solid #eee", paddingTop: 12 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>Photos ({photos.length}/5)</div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {photos.map((img, i) => (
-                  <div key={img.id || img.url || i} style={{ position: "relative", width: 70, height: 70 }}>
-                    <img src={img.url} alt="" style={{ width: 70, height: 70, objectFit: "cover", borderRadius: 6 }} />
-                    <button onClick={() => removeProductImage(img)} style={{ position: "absolute", top: -6, right: -6, width: 18, height: 18, borderRadius: "50%", border: "none", background: "#c0392b", color: "#fff", fontSize: 11, cursor: "pointer" }}>×</button>
-                  </div>
-                ))}
-                {photos.length < 5 && (
-                  <label style={{ width: 70, height: 70, borderRadius: 6, border: "1px dashed #bbb", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 20, color: "#aaa" }}>
-                    +<input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => uploadProductImage(e.target.files?.[0])} />
-                  </label>
-                )}
-              </div>
-            </div>
-            );
-          })()}
+          <Btn onClick={saveProduct} style={{ marginTop: 12 }}>{editingProduct.id ? "Save changes" : "Create product"}</Btn>
         </Modal>
-      )}
+        );
+      })()}
     </div>
   );
 }
@@ -11972,7 +12154,6 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   const saveMakingMode = (v) => { setMakingMode(v); try { localStorage.setItem("making_mode", v); } catch { } };
 
   // ── Jewellery calculations ──
-  const ctToG = (w, unit) => unit === "ct" ? parseFloat(w || 0) * 0.2 : parseFloat(w || 0);
   // Get per-gram gold rate for current purity — live rate is already purity-adjusted
   // (except purities with an explicit `mult`, e.g. 92.5 silver off the 999 rate).
   const getGoldRatePg = (purityIdx, override) => {
@@ -11980,35 +12161,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     return purityRatePg(purityIdx, liveRates);
   };
 
-  const jwCalc = (() => {
-    const gross = parseFloat(jw.grossWt || 0);
-    const gRate = getGoldRatePg(jw.purityIdx, jw.goldRateOverride);
-    const d1g = ctToG(jw.dia1Wt, jw.dia1Unit);
-    const d2g = ctToG(jw.dia2Wt, jw.dia2Unit);
-    const stg = ctToG(jw.stoneWt, jw.stoneUnit);
-    const misc1g = jw.misc1Deduct ? ctToG(jw.misc1Wt, jw.misc1Unit) : 0;
-    const misc2g = jw.misc2Deduct ? ctToG(jw.misc2Wt, jw.misc2Unit) : 0;
-    const misc3g = jw.misc3Deduct ? ctToG(jw.misc3Wt, jw.misc3Unit) : 0;
-    const netGold = Math.max(0, gross - d1g - d2g - stg - misc1g - misc2g - misc3g);
-    const goldVal = netGold * gRate;
-    const makingR = makingMode === "per_g" ? parseFloat(jw.makingRatePg || 0) : parseFloat(jw.makingRatePct || 0);
-    const isBelow1g = gross > 0 && gross < 1;
-    const making = isBelow1g ? 2000 : (makingMode === "per_g" ? netGold * makingR : goldVal * (makingR / 100));
-    const d1raw = parseFloat(jw.dia1Wt || 0);
-    const d2raw = parseFloat(jw.dia2Wt || 0);
-    const straw = parseFloat(jw.stoneWt || 0);
-    const diaTotal = d1raw * parseFloat(jw.dia1Rate || 0) + d2raw * parseFloat(jw.dia2Rate || 0) + straw * parseFloat(jw.stoneRate || 0);
-    const miscVal = (wt, rate) => { const w = parseFloat(wt || 0), r = parseFloat(rate || 0); return w > 0 ? w * r : r; };
-    const misc1Val = miscVal(jw.misc1Wt, jw.misc1Rate);
-    const misc2Val = miscVal(jw.misc2Wt, jw.misc2Rate);
-    const misc3Val = miscVal(jw.misc3Wt, jw.misc3Rate);
-    const miscTotal = misc1Val + misc2Val + misc3Val;
-    const subTotal = goldVal + making + diaTotal + miscTotal;
-    const gst = jw.applyGst ? subTotal * 0.03 : 0;
-    const qty = Math.max(1, parseInt(jw.qty || "1", 10) || 1);
-    const perPieceTotal = subTotal + gst;
-    return { gross, gRate, netGold, goldVal, making, makingR, makingMode, isBelow1g, diaTotal, miscTotal, subTotal, gst, qty, perPieceTotal, total: perPieceTotal * qty };
-  })();
+  const jwCalc = computeJewelleryEstimate(jw, makingMode, getGoldRatePg(jw.purityIdx, jw.goldRateOverride));
 
   // ── Solitaire calculation ──
   const solCalc = (stone) => {
@@ -12085,12 +12238,24 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     const tid = getTenantId();
     const payload = {
       tenant_id: tid, item_type_id: jw.catalogueItemTypeId, material_id: jw.catalogueMaterialId, style_id: jw.catalogueStyleId || null,
-      name: jw.itemName || null, old_sku: jw.vendorCode || null, weight_grams: jw.grossWt ? Number(jw.grossWt) : null,
+      name: jw.itemName || null, old_sku: jw.vendorCode || null, description: jw.notes || null, weight_grams: jw.grossWt ? Number(jw.grossWt) : null,
       price_mode: "live_gold", rate_source: "jewellery_purity", purity_idx: jw.purityIdx,
       net_gold_weight_grams: jwCalc.netGold, making_amount: jwCalc.making, dia_total: jwCalc.diaTotal, misc_total: jwCalc.miscTotal,
       apply_gst: !!jw.applyGst, qty: Number(jw.qty || 1),
       source_estimate_id: estimateId || null,
       created_by: user?.name || user?.username || null,
+      // Full breakdown so the Catalogue tab's edit form (same fields as this
+      // one) can show/edit dia1/dia2/stone/misc individually, not just totals.
+      pricing_detail: {
+        size: jw.size, grossWt: jw.grossWt, goldRateOverride: jw.goldRateOverride,
+        makingMode, makingRatePg: jw.makingRatePg, makingRatePct: jw.makingRatePct,
+        dia1Wt: jw.dia1Wt, dia1Unit: jw.dia1Unit, dia1Rate: jw.dia1Rate,
+        dia2Wt: jw.dia2Wt, dia2Unit: jw.dia2Unit, dia2Rate: jw.dia2Rate,
+        stoneWt: jw.stoneWt, stoneUnit: jw.stoneUnit, stoneRate: jw.stoneRate,
+        misc1Lbl: jw.misc1Lbl, misc1Wt: jw.misc1Wt, misc1Unit: jw.misc1Unit, misc1Rate: jw.misc1Rate, misc1Deduct: jw.misc1Deduct,
+        misc2Lbl: jw.misc2Lbl, misc2Wt: jw.misc2Wt, misc2Unit: jw.misc2Unit, misc2Rate: jw.misc2Rate, misc2Deduct: jw.misc2Deduct,
+        misc3Lbl: jw.misc3Lbl, misc3Wt: jw.misc3Wt, misc3Unit: jw.misc3Unit, misc3Rate: jw.misc3Rate, misc3Deduct: jw.misc3Deduct,
+      },
     };
     if (jw.catalogueProductId) {
       await sb.from("catalogue_products").update(payload).eq("id", jw.catalogueProductId);
