@@ -24,6 +24,8 @@ $ErrorActionPreference = "Stop"
 $stateFile = "C:\docker-data\wa-watchdog-state.json"
 $healthUrl = "http://localhost:3021/clients"
 $pushUrl = "https://hr.gemtre.in/api/push"
+$waAlertUrl = "https://ssjbot.gemtre.in/api/connection-alert"
+$crmSecret = $env:CRM_SECRET   # same shared secret the CRM frontend uses (x-crm-secret)
 $containerName = "ssj-wa-service"
 $restartCooldownMin = 60   # don't restart more than once per hour even if still broken
 
@@ -51,6 +53,18 @@ function Send-Alert($title, $body) {
         Invoke-RestMethod -Uri $pushUrl -Method Post -Body $payload -ContentType "application/json" -TimeoutSec 15 | Out-Null
     } catch {
         Write-Output ("wa-watchdog: push alert failed - {0}" -f $_)
+    }
+    # Also send a WhatsApp message via api/connection-alert.js — deliberately
+    # over WbizTool (not Baileys), since Baileys is the very channel that may
+    # be down right now. Push already covers all superadmin+admin; this adds
+    # a channel that doesn't depend on the phone having the PWA installed.
+    if ($crmSecret) {
+        try {
+            $waPayload = @{ title = $title; message = $body } | ConvertTo-Json
+            Invoke-RestMethod -Uri $waAlertUrl -Method Post -Body $waPayload -ContentType "application/json" -Headers @{ "x-crm-secret" = $crmSecret } -TimeoutSec 15 | Out-Null
+        } catch {
+            Write-Output ("wa-watchdog: WA alert failed - {0}" -f $_)
+        }
     }
 }
 

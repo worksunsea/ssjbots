@@ -10154,6 +10154,27 @@ export default function App() {
   const [, forceNavRefresh] = useState(0); // re-render after localStorage-only pinned-tabs changes
   const [moreTabsOpen, setMoreTabsOpen] = useState(false);
   const [draggingTabKey, setDraggingTabKey] = useState(null);
+
+  // In-header alert for superadmin/admin when a Baileys WA session is down —
+  // the watchdog (wa-service/watchdog.ps1) already pushes + WhatsApps admins
+  // within ~10min of a drop; this covers the gap while someone's actively in
+  // the app, and while the tab is open (watchdog only checks every 5 min).
+  const [disconnectedClients, setDisconnectedClients] = useState([]);
+  const isAdminForAlert = user?.role === "superadmin" || user?.role === "admin";
+  useEffect(() => {
+    if (!isAdminForAlert) return;
+    let cancelled = false;
+    const checkConnections = () => {
+      fetch(`${WA_SERVICE_URL}/clients`).then((r) => r.json()).then((d) => {
+        if (cancelled) return;
+        const down = (d?.clients || []).filter((c) => !c.connected);
+        setDisconnectedClients(down);
+      }).catch(() => {});
+    };
+    checkConnections();
+    const iv = setInterval(checkConnections, 90000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [isAdminForAlert]);
   const [funnels, setFunnels] = useState([]);
   const [personas, setPersonas] = useState([]);
   const [allTags, setAllTags] = useState([]);
@@ -10252,6 +10273,15 @@ export default function App() {
   if (!user) return <LoginScreen onLogin={login} />;
 
   const header = (
+    <>
+    {isAdminForAlert && disconnectedClients.length > 0 && (
+      <div
+        onClick={() => setScreen("connections")}
+        style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, padding: "8px 14px", borderRadius: 8, background: "#fef2f2", border: "1px solid #fecaca", color: "#991b1b", fontSize: 12, cursor: "pointer" }}
+      >
+        🔴 WhatsApp disconnected: {disconnectedClients.map((c) => c.client_id + (c.me ? ` (${c.me.split(":")[0]})` : "")).join(", ")} — tap to re-pair
+      </div>
+    )}
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
       <div>
         <p style={{ fontSize: 12, color: "#888", margin: 0 }}>{ROLES[user.role] || user.role} · {user.name}</p>
@@ -10264,6 +10294,7 @@ export default function App() {
       </div>
       <button onClick={() => logout()} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 7, border: "1px solid #ddd", background: "transparent", cursor: "pointer" }}>Logout</button>
     </div>
+    </>
   );
 
   // Tabs filtered by app_permissions (set in SSJ HR → People → Permissions tab)
