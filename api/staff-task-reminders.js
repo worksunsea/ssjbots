@@ -11,7 +11,8 @@
 
 import { supa } from "./_lib/supabase.js";
 import { sendWhatsApp } from "./_lib/wa.js";
-import { TENANT_ID, DIGEST_CRON_SECRET, WA_SESSION_CLIENT_ID } from "./_lib/config.js";
+import { staffPhoneMap } from "./_lib/staffPhone.js";
+import { TENANT_ID, DIGEST_CRON_SECRET, TASKS_WA_CLIENT_ID } from "./_lib/config.js";
 
 export const config = { maxDuration: 280 };
 
@@ -36,10 +37,10 @@ function todayIST() {
   return new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
 }
 
-function buildReminderText(tasks) {
+function buildReminderText(name, tasks) {
   const lines = tasks.map((t) => `- ${t.title} (due ${t.due_date})`);
   return [
-    `⏰ Reminder — you have ${tasks.length} overdue task${tasks.length > 1 ? "s" : ""}:`,
+    `⏰ Hi ${name}, you have ${tasks.length} overdue task${tasks.length > 1 ? "s" : ""}:`,
     ...lines,
     "Please update the status in the HR app.",
   ].join("\n");
@@ -86,9 +87,10 @@ export default async function handler(req, res) {
 
     const { data: staffRows } = await sb
       .from("staff")
-      .select("name,phone")
+      .select("id,name,phone")
       .eq("tenant_id", TENANT_ID)
       .eq("active", true);
+    const phones = await staffPhoneMap(sb, TENANT_ID);
 
     let sent = 0;
     const results = [];
@@ -96,12 +98,13 @@ export default async function handler(req, res) {
       const staffName = batch[i];
       const tasks = byStaff.get(staffName);
       const staffRow = (staffRows || []).find((s) => nameEq(s.name, staffName));
+      const targetPhone = phones.forStaff(staffRow);
 
-      if (staffRow?.phone) {
+      if (targetPhone) {
         const wa = await sendWhatsApp({
-          phone: staffRow.phone,
-          msg: buildReminderText(tasks),
-          client: WA_SESSION_CLIENT_ID,
+          phone: targetPhone,
+          msg: buildReminderText(staffRow?.name || staffName, tasks),
+          client: TASKS_WA_CLIENT_ID,
         });
         results.push({ staffName, taskCount: tasks.length, sent: wa.status === 1, error: wa.status === 1 ? null : wa.message });
         if (wa.status === 1) sent++;

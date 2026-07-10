@@ -36,6 +36,12 @@ export const REPORTING_URL = process.env.REPORTING_URL || "https://hr.gemtre.in/
 // from) must pass this explicitly or wa-service 502s.
 export const WA_SESSION_CLIENT_ID = process.env.WA_SESSION_CLIENT_ID || "Reception";
 
+// Session for KRA/task/internal-working messages to staff. Meant to be the
+// dedicated 8448271248 number: pair it in wa-service (POST /clients with a
+// new client_id, scan QR from that phone) and set TASKS_WA_CLIENT_ID to that
+// client id. Until then it falls back to the Reception session.
+export const TASKS_WA_CLIENT_ID = process.env.TASKS_WA_CLIENT_ID || WA_SESSION_CLIENT_ID;
+
 // Only these WA numbers run the bot (reply to inbound messages).
 // Other numbers (birthday/anniversary) are send-only.
 export const BOT_NUMBERS = (process.env.BOT_NUMBERS || "8860866000,9312839912")

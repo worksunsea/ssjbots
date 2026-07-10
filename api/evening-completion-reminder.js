@@ -11,7 +11,8 @@
 import { supa } from "./_lib/supabase.js";
 import { sendWhatsApp } from "./_lib/wa.js";
 import { sendPushNotification } from "./_lib/pushNotify.js";
-import { TENANT_ID, DIGEST_CRON_SECRET, WA_SESSION_CLIENT_ID } from "./_lib/config.js";
+import { staffPhoneMap } from "./_lib/staffPhone.js";
+import { TENANT_ID, DIGEST_CRON_SECRET, TASKS_WA_CLIENT_ID } from "./_lib/config.js";
 
 export const config = { maxDuration: 280 };
 
@@ -101,6 +102,7 @@ export default async function handler(req, res) {
 
     if (!batch.length) return res.status(200).json({ ok: true, sent: 0, remaining: 0 });
 
+    const phones = await staffPhoneMap(sb, TENANT_ID);
     let sent = 0;
     const results = [];
     for (let i = 0; i < batch.length; i++) {
@@ -116,8 +118,9 @@ export default async function handler(req, res) {
       const msg = lines.join("\n");
 
       let waSent = false, waError = null;
-      if (staffRow?.phone) {
-        const wa = await sendWhatsApp({ phone: staffRow.phone, msg, client: WA_SESSION_CLIENT_ID });
+      const targetPhone = phones.forStaff(staffRow);
+      if (targetPhone) {
+        const wa = await sendWhatsApp({ phone: targetPhone, msg, client: TASKS_WA_CLIENT_ID });
         waSent = wa.status === 1;
         waError = waSent ? null : wa.message;
       } else {

@@ -9,7 +9,8 @@
 
 import { sendWhatsApp } from "./wa.js";
 import { sendPushNotification } from "./pushNotify.js";
-import { TENANT_ID, WA_SESSION_CLIENT_ID, sanitizeErrorForWA } from "./config.js";
+import { TENANT_ID, TASKS_WA_CLIENT_ID, sanitizeErrorForWA } from "./config.js";
+import { staffPhoneMap } from "./staffPhone.js";
 
 const nameEq = (a, b) => String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
 
@@ -59,9 +60,9 @@ export async function createTaskFromCommand(sb, { assignedToName, title, dueDate
 // Plain template, no AI — sent only for tasks created via this WhatsApp
 // command path (not app-created tasks, to avoid any risk of notifying staff
 // during bulk operations like CSV import or backup restore).
-function buildAssigneeNotifyText({ title, dueDate }) {
+function buildAssigneeNotifyText({ name, title, dueDate }) {
   const dueText = dueDate ? ` — due ${dueDate}` : "";
-  return `📋 New task from Saurav: "${title}"${dueText}`;
+  return `📋 Hi ${name}, new task from Saurav: "${title}"${dueText}`;
 }
 
 // Given an already-classified { assignee, title, due_date } (from
@@ -90,11 +91,13 @@ export async function executeCreateTask(sb, staff, { assignee, title, due_date }
 
   const dueText = due_date ? `, due ${due_date}` : "";
   let notifyNote = "";
-  if (matchedStaff.phone) {
+  const phones = await staffPhoneMap(sb, TENANT_ID);
+  const targetPhone = phones.forStaff(matchedStaff);
+  if (targetPhone) {
     const wa = await sendWhatsApp({
-      phone: matchedStaff.phone,
-      msg: buildAssigneeNotifyText({ title, dueDate: due_date }),
-      client: WA_SESSION_CLIENT_ID,
+      phone: targetPhone,
+      msg: buildAssigneeNotifyText({ name: matchedStaff.name, title, dueDate: due_date }),
+      client: TASKS_WA_CLIENT_ID,
     });
     if (wa.status !== 1) notifyNote = ` (couldn't notify ${matchedStaff.name} on WhatsApp: ${wa.message})`;
   } else {

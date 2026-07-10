@@ -14,10 +14,10 @@ export default async function handler(req, res) {
     return res.status(401).json({ ok: false, error: "unauthorized" });
   }
 
-  const { phone, code, label } = req.body || {};
+  const { phone, code, label, name } = req.body || {};
   if (!phone || !code) return res.status(400).json({ ok: false, error: "missing_phone_or_code" });
 
-  const msg = `🔐 Your SSJ HR verification code${label ? ` for ${label}` : ""}: ${code}\nValid for 10 minutes. Do not share this code.`;
+  const msg = `🔐 ${name ? `Hi ${name}, your` : "Your"} SSJ HR verification code${label ? ` for ${label}` : ""}: ${code}\nValid for 10 minutes. Do not share this code.`;
   const wa = await sendWhatsApp({ phone, msg, client: WA_SESSION_CLIENT_ID });
 
   if (wa.status !== 1) return res.status(502).json({ ok: false, error: wa.message });
