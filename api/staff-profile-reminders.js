@@ -60,6 +60,12 @@ function pendingItems(docs) {
   const unverified = VERIFY_FIELDS
     .filter(([f]) => !na.includes(f) && docs?.[f] && !docs?.[`${f}_verified_at`])
     .map(([, label]) => label);
+  // Hard rule: at least 2 different verified numbers — own personal + one family.
+  if (!docs?.personal_phone_verified_at && !unverified.includes("Personal phone") && !missing.includes("Personal phone")) {
+    unverified.push("Personal phone (must be verified)");
+  }
+  const famVerified = ["parent_phone", "sibling_phone", "spouse_phone"].some((f) => docs?.[`${f}_verified_at`]);
+  if (!famVerified) unverified.push("One family number — parent/sibling/spouse (must be verified)");
   return { missing, unverified };
 }
 
