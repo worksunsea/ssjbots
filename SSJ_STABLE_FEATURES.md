@@ -293,7 +293,7 @@ Gamified MCQ quiz for staff jewellery knowledge. Separate from main CRM. Not yet
 | 0049 | — | bullion_lead_sources table for lead webhook intake ✅ |
 | 0055 | — | enquiry_items jsonb on bullion_demands ✅ |
 | 0056 | 2026-07-02 | staff.active + tenant_security_settings + trusted_devices + device_verifications (§19 session security) — run in Supabase before deploy |
-| 0061 | 2026-07-11 | bullion_vendors, bullion_vendor_dealings, bullion_vendor_items + uploads/vendors/% storage RLS (§24 Vendor Management) — run in Supabase before deploy |
+| 0061 | 2026-07-11 | bullion_vendors, bullion_vendor_dealings, bullion_vendor_items + uploads/vendors/% storage RLS (§24 Vendor Management) ✅ |
 
 ---
 
