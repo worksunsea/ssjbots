@@ -9,6 +9,7 @@ import { getActiveStaff, executeCreateTask } from "./taskCommand.js";
 import { buildReportText, findLeadsForForm } from "./reportQueries.js";
 import { logCommand, getLastCommand, markFeedback, getRecentCorrections } from "./ownerLog.js";
 import { queueDevTask } from "./devAgent.js";
+import { getRates, ratesForPrompt } from "./rates.js";
 
 const FORM_BASE_URL = "https://ssjbot.gemtre.in";
 
@@ -141,7 +142,9 @@ async function classifyOwnerMessage(messageText, staffNames, corrections, lastCo
     `7. Wanting to ADD a brand-new customer/contact to the database (NOT editing one that already exists): {"intent":"add_contact","name":"<name if given, else omit>","phone":"<10-digit phone if given, else omit>"}`,
     "   e.g. \"add new contact Pooja 9811123456\", \"naya contact add karo\", \"add a client Rohit, number 98111...\".",
     "",
-    `8. Anything else (chit-chat, unclear, not matching the above): {"intent":"none"}`,
+    `8. Asking for LIVE GOLD/SILVER RATES — the current bhav/price, e.g. "what's the gold rate", "aaj ka sona bhav kya hai", "silver rate today", "24kt price": {"intent":"get_rates"}`,
+    "",
+    `9. Anything else (chit-chat, unclear, not matching the above): {"intent":"none"}`,
     "",
     "The message may be in English, Hindi, or Hinglish (Devanagari or Latin script, or mixed) for any of the above.",
     ...lastCommandBlock,
@@ -333,6 +336,9 @@ export async function handleOwnerMessage(sb, messageText) {
     result = { replyText: (await editContact(sb, parsed.query)).text };
   } else if (parsed.intent === "add_contact") {
     result = { replyText: (await addContact(sb, parsed.name, parsed.phone)).text };
+  } else if (parsed.intent === "get_rates") {
+    const rates = await getRates();
+    result = { replyText: ratesForPrompt(rates) };
   } else if (parsed.intent === "dev_task") {
     try {
       await queueDevTask(sb, { taskText: parsed.task || messageText, repoHint: parsed.repo_hint });
