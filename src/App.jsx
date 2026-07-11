@@ -11577,6 +11577,10 @@ async function persistNewVendor(tid, form, dealingIds, itemRows) {
 // live scan path and the offline-sync path.
 function mergeCardFields(form, fields) {
   const next = { ...form };
+  // A placeholder name ("Unnamed vendor — card scanned ...", set when an
+  // offline draft was queued with no typed name yet) counts as blank here —
+  // AI-extracted company_name should overwrite it, not just fill true blanks.
+  if (next._placeholderName && fields.company_name) { next.company_name = fields.company_name; next._placeholderName = false; }
   ["company_name", "email", "address", "website", "gstin"].forEach((k) => {
     if (!next[k] && fields[k]) next[k] = fields[k];
   });
@@ -11832,25 +11836,34 @@ function VendorsScreen() {
   };
 
   const saveVendor = async () => {
-    if (!vendorForm.company_name.trim()) { showToast("❌ Company name required"); return; }
+    // A card capture with no typed name yet is the exact "just snap and
+    // move on" flow this feature is for — don't block it with a required
+    // Company Name. Placeholder gets overwritten by AI extraction once the
+    // card is actually read (live, or at offline-sync time).
+    const hasCardCapture = !!(vendorForm.card_image_front_url || vendorForm.card_image_back_url || pendingBlobs.front || pendingBlobs.back);
+    if (!vendorForm.company_name.trim() && !hasCardCapture) { showToast("❌ Company name required (or scan a card first)"); return; }
+    const effectiveForm = vendorForm.company_name.trim()
+      ? vendorForm
+      : { ...vendorForm, company_name: `Unnamed vendor — card scanned ${new Date().toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}`, _placeholderName: true };
+
     setSaving(true);
     if (editingVendor?.id) {
       // Editing an existing vendor requires network — offline queueing is
       // scoped to NEW vendor capture (the actual exhibition-floor use case).
       try {
         const payload = {
-          company_name: vendorForm.company_name.trim(),
-          contacts: (vendorForm.contacts || []).filter((c) => c.name || c.phone),
-          custom_fields: (vendorForm.custom_fields || []).filter((f) => f.label || f.value),
-          email: vendorForm.email || null, address: vendorForm.address || null, city: vendorForm.city || null, state: vendorForm.state || null,
-          website: vendorForm.website || null, gstin: vendorForm.gstin || null,
-          payment_terms: vendorForm.payment_terms,
-          on_approval_days: vendorForm.on_approval_days !== "" ? Number(vendorForm.on_approval_days) : null,
-          credit_days: vendorForm.credit_days !== "" ? Number(vendorForm.credit_days) : null,
-          card_image_front_url: vendorForm.card_image_front_url || null, card_image_back_url: vendorForm.card_image_back_url || null,
-          notes: vendorForm.notes || null,
-          source: vendorForm.source, exhibition_name: vendorForm.exhibition_name || null,
-          active: vendorForm.active,
+          company_name: effectiveForm.company_name.trim(),
+          contacts: (effectiveForm.contacts || []).filter((c) => c.name || c.phone),
+          custom_fields: (effectiveForm.custom_fields || []).filter((f) => f.label || f.value),
+          email: effectiveForm.email || null, address: effectiveForm.address || null, city: effectiveForm.city || null, state: effectiveForm.state || null,
+          website: effectiveForm.website || null, gstin: effectiveForm.gstin || null,
+          payment_terms: effectiveForm.payment_terms,
+          on_approval_days: effectiveForm.on_approval_days !== "" ? Number(effectiveForm.on_approval_days) : null,
+          credit_days: effectiveForm.credit_days !== "" ? Number(effectiveForm.credit_days) : null,
+          card_image_front_url: effectiveForm.card_image_front_url || null, card_image_back_url: effectiveForm.card_image_back_url || null,
+          notes: effectiveForm.notes || null,
+          source: effectiveForm.source, exhibition_name: effectiveForm.exhibition_name || null,
+          active: effectiveForm.active,
         };
         const { error } = await sb.from("bullion_vendors").update(payload).eq("id", editingVendor.id);
         if (error) throw error;
@@ -11880,7 +11893,7 @@ function VendorsScreen() {
     // NEW vendor — try online first, fall back to the offline queue on any failure.
     try {
       if (!navigator.onLine) throw new Error("offline");
-      await persistNewVendor(tid, vendorForm, [...dealingIds], itemRows);
+      await persistNewVendor(tid, effectiveForm, [...dealingIds], itemRows);
       showToast("✓ Vendor added");
       closeForm();
       load();
@@ -11889,12 +11902,12 @@ function VendorsScreen() {
         const draft = {
           id: `local_${Date.now()}_${Math.random().toString(36).slice(2)}`,
           createdAt: Date.now(),
-          form: vendorForm, dealingIds: [...dealingIds], itemRows,
+          form: effectiveForm, dealingIds: [...dealingIds], itemRows,
           frontBlob: pendingBlobs.front || null, backBlob: pendingBlobs.back || null,
           aiAttempted: false,
         };
         await idbPutDraft(draft);
-        showToast("📴 Saved offline — will sync automatically when back online");
+        showToast(effectiveForm.company_name !== vendorForm.company_name ? "📴 Saved offline with a placeholder name — both update once the card is read" : "📴 Saved offline — will sync automatically when back online");
         closeForm();
         refreshPendingCount();
       } catch (idbErr) {
