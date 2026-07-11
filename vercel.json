@@ -5,6 +5,8 @@
   ],
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/diamondmenu", "destination": "/diamondmenu.html" },
+    { "source": "/goldmenu", "destination": "/goldmenu.html" },
     { "source": "/(.*)", "destination": "/" }
   ],
   "headers": [
