@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import { createClient } from "@supabase/supabase-js";
 import QRCode from "qrcode";
 import { jsPDF } from "jspdf";
-import { secureImageUpload, secureNonImageUpload } from "./utils/imageUpload";
+import { secureImageUpload, secureNonImageUpload, compressImageOnly } from "./utils/imageUpload";
 import { getDeviceToken, shouldForceLogout, SESSION_POLL_MS } from "./utils/session-security";
 import { sendPushNotification } from "./utils/pushNotify";
 
@@ -11815,12 +11815,17 @@ function VendorsScreen() {
       }
     } catch (e) {
       // Offline (or upload failed) — keep the photo locally so it isn't
-      // lost. It uploads + auto-scans once this vendor syncs.
-      const previewUrl = URL.createObjectURL(file);
-      setPendingBlobs((p) => ({ ...p, [side]: file }));
+      // lost. It uploads + auto-scans once this vendor syncs. Compress
+      // FIRST (pure client-side Canvas work, no network needed) so a phone
+      // with no signal doesn't pile up several MB per raw camera photo in
+      // IndexedDB while queued — same target size as the online upload path.
+      let stored = file;
+      try { stored = await compressImageOnly(file, { maxDim: 1600, quality: 0.85 }); } catch { /* fall back to raw file if compression itself fails */ }
+      const previewUrl = URL.createObjectURL(stored);
+      setPendingBlobs((p) => ({ ...p, [side]: stored }));
       setPendingPreviewUrls((p) => ({ ...p, [side]: previewUrl }));
       setVendorForm((p) => ({ ...p, source: p.source === "manual" ? "card_scan" : p.source }));
-      showToast("📴 Captured — will scan + upload once you're back online");
+      showToast("📴 Captured (compressed) — will scan + upload once you're back online");
     } finally {
       setUploading(false);
     }

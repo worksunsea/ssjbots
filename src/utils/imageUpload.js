@@ -94,6 +94,26 @@ async function compressImage(file, detectedType, maxDim = 1920, quality = 0.85) 
  *   (extension is still derived from the detected image type). e.g. "CKGAT-0001_1".
  * @returns {Promise<{publicUrl: string, compressedSize: number}>}
  */
+/**
+ * Validate + compress an image WITHOUT uploading — pure client-side Canvas
+ * work, needs no network. Used to shrink photos before queueing them in
+ * IndexedDB for offline sync, so a phone captured with no signal doesn't
+ * accumulate full-size camera photos (several MB each) locally while queued.
+ * @returns {Promise<Blob>}
+ */
+export async function compressImageOnly(file, opts = {}) {
+  const { maxDim = 1600, quality = 0.85, maxFileMB = 10 } = opts;
+  if (file.size > maxFileMB * 1024 * 1024) {
+    throw new Error(`File too large. Maximum allowed size is ${maxFileMB} MB.`);
+  }
+  const bytes = await readMagicBytes(file);
+  const detectedType = detectImageType(bytes);
+  if (!detectedType) {
+    throw new Error("Invalid file. Only JPEG, PNG, WebP, and GIF images are allowed.");
+  }
+  return compressImage(file, detectedType, maxDim, quality);
+}
+
 export async function secureImageUpload(file, supabase, folder, opts = {}) {
   const { maxDim = 1920, quality = 0.85, maxFileMB = 10, fileNameOverride } = opts;
 
