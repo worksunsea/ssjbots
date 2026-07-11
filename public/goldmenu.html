@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=3.0">
+  <title>Gold Menu — Sun Sea Cafe</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #111;
+      -webkit-user-select: none;
+      user-select: none;
+      overflow-x: hidden;
+    }
+    #header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: #1a1400;
+      border-bottom: 2px solid #c9a84c;
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    #header span {
+      color: #c9a84c;
+      font-size: 15px;
+      font-weight: 600;
+      font-family: sans-serif;
+      letter-spacing: 0.5px;
+    }
+    #header .dot { width: 8px; height: 8px; border-radius: 50%; background: #c9a84c; flex-shrink: 0; }
+    #viewer {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 12px;
+      gap: 10px;
+    }
+    img {
+      width: 100%;
+      max-width: 900px;
+      display: block;
+      border-radius: 6px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.6);
+      -webkit-user-drag: none;
+      user-drag: none;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body oncontextmenu="return false">
+  <div id="header">
+    <div class="dot"></div>
+    <span>☕ Gold Menu — Sun Sea Cafe</span>
+  </div>
+  <div id="viewer">
+    <img src="/menus/gold.jpg" alt="Gold Menu" draggable="false" />
+  </div>
+</body>
+</html>
