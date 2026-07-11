@@ -4221,7 +4221,7 @@ function ConnectionsScreen() {
             )}
             {linked.length === 0 && <div style={{ fontSize: 11, color: "#aaa", marginBottom: 10 }}>No funnels linked to this session</div>}
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {!c.connected && <Btn small color={C.blue} onClick={() => setPairing(c.client_id)}>Pair QR</Btn>}
+              {!c.connected && <Btn small color={C.blue} onClick={() => rePair(c.client_id)}>Pair QR</Btn>}
               {c.connected && <Btn small ghost color={C.orange} onClick={() => rePair(c.client_id)}>Re-pair</Btn>}
               {c.connected && <Btn small ghost color={C.red} onClick={() => disconnect(c.client_id)}>Disconnect</Btn>}
               {/* Move funnels to another connected session */}
