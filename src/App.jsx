@@ -195,6 +195,44 @@ function demandTemperature(d) {
   return "cold";
 }
 const tempRank = (t) => ({ hot: 0, warm: 1, cold: 2, converted: 3, dead: 4 }[t] ?? 5);
+// Next-step engine — one prescribed action per demand card ("do this now").
+// Priority order below; first match wins. Mirrors demandTemperature's urgency
+// signals but resolves them to a single actionable button instead of a pile of pills.
+function nextStepFor(d) {
+  const lead = d?.lead || {};
+  const now = Date.now();
+  const isCallStep = d?.step?.step_type === "call";
+  const callDueMs = d.next_call_at ? new Date(d.next_call_at) - now : null;
+  const visitMs = d.visit_scheduled_at ? new Date(d.visit_scheduled_at) - now : null;
+  const oneDay = 86400000;
+
+  if (d.is_callback_promised && callDueMs !== null && callDueMs <= 0) {
+    return { label: `📞 Call back NOW — promised ${fmtT(d.next_call_at)}`, color: C.red, action: "call" };
+  }
+  if (isCallStep && callDueMs !== null && callDueMs <= 0) {
+    const overdueHrs = Math.max(1, Math.round(-callDueMs / 3600000));
+    return { label: `📞 Call now · overdue ${overdueHrs}h`, color: C.red, action: "call" };
+  }
+  if (isCallStep && callDueMs !== null && callDueMs > 0) {
+    return { label: `📞 Call at ${fmtT(d.next_call_at)}`, color: C.gray, action: "call", disabled: true };
+  }
+  if (visitMs !== null && visitMs >= 0 && visitMs < oneDay) {
+    return { label: `🏪 Visit TODAY ${fmtT(d.visit_scheduled_at)} — prepare pieces`, color: C.green, action: "open" };
+  }
+  if (visitMs !== null && visitMs >= oneDay && visitMs < 2 * oneDay && !d.visit_confirmed) {
+    return { label: "🏪 Confirm visit for tomorrow", color: C.orange, action: "open" };
+  }
+  if (visitMs !== null && visitMs < 0 && !d.outcome) {
+    return { label: "🏪 Visited — mark result", color: C.orange, action: "open" };
+  }
+  if (lead.status === "handoff") {
+    return { label: "💬 Reply personally — bot handed off", color: C.red, action: "open" };
+  }
+  if (!isCallStep) {
+    return { label: "🤖 Bot chatting · no action", color: C.gray, action: "none" };
+  }
+  return { label: "Open", color: C.gray, action: "open" };
+}
 const tempMeta = (t) => ({
   hot:       { label: "🔥 Hot",       color: "#ef4444" },
   warm:      { label: "🌤 Warm",       color: "#f59e0b" },
@@ -643,7 +681,7 @@ function VisitRescheduleButton({ demandId, onRescheduled }) {
   );
 }
 
-function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, onAdvanceStep, onRollbackStep, onMergeDuplicate }) {
+function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, onAdvanceStep, onRollbackStep, onMergeDuplicate, autoOpen }) {
   const { customFields, fieldOrder } = React.useContext(ContactFieldsContext);
   const [messages, setMessages] = useState([]);
   const [reply, setReply] = useState("");
@@ -661,6 +699,20 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
   const [funnelBusy, setFunnelBusy] = useState(false);
   const [scheduleVisitOpen, setScheduleVisitOpen] = useState(false);
   const [sendDesignOpen, setSendDesignOpen] = useState(false);
+  const [closeMenuOpen, setCloseMenuOpen] = useState(false);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const [funnelFlowOpen, setFunnelFlowOpen] = useState(false);
+  const [attemptsOpen, setAttemptsOpen] = useState(false);
+  const myRole = loadUser()?.role;
+  const isManagerPlus = ["superadmin", "admin", "manager"].includes(myRole);
+  const primaryStep = demand ? nextStepFor(demand) : null;
+
+  // Card's next-step button fires this — jump straight to the relevant modal
+  // instead of making staff hunt through the action row for it.
+  useEffect(() => {
+    if (autoOpen === "call") setLogCallOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     sb.from("funnels").select("id,name,kind,active").eq("tenant_id", getTenantId()).order("active", { ascending: false }).order("id")
@@ -1015,9 +1067,15 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
         </div>
       )}
 
-      {/* Funnel flow strip — what step is current, what comes next */}
-      {demand && funnelSteps.length > 0 && (
-        <div style={{ padding: "8px 14px", borderBottom: "1px solid #eee", background: "#f0f9ff", fontSize: 11 }}>
+      {/* Funnel flow strip — admin/manager only, collapsed by default; telecallers never see it */}
+      {demand && funnelSteps.length > 0 && isManagerPlus && (
+        <div style={{ borderBottom: "1px solid #eee" }}>
+          <button onClick={() => setFunnelFlowOpen((v) => !v)}
+            style={{ width: "100%", textAlign: "left", padding: "6px 14px", background: "#f0f9ff", border: "none", cursor: "pointer", fontSize: 11, fontWeight: 600, color: "#1e3a8a" }}>
+            🛤 Funnel {funnelFlowOpen ? "▲" : "▼"}
+          </button>
+          {funnelFlowOpen && (
+        <div style={{ padding: "0 14px 8px", background: "#f0f9ff", fontSize: 11 }}>
           <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
             <span style={{ fontSize: 10, fontWeight: 600, color: "#1e3a8a", letterSpacing: 0.4 }}>🛤 FUNNEL:</span>
             <Select
@@ -1074,6 +1132,8 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
             return null;
           })()}
         </div>
+          )}
+        </div>
       )}
 
       {/* Call cadence strip — only for call-step demands */}
@@ -1103,8 +1163,11 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
             </div>
             {callLogs.length > 0 && (
               <div style={{ marginTop: 6, paddingTop: 4, borderTop: "1px dashed #fcd34d" }}>
-                <div style={{ fontWeight: 600, marginBottom: 3, color: "#92400e" }}>Past attempts:</div>
-                {callLogs.map((c) => {
+                <button onClick={() => setAttemptsOpen((v) => !v)}
+                  style={{ background: "transparent", border: "none", cursor: "pointer", padding: 0, fontWeight: 600, marginBottom: 3, color: "#92400e", fontSize: 11 }}>
+                  {callLogs.length} attempt{callLogs.length === 1 ? "" : "s"} {attemptsOpen ? "▲" : "▼"}
+                </button>
+                {attemptsOpen && callLogs.map((c) => {
                   const who = staff.find((s) => s.id === c.staff_id);
                   return (
                     <div key={c.attempt_no} style={{ color: "#78350f", lineHeight: 1.5 }}>
@@ -1126,33 +1189,85 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
         );
       })()}
 
-      {/* Actions */}
-      <div style={{ padding: "8px 14px", borderBottom: "1px solid #eee", display: "flex", gap: 6, flexWrap: "wrap" }}>
-        <Btn small ghost color={lead.bot_paused ? C.green : C.orange} onClick={toggleBot} disabled={busy}>{lead.bot_paused ? "Resume bot" : "Pause bot"}</Btn>
-        <Btn small ghost color={C.red} onClick={optOut} disabled={busy} title="Block from all calls and messages (DNC)">🚫 Opt Out</Btn>
-        {onMergeDuplicate && <Btn small ghost color={C.orange} onClick={onMergeDuplicate} title="Merge this with a duplicate lead record">⊕ Merge duplicate</Btn>}
-        <Btn small ghost color={C.green} onClick={() => setEditLeadOpen(true)}>✏️ Edit contact</Btn>
-        {demand?.id && (
-          <>
-            <Btn small color={C.green} onClick={() => markOutcome("converted")} disabled={outcomeBusy}>✅ Converted</Btn>
-            <Btn small color={C.red} onClick={() => setLostModalOpen(true)} disabled={outcomeBusy}>❌ Lost</Btn>
-            <Btn small ghost color={C.orange} onClick={() => markOutcome("not_interested")} disabled={outcomeBusy}>🤔 Not interested</Btn>
-            <Btn small ghost color={C.gray} onClick={() => markOutcome("junk")} disabled={outcomeBusy}>🗑 Junk</Btn>
-            <Btn small ghost color={C.purple} onClick={() => markOutcome("supplier")} disabled={outcomeBusy}>🏷 Supplier</Btn>
-            <Btn small ghost color={C.blue} onClick={() => setReassignOpen((v) => !v)}>🔁 Reassign</Btn>
-            <Btn small ghost color={C.blue} onClick={() => setLogCallOpen(true)} disabled={isLid(lead.phone) || !lead.phone} title={isLid(lead.phone) || !lead.phone ? "Phone hidden — link to existing contact or add a real number first" : ""}>📝 Log call</Btn>
-            <Btn small ghost color={C.green} onClick={() => setScheduleVisitOpen(true)}>📅 Schedule visit</Btn>
-            <Btn small ghost color={C.purple} onClick={() => setSendDesignOpen(true)} disabled={isLid(lead.phone) || !lead.phone}>📤 Send design</Btn>
-            {onAdvanceStep && (
-              <Btn small ghost color={C.green} onClick={onAdvanceStep}>✓ Mark step complete</Btn>
-            )}
-            {onRollbackStep && funnelSteps.length > 0 && funnelSteps.findIndex((s) => s.id === demand.fms_step_id) > 0 && (
-              <Btn small ghost color={C.gray} onClick={onRollbackStep}>↶ Undo last step</Btn>
-            )}
-          </>
+      {/* Actions — regrouped to Primary / Close / More so staff aren't hunting through 17 buttons */}
+      <div style={{ padding: "8px 14px", borderBottom: "1px solid #eee", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        {/* Primary — whatever nextStepFor() says is the one thing to do right now */}
+        {primaryStep && primaryStep.action === "call" && !primaryStep.disabled && (
+          <Btn color={primaryStep.color} onClick={() => setLogCallOpen(true)} disabled={isLid(lead.phone) || !lead.phone}
+            title={isLid(lead.phone) || !lead.phone ? "Phone hidden — link to existing contact or add a real number first" : ""}>
+            {primaryStep.label}
+          </Btn>
         )}
-        <Btn small ghost color={C.red} onClick={() => setStatus("handoff", { stage: "handoff", bot_paused: true })} disabled={busy}>Handoff</Btn>
-        <Btn small ghost color={C.gray} onClick={() => setStatus("dead", { stage: "dead" })} disabled={busy}>Dead</Btn>
+        {primaryStep && (primaryStep.disabled || primaryStep.action === "open" || primaryStep.action === "none") && (
+          <span style={{ fontSize: 12, color: primaryStep.color, fontWeight: 600 }}>{primaryStep.label}</span>
+        )}
+
+        {demand?.id && (
+          <div style={{ position: "relative" }}>
+            <Btn small ghost color={C.gray} onClick={() => { setCloseMenuOpen((v) => !v); setMoreMenuOpen(false); }}>Close demand ▾</Btn>
+            {closeMenuOpen && (
+              <div style={{ position: "absolute", top: "100%", left: 0, marginTop: 4, background: "#fff", border: "1px solid #ddd", borderRadius: 8, boxShadow: "0 4px 12px rgba(0,0,0,0.12)", zIndex: 20, minWidth: 200 }}>
+                {[
+                  ["✅ Converted", () => markOutcome("converted"), C.green],
+                  ["❌ Lost…", () => setLostModalOpen(true), C.red],
+                  ["🤔 Not interested", () => markOutcome("not_interested"), C.orange],
+                  ["🗑 Junk", () => markOutcome("junk"), C.gray],
+                  ["🏷 Supplier", () => markOutcome("supplier"), C.purple],
+                  ["🚫 Opt Out / DNC", optOut, C.red],
+                ].map(([label, fn, color]) => (
+                  <button key={label} onClick={() => { setCloseMenuOpen(false); fn(); }} disabled={outcomeBusy || busy}
+                    style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", background: "transparent", border: "none", cursor: "pointer", fontSize: 12, color }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div style={{ position: "relative" }}>
+          <Btn small ghost color={C.gray} onClick={() => { setMoreMenuOpen((v) => !v); setCloseMenuOpen(false); }}>⋯ More</Btn>
+          {moreMenuOpen && (
+            <div style={{ position: "absolute", top: "100%", left: 0, marginTop: 4, background: "#fff", border: "1px solid #ddd", borderRadius: 8, boxShadow: "0 4px 12px rgba(0,0,0,0.12)", zIndex: 20, minWidth: 220 }}>
+              {demand?.id && (
+                <button onClick={() => { setMoreMenuOpen(false); setScheduleVisitOpen(true); }}
+                  style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", background: "transparent", border: "none", cursor: "pointer", fontSize: 12, color: C.green }}>📅 Schedule visit</button>
+              )}
+              {demand?.id && (
+                <button onClick={() => { setMoreMenuOpen(false); setSendDesignOpen(true); }} disabled={isLid(lead.phone) || !lead.phone}
+                  style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", background: "transparent", border: "none", cursor: "pointer", fontSize: 12, color: C.purple }}>📤 Send design</button>
+              )}
+              <button onClick={() => { setMoreMenuOpen(false); setEditLeadOpen(true); }}
+                style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", background: "transparent", border: "none", cursor: "pointer", fontSize: 12, color: C.green }}>✏️ Edit contact</button>
+              {isManagerPlus && demand?.id && (
+                <button onClick={() => { setMoreMenuOpen(false); setReassignOpen((v) => !v); }}
+                  style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", background: "transparent", border: "none", cursor: "pointer", fontSize: 12, color: C.blue }}>🔁 Reassign</button>
+              )}
+              {isManagerPlus && (
+                <button onClick={() => { setMoreMenuOpen(false); toggleBot(); }} disabled={busy}
+                  style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", background: "transparent", border: "none", cursor: "pointer", fontSize: 12, color: lead.bot_paused ? C.green : C.orange }}>
+                  {lead.bot_paused ? "▶ Resume bot" : "⏸ Pause bot"}
+                </button>
+              )}
+              {isManagerPlus && onMergeDuplicate && (
+                <button onClick={() => { setMoreMenuOpen(false); onMergeDuplicate(); }}
+                  style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", background: "transparent", border: "none", cursor: "pointer", fontSize: 12, color: C.orange }}>⊕ Merge duplicate</button>
+              )}
+              {isManagerPlus && demand?.id && onAdvanceStep && (
+                <button onClick={() => { setMoreMenuOpen(false); onAdvanceStep(); }}
+                  style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", background: "transparent", border: "none", cursor: "pointer", fontSize: 12, color: C.green }}>✓ Mark step complete</button>
+              )}
+              {isManagerPlus && demand?.id && onRollbackStep && funnelSteps.length > 0 && funnelSteps.findIndex((s) => s.id === demand.fms_step_id) > 0 && (
+                <button onClick={() => { setMoreMenuOpen(false); onRollbackStep(); }}
+                  style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", background: "transparent", border: "none", cursor: "pointer", fontSize: 12, color: C.gray }}>↶ Undo last step</button>
+              )}
+              {isManagerPlus && (
+                <button onClick={() => { setMoreMenuOpen(false); setStatus("handoff", { stage: "handoff", bot_paused: true }); }} disabled={busy}
+                  style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", background: "transparent", border: "none", cursor: "pointer", fontSize: 12, color: C.red }}>💬 Handoff (bot pauses, you take over)</button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
       {logCallOpen && demand && (
         <LogCallModal
@@ -1268,6 +1383,9 @@ function DemandsScreen({ funnels, allTags }) {
   const [bulkStaff, setBulkStaff] = useState([]);
   const [mergeModal, setMergeModal] = useState(null); // { primaryId, secondaryId }
   const [showClosed, setShowClosed] = useState(false);
+  const [pendingAction, setPendingAction] = useState(null); // "call" | null — auto-opens a modal in ConversationPane on select
+  const myRole = loadUser()?.role;
+  const isManagerPlus = ["superadmin", "admin", "manager"].includes(myRole);
   useEffect(() => {
     sb.from("staff").select("id,name,username,role,app_permissions").eq("tenant_id", getTenantId()).neq("type", "artisan").order("name")
       .then(({ data }) => setBulkStaff(data || []));
@@ -1511,26 +1629,23 @@ function DemandsScreen({ funnels, allTags }) {
 
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {filtered.map((d) => {
-            const urg = urgencyLabel(d);
             const sel = d.lead?.id === selectedLeadId;
             const isBulkChecked = bulkSelected.has(d.id);
             const isVip = d.lead?.is_client || d.crm_source === "old_client" || d.lead?.source === "old_client";
-            const stepName = d.step?.name || "—";
-            const isCallStep = d.step?.step_type === "call";
-            const attempts = d.call_attempts || 0;
-            const cadenceColor = attempts >= 5 ? C.red : attempts >= 4 ? C.orange : C.gray;
-            const overdue = d.next_call_at && new Date(d.next_call_at) < new Date();
             return (
               <React.Fragment key={d.id}>
                 <div style={{ position: "relative" }}>
-                {/* Bulk-select checkbox */}
-                <input type="checkbox" checked={isBulkChecked}
-                  onChange={(e) => { e.stopPropagation(); setBulkSelected((prev) => { const next = new Set(prev); e.target.checked ? next.add(d.id) : next.delete(d.id); return next; }); }}
-                  style={{ position: "absolute", top: 10, left: 8, zIndex: 2, width: 15, height: 15, cursor: "pointer" }} />
+                {/* Bulk-select checkbox — manager+ only, telecallers only see their own demands anyway */}
+                {isManagerPlus && (
+                  <input type="checkbox" checked={isBulkChecked}
+                    onChange={(e) => { e.stopPropagation(); setBulkSelected((prev) => { const next = new Set(prev); e.target.checked ? next.add(d.id) : next.delete(d.id); return next; }); }}
+                    style={{ position: "absolute", top: 10, left: 8, zIndex: 2, width: 15, height: 15, cursor: "pointer" }} />
+                )}
                 <div
                   onClick={() => {
                     if (sel) { setSelectedLeadId(null); setSelectedDemand(null); }
                     else { setSelectedLeadId(d.lead?.id || null); setSelectedDemand(d); }
+                    setPendingAction(null);
                   }}
                   style={{
                     padding: 10,
@@ -1541,46 +1656,48 @@ function DemandsScreen({ funnels, allTags }) {
                     cursor: "pointer",
                   }}
                 >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                    <strong style={{ fontSize: 13 }}>{d.lead?.name || (isLid(d.lead?.phone) ? (d.lead?.wa_display_name || displayPhone(d.lead?.phone)) : d.lead?.phone) || "Unknown"}</strong>
-                    <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                      {(() => { const t = demandTemperature(d); const m = tempMeta(t); return <Pill color={m.color} solid>{m.label}{d.temperature_override ? " 📌" : ""}</Pill>; })()}
-                      {isVip && <Pill color="#d97706" solid>⭐ VIP</Pill>}
-                      {(d.lead?.source === "walk_in") && <Pill color="#16a085" solid>🏪 Walk-in</Pill>}
-                      {urg && <Pill color={urg.color} solid>{urg.text}</Pill>}
-                      {isCallStep && <Pill color={overdue ? C.red : cadenceColor} solid>📞 {overdue ? "OVERDUE " : ""}{attempts}/6</Pill>}
-                      {!isCallStep && <Pill color={C.blue}>🤖 Bot</Pill>}
-                    </div>
-                  </div>
-                  <div style={{ fontSize: 12, color: "#555", marginBottom: 3 }}>
-                    {d.description || "(no description)"}
-                    {d.for_whom ? <span style={{ color: "#888" }}> · for {d.for_whom}</span> : ""}
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                      <Pill color={C.purple}>{d.product_category || "?"}</Pill>
-                      {d.occasion && <Pill color={C.orange}>{d.occasion}</Pill>}
-                      {d.budget && <Pill color={C.gray}>₹{Number(d.budget).toLocaleString("en-IN")}</Pill>}
-                      {d.visit_scheduled_at && (() => {
-                        const vdays = Math.round((new Date(d.visit_scheduled_at) - new Date()) / 86400000);
-                        const color = vdays < 0 ? "#999" : vdays === 0 ? C.red : vdays <= 2 ? C.orange : C.green;
-                        const label = vdays < 0 ? "Visit passed" : vdays === 0 ? "Visit TODAY" : `Visit in ${vdays}d`;
-                        return <Pill color={color} solid>🏪 {label}{d.visit_confirmed ? " ✓" : ""}</Pill>;
-                      })()}
-                    </div>
-                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                      {d.assigned_to && <Pill color={C.blue}>👤 {d.assigned_to}</Pill>}
-                      <span style={{ fontSize: 11, color: C.gray }}>{stepName}</span>
-                      <span style={{ fontSize: 10, color: "#aaa" }}>{fmtDT(d.updated_at)}</span>
-                    </div>
-                  </div>
+                  {(() => {
+                    const step = nextStepFor(d);
+                    const oneLinerParts = [
+                      d.description || "(no description)",
+                      [d.occasion, d.occasion_date ? fmtD(d.occasion_date) : ""].filter(Boolean).join(" "),
+                      d.budget ? `₹${Number(d.budget).toLocaleString("en-IN")}` : "",
+                    ].filter(Boolean);
+                    return (
+                      <>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, gap: 8 }}>
+                          <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
+                            <strong style={{ fontSize: 13 }}>{d.lead?.name || (isLid(d.lead?.phone) ? (d.lead?.wa_display_name || displayPhone(d.lead?.phone)) : d.lead?.phone) || "Unknown"}</strong>
+                            {(() => { const t = demandTemperature(d); const m = tempMeta(t); return <Pill color={m.color} solid>{m.label}{d.temperature_override ? " 📌" : ""}</Pill>; })()}
+                            {isVip && <Pill color="#d97706" solid>⭐ VIP</Pill>}
+                          </div>
+                          {step.action === "none" ? (
+                            <span style={{ fontSize: 11, color: "#999", whiteSpace: "nowrap" }}>{step.label}</span>
+                          ) : step.disabled ? (
+                            <span style={{ fontSize: 11, color: step.color, padding: "4px 10px", border: `1px solid ${step.color}`, borderRadius: 6, whiteSpace: "nowrap" }}>{step.label}</span>
+                          ) : (
+                            <Btn small color={step.color} style={{ whiteSpace: "nowrap" }} onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedLeadId(d.lead?.id || null);
+                              setSelectedDemand(d);
+                              setPendingAction(step.action === "call" ? "call" : null);
+                            }}>{step.label}</Btn>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 12, color: "#555" }}>
+                          {d.lead?.source === "walk_in" ? "🏪 " : ""}{oneLinerParts.join(" · ")}
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
                 </div>{/* end position:relative wrapper */}
                 {sel && selectedLead && selectedDemand?.id === d.id && (
                   <ConversationPane
+                    key={d.id}
                     lead={selectedLead}
                     funnel={selectedFunnel}
-                    onClose={() => { setSelectedLeadId(null); setSelectedDemand(null); }}
+                    onClose={() => { setSelectedLeadId(null); setSelectedDemand(null); setPendingAction(null); }}
                     onChanged={load}
                     allTags={allTags}
                     demand={selectedDemand}
@@ -1590,6 +1707,7 @@ function DemandsScreen({ funnels, allTags }) {
                       const secId = window.prompt("Enter the duplicate lead ID to merge into this record (find it in Contacts tab):");
                       if (secId?.trim()) setMergeModal({ primaryId: d.lead?.id, secondaryId: secId.trim() });
                     }}
+                    autoOpen={pendingAction}
                   />
                 )}
               </React.Fragment>
@@ -2121,6 +2239,10 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved, prefill = n
   const [toast, setToast] = useState("");
   const [dupContact, setDupContact] = useState(null); // existing contact with same phone
   const [editingContact, setEditingContact] = useState(null); // when user wants to fix the dup contact's name/details
+  // Step 1 = the 6 fields a staffer fills while the customer stands at the counter.
+  // Step 2 (this toggle) = everything else — city/bday/visit-tracking/exchange/design ref —
+  // filled in later once the customer has left, so the counter interaction stays under a minute.
+  const [expanded, setExpanded] = useState(false);
 
   const walkinFunnel = funnels.find((f) => f.active && (/walk[\s_-]?in/i.test(f.id) || /walk[\s_-]?in/i.test(f.name || "")));
 
@@ -2476,48 +2598,9 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved, prefill = n
 
           <div style={{ fontSize: 12, color: "#666", margin: "10px 0 6px", fontWeight: 600 }}>👤 Contact Details</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <Field label="Name"><Input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Full name" /></Field>
+            <Field label="Name" required><Input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Full name" /></Field>
             <Field label="Phone" required><Input value={form.phone} onChange={(e) => set("phone", e.target.value)} placeholder="9876543210" /></Field>
-            <Field label="City"><Input value={form.city} onChange={(e) => set("city", e.target.value)} placeholder="Delhi" /></Field>
-            <Field label="Email"><Input value={form.email} onChange={(e) => set("email", e.target.value)} placeholder="email@example.com" /></Field>
-            <Field label="Birthday"><Input type="date" value={form.bday} onChange={(e) => set("bday", e.target.value)} /></Field>
-            <Field label="Anniversary"><Input type="date" value={form.anniversary} onChange={(e) => set("anniversary", e.target.value)} /></Field>
-            <Field label="Wedding date"><Input type="date" value={form.wedding_date} onChange={(e) => set("wedding_date", e.target.value)} /></Field>
-            <Field label="Wedding (family member)"><Input value={form.wedding_family_member} onChange={(e) => set("wedding_family_member", e.target.value)} placeholder="daughter Priya" /></Field>
-            <Field label="Rating">
-              <Select value={form.client_rating} onChange={(e) => set("client_rating", e.target.value)}>
-                <option value="">—</option>
-                {[1,2,3,4,5].map((n) => <option key={n} value={n}>{"★".repeat(n)} {n}</option>)}
-              </Select>
-            </Field>
-            <Field label="Source">
-              <Select value={form.source} onChange={(e) => set("source", e.target.value)}>
-                <option value="walk_in">walk_in</option>
-                {sourceTags.filter((s) => s !== "walk_in").map((s) => <option key={s} value={s}>{s}</option>)}
-              </Select>
-            </Field>
           </div>
-
-          {otherTags.length > 0 && (
-            <Field label="Tags" style={{ marginTop: 8 }}>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {otherTags.map((tag) => {
-                  const active = form.tags.includes(tag);
-                  const meta = allTags.find((t) => t.name === tag);
-                  return (
-                    <button key={tag} onClick={() => toggleTag(tag)} style={{ padding: "3px 10px", borderRadius: 20, fontSize: 12, cursor: "pointer", border: `1px solid ${active ? (meta?.color || C.blue) : "#ddd"}`, background: active ? (meta?.color || C.blue) : "transparent", color: active ? "#fff" : "#555", fontWeight: active ? 600 : 400 }}>
-                      {tag}
-                    </button>
-                  );
-                })}
-              </div>
-            </Field>
-          )}
-
-          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, margin: "8px 0", cursor: "pointer" }}>
-            <input type="checkbox" checked={form.is_client} onChange={(e) => set("is_client", e.target.checked)} />
-            Mark as known client (has purchased before)
-          </label>
 
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, margin: "14px 0 6px", cursor: "pointer", fontWeight: 600, color: "#444" }}>
             <input type="checkbox" checked={createDemand} onChange={(e) => setCreateDemand(e.target.checked)} />
@@ -2532,16 +2615,100 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved, prefill = n
                     {PRODUCT_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
                   </Select>
                 </Field>
-                <Field label="For whom">
-                  <Select value={form.forWhom} onChange={(e) => set("forWhom", e.target.value)}>
-                    <option value="">— select —</option>
-                    {FOR_WHOM_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
-                  </Select>
-                </Field>
+                <Field label="Estimate / budget (₹)"><Input type="number" value={form.estimate} onChange={(e) => set("estimate", e.target.value)} placeholder="150000" /></Field>
               </div>
               <Field label="Description — what they're looking for" required>
                 <Textarea rows={3} value={form.description} onChange={(e) => set("description", e.target.value)}
                   placeholder="e.g. Wedding necklace set in polki, around 5 lakhs..." />
+              </Field>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <Field label="Occasion">
+                  <Select value={form.occasion} onChange={(e) => set("occasion", e.target.value)}>
+                    <option value="">— select —</option>
+                    {OCCASION_TYPES.map((o) => <option key={o} value={o}>{o}</option>)}
+                  </Select>
+                </Field>
+                <Field label="Occasion date"><Input type="date" value={form.occasionDate} onChange={(e) => set("occasionDate", e.target.value)} /></Field>
+              </div>
+            </>
+          )}
+
+          {err && <p style={{ fontSize: 12, color: C.red, margin: "8px 0" }}>{err}</p>}
+
+          {dupContact && (
+            <div style={{ background: "#fff7ed", border: "1px solid #fdba74", borderRadius: 8, padding: 12, margin: "10px 0", fontSize: 13 }}>
+              <div style={{ fontWeight: 600, color: "#c2410c", marginBottom: 4 }}>⚠️ Phone already exists</div>
+              <div style={{ color: "#555", marginBottom: 8 }}>
+                <strong>{dupContact.name || "(no name)"}</strong> · {dupContact.phone}
+                {dupContact.city ? ` · ${dupContact.city}` : ""}
+                {dupContact.source ? ` · source: ${dupContact.source}` : ""}
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <Btn small color={C.blue} onClick={() => { pickContact(dupContact); setDupContact(null); }}>Use existing contact</Btn>
+                <Btn small ghost color={C.green} onClick={() => setEditingContact(dupContact)}>✏️ Edit existing (fix name/details)</Btn>
+                <Btn small ghost color={C.gray} onClick={() => { setDupContact(null); set("phone", ""); }}>Change phone</Btn>
+              </div>
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 8, justifyContent: "space-between", alignItems: "center", marginTop: 14 }}>
+            <button type="button" onClick={() => setExpanded((v) => !v)}
+              style={{ background: "transparent", border: "none", color: C.blue, cursor: "pointer", fontSize: 12, fontWeight: 600, padding: 0 }}>
+              {expanded ? "▲ Hide visit details" : "▼ Complete visit details (city, exchange, items seen…) — optional, can finish later"}
+            </button>
+          </div>
+
+          {expanded && (
+            <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed #ddd" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <Field label="City"><Input value={form.city} onChange={(e) => set("city", e.target.value)} placeholder="Delhi" /></Field>
+                <Field label="Email"><Input value={form.email} onChange={(e) => set("email", e.target.value)} placeholder="email@example.com" /></Field>
+                <Field label="Birthday"><Input type="date" value={form.bday} onChange={(e) => set("bday", e.target.value)} /></Field>
+                <Field label="Anniversary"><Input type="date" value={form.anniversary} onChange={(e) => set("anniversary", e.target.value)} /></Field>
+                <Field label="Wedding date"><Input type="date" value={form.wedding_date} onChange={(e) => set("wedding_date", e.target.value)} /></Field>
+                <Field label="Wedding (family member)"><Input value={form.wedding_family_member} onChange={(e) => set("wedding_family_member", e.target.value)} placeholder="daughter Priya" /></Field>
+                <Field label="Rating">
+                  <Select value={form.client_rating} onChange={(e) => set("client_rating", e.target.value)}>
+                    <option value="">—</option>
+                    {[1,2,3,4,5].map((n) => <option key={n} value={n}>{"★".repeat(n)} {n}</option>)}
+                  </Select>
+                </Field>
+                <Field label="Source">
+                  <Select value={form.source} onChange={(e) => set("source", e.target.value)}>
+                    <option value="walk_in">walk_in</option>
+                    {sourceTags.filter((s) => s !== "walk_in").map((s) => <option key={s} value={s}>{s}</option>)}
+                  </Select>
+                </Field>
+              </div>
+
+              {otherTags.length > 0 && (
+                <Field label="Tags" style={{ marginTop: 8 }}>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {otherTags.map((tag) => {
+                      const active = form.tags.includes(tag);
+                      const meta = allTags.find((t) => t.name === tag);
+                      return (
+                        <button key={tag} onClick={() => toggleTag(tag)} style={{ padding: "3px 10px", borderRadius: 20, fontSize: 12, cursor: "pointer", border: `1px solid ${active ? (meta?.color || C.blue) : "#ddd"}`, background: active ? (meta?.color || C.blue) : "transparent", color: active ? "#fff" : "#555", fontWeight: active ? 600 : 400 }}>
+                          {tag}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </Field>
+              )}
+
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, margin: "8px 0", cursor: "pointer" }}>
+                <input type="checkbox" checked={form.is_client} onChange={(e) => set("is_client", e.target.checked)} />
+                Mark as known client (has purchased before)
+              </label>
+
+          {createDemand && (
+            <>
+              <Field label="For whom">
+                <Select value={form.forWhom} onChange={(e) => set("forWhom", e.target.value)}>
+                  <option value="">— select —</option>
+                  {FOR_WHOM_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+                </Select>
               </Field>
               <Field label="Product type — pick all that apply">
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: "4px 0" }}>
@@ -2652,14 +2819,6 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved, prefill = n
               </div>
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <Field label="Occasion">
-                  <Select value={form.occasion} onChange={(e) => set("occasion", e.target.value)}>
-                    <option value="">— select —</option>
-                    {OCCASION_TYPES.map((o) => <option key={o} value={o}>{o}</option>)}
-                  </Select>
-                </Field>
-                <Field label="Occasion date"><Input type="date" value={form.occasionDate} onChange={(e) => set("occasionDate", e.target.value)} /></Field>
-                <Field label="Estimate (₹)"><Input type="number" value={form.estimate} onChange={(e) => set("estimate", e.target.value)} placeholder="150000" /></Field>
                 <Field label="Funnel">
                   <Select value={form.funnelId} onChange={(e) => set("funnelId", e.target.value)}>
                     {funnels.filter((f) => f.active).map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
@@ -2765,22 +2924,6 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved, prefill = n
               </label>
             </>
           )}
-
-          {err && <p style={{ fontSize: 12, color: C.red, margin: "8px 0" }}>{err}</p>}
-
-          {dupContact && (
-            <div style={{ background: "#fff7ed", border: "1px solid #fdba74", borderRadius: 8, padding: 12, margin: "10px 0", fontSize: 13 }}>
-              <div style={{ fontWeight: 600, color: "#c2410c", marginBottom: 4 }}>⚠️ Phone already exists</div>
-              <div style={{ color: "#555", marginBottom: 8 }}>
-                <strong>{dupContact.name || "(no name)"}</strong> · {dupContact.phone}
-                {dupContact.city ? ` · ${dupContact.city}` : ""}
-                {dupContact.source ? ` · source: ${dupContact.source}` : ""}
-              </div>
-              <div style={{ display: "flex", gap: 6 }}>
-                <Btn small color={C.blue} onClick={() => { pickContact(dupContact); setDupContact(null); }}>Use existing contact</Btn>
-                <Btn small ghost color={C.green} onClick={() => setEditingContact(dupContact)}>✏️ Edit existing (fix name/details)</Btn>
-                <Btn small ghost color={C.gray} onClick={() => { setDupContact(null); set("phone", ""); }}>Change phone</Btn>
-              </div>
             </div>
           )}
 
@@ -11006,29 +11149,31 @@ function WalkinDashboardScreen({ funnels = [], onEditEstimate }) {
 // sections: [{ heading?, rows: [[label, value], ...], total }, ...]
 // One section with no heading renders like a single plain estimate; multiple
 // sections (each with a heading) is used for the multi-estimate "send selected" flow.
-function buildEstimatePdfDoc({ title, clientName, sections }) {
-  const doc = new jsPDF({ unit: "pt", format: "a5" });
-  const marginX = 40, colR = 380;
+function buildEstimatePdfDoc({ title, clientName, sections, orientation = "portrait", format = "a5" }) {
+  const doc = new jsPDF({ unit: "pt", format, orientation });
+  const pageW = doc.internal.pageSize.getWidth();
+  const marginX = 40, colR = pageW - 40, centerX = pageW / 2;
   let y = 50;
 
   doc.setFont("times", "bold");
   doc.setFontSize(18);
-  doc.text(title || "ESTIMATE", 210, y, { align: "center" });
+  doc.text(title || "ESTIMATE", centerX, y, { align: "center" });
   y += 22;
 
   doc.setFont("times", "normal");
   doc.setFontSize(10);
   const today = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" });
-  doc.text(today, 210, y, { align: "center" });
+  doc.text(today, centerX, y, { align: "center" });
   y += 16;
   if (clientName) {
     doc.setFont("times", "italic");
-    doc.text(`Prepared for: ${clientName}`, 210, y, { align: "center" });
+    doc.text(`Prepared for: ${clientName}`, centerX, y, { align: "center" });
     y += 16;
   }
   y += 6;
 
-  const ensureRoom = (need = 20) => { if (y + need > 760) { doc.addPage(); y = 50; } };
+  const pageH = doc.internal.pageSize.getHeight();
+  const ensureRoom = (need = 20) => { if (y + need > pageH - 40) { doc.addPage(); y = 50; } };
 
   sections.forEach((sec) => {
     ensureRoom(30);
@@ -11070,7 +11215,7 @@ function buildEstimatePdfDoc({ title, clientName, sections }) {
   doc.setFont("times", "normal");
   doc.setFontSize(8);
   doc.setTextColor(130);
-  doc.text("This is an estimate only · Gold rates apply on full payment · Not a final bill", 210, y, { align: "center", maxWidth: 340 });
+  doc.text("This is an estimate only · Gold rates apply on full payment · Not a final bill", centerX, y, { align: "center", maxWidth: colR - marginX });
 
   return doc;
 }
@@ -11081,16 +11226,16 @@ function estimatePdfFilename(title, clientName) {
 
 // Downloads a single-estimate PDF straight to disk (no print dialog).
 // rows: [[label, value], ...]
-function downloadEstimatePdf({ title, clientName, rows, total }) {
-  const doc = buildEstimatePdfDoc({ title, clientName, sections: [{ rows, total }] });
+function downloadEstimatePdf({ title, clientName, rows, total, orientation, format }) {
+  const doc = buildEstimatePdfDoc({ title, clientName, sections: [{ rows, total }], orientation, format });
   doc.save(estimatePdfFilename(title, clientName));
 }
 
 // Builds the PDF, uploads it to Supabase storage, and sends it as a WhatsApp
 // document via the Baileys wa-service (default session, 8860866000).
 // sections: same shape as buildEstimatePdfDoc.
-async function sendEstimatePdfOnWA({ phone, clientName, title, sections, caption }) {
-  const doc = buildEstimatePdfDoc({ title, clientName, sections });
+async function sendEstimatePdfOnWA({ phone, clientName, title, sections, caption, orientation, format }) {
+  const doc = buildEstimatePdfDoc({ title, clientName, sections, orientation, format });
   const blob = doc.output("blob");
   const filename = estimatePdfFilename(title, clientName);
   const file = new File([blob], filename, { type: "application/pdf" });
@@ -12620,25 +12765,31 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   const handleQuotPrint = () => {
     const today = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" });
     const clientName = saveContact?.name || saveContact?.phone || "";
+    const quotTotalN = rows.reduce((s, r) => s + (solCalc(r).sellTotal || 0), 0);
     const stoneRows = rows.map((r, i) => {
       const sc = solCalc(r);
+      const rapTxt = sc.rapInrPerCt != null ? "₹" + Math.round(sc.rapInrPerCt).toLocaleString("en-IN") : "—";
+      const discTxt = sc.sellDisc != null && !isNaN(sc.sellDisc) ? `${sc.sellDisc.toFixed(1)}%` : "—";
       const mainRow = `<tr style="border-bottom:${r.notes ? "none" : "1px solid #eee"};">
         <td style="padding:4px 6px;font-size:12px;color:#888;">${i + 1}</td>
         <td style="padding:4px 6px;font-size:12px;">${r.shape}</td>
         <td style="padding:4px 6px;font-size:12px;">${r.weight} ct</td>
         <td style="padding:4px 6px;font-size:12px;">${r.color} / ${r.clarity}</td>
+        <td style="padding:4px 6px;font-size:12px;">${r.cut}</td>
         <td style="padding:4px 6px;font-size:12px;">${r.cert}</td>
+        <td style="padding:4px 6px;font-size:12px;text-align:right;">${rapTxt}</td>
+        <td style="padding:4px 6px;font-size:12px;text-align:right;">${discTxt}</td>
         <td style="padding:4px 6px;font-size:12px;text-align:right;font-weight:600;">${sc.sellTotal != null ? fmt(sc.sellTotal) : "—"}</td>
       </tr>`;
-      const notesRow = r.notes ? `<tr style="border-bottom:1px solid #eee;"><td colspan="6" style="padding:0 6px 6px;font-size:11px;color:#777;">📝 ${r.notes}</td></tr>` : "";
+      const notesRow = r.notes ? `<tr style="border-bottom:1px solid #eee;"><td colspan="9" style="padding:0 6px 6px;font-size:11px;color:#777;">📝 ${r.notes}</td></tr>` : "";
       return mainRow + notesRow;
     }).join("");
     const html = `<!DOCTYPE html><html><head><title>Quotation</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: 'Georgia', serif; background: #fff; color: #222; }
-  @page { size: A5 portrait; margin: 12mm; }
-  .wrap { max-width: 500px; margin: 0 auto; }
+  @page { size: A4 landscape; margin: 12mm; }
+  .wrap { max-width: 100%; margin: 0 auto; }
   .om { font-size: 28px; color: #8b6914; text-align: center; margin-bottom: 4px; }
   .title { font-size: 18px; letter-spacing: 3px; text-align: center; font-weight: bold; margin-bottom: 2px; }
   .date { font-size: 12px; color: #666; text-align: center; margin-bottom: 4px; }
@@ -12648,6 +12799,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   table { width: 100%; border-collapse: collapse; }
   th { padding: 5px 6px; font-size: 11px; color: #555; text-align: left; border-bottom: 2px solid #333; font-weight: 600; }
   th:last-child { text-align: right; }
+  tfoot td { padding: 8px 6px; font-size: 14px; font-weight: bold; border-top: 2px solid #333; }
   .disclaimer { font-size: 10px; color: #888; text-align: center; margin-top: 14px; line-height: 1.7; }
 </style></head><body>
 <div class="wrap">
@@ -12658,9 +12810,10 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   <hr class="thick"/>
   <table>
     <thead><tr>
-      <th>#</th><th>Shape</th><th>Weight</th><th>Colour/Clarity</th><th>Cert</th><th style="text-align:right;">Price</th>
+      <th>#</th><th>Shape</th><th>Weight</th><th>Colour/Clarity</th><th>Cut</th><th>Cert</th><th style="text-align:right;">Rap INR/ct</th><th style="text-align:right;">Disc%</th><th style="text-align:right;">Price</th>
     </tr></thead>
     <tbody>${stoneRows}</tbody>
+    <tfoot><tr><td colspan="8">Total</td><td style="text-align:right;">${fmt(quotTotalN)}</td></tr></tfoot>
   </table>
   <div class="disclaimer">This is an estimate only · Prices subject to change · Not a final bill</div>
 </div>
@@ -13073,7 +13226,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
           <thead>
             <tr style={{ background: "#f7f7f7", borderBottom: "2px solid #eee" }}>
-              {["#","Shape","Wt (ct)","Colour","Clarity","Cut","Cert","Rap INR/ct","Sell Disc%","Sell Price", ...(quotShowExtra ? ["Notes"] : []), ""].map(h => (
+              {["#","Shape","Wt (ct)","Colour","Clarity","Cut","Cert","Cert/Stk#","Rap INR/ct","Buy Disc%","Sell Disc%","Sell Price", ...(quotShowExtra ? ["Notes"] : []), ""].map(h => (
                 <th key={h} style={{ padding: "7px 8px", textAlign: "left", fontWeight: 600, color: "#555", fontSize: 11, whiteSpace: "nowrap" }}>{h}</th>
               ))}
             </tr>
@@ -13112,8 +13265,14 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
                       {["IGI","GIA","HRD","Non-Cert"].map(c => <option key={c}>{c}</option>)}
                     </select>
                   </td>
+                  <td style={{ padding: "4px 4px" }}>
+                    <input style={{ ...inp, width: 90, padding: "4px 6px", fontSize: 11 }} value={row.vendorCode} onChange={e => setRows(p => p.map((r, i) => i === idx ? { ...r, vendorCode: e.target.value } : r))} placeholder="Cert/Stk#" />
+                  </td>
                   <td style={{ padding: "4px 8px", fontSize: 11, color: rc.rapInrPerCt != null ? "#333" : "#ccc" }}>
                     {rc.rapInrPerCt != null ? "₹" + Math.round(rc.rapInrPerCt).toLocaleString("en-IN") : "—"}
+                  </td>
+                  <td style={{ padding: "4px 4px" }}>
+                    <input style={{ ...inp, width: 55, padding: "4px 6px", fontSize: 11 }} type="number" step="0.1" value={row.buyDisc} onChange={e => setRows(p => p.map((r, i) => i === idx ? { ...r, buyDisc: e.target.value } : r))} placeholder="e.g. 43" />
                   </td>
                   <td style={{ padding: "4px 4px" }}>
                     <input style={{ ...inp, width: 60, padding: "4px 6px", fontSize: 11, background: row.sellDisc === "" ? "#fffbe6" : "#fff" }} type="number" step="0.1" value={row.sellDisc} onChange={e => setRows(p => p.map((r, i) => i === idx ? { ...r, sellDisc: e.target.value } : r))} placeholder={String((rc.buyDisc - spread).toFixed(1))} />
@@ -13146,7 +13305,9 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
       {(() => {
         const quotPdfRows = rows.map((r, i) => {
           const sc = solCalc(r);
-          const label = `${i+1}. ${r.shape} ${r.weight}ct ${r.color}/${r.clarity} ${r.cert}${r.notes ? `\n   📝 ${r.notes}` : ""}`;
+          const rapTxt = sc.rapInrPerCt != null ? "₹" + Math.round(sc.rapInrPerCt).toLocaleString("en-IN") : "—";
+          const discTxt = sc.sellDisc != null && !isNaN(sc.sellDisc) ? `${sc.sellDisc.toFixed(1)}%` : "—";
+          const label = `${i+1}. ${r.shape}  ${r.weight}ct  ${r.color}/${r.clarity}  ${r.cut}  ${r.cert}  ·  Rap ${rapTxt}  ·  Disc ${discTxt}${r.notes ? `\n   📝 ${r.notes}` : ""}`;
           return [label, sc.sellTotal != null ? fmt(sc.sellTotal) : "—"];
         });
         const quotTotal = fmt(rows.reduce((s, r) => s + (solCalc(r).sellTotal || 0), 0));
@@ -13157,12 +13318,12 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
             <Btn small color={C.green} onClick={() => setRows(p => [...p, newSolRow()])}>+ Add Stone</Btn>
             <Btn small color={C.blue} onClick={() => { setJustSaved(false); setSaveModal(true); }}>💾 Save</Btn>
             <Btn small ghost color={C.blue} onClick={handleQuotPrint}>🖨️ Print</Btn>
-            <Btn small ghost color={C.blue} onClick={() => downloadEstimatePdf({ title: "QUOTATION", clientName: saveContact?.name, rows: quotPdfRows, total: quotTotal })}>📄 Download PDF</Btn>
+            <Btn small ghost color={C.blue} onClick={() => downloadEstimatePdf({ title: "QUOTATION", clientName: saveContact?.name, rows: quotPdfRows, total: quotTotal, orientation: "landscape", format: "a4" })}>📄 Download PDF</Btn>
             {saveContact && (
               <Btn small ghost={!justSaved} color={C.green} disabled={!justSaved || sendingEst} style={justSaved ? { background: C.green, color: "#fff" } : undefined} onClick={async () => {
                 setSendingEst(true);
                 try {
-                  const r = await sendEstimatePdfOnWA({ phone: saveContact.phone, clientName: saveContact.name, title: "QUOTATION", sections: [{ rows: quotPdfRows, total: quotTotal }], caption: quotCaption });
+                  const r = await sendEstimatePdfOnWA({ phone: saveContact.phone, clientName: saveContact.name, title: "QUOTATION", sections: [{ rows: quotPdfRows, total: quotTotal }], caption: quotCaption, orientation: "landscape", format: "a4" });
                   showToast(r.ok ? "✅ Quotation PDF sent on WhatsApp" : "❌ " + (r.error || "Send failed"));
                 } catch (e) { showToast("❌ " + e.message); }
                 setSendingEst(false);

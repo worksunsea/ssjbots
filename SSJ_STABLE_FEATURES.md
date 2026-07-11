@@ -146,6 +146,14 @@ Before any message is sent, Saurav must review and approve it in the **Approvals
 **Demand = a specific purchase enquiry from a contact.**
 One contact can have multiple demands (each for a different product/occasion).
 
+**Demands tab UI (simplified 2026-07-10):**
+- `nextStepFor(demand)` helper (App.jsx ~line 199) is the single source of truth for "what should staff do right now" — priority order: callback-promised-and-due → call-overdue → call-scheduled(disabled) → visit-today → confirm-visit-tomorrow → mark-visit-result → handoff-reply → bot-chatting(no action). Drives both the card's one-button and ConversationPane's primary action — **do not re-derive urgency logic elsewhere; call this function.**
+- Collapsed demand card = 2 lines: name+temp chip+VIP chip+next-step button, then a plain-text one-liner (description · occasion+date · budget). All the old pills (call-attempts, bot pill, product/occasion/budget/visit/assigned pills, step name, timestamp) were deliberately removed — do not re-add without re-checking the simplification intent.
+- Card's next-step button auto-selects the demand and passes `autoOpen="call"` to `ConversationPane`, which opens `LogCallModal` on mount — this is why `ConversationPane` is given `key={d.id}` in the map (forces remount so the auto-open effect fires per-selection).
+- `ConversationPane` action row was regrouped from 17 flat buttons into 3: Primary (nextStepFor), "Close demand ▾" dropdown (Converted/Lost/Not interested/Junk/Supplier/Opt-Out-DNC), "⋯ More" dropdown (Schedule visit/Send design/Edit contact + manager-only: Reassign/Pause bot/Merge duplicate/Mark step complete/Undo step/Handoff). Standalone "Dead" button was deleted (duplicate of Close→Lost).
+- Role gating: `isManagerPlus = ["superadmin","admin","manager"].includes(loadUser()?.role)`. Bulk-select checkbox (card list) and the More-menu's manager items are hidden for telecallers. Funnel-flow strip is manager+-only and collapsed by default (`funnelFlowOpen`); past call attempts collapse behind a count toggle (`attemptsOpen`) for everyone.
+- `WalkinEntryModal` is now a 2-step form: Step 1 (always visible) = Name/Phone/Product category/Estimate/Description/Occasion+date. Step 2 = everything else (city/email/bday/anniversary/rating/tags/is_client/for-whom/product-types/items-enquired/exchange/funnel/attended-by/discovery-source/design-ref/visit-scheduling/visit-tracking/outcome/competitor/followup/activate-bot), behind a "▼ Complete visit details" toggle (`expanded` state), collapsed by default. There's no backend-persisted "finish later" reminder — Step 2 is just collapsed in the same modal, not a separate reopenable flow.
+
 **Key features:**
 - AI-personalized opening WA message sent on demand creation (Claude Haiku)
 - Visit scheduling: D-1 reminder + D-day morning reminder (both auto-approved)
