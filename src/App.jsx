@@ -11454,11 +11454,31 @@ function productFormFromRow(p) {
   };
 }
 
+// Auto-derive a short code from a catalogue collection name — avoids staff
+// having to invent+remember a 2-letter code and risking a silent collision.
+// Tries initials of the first two words, then first two letters, then falls
+// back to a numbered variant until something's free. Shared by CatalogueScreen
+// (collection admin) and VendorsScreen (inline "+ New Category" quick-add).
+function deriveItemTypeCode(name, existingCodes) {
+  const words = name.trim().toUpperCase().split(/\s+/).filter(Boolean);
+  const letters = words.join("").replace(/[^A-Z]/g, "");
+  const candidates = [];
+  if (words.length >= 2 && words[0][0] && words[1][0]) candidates.push(words[0][0] + words[1][0]);
+  if (letters.length >= 2) candidates.push(letters.slice(0, 2));
+  if (words[0]) candidates.push(words[0].slice(0, 2));
+  for (const c of candidates) if (c && c.length >= 2 && !existingCodes.has(c)) return c;
+  const base = candidates[0] || "XX";
+  for (let n = 2; n < 50; n++) { const c = base[0] + n; if (!existingCodes.has(c)) return c; }
+  return base + Date.now().toString().slice(-3);
+}
+
 const EMPTY_VENDOR_FORM = {
-  company_name: "", contact_person: "", designation: "", phone: "", alt_phone: "", email: "",
+  company_name: "", contacts: [], email: "",
   address: "", city: "", state: "", website: "", gstin: "",
   payment_terms: "advance", on_approval_days: "", credit_days: "",
-  card_image_url: "", notes: "", source: "manual", exhibition_name: "", active: true,
+  card_image_front_url: "", card_image_back_url: "",
+  notes: "", source: "manual", exhibition_name: "", active: true,
+  custom_fields: [], // [{label, value}] — ad-hoc, no field-type system by design
 };
 const VENDOR_PAYMENT_TERMS = [
   { k: "advance", l: "Advance" }, { k: "on_approval", l: "On Approval" },
@@ -11466,12 +11486,109 @@ const VENDOR_PAYMENT_TERMS = [
 ];
 const VENDOR_SOURCES = [
   { k: "manual", l: "Manual entry" }, { k: "card_scan", l: "Card scan" },
-  { k: "exhibition", l: "Exhibition" }, { k: "referral", l: "Referral" }, { k: "other", l: "Other" },
+  { k: "referral", l: "Referral" }, { k: "other", l: "Other" },
 ];
 const VENDOR_ITEM_UNITS = [
   { k: "per_gram", l: "per gram" }, { k: "per_piece", l: "per piece" },
   { k: "per_carat", l: "per carat" }, { k: "percent", l: "%" }, { k: "flat", l: "flat" },
 ];
+
+// ── Offline draft queue (IndexedDB) — lets a vendor be captured (photos +
+// all typed fields) with zero network at an exhibition, then synced
+// automatically once the device is back online. No library — plain
+// indexedDB, small enough to inline. ──
+const VENDOR_DB_NAME = "ssj_vendor_offline";
+const VENDOR_STORE = "drafts";
+function openVendorDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(VENDOR_DB_NAME, 1);
+    req.onupgradeneeded = () => { req.result.createObjectStore(VENDOR_STORE, { keyPath: "id" }); };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function idbPutDraft(draft) {
+  const db = await openVendorDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(VENDOR_STORE, "readwrite");
+    tx.objectStore(VENDOR_STORE).put(draft);
+    tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
+  });
+}
+async function idbGetAllDrafts() {
+  const db = await openVendorDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(VENDOR_STORE, "readonly");
+    const req = tx.objectStore(VENDOR_STORE).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function idbDeleteDraft(id) {
+  const db = await openVendorDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(VENDOR_STORE, "readwrite");
+    tx.objectStore(VENDOR_STORE).delete(id);
+    tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
+  });
+}
+
+// Shared insert path — used both by the live "Add Vendor" save and by the
+// offline-draft sync loop, so both routes stay in sync with schema changes.
+async function persistNewVendor(tid, form, dealingIds, itemRows) {
+  const payload = {
+    tenant_id: tid,
+    company_name: form.company_name.trim(),
+    contacts: (form.contacts || []).filter((c) => c.name || c.phone),
+    custom_fields: (form.custom_fields || []).filter((f) => f.label || f.value),
+    email: form.email || null, address: form.address || null, city: form.city || null, state: form.state || null,
+    website: form.website || null, gstin: form.gstin || null,
+    payment_terms: form.payment_terms,
+    on_approval_days: form.on_approval_days !== "" ? Number(form.on_approval_days) : null,
+    credit_days: form.credit_days !== "" ? Number(form.credit_days) : null,
+    card_image_front_url: form.card_image_front_url || null,
+    card_image_back_url: form.card_image_back_url || null,
+    notes: form.notes || null,
+    source: form.source, exhibition_name: form.exhibition_name || null,
+    active: form.active !== false,
+    created_by: loadUser()?.name || loadUser()?.username || null,
+  };
+  const { data, error } = await sb.from("bullion_vendors").insert(payload).select("id").single();
+  if (error) throw error;
+  const vendorId = data.id;
+  if (dealingIds && dealingIds.length) {
+    await sb.from("bullion_vendor_dealings").insert(dealingIds.map((item_type_id) => ({ vendor_id: vendorId, item_type_id })));
+  }
+  const validItems = (itemRows || []).filter((r) => r.item_name && r.item_name.trim() && r.making_charge !== "");
+  if (validItems.length) {
+    await sb.from("bullion_vendor_items").insert(validItems.map((r) => ({
+      tenant_id: tid, vendor_id: vendorId,
+      item_type_id: r.item_type_id || null, item_name: r.item_name.trim(),
+      making_charge: Number(r.making_charge), making_charge_unit: r.making_charge_unit || "per_gram",
+      price_note: r.price_note || null, active: r.active !== false,
+      created_by: loadUser()?.name || loadUser()?.username || null,
+    })));
+  }
+  return vendorId;
+}
+
+// Merges AI-extracted card fields into a vendor form draft, filling only
+// blanks — never overwrites what a person already typed. Shared by the
+// live scan path and the offline-sync path.
+function mergeCardFields(form, fields) {
+  const next = { ...form };
+  ["company_name", "email", "address", "website", "gstin"].forEach((k) => {
+    if (!next[k] && fields[k]) next[k] = fields[k];
+  });
+  if ((!next.contacts || next.contacts.length === 0) && Array.isArray(fields.contacts) && fields.contacts.length) {
+    next.contacts = fields.contacts.map((c) => ({ name: c.name || "", phone: c.phone || "", designation: c.designation || "" }));
+  }
+  const extraLines = [];
+  if (fields.deals_in_text) extraLines.push(`Deals in (from card): ${fields.deals_in_text}`);
+  if (Array.isArray(fields.other_notes)) fields.other_notes.forEach((n) => { if (n) extraLines.push(String(n)); });
+  if (extraLines.length) next.notes = [next.notes, ...extraLines].filter(Boolean).join("\n");
+  return next;
+}
 
 function VendorsScreen() {
   const tid = getTenantId();
@@ -11487,10 +11604,22 @@ function VendorsScreen() {
   const [dealingIds, setDealingIds] = useState(new Set());
   const [itemRows, setItemRows] = useState([]); // [{id?, item_name, item_type_id, making_charge, making_charge_unit, price_note, active}]
   const [saving, setSaving] = useState(false);
-  const [scanningCard, setScanningCard] = useState(false);
+  const [scanningFront, setScanningFront] = useState(false);
+  const [scanningBack, setScanningBack] = useState(false);
+  const [pendingBlobs, setPendingBlobs] = useState({ front: null, back: null }); // captured offline, not yet uploaded
+  const [pendingPreviewUrls, setPendingPreviewUrls] = useState({ front: "", back: "" });
   const [toast, setToast] = useState("");
-  const showToast = (m) => { setToast(m); setTimeout(() => setToast(""), 3000); };
-  const cardImgRef = useRef();
+  const showToast = (m) => { setToast(m); setTimeout(() => setToast(""), 4000); };
+  const frontImgRef = useRef();
+  const backImgRef = useRef();
+
+  // Offline queue state
+  const [pendingCount, setPendingCount] = useState(0);
+  const [syncing, setSyncing] = useState(false);
+
+  // Inline "+ New Category / Subcategory" (with optional cover image)
+  const [newCatForm, setNewCatForm] = useState(null); // null | { name, parentId, file, previewUrl }
+  const [savingCat, setSavingCat] = useState(false);
 
   // Find Supplier (sourcing search) state
   const [findCategory, setFindCategory] = useState("");
@@ -11519,6 +11648,62 @@ function VendorsScreen() {
     return () => clearInterval(t);
   }, [load, editingVendor]);
 
+  const refreshPendingCount = useCallback(async () => {
+    const drafts = await idbGetAllDrafts().catch(() => []);
+    setPendingCount(drafts.length);
+  }, []);
+
+  const syncDrafts = useCallback(async () => {
+    if (!navigator.onLine) return;
+    const drafts = await idbGetAllDrafts().catch(() => []);
+    if (!drafts.length) { setPendingCount(0); return; }
+    setSyncing(true);
+    let synced = 0;
+    for (const draft of drafts) {
+      try {
+        let frontUrl = draft.form.card_image_front_url;
+        let backUrl = draft.form.card_image_back_url;
+        if (!frontUrl && draft.frontBlob) {
+          const up = await secureImageUpload(new File([draft.frontBlob], "vendor-card-front.jpg", { type: draft.frontBlob.type || "image/jpeg" }), sb, "vendors", { maxDim: 1600, quality: 0.85 });
+          frontUrl = up.publicUrl;
+        }
+        if (!backUrl && draft.backBlob) {
+          const up = await secureImageUpload(new File([draft.backBlob], "vendor-card-back.jpg", { type: draft.backBlob.type || "image/jpeg" }), sb, "vendors", { maxDim: 1600, quality: 0.85 });
+          backUrl = up.publicUrl;
+        }
+        let form = { ...draft.form, card_image_front_url: frontUrl || "", card_image_back_url: backUrl || "" };
+        if ((frontUrl || backUrl) && !draft.aiAttempted) {
+          try {
+            const res = await fetch("/api/vendor-card-scan", {
+              method: "POST", headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
+              body: JSON.stringify({ frontUrl: frontUrl || null, backUrl: backUrl || null }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (data.fields) form = mergeCardFields(form, data.fields);
+          } catch { /* AI extraction failing shouldn't block the vendor from saving */ }
+        }
+        await persistNewVendor(tid, form, draft.dealingIds, draft.itemRows);
+        await idbDeleteDraft(draft.id);
+        synced++;
+      } catch (e) {
+        console.error("vendor draft sync failed", draft.id, e); // leave queued, retry next pass
+      }
+    }
+    setSyncing(false);
+    if (synced > 0) { showToast(`✓ Synced ${synced} offline vendor${synced === 1 ? "" : "s"}`); load(); }
+    refreshPendingCount();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tid, load, refreshPendingCount]);
+
+  useEffect(() => {
+    refreshPendingCount();
+    syncDrafts();
+    const onOnline = () => syncDrafts();
+    window.addEventListener("online", onOnline);
+    const t = setInterval(syncDrafts, 60000);
+    return () => { window.removeEventListener("online", onOnline); clearInterval(t); };
+  }, [syncDrafts, refreshPendingCount]);
+
   const topLevel = itemTypes.filter((t) => !t.parent_id);
   const childrenOf = (id) => itemTypes.filter((t) => t.parent_id === id);
   const itemTypeName = (id) => itemTypes.find((t) => t.id === id)?.name || "—";
@@ -11540,35 +11725,49 @@ function VendorsScreen() {
       const s = search.toLowerCase();
       rows = rows.filter((v) =>
         (v.company_name || "").toLowerCase().includes(s) ||
-        (v.contact_person || "").toLowerCase().includes(s) ||
-        (v.phone || "").includes(s) ||
-        (v.gstin || "").toLowerCase().includes(s)
+        (v.contacts || []).some((c) => (c.name || "").toLowerCase().includes(s) || (c.phone || "").includes(s)) ||
+        (v.gstin || "").toLowerCase().includes(s) ||
+        (v.notes || "").toLowerCase().includes(s)
       );
     }
     return rows;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vendors, itemTypes, filterCategory, filterPaymentTerms, search]);
 
+  const revokePreviews = () => {
+    Object.values(pendingPreviewUrls).forEach((u) => { if (u) URL.revokeObjectURL(u); });
+  };
   const openNew = () => {
+    revokePreviews();
     setVendorForm(EMPTY_VENDOR_FORM);
     setDealingIds(new Set());
     setItemRows([]);
+    setPendingBlobs({ front: null, back: null });
+    setPendingPreviewUrls({ front: "", back: "" });
     setEditingVendor({});
   };
   const openEdit = (v) => {
+    revokePreviews();
     setVendorForm({
-      company_name: v.company_name || "", contact_person: v.contact_person || "", designation: v.designation || "",
-      phone: v.phone || "", alt_phone: v.alt_phone || "", email: v.email || "",
+      company_name: v.company_name || "", contacts: v.contacts || [], email: v.email || "",
       address: v.address || "", city: v.city || "", state: v.state || "", website: v.website || "", gstin: v.gstin || "",
       payment_terms: v.payment_terms || "advance", on_approval_days: v.on_approval_days ?? "", credit_days: v.credit_days ?? "",
-      card_image_url: v.card_image_url || "", notes: v.notes || "", source: v.source || "manual",
+      card_image_front_url: v.card_image_front_url || "", card_image_back_url: v.card_image_back_url || "",
+      notes: v.notes || "", source: v.source || "manual",
       exhibition_name: v.exhibition_name || "", active: v.active !== false,
+      custom_fields: v.custom_fields || [],
     });
     setDealingIds(new Set((v.dealings || []).map((d) => d.item_type_id)));
     setItemRows((v.items || []).map((it) => ({ ...it })));
+    setPendingBlobs({ front: null, back: null });
+    setPendingPreviewUrls({ front: "", back: "" });
     setEditingVendor(v);
   };
-  const closeForm = () => { setEditingVendor(null); setVendorForm(EMPTY_VENDOR_FORM); setDealingIds(new Set()); setItemRows([]); };
+  const closeForm = () => {
+    revokePreviews();
+    setEditingVendor(null); setVendorForm(EMPTY_VENDOR_FORM); setDealingIds(new Set()); setItemRows([]);
+    setPendingBlobs({ front: null, back: null }); setPendingPreviewUrls({ front: "", back: "" });
+  };
 
   const toggleDealing = (id) => {
     setDealingIds((prev) => {
@@ -11578,96 +11777,124 @@ function VendorsScreen() {
     });
   };
 
+  const addContactRow = () => setVendorForm((p) => ({ ...p, contacts: [...(p.contacts || []), { name: "", phone: "", designation: "" }] }));
+  const updateContactRow = (idx, patch) => setVendorForm((p) => ({ ...p, contacts: p.contacts.map((c, i) => i === idx ? { ...c, ...patch } : c) }));
+  const removeContactRow = (idx) => setVendorForm((p) => ({ ...p, contacts: p.contacts.filter((_, i) => i !== idx) }));
+
+  const addCustomFieldRow = () => setVendorForm((p) => ({ ...p, custom_fields: [...(p.custom_fields || []), { label: "", value: "" }] }));
+  const updateCustomFieldRow = (idx, patch) => setVendorForm((p) => ({ ...p, custom_fields: p.custom_fields.map((f, i) => i === idx ? { ...f, ...patch } : f) }));
+  const removeCustomFieldRow = (idx) => setVendorForm((p) => ({ ...p, custom_fields: p.custom_fields.filter((_, i) => i !== idx) }));
+
   const addItemRow = () => setItemRows((r) => [...r, { item_name: "", item_type_id: "", making_charge: "", making_charge_unit: "per_gram", price_note: "", active: true }]);
   const updateItemRow = (idx, patch) => setItemRows((r) => r.map((row, i) => i === idx ? { ...row, ...patch } : row));
   const removeItemRow = (idx) => setItemRows((r) => r.filter((_, i) => i !== idx));
 
-  const handleCardPick = async (file) => {
+  const handleCardPick = async (side, file) => {
     if (!file) return;
-    setScanningCard(true);
+    const setUploading = side === "front" ? setScanningFront : setScanningBack;
+    setUploading(true);
     try {
+      if (!navigator.onLine) throw new Error("offline");
       const { publicUrl } = await secureImageUpload(file, sb, "vendors", { maxDim: 1600, quality: 0.85 });
-      setVendorForm((p) => ({ ...p, card_image_url: publicUrl, source: p.source === "manual" ? "card_scan" : p.source }));
-      const res = await fetch("/api/vendor-card-scan", {
-        method: "POST", headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
-        body: JSON.stringify({ imageUrl: publicUrl }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (data.fields) {
-        // Only fill fields the user hasn't already typed — never clobber manual input.
-        setVendorForm((p) => {
-          const next = { ...p };
-          const map = { company_name: "company_name", contact_person: "contact_person", designation: "designation", phone: "phone", email: "email", address: "address", website: "website", gstin: "gstin" };
-          Object.entries(map).forEach(([formKey, aiKey]) => {
-            if (!next[formKey] && data.fields[aiKey]) next[formKey] = data.fields[aiKey];
-          });
-          return next;
+      const key = side === "front" ? "card_image_front_url" : "card_image_back_url";
+      setVendorForm((p) => ({ ...p, [key]: publicUrl, source: p.source === "manual" ? "card_scan" : p.source }));
+      const frontUrl = side === "front" ? publicUrl : vendorForm.card_image_front_url;
+      const backUrl = side === "back" ? publicUrl : vendorForm.card_image_back_url;
+      if (frontUrl || backUrl) {
+        const res = await fetch("/api/vendor-card-scan", {
+          method: "POST", headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
+          body: JSON.stringify({ frontUrl: frontUrl || null, backUrl: backUrl || null }),
         });
-        showToast("✓ Card scanned — please verify the details");
-      } else {
-        showToast("⚠️ Couldn't read the card — fill details manually");
+        const data = await res.json().catch(() => ({}));
+        if (data.fields) {
+          setVendorForm((p) => mergeCardFields(p, data.fields));
+          showToast("✓ Card scanned — please verify the details");
+        } else {
+          showToast("⚠️ Couldn't read the card — fill details manually");
+        }
       }
     } catch (e) {
-      showToast("❌ " + e.message);
+      // Offline (or upload failed) — keep the photo locally so it isn't
+      // lost. It uploads + auto-scans once this vendor syncs.
+      const previewUrl = URL.createObjectURL(file);
+      setPendingBlobs((p) => ({ ...p, [side]: file }));
+      setPendingPreviewUrls((p) => ({ ...p, [side]: previewUrl }));
+      setVendorForm((p) => ({ ...p, source: p.source === "manual" ? "card_scan" : p.source }));
+      showToast("📴 Captured — will scan + upload once you're back online");
     } finally {
-      setScanningCard(false);
+      setUploading(false);
     }
   };
 
   const saveVendor = async () => {
     if (!vendorForm.company_name.trim()) { showToast("❌ Company name required"); return; }
     setSaving(true);
+    if (editingVendor?.id) {
+      // Editing an existing vendor requires network — offline queueing is
+      // scoped to NEW vendor capture (the actual exhibition-floor use case).
+      try {
+        const payload = {
+          company_name: vendorForm.company_name.trim(),
+          contacts: (vendorForm.contacts || []).filter((c) => c.name || c.phone),
+          custom_fields: (vendorForm.custom_fields || []).filter((f) => f.label || f.value),
+          email: vendorForm.email || null, address: vendorForm.address || null, city: vendorForm.city || null, state: vendorForm.state || null,
+          website: vendorForm.website || null, gstin: vendorForm.gstin || null,
+          payment_terms: vendorForm.payment_terms,
+          on_approval_days: vendorForm.on_approval_days !== "" ? Number(vendorForm.on_approval_days) : null,
+          credit_days: vendorForm.credit_days !== "" ? Number(vendorForm.credit_days) : null,
+          card_image_front_url: vendorForm.card_image_front_url || null, card_image_back_url: vendorForm.card_image_back_url || null,
+          notes: vendorForm.notes || null,
+          source: vendorForm.source, exhibition_name: vendorForm.exhibition_name || null,
+          active: vendorForm.active,
+        };
+        const { error } = await sb.from("bullion_vendors").update(payload).eq("id", editingVendor.id);
+        if (error) throw error;
+        await sb.from("bullion_vendor_dealings").delete().eq("vendor_id", editingVendor.id);
+        if (dealingIds.size) await sb.from("bullion_vendor_dealings").insert([...dealingIds].map((item_type_id) => ({ vendor_id: editingVendor.id, item_type_id })));
+        await sb.from("bullion_vendor_items").delete().eq("vendor_id", editingVendor.id);
+        const validItems = itemRows.filter((r) => r.item_name.trim() && r.making_charge !== "");
+        if (validItems.length) {
+          await sb.from("bullion_vendor_items").insert(validItems.map((r) => ({
+            tenant_id: tid, vendor_id: editingVendor.id,
+            item_type_id: r.item_type_id || null, item_name: r.item_name.trim(),
+            making_charge: Number(r.making_charge), making_charge_unit: r.making_charge_unit || "per_gram",
+            price_note: r.price_note || null, active: r.active !== false,
+            created_by: loadUser()?.name || loadUser()?.username || null,
+          })));
+        }
+        showToast("✓ Vendor updated");
+        closeForm();
+        load();
+      } catch (e) {
+        showToast("❌ " + e.message);
+      }
+      setSaving(false);
+      return;
+    }
+
+    // NEW vendor — try online first, fall back to the offline queue on any failure.
     try {
-      const payload = {
-        tenant_id: tid,
-        company_name: vendorForm.company_name.trim(),
-        contact_person: vendorForm.contact_person || null, designation: vendorForm.designation || null,
-        phone: vendorForm.phone || null, alt_phone: vendorForm.alt_phone || null, email: vendorForm.email || null,
-        address: vendorForm.address || null, city: vendorForm.city || null, state: vendorForm.state || null,
-        website: vendorForm.website || null, gstin: vendorForm.gstin || null,
-        payment_terms: vendorForm.payment_terms,
-        on_approval_days: vendorForm.on_approval_days !== "" ? Number(vendorForm.on_approval_days) : null,
-        credit_days: vendorForm.credit_days !== "" ? Number(vendorForm.credit_days) : null,
-        card_image_url: vendorForm.card_image_url || null, notes: vendorForm.notes || null,
-        source: vendorForm.source, exhibition_name: vendorForm.exhibition_name || null,
-        active: vendorForm.active,
-        created_by: loadUser()?.name || loadUser()?.username || null,
-      };
-      let vendorId = editingVendor?.id;
-      if (vendorId) {
-        const { error } = await sb.from("bullion_vendors").update(payload).eq("id", vendorId);
-        if (error) throw error;
-      } else {
-        const { data, error } = await sb.from("bullion_vendors").insert(payload).select("id").single();
-        if (error) throw error;
-        vendorId = data.id;
-      }
-
-      // Sync "deals in" categories — delete-then-insert is simplest correct
-      // approach at this scale (a handful of categories per vendor).
-      await sb.from("bullion_vendor_dealings").delete().eq("vendor_id", vendorId);
-      if (dealingIds.size) {
-        await sb.from("bullion_vendor_dealings").insert([...dealingIds].map((item_type_id) => ({ vendor_id: vendorId, item_type_id })));
-      }
-
-      // Sync item-wise making charges — same delete-then-insert approach.
-      await sb.from("bullion_vendor_items").delete().eq("vendor_id", vendorId);
-      const validItems = itemRows.filter((r) => r.item_name.trim() && r.making_charge !== "");
-      if (validItems.length) {
-        await sb.from("bullion_vendor_items").insert(validItems.map((r) => ({
-          tenant_id: tid, vendor_id: vendorId,
-          item_type_id: r.item_type_id || null, item_name: r.item_name.trim(),
-          making_charge: Number(r.making_charge), making_charge_unit: r.making_charge_unit || "per_gram",
-          price_note: r.price_note || null, active: r.active !== false,
-          created_by: loadUser()?.name || loadUser()?.username || null,
-        })));
-      }
-
-      showToast(editingVendor?.id ? "✓ Vendor updated" : "✓ Vendor added");
+      if (!navigator.onLine) throw new Error("offline");
+      await persistNewVendor(tid, vendorForm, [...dealingIds], itemRows);
+      showToast("✓ Vendor added");
       closeForm();
       load();
     } catch (e) {
-      showToast("❌ " + e.message);
+      try {
+        const draft = {
+          id: `local_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+          createdAt: Date.now(),
+          form: vendorForm, dealingIds: [...dealingIds], itemRows,
+          frontBlob: pendingBlobs.front || null, backBlob: pendingBlobs.back || null,
+          aiAttempted: false,
+        };
+        await idbPutDraft(draft);
+        showToast("📴 Saved offline — will sync automatically when back online");
+        closeForm();
+        refreshPendingCount();
+      } catch (idbErr) {
+        showToast("❌ Couldn't save (online or offline): " + idbErr.message);
+      }
     }
     setSaving(false);
   };
@@ -11682,7 +11909,7 @@ function VendorsScreen() {
     setFindLoading(true);
     try {
       if (findByCategoryOnly) {
-        let q = sb.from("bullion_vendor_dealings").select("vendor_id, vendor:bullion_vendors(id,company_name,contact_person,phone,payment_terms,active)");
+        let q = sb.from("bullion_vendor_dealings").select("vendor_id, vendor:bullion_vendors(id,company_name,contacts,payment_terms,active)");
         if (findCategory) {
           const ids = [...categoryAndDescendants(findCategory)];
           q = q.in("item_type_id", ids);
@@ -11693,7 +11920,7 @@ function VendorsScreen() {
         setFindResults([...seen.values()].map((v) => ({ vendor: v, item_name: null, making_charge: null })));
       } else {
         let q = sb.from("bullion_vendor_items")
-          .select("*, vendor:bullion_vendors(id,company_name,contact_person,phone,payment_terms,active)")
+          .select("*, vendor:bullion_vendors(id,company_name,contacts,payment_terms,active)")
           .eq("tenant_id", tid).eq("active", true);
         if (findCategory) {
           const ids = [...categoryAndDescendants(findCategory)];
@@ -11714,14 +11941,53 @@ function VendorsScreen() {
   const inp = { padding: "6px 10px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13, width: "100%", boxSizing: "border-box" };
   const lbl = { fontSize: 11, color: "#888", marginBottom: 3, display: "block" };
 
+  const openNewCat = (parentId = "") => setNewCatForm({ name: "", parentId, file: null, previewUrl: "", customerVisible: false });
+  const pickNewCatImage = (file) => {
+    if (!file) return;
+    setNewCatForm((p) => ({ ...p, file, previewUrl: URL.createObjectURL(file) }));
+  };
+  const saveNewCat = async () => {
+    if (!newCatForm?.name?.trim()) { showToast("❌ Category name required"); return; }
+    setSavingCat(true);
+    try {
+      let cover_image_url = null;
+      if (newCatForm.file) {
+        const { publicUrl } = await secureImageUpload(newCatForm.file, sb, "catalogue", { maxDim: 1000, quality: 0.8 });
+        cover_image_url = publicUrl;
+      }
+      const existingCodes = new Set(itemTypes.map((t) => t.code));
+      const code = deriveItemTypeCode(newCatForm.name, existingCodes);
+      const { data, error } = await sb.from("catalogue_item_types").insert({
+        tenant_id: tid, name: newCatForm.name.trim(), code,
+        parent_id: newCatForm.parentId || null, cover_image_url,
+        customer_visible: !!newCatForm.customerVisible,
+        created_by: loadUser()?.name || null,
+      }).select().single();
+      if (error) throw error;
+      setItemTypes((p) => [...p, data]);
+      setDealingIds((prev) => new Set([...prev, data.id]));
+      if (newCatForm.previewUrl) URL.revokeObjectURL(newCatForm.previewUrl);
+      setNewCatForm(null);
+      showToast(`✓ ${newCatForm.parentId ? "Subcategory" : "Category"} added — code ${code}`);
+    } catch (e) {
+      showToast("❌ " + e.message);
+    }
+    setSavingCat(false);
+  };
+
   return (
     <div>
-      {toast && <div style={{ position: "fixed", top: 16, right: 16, background: "#222", color: "#fff", padding: "10px 16px", borderRadius: 8, zIndex: 200, fontSize: 13 }}>{toast}</div>}
+      {toast && <div style={{ position: "fixed", top: 16, right: 16, background: "#222", color: "#fff", padding: "10px 16px", borderRadius: 8, zIndex: 200, fontSize: 13, maxWidth: 320 }}>{toast}</div>}
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
-        <div style={{ display: "flex", gap: 6 }}>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
           <Btn small color={mode === "directory" ? C.blue : C.gray} ghost={mode !== "directory"} onClick={() => setMode("directory")}>📇 Directory</Btn>
           <Btn small color={mode === "find" ? C.blue : C.gray} ghost={mode !== "find"} onClick={() => setMode("find")}>🔎 Find Supplier</Btn>
+          {pendingCount > 0 && (
+            <Btn small ghost color={C.orange} onClick={syncDrafts} disabled={syncing}>
+              {syncing ? "Syncing…" : `📴 ${pendingCount} pending sync — tap to retry`}
+            </Btn>
+          )}
         </div>
         {mode === "directory" && <Btn small color={C.green} onClick={openNew}>+ Add Vendor</Btn>}
       </div>
@@ -11742,22 +12008,24 @@ function VendorsScreen() {
               <option value="">All payment terms</option>
               {VENDOR_PAYMENT_TERMS.map((p) => <option key={p.k} value={p.k}>{p.l}</option>)}
             </select>
-            <input style={{ ...inp, width: 220 }} placeholder="Search company, contact, phone, GSTIN…" value={search} onChange={(e) => setSearch(e.target.value)} />
+            <input style={{ ...inp, width: 240 }} placeholder="Search company, contact, GSTIN, notes…" value={search} onChange={(e) => setSearch(e.target.value)} />
           </div>
 
           {loading ? <div style={{ color: "#888", fontSize: 13 }}>Loading…</div> : filtered.length === 0 ? (
             <div style={{ color: "#888", fontSize: 13, padding: 20, textAlign: "center" }}>No vendors match — try clearing filters, or add one.</div>
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 10 }}>
-              {filtered.map((v) => (
+              {filtered.map((v) => {
+                const primaryContact = (v.contacts || [])[0];
+                return (
                 <Card key={v.id} style={{ cursor: "pointer" }}>
                   <div onClick={() => openEdit(v)}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                       <div style={{ fontWeight: 600, fontSize: 14 }}>{v.company_name}</div>
                       <Pill color={C.blue}>{VENDOR_PAYMENT_TERMS.find((p) => p.k === v.payment_terms)?.l || v.payment_terms}</Pill>
                     </div>
-                    {v.contact_person && <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>{v.contact_person}{v.designation ? ` · ${v.designation}` : ""}</div>}
-                    {v.phone && <div style={{ fontSize: 12, color: "#666" }}>📞 <a href={`tel:${v.phone}`} onClick={(e) => e.stopPropagation()} style={{ color: C.blue }}>{v.phone}</a></div>}
+                    {primaryContact && <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>{primaryContact.name}{primaryContact.designation ? ` · ${primaryContact.designation}` : ""}</div>}
+                    {primaryContact?.phone && <div style={{ fontSize: 12, color: "#666" }}>📞 <a href={`tel:${primaryContact.phone}`} onClick={(e) => e.stopPropagation()} style={{ color: C.blue }}>{primaryContact.phone}</a>{(v.contacts || []).length > 1 ? ` +${v.contacts.length - 1} more` : ""}</div>}
                     {(v.city || v.state) && <div style={{ fontSize: 11, color: "#999" }}>{[v.city, v.state].filter(Boolean).join(", ")}</div>}
                     {(v.dealings || []).length > 0 && (
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 8 }}>
@@ -11774,7 +12042,8 @@ function VendorsScreen() {
                     <Btn small ghost color={C.red} onClick={() => deactivateVendor(v)}>Deactivate</Btn>
                   </div>
                 </Card>
-              ))}
+                );
+              })}
             </div>
           )}
         </>
@@ -11804,7 +12073,9 @@ function VendorsScreen() {
             <div style={{ color: "#888", fontSize: 13, padding: 20, textAlign: "center" }}>No suppliers found for that filter.</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {findResults.map((r, i) => (
+              {findResults.map((r, i) => {
+                const primaryContact = (r.vendor?.contacts || [])[0];
+                return (
                 <Card key={r.id || `${r.vendor?.id}-${i}`}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
                     <div>
@@ -11812,43 +12083,66 @@ function VendorsScreen() {
                       <div style={{ fontSize: 12, color: "#666" }}>
                         {r.item_name ? `${r.item_name}${r.item_type_id ? ` (${itemTypeName(r.item_type_id)})` : ""}` : "Deals in this category"}
                       </div>
-                      {r.vendor?.contact_person && <div style={{ fontSize: 11, color: "#999" }}>{r.vendor.contact_person}</div>}
+                      {primaryContact?.name && <div style={{ fontSize: 11, color: "#999" }}>{primaryContact.name}</div>}
                     </div>
                     <div style={{ textAlign: "right" }}>
                       {r.making_charge != null && (
                         <div style={{ fontWeight: 600, color: C.blue }}>₹{r.making_charge} {VENDOR_ITEM_UNITS.find((u) => u.k === r.making_charge_unit)?.l || r.making_charge_unit}</div>
                       )}
-                      {r.vendor?.phone && <a href={`tel:${r.vendor.phone}`} style={{ fontSize: 12, color: C.green, display: "block" }}>📞 {r.vendor.phone}</a>}
+                      {primaryContact?.phone && <a href={`tel:${primaryContact.phone}`} style={{ fontSize: 12, color: C.green, display: "block" }}>📞 {primaryContact.phone}</a>}
                       {r.vendor?.payment_terms && <div style={{ fontSize: 11, color: "#999" }}>{VENDOR_PAYMENT_TERMS.find((p) => p.k === r.vendor.payment_terms)?.l}</div>}
                     </div>
                   </div>
                 </Card>
-              ))}
+                );
+              })}
             </div>
           )}
         </>
       )}
 
       {editingVendor !== null && (
-        <Modal title={editingVendor?.id ? "Edit Vendor" : "Add Vendor"} onClose={closeForm} width={640}>
-          <input ref={cardImgRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={(e) => handleCardPick(e.target.files?.[0])} />
-          <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "center" }}>
-            <Btn small color={C.purple} onClick={() => cardImgRef.current?.click()} disabled={scanningCard}>{scanningCard ? "Scanning…" : "📷 Scan Business Card"}</Btn>
-            {vendorForm.card_image_url && <img src={vendorForm.card_image_url} alt="card" style={{ height: 40, borderRadius: 4, border: "1px solid #eee" }} />}
+        <Modal title={editingVendor?.id ? "Edit Vendor" : "Add Vendor"} onClose={closeForm} width={680}>
+          <input ref={frontImgRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={(e) => handleCardPick("front", e.target.files?.[0])} />
+          <input ref={backImgRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={(e) => handleCardPick("back", e.target.files?.[0])} />
+          <div style={{ display: "flex", gap: 16, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <Btn small color={C.purple} onClick={() => frontImgRef.current?.click()} disabled={scanningFront}>{scanningFront ? "Scanning…" : "📷 Front of card"}</Btn>
+              {(vendorForm.card_image_front_url || pendingPreviewUrls.front) && <img src={vendorForm.card_image_front_url || pendingPreviewUrls.front} alt="card front" style={{ height: 40, borderRadius: 4, border: "1px solid #eee" }} />}
+              {pendingPreviewUrls.front && <span style={{ fontSize: 10, color: C.orange }}>📴 not uploaded yet</span>}
+            </div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <Btn small color={C.purple} onClick={() => backImgRef.current?.click()} disabled={scanningBack}>{scanningBack ? "Scanning…" : "📷 Back of card"}</Btn>
+              {(vendorForm.card_image_back_url || pendingPreviewUrls.back) && <img src={vendorForm.card_image_back_url || pendingPreviewUrls.back} alt="card back" style={{ height: 40, borderRadius: 4, border: "1px solid #eee" }} />}
+              {pendingPreviewUrls.back && <span style={{ fontSize: 10, color: C.orange }}>📴 not uploaded yet</span>}
+            </div>
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <div><label style={lbl}>Company Name *</label><input style={inp} value={vendorForm.company_name} onChange={(e) => setVendorForm((p) => ({ ...p, company_name: e.target.value }))} /></div>
-            <div><label style={lbl}>Contact Person</label><input style={inp} value={vendorForm.contact_person} onChange={(e) => setVendorForm((p) => ({ ...p, contact_person: e.target.value }))} /></div>
-            <div><label style={lbl}>Designation</label><input style={inp} value={vendorForm.designation} onChange={(e) => setVendorForm((p) => ({ ...p, designation: e.target.value }))} /></div>
-            <div><label style={lbl}>Phone</label><input style={inp} value={vendorForm.phone} onChange={(e) => setVendorForm((p) => ({ ...p, phone: e.target.value }))} /></div>
-            <div><label style={lbl}>Alt Phone</label><input style={inp} value={vendorForm.alt_phone} onChange={(e) => setVendorForm((p) => ({ ...p, alt_phone: e.target.value }))} /></div>
+            <div style={{ gridColumn: "1 / -1" }}><label style={lbl}>Company Name *</label><input style={inp} value={vendorForm.company_name} onChange={(e) => setVendorForm((p) => ({ ...p, company_name: e.target.value }))} /></div>
+
+            <div style={{ gridColumn: "1 / -1" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <label style={lbl}>Contacts (name, phone, role — a card can list more than one person)</label>
+                <Btn small ghost color={C.green} onClick={addContactRow}>+ Add contact</Btn>
+              </div>
+              {(vendorForm.contacts || []).map((c, idx) => (
+                <div key={idx} style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr auto", gap: 6, marginBottom: 6 }}>
+                  <input style={inp} placeholder="Name" value={c.name} onChange={(e) => updateContactRow(idx, { name: e.target.value })} />
+                  <input style={inp} placeholder="Phone" value={c.phone} onChange={(e) => updateContactRow(idx, { phone: e.target.value })} />
+                  <input style={inp} placeholder="Designation" value={c.designation} onChange={(e) => updateContactRow(idx, { designation: e.target.value })} />
+                  <button onClick={() => removeContactRow(idx)} style={{ background: "none", border: "none", color: "#ccc", cursor: "pointer", fontSize: 16 }}>×</button>
+                </div>
+              ))}
+              {(vendorForm.contacts || []).length === 0 && <div style={{ fontSize: 12, color: "#aaa" }}>No contacts yet — add one, or scan a card to auto-fill.</div>}
+            </div>
+
             <div><label style={lbl}>Email</label><input style={inp} value={vendorForm.email} onChange={(e) => setVendorForm((p) => ({ ...p, email: e.target.value }))} /></div>
+            <div><label style={lbl}>GSTIN</label><input style={inp} value={vendorForm.gstin} onChange={(e) => setVendorForm((p) => ({ ...p, gstin: e.target.value }))} /></div>
             <div style={{ gridColumn: "1 / -1" }}><label style={lbl}>Address</label><input style={inp} value={vendorForm.address} onChange={(e) => setVendorForm((p) => ({ ...p, address: e.target.value }))} /></div>
             <div><label style={lbl}>City</label><input style={inp} value={vendorForm.city} onChange={(e) => setVendorForm((p) => ({ ...p, city: e.target.value }))} /></div>
             <div><label style={lbl}>State</label><input style={inp} value={vendorForm.state} onChange={(e) => setVendorForm((p) => ({ ...p, state: e.target.value }))} /></div>
             <div><label style={lbl}>Website</label><input style={inp} value={vendorForm.website} onChange={(e) => setVendorForm((p) => ({ ...p, website: e.target.value }))} /></div>
-            <div><label style={lbl}>GSTIN</label><input style={inp} value={vendorForm.gstin} onChange={(e) => setVendorForm((p) => ({ ...p, gstin: e.target.value }))} /></div>
 
             <div><label style={lbl}>Payment Terms</label>
               <select style={inp} value={vendorForm.payment_terms} onChange={(e) => setVendorForm((p) => ({ ...p, payment_terms: e.target.value }))}>
@@ -11867,23 +12161,66 @@ function VendorsScreen() {
                 {VENDOR_SOURCES.map((s) => <option key={s.k} value={s.k}>{s.l}</option>)}
               </select>
             </div>
-            {vendorForm.source === "exhibition" && (
-              <div><label style={lbl}>Exhibition name</label><input style={inp} value={vendorForm.exhibition_name} onChange={(e) => setVendorForm((p) => ({ ...p, exhibition_name: e.target.value }))} placeholder="e.g. IIJS Mumbai 2026" /></div>
-            )}
-            <div style={{ gridColumn: "1 / -1" }}><label style={lbl}>Notes</label><input style={inp} value={vendorForm.notes} onChange={(e) => setVendorForm((p) => ({ ...p, notes: e.target.value }))} /></div>
+            {/* Independent of source — a card can be scanned AT an exhibition, so this isn't gated on source==="exhibition". */}
+            <div><label style={lbl}>Met at exhibition (if any)</label><input style={inp} value={vendorForm.exhibition_name} onChange={(e) => setVendorForm((p) => ({ ...p, exhibition_name: e.target.value }))} placeholder="e.g. IIJS Mumbai 2026" /></div>
+            <div style={{ gridColumn: "1 / -1" }}><label style={lbl}>Notes (also holds anything scanned off the card that doesn't fit a field above — searchable)</label>
+              <textarea style={{ ...inp, minHeight: 60, resize: "vertical", fontFamily: "inherit" }} value={vendorForm.notes} onChange={(e) => setVendorForm((p) => ({ ...p, notes: e.target.value }))} />
+            </div>
           </div>
 
           <div style={{ marginTop: 16 }}>
-            <label style={lbl}>Deals in</label>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <label style={lbl}>Custom fields (add anything not covered above — no fixed list, just label + value)</label>
+              <Btn small ghost color={C.green} onClick={addCustomFieldRow}>+ Add field</Btn>
+            </div>
+            {(vendorForm.custom_fields || []).map((f, idx) => (
+              <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 2fr auto", gap: 6, marginBottom: 6 }}>
+                <input style={inp} placeholder="Label (e.g. WhatsApp broadcast group)" value={f.label} onChange={(e) => updateCustomFieldRow(idx, { label: e.target.value })} />
+                <input style={inp} placeholder="Value" value={f.value} onChange={(e) => updateCustomFieldRow(idx, { value: e.target.value })} />
+                <button onClick={() => removeCustomFieldRow(idx)} style={{ background: "none", border: "none", color: "#ccc", cursor: "pointer", fontSize: 16 }}>×</button>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginTop: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <label style={lbl}>Deals in</label>
+              <Btn small ghost color={C.green} onClick={() => openNewCat("")}>+ New Category / Subcategory</Btn>
+            </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, border: "1px solid #eee", borderRadius: 8, padding: 10, maxHeight: 160, overflowY: "auto" }}>
-              {itemTypes.length === 0 && <span style={{ fontSize: 12, color: "#aaa" }}>No catalogue categories yet — add some in the Catalogue tab first.</span>}
+              {itemTypes.length === 0 && <span style={{ fontSize: 12, color: "#aaa" }}>No categories yet — use "+ New Category / Subcategory" above.</span>}
               {itemTypes.map((t) => (
                 <label key={t.id} style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 6, background: dealingIds.has(t.id) ? "#dbeafe" : "#f7f7f7", cursor: "pointer" }}>
                   <input type="checkbox" checked={dealingIds.has(t.id)} onChange={() => toggleDealing(t.id)} />
+                  {t.cover_image_url && <img src={t.cover_image_url} alt="" style={{ width: 16, height: 16, borderRadius: 3, objectFit: "cover" }} />}
                   {t.parent_id ? `↳ ${t.name}` : t.name}
                 </label>
               ))}
             </div>
+            {newCatForm && (
+              <div style={{ marginTop: 8, border: "1px solid #ddd", borderRadius: 8, padding: 10, background: "#fafafa" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr auto", gap: 6, alignItems: "center" }}>
+                  <input style={inp} placeholder={newCatForm.parentId ? "Subcategory name" : "Category name"} value={newCatForm.name} onChange={(e) => setNewCatForm((p) => ({ ...p, name: e.target.value }))} />
+                  <select style={inp} value={newCatForm.parentId} onChange={(e) => setNewCatForm((p) => ({ ...p, parentId: e.target.value }))}>
+                    <option value="">Top-level category</option>
+                    {topLevel.map((t) => <option key={t.id} value={t.id}>Subcategory of: {t.name}</option>)}
+                  </select>
+                  <label style={{ fontSize: 11, color: C.blue, cursor: "pointer" }}>
+                    📷 {newCatForm.file ? "Change image" : "Add image"}
+                    <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => pickNewCatImage(e.target.files?.[0])} />
+                  </label>
+                </div>
+                {newCatForm.previewUrl && <img src={newCatForm.previewUrl} alt="preview" style={{ height: 48, borderRadius: 4, marginTop: 6, border: "1px solid #eee" }} />}
+                <label style={{ fontSize: 11, color: "#666", display: "flex", alignItems: "center", gap: 4, marginTop: 8 }}>
+                  <input type="checkbox" checked={!!newCatForm.customerVisible} onChange={(e) => setNewCatForm((p) => ({ ...p, customerVisible: e.target.checked }))} />
+                  Also show in Catalogue for clients (leave unchecked for service/supply categories like packaging, equipment, chemicals)
+                </label>
+                <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                  <Btn small color={C.blue} onClick={saveNewCat} disabled={savingCat}>{savingCat ? "Saving…" : "Save"}</Btn>
+                  <Btn small ghost color={C.gray} onClick={() => { if (newCatForm.previewUrl) URL.revokeObjectURL(newCatForm.previewUrl); setNewCatForm(null); }}>Cancel</Btn>
+                </div>
+              </div>
+            )}
           </div>
 
           <div style={{ marginTop: 16 }}>
@@ -11940,7 +12277,10 @@ function CatalogueScreen() {
 
   const loadTaxonomy = useCallback(() => {
     Promise.all([
-      sb.from("catalogue_item_types").select("*").eq("tenant_id", tid).eq("active", true).order("sort_order"),
+      // customer_visible=false excludes vendor-only service/supply categories
+      // (packaging, equipment, chemicals, etc.) from the product catalogue —
+      // those are tagged via VendorsScreen, not meant for client browsing.
+      sb.from("catalogue_item_types").select("*").eq("tenant_id", tid).eq("active", true).eq("customer_visible", true).order("sort_order"),
       sb.from("catalogue_materials").select("*").eq("tenant_id", tid).eq("active", true).order("sort_order"),
       sb.from("catalogue_styles").select("*").eq("tenant_id", tid).eq("active", true).order("sort_order"),
       sb.from("catalogue_product_collections").select("item_type_id"),
@@ -11982,23 +12322,6 @@ function CatalogueScreen() {
 
   const topLevel = itemTypes.filter((t) => !t.parent_id);
   const childrenOf = (id) => itemTypes.filter((t) => t.parent_id === id);
-
-  // Auto-derive a short code from the collection name — avoids staff having
-  // to invent+remember a 2-letter code and risking a silent collision.
-  // Tries initials of the first two words, then first two letters, then
-  // falls back to a numbered variant until something's free.
-  const deriveItemTypeCode = (name, existingCodes) => {
-    const words = name.trim().toUpperCase().split(/\s+/).filter(Boolean);
-    const letters = words.join("").replace(/[^A-Z]/g, "");
-    const candidates = [];
-    if (words.length >= 2 && words[0][0] && words[1][0]) candidates.push(words[0][0] + words[1][0]);
-    if (letters.length >= 2) candidates.push(letters.slice(0, 2));
-    if (words[0]) candidates.push(words[0].slice(0, 2));
-    for (const c of candidates) if (c && c.length >= 2 && !existingCodes.has(c)) return c;
-    const base = candidates[0] || "XX";
-    for (let n = 2; n < 50; n++) { const c = base[0] + n; if (!existingCodes.has(c)) return c; }
-    return base + Date.now().toString().slice(-3);
-  };
   const existingCodes = new Set(itemTypes.map((t) => t.code));
   const newCollCodePreview = newCollForm?.name ? deriveItemTypeCode(newCollForm.name, existingCodes) : "";
 
@@ -12779,7 +13102,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   useEffect(() => {
     const tid = getTenantId();
     Promise.all([
-      sb.from("catalogue_item_types").select("*").eq("tenant_id", tid).eq("active", true).order("sort_order"),
+      sb.from("catalogue_item_types").select("*").eq("tenant_id", tid).eq("active", true).eq("customer_visible", true).order("sort_order"),
       sb.from("catalogue_materials").select("*").eq("tenant_id", tid).eq("active", true).order("sort_order"),
       sb.from("catalogue_styles").select("*").eq("tenant_id", tid).eq("active", true).order("sort_order"),
     ]).then(([it, mat, sty]) => {
