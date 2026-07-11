@@ -9,7 +9,7 @@ import { getActiveStaff, executeCreateTask } from "./taskCommand.js";
 import { buildReportText, findLeadsForForm } from "./reportQueries.js";
 import { logCommand, getLastCommand, markFeedback, getRecentCorrections } from "./ownerLog.js";
 import { queueDevTask } from "./devAgent.js";
-import { getRates, ratesForPrompt } from "./rates.js";
+import { getRates } from "./rates.js";
 
 const FORM_BASE_URL = "https://ssjbot.gemtre.in";
 
@@ -62,6 +62,27 @@ async function addContact(sb, name, phone) {
   const link = await ensureFormLink(sb, lead);
   const verb = existing ? "already exists — here's their edit link" : "added";
   return { text: `✅ Contact ${lead.name || lead.phone} ${verb}:\n${link}` };
+}
+
+// Compact owner-facing rate quote — deterministic, not the verbose
+// ratesForPrompt() block (that one's meant as AI system-prompt context for
+// the customer bot, not a human-readable chat reply).
+async function buildRatesReply() {
+  const { spot, fetchedAt } = await getRates();
+  const fmt = (n) => (n == null ? "—" : `₹${Number(n).toLocaleString("en-IN")}/g`);
+  if (spot.gold24kt == null && spot.silverPerGram == null) {
+    return "Live rates aren't loading right now — try again in a bit.";
+  }
+  const asOf = new Date(fetchedAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+  return [
+    "💰 *Live rates*",
+    `24KT: ${fmt(spot.gold24kt)}`,
+    `22KT: ${fmt(spot.gold22kt)}`,
+    `18KT: ${fmt(spot.gold18kt)}`,
+    `14KT: ${fmt(spot.gold14kt)}`,
+    `Silver: ${fmt(spot.silverPerGram)}`,
+    `_as of ${asOf}_`,
+  ].join("\n");
 }
 
 function todayIST() {
@@ -337,8 +358,7 @@ export async function handleOwnerMessage(sb, messageText) {
   } else if (parsed.intent === "add_contact") {
     result = { replyText: (await addContact(sb, parsed.name, parsed.phone)).text };
   } else if (parsed.intent === "get_rates") {
-    const rates = await getRates();
-    result = { replyText: ratesForPrompt(rates) };
+    result = { replyText: await buildRatesReply() };
   } else if (parsed.intent === "dev_task") {
     try {
       await queueDevTask(sb, { taskText: parsed.task || messageText, repoHint: parsed.repo_hint });
