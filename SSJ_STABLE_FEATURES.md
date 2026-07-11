@@ -293,6 +293,7 @@ Gamified MCQ quiz for staff jewellery knowledge. Separate from main CRM. Not yet
 | 0049 | — | bullion_lead_sources table for lead webhook intake ✅ |
 | 0055 | — | enquiry_items jsonb on bullion_demands ✅ |
 | 0056 | 2026-07-02 | staff.active + tenant_security_settings + trusted_devices + device_verifications (§19 session security) — run in Supabase before deploy |
+| 0061 | 2026-07-11 | bullion_vendors, bullion_vendor_dealings, bullion_vendor_items + uploads/vendors/% storage RLS (§24 Vendor Management) — run in Supabase before deploy |
 
 ---
 
@@ -544,6 +545,19 @@ This section supersedes an earlier same-day pass that got two things wrong — c
 1. **Picking a silver purity still said "Gold Value"/"Gold Rate" everywhere.** All the jewellery-tab metal labels were hardcoded to "Gold". New module-level `metalLabel(purityIdx)` (right after `purityRatePg`, checks `/silver/i` against `PURITIES[idx].l`) now drives every one of: results panel ("Net {metal} Weight", "{metal} Value", live-rate hint), `handleJwPrint`, `jwPdfRows`/`jwCaption` (Download PDF + Send Estimate), and the **reprint window** (`openEstimateSlipWindow` + its inline `recalcToday()` — passed through as a `METAL` JS var since that code runs in the opened print window, not React). Solitaire's optional gold/silver setting got the same treatment for its one combined line (`{metal} + Making`, keyed off `it.goldPurityIdx`/`sol.goldPurityIdx`) — the rest of the solitaire tab's setting-metal labels ("Include Gold Setting", "Gold Gross Weight") were left as-is (out of scope for this pass, solitaire settings are gold in practice).
 2. **Making charges now show Rate and Total as two separate lines, not one.** Previously "Making (₹/g)" showed only the computed ₹ total, with the actual per-gram (or %) rate visible only in the input form, not in print/PDF/WA. New `makingRateLabel(makingR, mode)` (next to `metalLabel`) renders `"₹1500/g"` or `"15%"`; `jwCalc` now also returns `makingR` and `makingMode` so every consumer can show both "Making Rate" and "Making Total" rows — updated in the results panel, `handleJwPrint`, `jwPdfRows`/`jwCaption`, and the reprint window/`recalcToday()`.
    - For **already-saved estimates** (before this change), `it.makingMode` won't exist — the reprint path falls back to an *effective* per-gram rate derived as `making ÷ netGold`, labeled "(effective)" so it's not confused with a rate the staff actually typed in. Estimates saved from now on persist `makingR`/`makingMode` directly (via `items = [{ ...jw, ...jwCalc }]` in `saveEstimate`), so future reprints show the exact configured rate instead of the derived one.
+
+---
+
+## 24. VENDOR MANAGEMENT (2026-07-11)
+
+Scan supplier business cards → auto-fill contact details via AI vision → tag "deals in" categories → record item-wise making charges → later search "who supplies X" when sourcing.
+
+- **Tables:** `bullion_vendors` (one row per company — contact info, payment terms, card photo), `bullion_vendor_dealings` (join to `catalogue_item_types` — reuses the EXISTING product catalogue taxonomy, no separate vendor-category dropdown), `bullion_vendor_items` (item-wise making charges, `item_type_id` nullable so a charge can be recorded before formal categorization). Migration `0061_vendor_management.sql` — **must be run in Supabase before deploy** (see MIGRATION STATUS table).
+- **Storage:** card photos in the `media` bucket under `uploads/vendors/%`, RLS policies added in the same migration. Upload via existing `secureImageUpload(file, sb, "vendors", opts)` — no new upload code.
+- **Screen:** `VendorsScreen` (`src/App.jsx`, right before `CatalogueScreen`) — two modes: "📇 Directory" (add/edit/browse, filter by category/payment terms/search) and "🔎 Find Supplier" (sourcing search — filter by category and/or item name, results sorted cheapest-first, tap-to-call). Nav tab `vendors` registered for `manager`/`staff`/`admin`/`superadmin` (not `telecaller` — back-office task), pinned by default alongside `catalogue`.
+- **Card scan:** `api/vendor-card-scan.js` — reuses the existing OpenAI wrapper (`askAI`/`parseBotJson` from `api/_lib/ai.js`), no new AI service. Camera-capture input follows the exact pattern already used for estimate item photos (`<input type="file" accept="image/*" capture="environment">`). AI-extracted fields only fill blank form fields — never overwrite what the user already typed. This is a human-confirms step, not silent auto-save.
+- **Payment terms are vendor-level only** (no per-item override) — a vendor quotes one set of terms (advance/on_approval/credit/cod/other), not per item.
+- **Category linkage:** deliberately reuses `catalogue_item_types` (the finished-product collection taxonomy already managed in the Catalogue tab) instead of a new dropdown list — so there's one taxonomy to maintain, and "who supplies Rings" can search across both the product catalogue and the vendor directory consistently. `bullion_vendor_dealings`/`bullion_vendor_items` sync on save via delete-then-insert (simplest correct approach at this scale — a handful of categories/items per vendor).
 
 ---
 

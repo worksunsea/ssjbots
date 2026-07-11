@@ -148,12 +148,13 @@ const CRM_ALL_TABS = [
   { k: "calculator",  l: "Calculator",     icon: "💎" },
   { k: "walkin",      l: "Walk-ins",       icon: "🏪" },
   { k: "catalogue",   l: "Catalogue",      icon: "🗂️" },
+  { k: "vendors",     l: "Vendors",        icon: "🏭" },
 ];
 const CRM_ROLE_DEFAULT_TABS = {
   superadmin: CRM_ALL_TABS.map((t) => t.k),
   admin:      CRM_ALL_TABS.map((t) => t.k),
-  manager:    ["demands", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue"],
-  staff:      ["demands", "contacts", "upcoming", "calculator", "walkin", "catalogue"],
+  manager:    ["demands", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors"],
+  staff:      ["demands", "contacts", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
   telecaller: ["queue", "demands"],
 };
 
@@ -10485,14 +10486,15 @@ export default function App() {
     { k: "calculator", l: "Calculator",    icon: "💎" },
     { k: "walkin",     l: "Walk-ins",       icon: "🏪" },
     { k: "catalogue",  l: "Catalogue",      icon: "🗂️" },
+    { k: "vendors",    l: "Vendors",        icon: "🏭" },
   ];
 
   // Role-based defaults when app_permissions.crm is not set
   const ROLE_DEFAULT_TABS = {
     superadmin: ALL_TABS.map((t) => t.k),
     admin:      ALL_TABS.map((t) => t.k),
-    manager:    ["demands", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue"],
-    staff:      ["demands", "contacts", "upcoming", "calculator", "walkin", "catalogue"],
+    manager:    ["demands", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors"],
+    staff:      ["demands", "contacts", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
     telecaller: ["queue", "demands"],
   };
 
@@ -10514,7 +10516,7 @@ export default function App() {
   // per-browser preference (localStorage), adjustable via drag-drop reorder
   // and pin/unpin — not tied to app_permissions (that still gates visibility).
   const tabKeySet = new Set(tabs.map((t) => t.k));
-  const DEFAULT_PINNED_TABS = ["demands", "upcoming", "calculator", "walkin", "catalogue"];
+  const DEFAULT_PINNED_TABS = ["demands", "upcoming", "calculator", "walkin", "catalogue", "vendors"];
   const savedPinned = (() => {
     try {
       const p = JSON.parse(localStorage.getItem("ssj_pinned_tabs") || "null");
@@ -10652,6 +10654,7 @@ export default function App() {
         setActiveScreen("calculator");
       }} />}
       {activeScreen === "catalogue" && <CatalogueScreen />}
+      {activeScreen === "vendors" && <VendorsScreen />}
     </div>
     </ContactFieldsContext.Provider>
   );
@@ -11449,6 +11452,471 @@ function productFormFromRow(p) {
     manualPrice: p.manual_price ?? "",
     priceVisible: p.price_visible !== false, status: p.status, stockStatus: p.stock_status,
   };
+}
+
+const EMPTY_VENDOR_FORM = {
+  company_name: "", contact_person: "", designation: "", phone: "", alt_phone: "", email: "",
+  address: "", city: "", state: "", website: "", gstin: "",
+  payment_terms: "advance", on_approval_days: "", credit_days: "",
+  card_image_url: "", notes: "", source: "manual", exhibition_name: "", active: true,
+};
+const VENDOR_PAYMENT_TERMS = [
+  { k: "advance", l: "Advance" }, { k: "on_approval", l: "On Approval" },
+  { k: "credit", l: "Credit" }, { k: "cod", l: "COD" }, { k: "other", l: "Other" },
+];
+const VENDOR_SOURCES = [
+  { k: "manual", l: "Manual entry" }, { k: "card_scan", l: "Card scan" },
+  { k: "exhibition", l: "Exhibition" }, { k: "referral", l: "Referral" }, { k: "other", l: "Other" },
+];
+const VENDOR_ITEM_UNITS = [
+  { k: "per_gram", l: "per gram" }, { k: "per_piece", l: "per piece" },
+  { k: "per_carat", l: "per carat" }, { k: "percent", l: "%" }, { k: "flat", l: "flat" },
+];
+
+function VendorsScreen() {
+  const tid = getTenantId();
+  const [vendors, setVendors] = useState([]);
+  const [itemTypes, setItemTypes] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filterCategory, setFilterCategory] = useState("");
+  const [filterPaymentTerms, setFilterPaymentTerms] = useState("");
+  const [search, setSearch] = useState("");
+  const [mode, setMode] = useState("directory"); // directory | find
+  const [editingVendor, setEditingVendor] = useState(null); // null | {} (new) | row
+  const [vendorForm, setVendorForm] = useState(EMPTY_VENDOR_FORM);
+  const [dealingIds, setDealingIds] = useState(new Set());
+  const [itemRows, setItemRows] = useState([]); // [{id?, item_name, item_type_id, making_charge, making_charge_unit, price_note, active}]
+  const [saving, setSaving] = useState(false);
+  const [scanningCard, setScanningCard] = useState(false);
+  const [toast, setToast] = useState("");
+  const showToast = (m) => { setToast(m); setTimeout(() => setToast(""), 3000); };
+  const cardImgRef = useRef();
+
+  // Find Supplier (sourcing search) state
+  const [findCategory, setFindCategory] = useState("");
+  const [findQuery, setFindQuery] = useState("");
+  const [findResults, setFindResults] = useState([]);
+  const [findLoading, setFindLoading] = useState(false);
+  const [findByCategoryOnly, setFindByCategoryOnly] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const [{ data: v }, { data: it }] = await Promise.all([
+      sb.from("bullion_vendors")
+        .select("*, dealings:bullion_vendor_dealings(item_type_id), items:bullion_vendor_items(id,item_name,item_type_id,making_charge,making_charge_unit,price_note,active)")
+        .eq("tenant_id", tid).order("company_name"),
+      sb.from("catalogue_item_types").select("*").eq("tenant_id", tid).eq("active", true).order("sort_order"),
+    ]);
+    setVendors(v || []);
+    setItemTypes(it || []);
+    setLoading(false);
+  }, [tid]);
+
+  useEffect(() => { load(); }, [load]);
+  // Skip auto-refresh while a form is open — avoids clobbering in-progress edits.
+  useEffect(() => {
+    const t = setInterval(() => { if (!editingVendor) load(); }, 15000);
+    return () => clearInterval(t);
+  }, [load, editingVendor]);
+
+  const topLevel = itemTypes.filter((t) => !t.parent_id);
+  const childrenOf = (id) => itemTypes.filter((t) => t.parent_id === id);
+  const itemTypeName = (id) => itemTypes.find((t) => t.id === id)?.name || "—";
+  // A parent category's search/filter should also match vendors tagged only at a child level.
+  const categoryAndDescendants = (id) => {
+    if (!id) return null;
+    const kids = childrenOf(id).map((c) => c.id);
+    return new Set([id, ...kids]);
+  };
+
+  const filtered = useMemo(() => {
+    let rows = vendors.filter((v) => v.active !== false);
+    if (filterCategory) {
+      const ids = categoryAndDescendants(filterCategory);
+      rows = rows.filter((v) => (v.dealings || []).some((d) => ids.has(d.item_type_id)));
+    }
+    if (filterPaymentTerms) rows = rows.filter((v) => v.payment_terms === filterPaymentTerms);
+    if (search) {
+      const s = search.toLowerCase();
+      rows = rows.filter((v) =>
+        (v.company_name || "").toLowerCase().includes(s) ||
+        (v.contact_person || "").toLowerCase().includes(s) ||
+        (v.phone || "").includes(s) ||
+        (v.gstin || "").toLowerCase().includes(s)
+      );
+    }
+    return rows;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vendors, itemTypes, filterCategory, filterPaymentTerms, search]);
+
+  const openNew = () => {
+    setVendorForm(EMPTY_VENDOR_FORM);
+    setDealingIds(new Set());
+    setItemRows([]);
+    setEditingVendor({});
+  };
+  const openEdit = (v) => {
+    setVendorForm({
+      company_name: v.company_name || "", contact_person: v.contact_person || "", designation: v.designation || "",
+      phone: v.phone || "", alt_phone: v.alt_phone || "", email: v.email || "",
+      address: v.address || "", city: v.city || "", state: v.state || "", website: v.website || "", gstin: v.gstin || "",
+      payment_terms: v.payment_terms || "advance", on_approval_days: v.on_approval_days ?? "", credit_days: v.credit_days ?? "",
+      card_image_url: v.card_image_url || "", notes: v.notes || "", source: v.source || "manual",
+      exhibition_name: v.exhibition_name || "", active: v.active !== false,
+    });
+    setDealingIds(new Set((v.dealings || []).map((d) => d.item_type_id)));
+    setItemRows((v.items || []).map((it) => ({ ...it })));
+    setEditingVendor(v);
+  };
+  const closeForm = () => { setEditingVendor(null); setVendorForm(EMPTY_VENDOR_FORM); setDealingIds(new Set()); setItemRows([]); };
+
+  const toggleDealing = (id) => {
+    setDealingIds((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  };
+
+  const addItemRow = () => setItemRows((r) => [...r, { item_name: "", item_type_id: "", making_charge: "", making_charge_unit: "per_gram", price_note: "", active: true }]);
+  const updateItemRow = (idx, patch) => setItemRows((r) => r.map((row, i) => i === idx ? { ...row, ...patch } : row));
+  const removeItemRow = (idx) => setItemRows((r) => r.filter((_, i) => i !== idx));
+
+  const handleCardPick = async (file) => {
+    if (!file) return;
+    setScanningCard(true);
+    try {
+      const { publicUrl } = await secureImageUpload(file, sb, "vendors", { maxDim: 1600, quality: 0.85 });
+      setVendorForm((p) => ({ ...p, card_image_url: publicUrl, source: p.source === "manual" ? "card_scan" : p.source }));
+      const res = await fetch("/api/vendor-card-scan", {
+        method: "POST", headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
+        body: JSON.stringify({ imageUrl: publicUrl }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.fields) {
+        // Only fill fields the user hasn't already typed — never clobber manual input.
+        setVendorForm((p) => {
+          const next = { ...p };
+          const map = { company_name: "company_name", contact_person: "contact_person", designation: "designation", phone: "phone", email: "email", address: "address", website: "website", gstin: "gstin" };
+          Object.entries(map).forEach(([formKey, aiKey]) => {
+            if (!next[formKey] && data.fields[aiKey]) next[formKey] = data.fields[aiKey];
+          });
+          return next;
+        });
+        showToast("✓ Card scanned — please verify the details");
+      } else {
+        showToast("⚠️ Couldn't read the card — fill details manually");
+      }
+    } catch (e) {
+      showToast("❌ " + e.message);
+    } finally {
+      setScanningCard(false);
+    }
+  };
+
+  const saveVendor = async () => {
+    if (!vendorForm.company_name.trim()) { showToast("❌ Company name required"); return; }
+    setSaving(true);
+    try {
+      const payload = {
+        tenant_id: tid,
+        company_name: vendorForm.company_name.trim(),
+        contact_person: vendorForm.contact_person || null, designation: vendorForm.designation || null,
+        phone: vendorForm.phone || null, alt_phone: vendorForm.alt_phone || null, email: vendorForm.email || null,
+        address: vendorForm.address || null, city: vendorForm.city || null, state: vendorForm.state || null,
+        website: vendorForm.website || null, gstin: vendorForm.gstin || null,
+        payment_terms: vendorForm.payment_terms,
+        on_approval_days: vendorForm.on_approval_days !== "" ? Number(vendorForm.on_approval_days) : null,
+        credit_days: vendorForm.credit_days !== "" ? Number(vendorForm.credit_days) : null,
+        card_image_url: vendorForm.card_image_url || null, notes: vendorForm.notes || null,
+        source: vendorForm.source, exhibition_name: vendorForm.exhibition_name || null,
+        active: vendorForm.active,
+        created_by: loadUser()?.name || loadUser()?.username || null,
+      };
+      let vendorId = editingVendor?.id;
+      if (vendorId) {
+        const { error } = await sb.from("bullion_vendors").update(payload).eq("id", vendorId);
+        if (error) throw error;
+      } else {
+        const { data, error } = await sb.from("bullion_vendors").insert(payload).select("id").single();
+        if (error) throw error;
+        vendorId = data.id;
+      }
+
+      // Sync "deals in" categories — delete-then-insert is simplest correct
+      // approach at this scale (a handful of categories per vendor).
+      await sb.from("bullion_vendor_dealings").delete().eq("vendor_id", vendorId);
+      if (dealingIds.size) {
+        await sb.from("bullion_vendor_dealings").insert([...dealingIds].map((item_type_id) => ({ vendor_id: vendorId, item_type_id })));
+      }
+
+      // Sync item-wise making charges — same delete-then-insert approach.
+      await sb.from("bullion_vendor_items").delete().eq("vendor_id", vendorId);
+      const validItems = itemRows.filter((r) => r.item_name.trim() && r.making_charge !== "");
+      if (validItems.length) {
+        await sb.from("bullion_vendor_items").insert(validItems.map((r) => ({
+          tenant_id: tid, vendor_id: vendorId,
+          item_type_id: r.item_type_id || null, item_name: r.item_name.trim(),
+          making_charge: Number(r.making_charge), making_charge_unit: r.making_charge_unit || "per_gram",
+          price_note: r.price_note || null, active: r.active !== false,
+          created_by: loadUser()?.name || loadUser()?.username || null,
+        })));
+      }
+
+      showToast(editingVendor?.id ? "✓ Vendor updated" : "✓ Vendor added");
+      closeForm();
+      load();
+    } catch (e) {
+      showToast("❌ " + e.message);
+    }
+    setSaving(false);
+  };
+
+  const deactivateVendor = async (v) => {
+    if (!confirm(`Deactivate "${v.company_name}"? It will be hidden from the directory and search.`)) return;
+    await sb.from("bullion_vendors").update({ active: false }).eq("id", v.id);
+    load();
+  };
+
+  const runFindSupplier = useCallback(async () => {
+    setFindLoading(true);
+    try {
+      if (findByCategoryOnly) {
+        let q = sb.from("bullion_vendor_dealings").select("vendor_id, vendor:bullion_vendors(id,company_name,contact_person,phone,payment_terms,active)");
+        if (findCategory) {
+          const ids = [...categoryAndDescendants(findCategory)];
+          q = q.in("item_type_id", ids);
+        }
+        const { data } = await q;
+        const seen = new Map();
+        (data || []).forEach((r) => { if (r.vendor?.active !== false) seen.set(r.vendor_id, r.vendor); });
+        setFindResults([...seen.values()].map((v) => ({ vendor: v, item_name: null, making_charge: null })));
+      } else {
+        let q = sb.from("bullion_vendor_items")
+          .select("*, vendor:bullion_vendors(id,company_name,contact_person,phone,payment_terms,active)")
+          .eq("tenant_id", tid).eq("active", true);
+        if (findCategory) {
+          const ids = [...categoryAndDescendants(findCategory)];
+          q = q.in("item_type_id", ids);
+        }
+        if (findQuery) q = q.ilike("item_name", `%${findQuery}%`);
+        const { data } = await q.order("making_charge", { ascending: true });
+        setFindResults((data || []).filter((r) => r.vendor?.active !== false));
+      }
+    } finally {
+      setFindLoading(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [findCategory, findQuery, findByCategoryOnly, itemTypes, tid]);
+
+  useEffect(() => { if (mode === "find") runFindSupplier(); }, [mode, runFindSupplier]);
+
+  const inp = { padding: "6px 10px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13, width: "100%", boxSizing: "border-box" };
+  const lbl = { fontSize: 11, color: "#888", marginBottom: 3, display: "block" };
+
+  return (
+    <div>
+      {toast && <div style={{ position: "fixed", top: 16, right: 16, background: "#222", color: "#fff", padding: "10px 16px", borderRadius: 8, zIndex: 200, fontSize: 13 }}>{toast}</div>}
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          <Btn small color={mode === "directory" ? C.blue : C.gray} ghost={mode !== "directory"} onClick={() => setMode("directory")}>📇 Directory</Btn>
+          <Btn small color={mode === "find" ? C.blue : C.gray} ghost={mode !== "find"} onClick={() => setMode("find")}>🔎 Find Supplier</Btn>
+        </div>
+        {mode === "directory" && <Btn small color={C.green} onClick={openNew}>+ Add Vendor</Btn>}
+      </div>
+
+      {mode === "directory" && (
+        <>
+          <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+            <select style={{ ...inp, width: 180 }} value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)}>
+              <option value="">All categories</option>
+              {topLevel.map((t) => (
+                <optgroup key={t.id} label={t.name}>
+                  <option value={t.id}>{t.name} (all)</option>
+                  {childrenOf(t.id).map((c) => <option key={c.id} value={c.id}>&nbsp;&nbsp;{c.name}</option>)}
+                </optgroup>
+              ))}
+            </select>
+            <select style={{ ...inp, width: 150 }} value={filterPaymentTerms} onChange={(e) => setFilterPaymentTerms(e.target.value)}>
+              <option value="">All payment terms</option>
+              {VENDOR_PAYMENT_TERMS.map((p) => <option key={p.k} value={p.k}>{p.l}</option>)}
+            </select>
+            <input style={{ ...inp, width: 220 }} placeholder="Search company, contact, phone, GSTIN…" value={search} onChange={(e) => setSearch(e.target.value)} />
+          </div>
+
+          {loading ? <div style={{ color: "#888", fontSize: 13 }}>Loading…</div> : filtered.length === 0 ? (
+            <div style={{ color: "#888", fontSize: 13, padding: 20, textAlign: "center" }}>No vendors match — try clearing filters, or add one.</div>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 10 }}>
+              {filtered.map((v) => (
+                <Card key={v.id} style={{ cursor: "pointer" }}>
+                  <div onClick={() => openEdit(v)}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>{v.company_name}</div>
+                      <Pill color={C.blue}>{VENDOR_PAYMENT_TERMS.find((p) => p.k === v.payment_terms)?.l || v.payment_terms}</Pill>
+                    </div>
+                    {v.contact_person && <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>{v.contact_person}{v.designation ? ` · ${v.designation}` : ""}</div>}
+                    {v.phone && <div style={{ fontSize: 12, color: "#666" }}>📞 <a href={`tel:${v.phone}`} onClick={(e) => e.stopPropagation()} style={{ color: C.blue }}>{v.phone}</a></div>}
+                    {(v.city || v.state) && <div style={{ fontSize: 11, color: "#999" }}>{[v.city, v.state].filter(Boolean).join(", ")}</div>}
+                    {(v.dealings || []).length > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 8 }}>
+                        {(v.dealings || []).slice(0, 4).map((d) => <Pill key={d.item_type_id} color={C.gray}>{itemTypeName(d.item_type_id)}</Pill>)}
+                        {(v.dealings || []).length > 4 && <Pill color={C.gray}>+{(v.dealings || []).length - 4} more</Pill>}
+                      </div>
+                    )}
+                    {(v.items || []).filter((it) => it.active !== false).length > 0 && (
+                      <div style={{ fontSize: 11, color: "#999", marginTop: 6 }}>{(v.items || []).filter((it) => it.active !== false).length} item{(v.items || []).filter((it) => it.active !== false).length === 1 ? "" : "s"} priced</div>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+                    <Btn small ghost color={C.blue} onClick={() => openEdit(v)}>Edit</Btn>
+                    <Btn small ghost color={C.red} onClick={() => deactivateVendor(v)}>Deactivate</Btn>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {mode === "find" && (
+        <>
+          <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
+            <select style={{ ...inp, width: 180 }} value={findCategory} onChange={(e) => setFindCategory(e.target.value)}>
+              <option value="">Any category</option>
+              {topLevel.map((t) => (
+                <optgroup key={t.id} label={t.name}>
+                  <option value={t.id}>{t.name} (all)</option>
+                  {childrenOf(t.id).map((c) => <option key={c.id} value={c.id}>&nbsp;&nbsp;{c.name}</option>)}
+                </optgroup>
+              ))}
+            </select>
+            {!findByCategoryOnly && <input style={{ ...inp, width: 220 }} placeholder="Item name…" value={findQuery} onChange={(e) => setFindQuery(e.target.value)} />}
+            <label style={{ fontSize: 12, color: "#666", display: "flex", alignItems: "center", gap: 4 }}>
+              <input type="checkbox" checked={findByCategoryOnly} onChange={(e) => setFindByCategoryOnly(e.target.checked)} />
+              By category only (skip item pricing)
+            </label>
+            <Btn small color={C.blue} onClick={runFindSupplier}>Search</Btn>
+          </div>
+
+          {findLoading ? <div style={{ color: "#888", fontSize: 13 }}>Searching…</div> : findResults.length === 0 ? (
+            <div style={{ color: "#888", fontSize: 13, padding: 20, textAlign: "center" }}>No suppliers found for that filter.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {findResults.map((r, i) => (
+                <Card key={r.id || `${r.vendor?.id}-${i}`}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>{r.vendor?.company_name}</div>
+                      <div style={{ fontSize: 12, color: "#666" }}>
+                        {r.item_name ? `${r.item_name}${r.item_type_id ? ` (${itemTypeName(r.item_type_id)})` : ""}` : "Deals in this category"}
+                      </div>
+                      {r.vendor?.contact_person && <div style={{ fontSize: 11, color: "#999" }}>{r.vendor.contact_person}</div>}
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      {r.making_charge != null && (
+                        <div style={{ fontWeight: 600, color: C.blue }}>₹{r.making_charge} {VENDOR_ITEM_UNITS.find((u) => u.k === r.making_charge_unit)?.l || r.making_charge_unit}</div>
+                      )}
+                      {r.vendor?.phone && <a href={`tel:${r.vendor.phone}`} style={{ fontSize: 12, color: C.green, display: "block" }}>📞 {r.vendor.phone}</a>}
+                      {r.vendor?.payment_terms && <div style={{ fontSize: 11, color: "#999" }}>{VENDOR_PAYMENT_TERMS.find((p) => p.k === r.vendor.payment_terms)?.l}</div>}
+                    </div>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {editingVendor !== null && (
+        <Modal title={editingVendor?.id ? "Edit Vendor" : "Add Vendor"} onClose={closeForm} width={640}>
+          <input ref={cardImgRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={(e) => handleCardPick(e.target.files?.[0])} />
+          <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "center" }}>
+            <Btn small color={C.purple} onClick={() => cardImgRef.current?.click()} disabled={scanningCard}>{scanningCard ? "Scanning…" : "📷 Scan Business Card"}</Btn>
+            {vendorForm.card_image_url && <img src={vendorForm.card_image_url} alt="card" style={{ height: 40, borderRadius: 4, border: "1px solid #eee" }} />}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div><label style={lbl}>Company Name *</label><input style={inp} value={vendorForm.company_name} onChange={(e) => setVendorForm((p) => ({ ...p, company_name: e.target.value }))} /></div>
+            <div><label style={lbl}>Contact Person</label><input style={inp} value={vendorForm.contact_person} onChange={(e) => setVendorForm((p) => ({ ...p, contact_person: e.target.value }))} /></div>
+            <div><label style={lbl}>Designation</label><input style={inp} value={vendorForm.designation} onChange={(e) => setVendorForm((p) => ({ ...p, designation: e.target.value }))} /></div>
+            <div><label style={lbl}>Phone</label><input style={inp} value={vendorForm.phone} onChange={(e) => setVendorForm((p) => ({ ...p, phone: e.target.value }))} /></div>
+            <div><label style={lbl}>Alt Phone</label><input style={inp} value={vendorForm.alt_phone} onChange={(e) => setVendorForm((p) => ({ ...p, alt_phone: e.target.value }))} /></div>
+            <div><label style={lbl}>Email</label><input style={inp} value={vendorForm.email} onChange={(e) => setVendorForm((p) => ({ ...p, email: e.target.value }))} /></div>
+            <div style={{ gridColumn: "1 / -1" }}><label style={lbl}>Address</label><input style={inp} value={vendorForm.address} onChange={(e) => setVendorForm((p) => ({ ...p, address: e.target.value }))} /></div>
+            <div><label style={lbl}>City</label><input style={inp} value={vendorForm.city} onChange={(e) => setVendorForm((p) => ({ ...p, city: e.target.value }))} /></div>
+            <div><label style={lbl}>State</label><input style={inp} value={vendorForm.state} onChange={(e) => setVendorForm((p) => ({ ...p, state: e.target.value }))} /></div>
+            <div><label style={lbl}>Website</label><input style={inp} value={vendorForm.website} onChange={(e) => setVendorForm((p) => ({ ...p, website: e.target.value }))} /></div>
+            <div><label style={lbl}>GSTIN</label><input style={inp} value={vendorForm.gstin} onChange={(e) => setVendorForm((p) => ({ ...p, gstin: e.target.value }))} /></div>
+
+            <div><label style={lbl}>Payment Terms</label>
+              <select style={inp} value={vendorForm.payment_terms} onChange={(e) => setVendorForm((p) => ({ ...p, payment_terms: e.target.value }))}>
+                {VENDOR_PAYMENT_TERMS.map((p) => <option key={p.k} value={p.k}>{p.l}</option>)}
+              </select>
+            </div>
+            {vendorForm.payment_terms === "on_approval" && (
+              <div><label style={lbl}>On-approval days</label><input style={inp} type="number" value={vendorForm.on_approval_days} onChange={(e) => setVendorForm((p) => ({ ...p, on_approval_days: e.target.value }))} /></div>
+            )}
+            {vendorForm.payment_terms === "credit" && (
+              <div><label style={lbl}>Credit days</label><input style={inp} type="number" value={vendorForm.credit_days} onChange={(e) => setVendorForm((p) => ({ ...p, credit_days: e.target.value }))} /></div>
+            )}
+
+            <div><label style={lbl}>Source</label>
+              <select style={inp} value={vendorForm.source} onChange={(e) => setVendorForm((p) => ({ ...p, source: e.target.value }))}>
+                {VENDOR_SOURCES.map((s) => <option key={s.k} value={s.k}>{s.l}</option>)}
+              </select>
+            </div>
+            {vendorForm.source === "exhibition" && (
+              <div><label style={lbl}>Exhibition name</label><input style={inp} value={vendorForm.exhibition_name} onChange={(e) => setVendorForm((p) => ({ ...p, exhibition_name: e.target.value }))} placeholder="e.g. IIJS Mumbai 2026" /></div>
+            )}
+            <div style={{ gridColumn: "1 / -1" }}><label style={lbl}>Notes</label><input style={inp} value={vendorForm.notes} onChange={(e) => setVendorForm((p) => ({ ...p, notes: e.target.value }))} /></div>
+          </div>
+
+          <div style={{ marginTop: 16 }}>
+            <label style={lbl}>Deals in</label>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, border: "1px solid #eee", borderRadius: 8, padding: 10, maxHeight: 160, overflowY: "auto" }}>
+              {itemTypes.length === 0 && <span style={{ fontSize: 12, color: "#aaa" }}>No catalogue categories yet — add some in the Catalogue tab first.</span>}
+              {itemTypes.map((t) => (
+                <label key={t.id} style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 6, background: dealingIds.has(t.id) ? "#dbeafe" : "#f7f7f7", cursor: "pointer" }}>
+                  <input type="checkbox" checked={dealingIds.has(t.id)} onChange={() => toggleDealing(t.id)} />
+                  {t.parent_id ? `↳ ${t.name}` : t.name}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ marginTop: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <label style={lbl}>Item-wise making charges</label>
+              <Btn small ghost color={C.green} onClick={addItemRow}>+ Add item</Btn>
+            </div>
+            {itemRows.map((row, idx) => (
+              <div key={idx} style={{ display: "grid", gridTemplateColumns: "2fr 1.4fr 1fr 1fr 1.4fr auto", gap: 6, marginBottom: 6, alignItems: "center" }}>
+                <input style={inp} placeholder="Item name" value={row.item_name} onChange={(e) => updateItemRow(idx, { item_name: e.target.value })} />
+                <select style={inp} value={row.item_type_id || ""} onChange={(e) => updateItemRow(idx, { item_type_id: e.target.value || null })}>
+                  <option value="">No category</option>
+                  {itemTypes.map((t) => <option key={t.id} value={t.id}>{t.parent_id ? `↳ ${t.name}` : t.name}</option>)}
+                </select>
+                <input style={inp} type="number" placeholder="Charge" value={row.making_charge} onChange={(e) => updateItemRow(idx, { making_charge: e.target.value })} />
+                <select style={inp} value={row.making_charge_unit} onChange={(e) => updateItemRow(idx, { making_charge_unit: e.target.value })}>
+                  {VENDOR_ITEM_UNITS.map((u) => <option key={u.k} value={u.k}>{u.l}</option>)}
+                </select>
+                <input style={inp} placeholder="Note (MOQ, slab, etc.)" value={row.price_note || ""} onChange={(e) => updateItemRow(idx, { price_note: e.target.value })} />
+                <button onClick={() => removeItemRow(idx)} style={{ background: "none", border: "none", color: "#ccc", cursor: "pointer", fontSize: 16 }}>×</button>
+              </div>
+            ))}
+            {itemRows.length === 0 && <div style={{ fontSize: 12, color: "#aaa" }}>No items yet — add one to record a making charge.</div>}
+          </div>
+
+          <div style={{ display: "flex", gap: 8, marginTop: 20, justifyContent: "flex-end" }}>
+            <Btn ghost color={C.gray} onClick={closeForm}>Cancel</Btn>
+            <Btn color={C.blue} onClick={saveVendor} disabled={saving}>{saving ? "Saving…" : (editingVendor?.id ? "Save Changes" : "Add Vendor")}</Btn>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
 }
 
 function CatalogueScreen() {
