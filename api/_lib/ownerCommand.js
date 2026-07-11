@@ -73,7 +73,7 @@ async function buildRatesReply() {
   if (spot.gold24kt == null && spot.silverPerGram == null) {
     return "Live rates aren't loading right now — try again in a bit.";
   }
-  const asOf = new Date(fetchedAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
+  const asOf = new Date(fetchedAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" });
   return [
     "💰 *Live rates*",
     `24KT: ${fmt(spot.gold24kt)}`,
