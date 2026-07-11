@@ -8,7 +8,8 @@
 // already happens directly from watchdog.ps1 against hr.gemtre.in/api/push.
 
 import { sendWhatsAppWbiz } from "./_lib/wa.js";
-import { checkCrmSecret, OWNER_PHONE, DIGEST_EXTRA_RECIPIENTS } from "./_lib/config.js";
+import { checkCrmSecret, OWNER_PHONE, DIGEST_EXTRA_RECIPIENTS, TENANT_ID } from "./_lib/config.js";
+import { supa } from "./_lib/supabase.js";
 
 export const config = { maxDuration: 15 };
 
@@ -23,7 +24,15 @@ export default async function handler(req, res) {
   const { title, message } = body;
   if (!message) return res.status(400).json({ ok: false, error: "message_required" });
 
-  const recipients = [OWNER_PHONE, ...DIGEST_EXTRA_RECIPIENTS.split(",")].map((p) => p.trim()).filter(Boolean);
+  let adminPhones = [];
+  try {
+    const sb = supa();
+    const { data } = await sb.from("staff").select("phone,role")
+      .eq("tenant_id", TENANT_ID).eq("active", true).in("role", ["superadmin", "admin"]);
+    adminPhones = (data || []).map((s) => s.phone).filter(Boolean);
+  } catch { /* SUPABASE_SERVICE_KEY missing or query failed — fall back to env list only */ }
+
+  const recipients = [...new Set([OWNER_PHONE, ...DIGEST_EXTRA_RECIPIENTS.split(","), ...adminPhones].map((p) => (p || "").trim()).filter(Boolean))];
   if (!recipients.length) return res.status(200).json({ ok: false, error: "no_recipients_configured" });
 
   const msg = `🔔 ${title || "WhatsApp session alert"}\n\n${message}`;
