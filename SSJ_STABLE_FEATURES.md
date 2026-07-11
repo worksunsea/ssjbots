@@ -546,3 +546,15 @@ This section supersedes an earlier same-day pass that got two things wrong — c
    - For **already-saved estimates** (before this change), `it.makingMode` won't exist — the reprint path falls back to an *effective* per-gram rate derived as `making ÷ netGold`, labeled "(effective)" so it's not confused with a rate the staff actually typed in. Estimates saved from now on persist `makingR`/`makingMode` directly (via `items = [{ ...jw, ...jwCalc }]` in `saveEstimate`), so future reprints show the exact configured rate instead of the derived one.
 
 ---
+
+## 23. GOLDMENU / DIAMONDMENU STATIC PAGES — DO NOT TOUCH (2026-07-11)
+
+**PROTECTED — owner explicitly asked these must never go down again, regardless of unrelated app changes.**
+
+- Live at `ssjbot.gemtre.in/goldmenu` and `ssjbot.gemtre.in/diamondmenu` (also reachable at the literal `.html` paths).
+- Files: `public/goldmenu.html`, `public/diamondmenu.html` — fully self-contained static HTML (no build step, no React, no API calls), plus their images/PDFs in `public/menus/` (`gold.jpg`, `gold.pdf`, `diamond-food.jpg`, `diamond-drinks.jpg`, `diamond.pdf`).
+- Routing: `vercel.json` → `rewrites` has two explicit entries (`/goldmenu` → `/goldmenu.html`, `/diamondmenu` → `/diamondmenu.html`) placed **before** the catch-all SPA rewrite (`"/(.*)" → "/"`). The catch-all only rewrites extension-less paths that Vercel's static lookup didn't already resolve — without these two explicit entries ahead of it, the bare URLs 404 into the CRM shell (this exact bug happened once already — see git history around 2026-07-11).
+- **History**: these pages were built 2026-07-02 but only ever existed in an uncommitted `git stash` — never actually deployed until 2026-07-11, when they were recovered and committed for real, and the routing bug above was fixed at the same time.
+- **Rule going forward**: any change to `vercel.json`'s `rewrites` array MUST keep these two entries ahead of the catch-all. Do not delete, rename, or move `public/goldmenu.html` / `public/diamondmenu.html` / `public/menus/*` without the owner explicitly asking for it — these are static assets, not app logic, they have zero reason to be touched by unrelated CRM feature work.
+
+---
