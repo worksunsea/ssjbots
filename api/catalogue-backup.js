@@ -37,7 +37,7 @@ export default async function handler(req, res) {
 
   const sb = supa();
   const since = new Date(Date.now() - LOOKBACK_MS).toISOString();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10); // IST
   const results = { imagesMirrored: 0, imageErrors: [], snapshotUrl: null };
 
   try {

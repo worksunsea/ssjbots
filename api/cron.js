@@ -444,7 +444,7 @@ export default async function handler(req, res) {
     .select("id, phone, name, funnel_id, funnel_history, tenant_id")
     .not("wedding_date", "is", null)
     .is("post_wedding_enrolled_at", null)
-    .lte("wedding_date", new Date().toISOString().slice(0, 10))
+    .lte("wedding_date", new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10)) // IST
     .eq("dnd", false)
     .limit(10);
 
