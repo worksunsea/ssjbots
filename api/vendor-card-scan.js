@@ -10,6 +10,7 @@
 //   contacts: [{name, phone, designation}],   // one card can list 2-3 people
 //   deals_in_text,                            // free text if the card says what they deal in
 //   other_notes: [string],                    // any other card text that doesn't fit a field above
+//   vendor_kind: "jewellery"|"service"|"other", // coarse classification — same read, no extra scan
 // } }
 
 import { askAI, parseBotJson } from "./_lib/ai.js";
@@ -39,11 +40,13 @@ export default async function handler(req, res) {
   "gstin": string|null,
   "contacts": [{"name": string, "phone": string, "designation": string|null}],
   "deals_in_text": string|null,
-  "other_notes": [string]
+  "other_notes": [string],
+  "vendor_kind": "jewellery"|"service"|"other"
 }
 - "contacts": the card may list MORE THAN ONE person/number — include every distinct name+phone pair found. Phone digits only where possible.
 - "deals_in_text": if the card explicitly states what the company deals in / trades in / manufactures, put that raw text here.
 - "other_notes": any other text on the card that doesn't map to a field above (tagline, certifications, additional addresses, etc.) — one string per distinct piece of info.
+- "vendor_kind": classify the business based on everything on the card — "jewellery" if they deal in gold/silver/diamonds/gemstones/findings/jewellery manufacturing/polishing/setting or similar jewellery-trade goods; "service" if they supply packaging, boxes, pouches, display equipment, cleaning chemicals, machinery, or other non-jewellery supplies/services to a jewellery business; "other" if genuinely unclear or unrelated. Best-effort guess from the card content — do not ask for clarification.
 - Use null (or empty array) for anything not present. Do not invent data.`;
 
   const content = [{ type: "text", text: promptText }];

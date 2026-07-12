@@ -11478,6 +11478,7 @@ const EMPTY_VENDOR_FORM = {
   payment_terms: "advance", on_approval_days: "", credit_days: "",
   card_image_front_url: "", card_image_back_url: "",
   notes: "", source: "manual", exhibition_name: "", active: true,
+  vendor_kind: "jewellery", // jewellery | service | other — AI-classified from the same card scan, editable
   custom_fields: [], // [{label, value}] — ad-hoc, no field-type system by design
 };
 const VENDOR_PAYMENT_TERMS = [
@@ -11491,6 +11492,9 @@ const VENDOR_SOURCES = [
 const VENDOR_ITEM_UNITS = [
   { k: "per_gram", l: "per gram" }, { k: "per_piece", l: "per piece" },
   { k: "per_carat", l: "per carat" }, { k: "percent", l: "%" }, { k: "flat", l: "flat" },
+];
+const VENDOR_KINDS = [
+  { k: "jewellery", l: "💍 Jewellery vendor" }, { k: "service", l: "🧰 Service / supply provider" }, { k: "other", l: "❓ Other" },
 ];
 
 // ── Offline draft queue (IndexedDB) — lets a vendor be captured (photos +
@@ -11550,6 +11554,7 @@ async function persistNewVendor(tid, form, dealingIds, itemRows) {
     card_image_back_url: form.card_image_back_url || null,
     notes: form.notes || null,
     source: form.source, exhibition_name: form.exhibition_name || null,
+    vendor_kind: form.vendor_kind || "jewellery",
     active: form.active !== false,
     created_by: loadUser()?.name || loadUser()?.username || null,
   };
@@ -11584,6 +11589,13 @@ function mergeCardFields(form, fields) {
   ["company_name", "email", "address", "website", "gstin"].forEach((k) => {
     if (!next[k] && fields[k]) next[k] = fields[k];
   });
+  // vendor_kind defaults to "jewellery" (not blank), so use "still at
+  // default" rather than "blank" as the untouched-check — a manual pick
+  // made before scanning (e.g. staff already knows it's a service vendor)
+  // is respected and not overwritten.
+  if (next.vendor_kind === "jewellery" && ["jewellery", "service", "other"].includes(fields.vendor_kind)) {
+    next.vendor_kind = fields.vendor_kind;
+  }
   if ((!next.contacts || next.contacts.length === 0) && Array.isArray(fields.contacts) && fields.contacts.length) {
     next.contacts = fields.contacts.map((c) => ({ name: c.name || "", phone: c.phone || "", designation: c.designation || "" }));
   }
@@ -11601,6 +11613,7 @@ function VendorsScreen() {
   const [loading, setLoading] = useState(true);
   const [filterCategory, setFilterCategory] = useState("");
   const [filterPaymentTerms, setFilterPaymentTerms] = useState("");
+  const [filterKind, setFilterKind] = useState("");
   const [search, setSearch] = useState("");
   const [mode, setMode] = useState("directory"); // directory | find
   const [editingVendor, setEditingVendor] = useState(null); // null | {} (new) | row
@@ -11725,6 +11738,7 @@ function VendorsScreen() {
       rows = rows.filter((v) => (v.dealings || []).some((d) => ids.has(d.item_type_id)));
     }
     if (filterPaymentTerms) rows = rows.filter((v) => v.payment_terms === filterPaymentTerms);
+    if (filterKind) rows = rows.filter((v) => (v.vendor_kind || "jewellery") === filterKind);
     if (search) {
       const s = search.toLowerCase();
       rows = rows.filter((v) =>
@@ -11736,7 +11750,7 @@ function VendorsScreen() {
     }
     return rows;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vendors, itemTypes, filterCategory, filterPaymentTerms, search]);
+  }, [vendors, itemTypes, filterCategory, filterPaymentTerms, filterKind, search]);
 
   const revokePreviews = () => {
     Object.values(pendingPreviewUrls).forEach((u) => { if (u) URL.revokeObjectURL(u); });
@@ -11759,6 +11773,7 @@ function VendorsScreen() {
       card_image_front_url: v.card_image_front_url || "", card_image_back_url: v.card_image_back_url || "",
       notes: v.notes || "", source: v.source || "manual",
       exhibition_name: v.exhibition_name || "", active: v.active !== false,
+      vendor_kind: v.vendor_kind || "jewellery",
       custom_fields: v.custom_fields || [],
     });
     setDealingIds(new Set((v.dealings || []).map((d) => d.item_type_id)));
@@ -11863,6 +11878,7 @@ function VendorsScreen() {
           card_image_front_url: effectiveForm.card_image_front_url || null, card_image_back_url: effectiveForm.card_image_back_url || null,
           notes: effectiveForm.notes || null,
           source: effectiveForm.source, exhibition_name: effectiveForm.exhibition_name || null,
+          vendor_kind: effectiveForm.vendor_kind || "jewellery",
           active: effectiveForm.active,
         };
         const { error } = await sb.from("bullion_vendors").update(payload).eq("id", editingVendor.id);
@@ -12026,6 +12042,10 @@ function VendorsScreen() {
               <option value="">All payment terms</option>
               {VENDOR_PAYMENT_TERMS.map((p) => <option key={p.k} value={p.k}>{p.l}</option>)}
             </select>
+            <select style={{ ...inp, width: 200 }} value={filterKind} onChange={(e) => setFilterKind(e.target.value)}>
+              <option value="">All vendor kinds</option>
+              {VENDOR_KINDS.map((k) => <option key={k.k} value={k.k}>{k.l}</option>)}
+            </select>
             <input style={{ ...inp, width: 240 }} placeholder="Search company, contact, GSTIN, notes…" value={search} onChange={(e) => setSearch(e.target.value)} />
           </div>
 
@@ -12038,9 +12058,12 @@ function VendorsScreen() {
                 return (
                 <Card key={v.id} style={{ cursor: "pointer" }}>
                   <div onClick={() => openEdit(v)}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6 }}>
                       <div style={{ fontWeight: 600, fontSize: 14 }}>{v.company_name}</div>
-                      <Pill color={C.blue}>{VENDOR_PAYMENT_TERMS.find((p) => p.k === v.payment_terms)?.l || v.payment_terms}</Pill>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 3, alignItems: "flex-end" }}>
+                        <Pill color={C.blue}>{VENDOR_PAYMENT_TERMS.find((p) => p.k === v.payment_terms)?.l || v.payment_terms}</Pill>
+                        {(v.vendor_kind || "jewellery") !== "jewellery" && <Pill color={C.purple}>{VENDOR_KINDS.find((k) => k.k === v.vendor_kind)?.l}</Pill>}
+                      </div>
                     </div>
                     {primaryContact && <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>{primaryContact.name}{primaryContact.designation ? ` · ${primaryContact.designation}` : ""}</div>}
                     {primaryContact?.phone && <div style={{ fontSize: 12, color: "#666" }}>📞 <a href={`tel:${primaryContact.phone}`} onClick={(e) => e.stopPropagation()} style={{ color: C.blue }}>{primaryContact.phone}</a>{(v.contacts || []).length > 1 ? ` +${v.contacts.length - 1} more` : ""}</div>}
@@ -12177,6 +12200,11 @@ function VendorsScreen() {
             <div><label style={lbl}>Source</label>
               <select style={inp} value={vendorForm.source} onChange={(e) => setVendorForm((p) => ({ ...p, source: e.target.value }))}>
                 {VENDOR_SOURCES.map((s) => <option key={s.k} value={s.k}>{s.l}</option>)}
+              </select>
+            </div>
+            <div><label style={lbl}>Vendor kind (auto-set from card scan, editable)</label>
+              <select style={inp} value={vendorForm.vendor_kind} onChange={(e) => setVendorForm((p) => ({ ...p, vendor_kind: e.target.value }))}>
+                {VENDOR_KINDS.map((k) => <option key={k.k} value={k.k}>{k.l}</option>)}
               </select>
             </div>
             {/* Independent of source — a card can be scanned AT an exhibition, so this isn't gated on source==="exhibition". */}

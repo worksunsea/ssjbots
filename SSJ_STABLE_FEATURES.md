@@ -295,6 +295,7 @@ Gamified MCQ quiz for staff jewellery knowledge. Separate from main CRM. Not yet
 | 0056 | 2026-07-02 | staff.active + tenant_security_settings + trusted_devices + device_verifications (§19 session security) — run in Supabase before deploy |
 | 0061 | 2026-07-11 | bullion_vendors, bullion_vendor_dealings, bullion_vendor_items + uploads/vendors/% storage RLS (§24 Vendor Management) ✅ |
 | 0062 | 2026-07-11 | Vendor Management v2 — contacts jsonb (multi-contact), dual card images, custom_fields jsonb, catalogue_item_types.customer_visible (§24) ✅ |
+| 0063 | 2026-07-12 | bullion_vendors.vendor_kind (jewellery/service/other) — AI-classified from the same card scan, no extra token cost (§24) ✅ |
 
 ---
 
@@ -566,6 +567,8 @@ Scan supplier business cards → auto-fill contact details via AI vision → tag
 - `mergeCardFields()`/`persistNewVendor()` are shared module-level functions (not component-local) precisely so the live-scan path and the offline-sync path can't drift out of sync with each other or with schema changes.
 - **`custom_fields`** jsonb (`[{label, value}]`) — deliberately NOT a form-builder (field types, admin-configurable schema). A full form-builder was explicitly considered and rejected as over-engineering for this scale; this is the intentional lightweight alternative.
 - **`catalogue_item_types.customer_visible`** (boolean, default `true`) — added because vendor categories aren't always jewellery product lines (packaging, equipment, cleaning chemicals, etc.), and `catalogue_item_types` doubles as the CUSTOMER-FACING product taxonomy on shared catalogue links. `VendorsScreen`'s inline "+ New Category / Subcategory" quick-add defaults new categories to `customer_visible:false` (checkbox to opt in). `CatalogueScreen.loadTaxonomy` and `CalculatorScreen`'s catalogue-linking item-type fetch both filter `.eq("customer_visible", true)` — `VendorsScreen`'s own itemTypes fetch stays unfiltered (vendors need to see every category, service ones included). Confirmed via `api/catalogue.js` read: customers only ever see a category name attached to a specific shared *product*, never a raw browsable category list — so the actual risk was internal admin clutter, not a customer-facing leak, but the flag is cheap insurance either way.
+
+**v3: `vendor_kind` (2026-07-12, migration `0063_vendor_kind.sql`):** `bullion_vendors.vendor_kind` text CHECK `jewellery|service|other`, default `jewellery`. Coarse top-level classification, separate from the detailed `bullion_vendor_dealings` category tags — lets staff filter the Directory to "just service/supply vendors" without tagging every category. Set by `api/vendor-card-scan.js`'s AI extraction as one extra JSON key in the SAME scan call (negligible added tokens — the AI already reads the whole card for company_name/contacts/etc), merged in via `mergeCardFields()` using an "still at default" check (not a blank check, since the field always has a value) so a manual pre-scan pick isn't clobbered. Editable via a dropdown in the vendor form regardless — AI classification is a starting guess, not a lock.
 
 ---
 
