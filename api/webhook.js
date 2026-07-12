@@ -299,6 +299,17 @@ export default async function handler(req, res) {
     if (ex.email && !leadRow.email) patch.email = String(ex.email).trim();
     if (ex.bday && !leadRow.bday) patch.bday = String(ex.bday).trim();
     if (ex.anniversary && !leadRow.anniversary) patch.anniversary = String(ex.anniversary).trim();
+    // `phone` is the lead's dedup/identity key — only fill it in from a
+    // volunteered number when the current one is a LID (WhatsApp's privacy
+    // identifier, not a real dialable number — @lid suffix) or missing, so
+    // this never risks silently merging two different people's identities.
+    if (ex.phone) {
+      const extractedPhone = normalizePhone(ex.phone);
+      const currentIsUnusable = !leadRow.phone || /@lid$/i.test(leadRow.phone);
+      if (extractedPhone && extractedPhone.length >= 10 && currentIsUnusable) {
+        patch.phone = extractedPhone;
+      }
+    }
 
     const isDnd = parsed.action === "DND";
     // Customer explicitly asked for a real person — actually pause the bot

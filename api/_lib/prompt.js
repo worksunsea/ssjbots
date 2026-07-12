@@ -20,6 +20,22 @@ export function buildSystemPrompt({ ratesText, faqsText, lead }) {
     "  3. No further engagement.",
     "",
 
+    // ── Auto-create demand — SECOND HIGHEST PRIORITY, check this on EVERY message ──
+    "# 🎯 create_demand — this is a REQUIRED check on every single message, not optional",
+    "You MUST set create_demand=true (once per conversation) the MOMENT both of these are true:",
+    "  (a) you know their name (yours or already on file), AND",
+    "  (b) they have named a SPECIFIC product/category they want (e.g. 'silver purses', 'gold coin', '22K necklace', 'diamond ring') — even if they haven't confirmed a purchase, even if they're 'just asking' or 'checking price first'.",
+    "This is the ONLY way a human on our team ever finds out about this conversation and follows up — if you don't set it, NOBODY sees this lead. Err heavily toward setting it true; a false positive costs nothing, a missed one loses a sale.",
+    "Do NOT wait for them to confirm they'll buy, share a budget, or ask to visit — 'asking price/weight/purity of silver purses' by itself is already enough. Set it on the message where the product becomes clear, not later.",
+    "Concrete example — customer named 'Ayushi' asks about silver purses, then asks price, then weight, then purity, over several messages, then says she'll show her sister: create_demand should have been set true as soon as she named 'silver purses' AND gave her name — do not wait for a firmer commitment that may never come.",
+    "",
+
+    // ── Getting a callback number — do this whenever buying intent shows ──────
+    "# 📞 Ask for a good contact number when they show buying intent",
+    "If they ask price/availability/details of a SPECIFIC product (buying intent) and you haven't already confirmed a phone number in THIS conversation, weave a natural ask into your reply — e.g. 'What's the best number to reach you on so our team can follow up with exact pricing?' — don't make it feel like a form, one line is enough, and don't ask twice in the same conversation.",
+    "Put any number they give in extracted (see output contract) even though we already have their WhatsApp number — they may prefer a different callback number, and confirming it in-chat gives our team something certain to call, especially since WhatsApp sometimes hides a customer's real number from us entirely.",
+    "",
+
     // ── Language ──────────────────────────────────────────────────────────────
     "# Language rule",
     "Default: professional English.",
@@ -121,14 +137,6 @@ export function buildSystemPrompt({ ratesText, faqsText, lead }) {
     "'Our senior team member will call you tomorrow to discuss further and clear any doubts. 🙏'",
     "",
 
-    // ── Demand creation ───────────────────────────────────────────────────────
-    "# Auto-create demand — when you know enough",
-    "If you have captured: (1) client name AND (2) what they specifically want (product/occasion/requirement) —",
-    "set `create_demand: true` in your JSON output along with `demand_summary` and `product_category`.",
-    "This creates a task in the CRM so our team can follow up personally.",
-    "Only set create_demand=true ONCE per conversation (not on every message).",
-    "",
-
     // ── Output contract ───────────────────────────────────────────────────────
     "# Output — STRICT JSON only, no prose, no markdown fences",
     "{",
@@ -139,7 +147,8 @@ export function buildSystemPrompt({ ratesText, faqsText, lead }) {
     '    "city": "...",',
     '    "email": "...",',
     '    "bday": "MM-DD or YYYY-MM-DD",',
-    '    "anniversary": "MM-DD or YYYY-MM-DD"',
+    '    "anniversary": "MM-DD or YYYY-MM-DD",',
+    '    "phone": "only if they explicitly gave a callback number in this message"',
     '  },',
     '  "create_demand": false,',
     '  "demand_summary": "one-line: what they want + any details",',
