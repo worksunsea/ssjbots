@@ -550,6 +550,20 @@ This section supersedes an earlier same-day pass that got two things wrong — c
 
 ---
 
+## 25. DEMANDS SCREEN REDESIGN — CARD GRID + ON-TIME TRACKING (2026-07-13)
+
+`DemandsScreen` (`src/App.jsx`, right after `demandEnquiryLine` helper) rewritten from a dense full-width stacked list to a small-card grid, per owner request to separate walk-in-client attention from demand-enquiry attention and make sure nothing due gets missed.
+
+- **Walk-ins hard-excluded, always** — `openBase`/`closedFiltered` memos filter `d.lead?.source !== "walk_in"` unconditionally (was previously a `filterSource` toggle mixing them in by default). Walk-ins live only in the Walk-ins tab now. The `filterSource` state/selector was removed entirely from this screen.
+- **`dueDateBucket(d)` / `dueDateRank(b)` / `DUE_BUCKET_META`** (module scope, right after `tempRank`) — new due-date urgency buckets (`overdue|today|week|later|none`) off `occasion_date`, promoted from what used to be dead code (`urgencyBorder`/`urgencyLabel` were computed but only `urgencyBorder` was actually wired into a card's border color; `urgencyLabel` was never rendered anywhere). These now drive BOTH the summary chip counts and `load()`'s primary sort order — due-date urgency first, `tempRank` (temperature) is the tiebreaker, not the primary key like before.
+- **On-time summary strip** — clickable count chips (🔴 Overdue / 🟠 Due Today / 🟡 Due This Week / ⚪ No Date Set) above the grid. Counts come from `openBase` (before the chip's own filter), tapping a chip sets `activeDueFilter` which narrows `filtered`. This is the actual mechanism for "make sure nothing is left" — check this strip, not the raw list, to know what's slipping.
+- **Card content** (exactly 4 things, matches the Calculator's "Recent Estimates" grid pattern — `repeat(auto-fill, minmax(240px, 1fr))`): client name + due-bucket pill, temperature pill, `demandEnquiryLine(d)` (description → else summarizes `enquiry_items[0]` + "+N more" → else `product_category`), "Due: {occasion} · {date}" or "No Date Set", and `nextStepFor(d)`'s label as the action button — **do not re-derive any of this logic, all four reuse existing module-scope functions** (`demandTemperature`, `nextStepFor`, `demandEnquiryLine`).
+- **Manager bulk-select/reassign moved behind a new "⋯ Manage" toggle** (`manageMode` state, manager+ only via existing `isManagerPlus`), off by default — still fully functional, just not part of the everyday view. Closed/Converted section behavior unchanged (still collapsed by default via `showClosed`).
+- Clicking a card still opens the exact same `ConversationPane` (call log, WA history, notes, close/reassign, more-menu) as before — no change to that flow, just reached from a card instead of a list row.
+- `Card` component (`src/App.jsx` ~407) now forwards `onClick`/`...rest` — needed to make the new cards clickable. Backward compatible; existing `Card` usages elsewhere (e.g. `VendorsScreen`) only ever passed `children`/`style` so nothing else changes behavior.
+
+---
+
 ## 24. VENDOR MANAGEMENT (2026-07-11)
 
 Scan supplier business cards → auto-fill contact details via AI vision → tag "deals in" categories → record item-wise making charges → later search "who supplies X" when sourcing.
