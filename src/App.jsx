@@ -11958,6 +11958,80 @@ function VendorsScreen() {
     load();
   };
 
+  // Folds the currently-open form's data INTO an existing vendor row
+  // instead of creating a second one — the fix for the duplicate warning.
+  // Existing scalar fields (address/email/notes core, images, payment
+  // terms) are treated as canonical and kept as-is unless blank; contacts,
+  // custom fields, categories, and item rows are UNIONED (deduped) so
+  // nothing typed in either copy is lost. Requires network — this is an
+  // explicit admin action, not part of the offline capture flow.
+  const mergeIntoExisting = async (target) => {
+    if (!confirm(`Merge this into "${target.company_name}"? The current form's details will be folded in and this form discarded.`)) return;
+    setSaving(true);
+    try {
+      const normPh = (p) => normalizePhone(p || "");
+      const existingPhones = new Set((target.contacts || []).map((c) => normPh(c.phone)).filter(Boolean));
+      const mergedContacts = [
+        ...(target.contacts || []),
+        ...(vendorForm.contacts || []).filter((c) => (c.name || c.phone) && !(normPh(c.phone) && existingPhones.has(normPh(c.phone)))),
+      ];
+      const existingFieldKeys = new Set((target.custom_fields || []).map((f) => `${(f.label || "").toLowerCase()}|${f.value || ""}`));
+      const mergedCustomFields = [
+        ...(target.custom_fields || []),
+        ...(vendorForm.custom_fields || []).filter((f) => (f.label || f.value) && !existingFieldKeys.has(`${(f.label || "").toLowerCase()}|${f.value || ""}`)),
+      ];
+      const mergedNotes = [target.notes, vendorForm.notes].filter(Boolean).filter((n, i, arr) => arr.indexOf(n) === i).join("\n");
+      const mergedDealingIds = new Set([...(target.dealings || []).map((d) => d.item_type_id), ...dealingIds]);
+
+      const payload = {
+        contacts: mergedContacts,
+        custom_fields: mergedCustomFields,
+        notes: mergedNotes || null,
+        address: target.address || vendorForm.address || null,
+        city: target.city || vendorForm.city || null,
+        state: target.state || vendorForm.state || null,
+        email: target.email || vendorForm.email || null,
+        website: target.website || vendorForm.website || null,
+        gstin: target.gstin || vendorForm.gstin || null,
+        card_image_front_url: target.card_image_front_url || vendorForm.card_image_front_url || null,
+        card_image_back_url: target.card_image_back_url || vendorForm.card_image_back_url || null,
+      };
+      const { error } = await sb.from("bullion_vendors").update(payload).eq("id", target.id);
+      if (error) throw error;
+
+      await sb.from("bullion_vendor_dealings").delete().eq("vendor_id", target.id);
+      if (mergedDealingIds.size) {
+        await sb.from("bullion_vendor_dealings").insert([...mergedDealingIds].map((item_type_id) => ({ vendor_id: target.id, item_type_id })));
+      }
+
+      const existingItemKeys = new Set((target.items || []).map((it) => `${it.item_name.trim().toLowerCase()}|${it.item_type_id || ""}`));
+      const newValidItems = itemRows.filter((r) => r.item_name.trim() && r.making_charge !== "" && !existingItemKeys.has(`${r.item_name.trim().toLowerCase()}|${r.item_type_id || ""}`));
+      if (newValidItems.length) {
+        await sb.from("bullion_vendor_items").insert(newValidItems.map((r) => ({
+          tenant_id: tid, vendor_id: target.id,
+          item_type_id: r.item_type_id || null, item_name: r.item_name.trim(),
+          making_charge: Number(r.making_charge), making_charge_unit: r.making_charge_unit || "per_gram",
+          price_note: r.price_note || null, active: r.active !== false,
+          created_by: loadUser()?.name || loadUser()?.username || null,
+        })));
+      }
+
+      // If the currently-open form was itself an already-saved vendor
+      // (two real duplicate rows, not a fresh capture merging into one),
+      // deactivate the one just merged away so it doesn't linger as a dupe.
+      if (editingVendor?.id && editingVendor.id !== target.id) {
+        await sb.from("bullion_vendors").update({ active: false }).eq("id", editingVendor.id);
+      }
+
+      showToast(`✓ Merged into ${target.company_name}`);
+      closeForm();
+      load();
+    } catch (e) {
+      showToast("❌ " + e.message);
+    }
+    setSaving(false);
+  };
+
   const runFindSupplier = useCallback(async () => {
     setFindLoading(true);
     try {
@@ -12168,7 +12242,10 @@ function VendorsScreen() {
           {duplicateWarning && (
             <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 13, color: "#991b1b", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               <span>⚠️ Possible duplicate — {duplicateWarning.reason === "phone" ? "a contact number here is already saved under" : "same company name already saved as"} <strong>{duplicateWarning.vendor.company_name}</strong>.</span>
-              <Btn small ghost color={C.red} onClick={() => openEdit(duplicateWarning.vendor)}>View existing</Btn>
+              <div style={{ display: "flex", gap: 6 }}>
+                <Btn small ghost color={C.red} onClick={() => openEdit(duplicateWarning.vendor)}>View existing</Btn>
+                <Btn small color={C.red} onClick={() => mergeIntoExisting(duplicateWarning.vendor)} disabled={saving}>Merge into existing</Btn>
+              </div>
             </div>
           )}
           <div style={{ display: "flex", gap: 16, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
