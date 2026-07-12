@@ -5781,25 +5781,61 @@ function ApprovalsScreen({ funnels, canApprove = true }) {
 
   const setSav = (id, on) => setSaving((s) => { const n = new Set(s); on ? n.add(id) : n.delete(id); return n; });
 
-  async function approve(id) {
+  async function approve(id, silent = false) {
     setSav(id, true);
     const body = editing[id];
     const upd = { approved: true, approved_at: new Date().toISOString(), approved_by: loadUser()?.name || "admin" };
     if (body !== undefined) upd.edited_body = body;
-    await sb.from("bullion_scheduled_messages").update(upd).eq("id", id);
+    // .select() so we can tell "0 rows matched" (RLS/stale id — Postgres
+    // returns success with an empty array, NOT an error) apart from a real
+    // failure — both looked identical to "nothing happened" before this.
+    const { data, error } = await sb.from("bullion_scheduled_messages").update(upd).eq("id", id).select();
+    if (error) {
+      if (!silent) alert("❌ Approve failed: " + error.message);
+      setSav(id, false);
+      return { ok: false, reason: error.message };
+    }
+    if (!data || data.length === 0) {
+      if (!silent) alert("❌ Approve didn't save — no matching row (permissions or the message may have been removed). Try Refresh.");
+      setSav(id, false);
+      return { ok: false, reason: "no matching row" };
+    }
+    // Row may be in either tab's list (calendar vs drip) — update whichever
+    // one actually has it; a no-op map on the other is harmless.
     setRows((r) => r.map((m) => m.id === id ? { ...m, ...upd } : m));
+    setCalRows((r) => r.map((m) => m.id === id ? { ...m, ...upd } : m));
     setSav(id, false);
+    return { ok: true };
   }
 
   async function reject(id) {
     setSav(id, true);
-    await sb.from("bullion_scheduled_messages").update({ status: "canceled", canceled_reason: "rejected_in_approval" }).eq("id", id);
+    const { data, error } = await sb.from("bullion_scheduled_messages").update({ status: "canceled", canceled_reason: "rejected_in_approval" }).eq("id", id).select();
+    if (error) {
+      alert("❌ Reject failed: " + error.message);
+      setSav(id, false);
+      return;
+    }
+    if (!data || data.length === 0) {
+      alert("❌ Reject didn't save — no matching row (permissions or the message may have been removed). Try Refresh.");
+      setSav(id, false);
+      return;
+    }
     setRows((r) => r.filter((m) => m.id !== id));
+    setCalRows((r) => r.filter((m) => m.id !== id));
     setSav(id, false);
   }
 
   async function approveAll(ids) {
-    for (const id of ids) await approve(id);
+    let failed = 0;
+    let firstReason = "";
+    for (const id of ids) {
+      const r = await approve(id, true);
+      if (!r.ok) { failed++; if (!firstReason) firstReason = r.reason; }
+    }
+    if (failed > 0) {
+      alert(`⚠️ ${failed} of ${ids.length} approvals failed (${ids.length - failed} succeeded).\nFirst error: ${firstReason}`);
+    }
   }
 
   const approveSelected = async () => {
