@@ -550,6 +550,19 @@ This section supersedes an earlier same-day pass that got two things wrong — c
 
 ---
 
+## 26. AD CAMPAIGN TRACKING — ADLEADS TAB (2026-07-13, migration 0065)
+
+Click-to-WhatsApp ads land with a pre-filled message. This attributes them and keeps them out of the regular Demands inbox.
+
+- **`bullion_lead_sources`** — existed only as migration `0049`, never actually run. The whole Lead Sources tab was silently non-functional until this migration ran it for real.
+- **`bullion_lead_sources.wa_keyword`** (comma-separated) — matched case-insensitively against a brand-new lead's FIRST inbound message only (not every message). Staff configure this themselves in the Lead Sources tab (superadmin/admin only — not in the manager tab list) alongside a `default_funnel_id` and `enroll_drip` toggle that already existed on that table.
+- **`bullion_leads.lead_source_id`** — set once at lead-creation time in `api/webhook.js`, independent of whether `create_demand` ever fires. On match: lead gets `lead_source_id` + `funnel_id` (from the source's `default_funnel_id`), and is auto-enrolled via the EXISTING `enrollLeadInDrip()` helper (`api/_lib/drip.js`) — not reimplemented.
+- **`DemandsScreen`** takes a new `adOnly` prop (default `false`). Regular Demands now excludes `lead.lead_source_id != null` (same precedent as walk-in exclusion, §25). New `adleads` tab renders the exact same component with `adOnly` — zero duplicated logic, both share card grid / due-date chips / `nextStepFor` / `ConversationPane`. Campaign name shows as a purple badge on each card (`d.lead.lead_source.name`, joined via `bullion_lead_sources`).
+- **Why this answers "5 campaigns + organic chat without clutter"**: each campaign auto-routes into its own funnel (isolated step/drip sequence) AND its own tab (AdLeads vs Demands vs Walk-ins) — no manual sorting needed day to day.
+- Nav wiring follows the exact same 5-spot pattern as every other tab addition in this file (tabs array x2, role defaults x2, pinned tabs, screen mount) — see §24/Vendors for the reference pattern if adding another tab later.
+
+---
+
 ## 25. DEMANDS SCREEN REDESIGN — CARD GRID + ON-TIME TRACKING (2026-07-13)
 
 `DemandsScreen` (`src/App.jsx`, right after `demandEnquiryLine` helper) rewritten from a dense full-width stacked list to a small-card grid, per owner request to separate walk-in-client attention from demand-enquiry attention and make sure nothing due gets missed.
