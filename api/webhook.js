@@ -301,15 +301,39 @@ export default async function handler(req, res) {
     if (ex.anniversary && !leadRow.anniversary) patch.anniversary = String(ex.anniversary).trim();
 
     const isDnd = parsed.action === "DND";
+    // Customer explicitly asked for a real person — actually pause the bot
+    // (bot_paused is the real gate that stops auto-replies, see the
+    // `if (leadRow.bot_paused)` check above; status:"handoff" alone is only
+    // a UI/temperature label and does NOT stop the bot on its own) and
+    // alert staff immediately so someone actually follows up, instead of
+    // the bot silently continuing to auto-reply after a cold "I'm not X".
+    const isHandoff = parsed.action === "HANDOFF";
     await qx(sb.from("bullion_leads").update({
       exchanges_count: (leadRow.exchanges_count || 0) + 1,
       stage: parsed.stage || leadRow.stage || "greeting",
       dnd: isDnd ? true : leadRow.dnd,
       dnd_reason: isDnd ? msg.slice(0, 200) : leadRow.dnd_reason,
       dnd_at: isDnd ? new Date().toISOString() : leadRow.dnd_at,
+      status: isHandoff ? "handoff" : leadRow.status,
+      bot_paused: isHandoff ? true : leadRow.bot_paused,
       updated_at: new Date().toISOString(),
       ...patch,
     }).eq("id", leadRow.id));
+
+    if (isHandoff) {
+      sendPushNotification({
+        userId: "admin",
+        title: "🙋 Customer wants a human",
+        body: `${leadRow.name || phone} asked to talk to a real person — bot paused, please follow up.`,
+        url: "/",
+      }).catch(() => {});
+      if (OWNER_ALERT_PHONE) {
+        sendWhatsApp({
+          phone: OWNER_ALERT_PHONE,
+          msg: `🙋 ${leadRow.name || phone} asked to talk to a real person on WhatsApp — bot paused. Please follow up: https://ssjbot.gemtre.in`,
+        }).catch(() => {});
+      }
+    }
 
     // ── Auto-create demand when Claude has enough info ─────────────────────────
     // Telecaller then assigns a funnel in CRM and takes over.

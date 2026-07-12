@@ -158,6 +158,20 @@ export default async function handler(req, res) {
     const lead = row.lead;
     const funnel = row.funnel;
 
+    // Atomic claim — the external pinger can (and has) fired this endpoint
+    // twice in close succession (retry after a slow response, overlapping
+    // schedules), and the old code just SELECTed status='pending' then sent
+    // then updated to 'sent' at the very end — a classic TOCTOU race where
+    // two concurrent runs both pick up the same still-pending row before
+    // either marks it sent. Real case: Meena Mehta's birthday message sent
+    // twice, 2m24s apart, two distinct WhatsApp message ids (2026-07-11).
+    // This UPDATE...WHERE status='pending' is atomic at the DB level — only
+    // one concurrent request can win it 0 rows affected means another
+    // process already claimed this row; skip instead of double-sending.
+    const { data: claimed } = await sb.from("bullion_scheduled_messages")
+      .update({ status: "processing" }).eq("id", row.id).eq("status", "pending").select("id");
+    if (!claimed || claimed.length === 0) { continue; }
+
     // Guards
     if (!funnel?.active) {
       await sb.from("bullion_scheduled_messages").update({ status: "canceled", canceled_reason: "funnel_inactive" }).eq("id", row.id);
