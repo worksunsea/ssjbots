@@ -11235,7 +11235,7 @@ function downloadEstimatePdf({ title, clientName, rows, total, orientation, form
 }
 
 // Builds the PDF, uploads it to Supabase storage, and sends it as a WhatsApp
-// document via the Baileys wa-service (default session, 8860866000).
+// document via the Baileys wa-service, office session (phone 8860866000).
 // sections: same shape as buildEstimatePdfDoc.
 async function sendEstimatePdfOnWA({ phone, clientName, title, sections, caption, orientation, format }) {
   const doc = buildEstimatePdfDoc({ title, clientName, sections, orientation, format });
@@ -11246,7 +11246,12 @@ async function sendEstimatePdfOnWA({ phone, clientName, title, sections, caption
   const res = await fetch("/api/send-media", {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
-    body: JSON.stringify({ phone: normalizePhone(phone), mediaUrl: publicUrl, mediaType: "document", filename, caption: caption || "", client: "8860866000" }),
+    // wa-service session client_id for phone 8860866000 is "Reception" (not
+    // the phone number itself — that was the bug: this hardcoded the old
+    // numeric client_id, which stopped matching once sessions got renamed
+    // to human-readable ids, so every automated Send Estimate silently
+    // failed even though the session showed "connected").
+    body: JSON.stringify({ phone: normalizePhone(phone), mediaUrl: publicUrl, mediaType: "document", filename, caption: caption || "", client: "Reception" }),
   });
   return await res.json();
 }
