@@ -11752,6 +11752,25 @@ function VendorsScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vendors, itemTypes, filterCategory, filterPaymentTerms, filterKind, search]);
 
+  // Flags a possible duplicate while filling the form — matches by phone
+  // (any contact number already saved under another vendor) or by an
+  // exact company name match. Non-blocking (a person can legitimately be
+  // saved under two entries), just surfaced so staff can check before
+  // creating a real duplicate — the classic "same vendor's card scanned
+  // twice at the same exhibition" case.
+  const duplicateWarning = useMemo(() => {
+    if (editingVendor === null) return null;
+    const formPhones = new Set((vendorForm.contacts || []).map((c) => normalizePhone(c.phone)).filter((p) => p.length >= 8));
+    const formName = (vendorForm.company_name || "").trim().toLowerCase();
+    for (const v of vendors) {
+      if (v.id === editingVendor?.id) continue;
+      const phoneHit = (v.contacts || []).some((c) => formPhones.has(normalizePhone(c.phone)));
+      const nameHit = formName && (v.company_name || "").trim().toLowerCase() === formName;
+      if (phoneHit || nameHit) return { vendor: v, reason: phoneHit ? "phone" : "name" };
+    }
+    return null;
+  }, [vendors, vendorForm.contacts, vendorForm.company_name, editingVendor]);
+
   const revokePreviews = () => {
     Object.values(pendingPreviewUrls).forEach((u) => { if (u) URL.revokeObjectURL(u); });
   };
@@ -12146,6 +12165,12 @@ function VendorsScreen() {
         <Modal title={editingVendor?.id ? "Edit Vendor" : "Add Vendor"} onClose={closeForm} width={680}>
           <input ref={frontImgRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={(e) => handleCardPick("front", e.target.files?.[0])} />
           <input ref={backImgRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={(e) => handleCardPick("back", e.target.files?.[0])} />
+          {duplicateWarning && (
+            <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 13, color: "#991b1b", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span>⚠️ Possible duplicate — {duplicateWarning.reason === "phone" ? "a contact number here is already saved under" : "same company name already saved as"} <strong>{duplicateWarning.vendor.company_name}</strong>.</span>
+              <Btn small ghost color={C.red} onClick={() => openEdit(duplicateWarning.vendor)}>View existing</Btn>
+            </div>
+          )}
           <div style={{ display: "flex", gap: 16, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <Btn small color={C.purple} onClick={() => frontImgRef.current?.click()} disabled={scanningFront}>{scanningFront ? "Scanning…" : "📷 Front of card"}</Btn>
