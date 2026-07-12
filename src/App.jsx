@@ -5712,6 +5712,8 @@ function ApprovalsScreen({ funnels, canApprove = true }) {
   const [cronRunning, setCronRunning] = useState(false);
   const [cronResult, setCronResult] = useState(null);
   const [genningIds, setGenningIds] = useState(new Set());
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [bulkApproving, setBulkApproving] = useState(false);
 
   const regenOne = async (id) => {
     setGenningIds((s) => new Set([...s, id]));
@@ -5771,6 +5773,7 @@ function ApprovalsScreen({ funnels, canApprove = true }) {
     setRows(dripData || []);
 
     setExpanded(new Set());
+    setSelectedIds(new Set());
     setLoading(false);
   }, [days, funnels]);
 
@@ -5798,6 +5801,25 @@ function ApprovalsScreen({ funnels, canApprove = true }) {
   async function approveAll(ids) {
     for (const id of ids) await approve(id);
   }
+
+  const approveSelected = async () => {
+    if (!selectedIds.size) return;
+    setBulkApproving(true);
+    await approveAll([...selectedIds]);
+    setSelectedIds(new Set());
+    setBulkApproving(false);
+  };
+
+  const approveAllPending = async () => {
+    const ids = activeRows.filter((r) => !r.approved).map((r) => r.id);
+    if (!ids.length) return;
+    if (!window.confirm(`Approve all ${ids.length} pending message${ids.length > 1 ? "s" : ""}?`)) return;
+    setBulkApproving(true);
+    await approveAll(ids);
+    setBulkApproving(false);
+  };
+
+  const toggleSelectId = (id) => setSelectedIds((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   const openContactEdit = async (leadId) => {
     const [{ data: lead }, { data: tags }] = await Promise.all([
@@ -5885,6 +5907,12 @@ const activeRows = tab === "calendar" ? calRows : rows;
 
         {!r.approved && (
           <div style={{ display: "flex", gap: 6, marginTop: 7, alignItems: "center", flexWrap: "wrap" }}>
+            {canApprove && (
+              <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#666", cursor: "pointer" }}>
+                <input type="checkbox" checked={selectedIds.has(r.id)} onChange={() => toggleSelectId(r.id)} style={{ width: 14, height: 14, cursor: "pointer" }} />
+                Select
+              </label>
+            )}
             {!canApprove && <span style={{ fontSize: 11, color: "#888", fontStyle: "italic" }}>👁️ View only — no approve access</span>}
             {canApprove && <button onClick={() => approve(r.id)} disabled={isSav || isGenning} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 6, border: "none", background: "#16a34a", color: "#fff", cursor: "pointer", fontWeight: 600 }}>{isSav ? "…" : "✅ Approve"}</button>}
             {canApprove && <button onClick={() => reject(r.id)} disabled={isSav || isGenning} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 6, border: "1px solid #f87171", background: "#fff", color: "#dc2626", cursor: "pointer" }}>❌ Reject</button>}
@@ -5963,6 +5991,16 @@ const activeRows = tab === "calendar" ? calRows : rows;
         )}
         <span style={{ fontSize: 12, padding: "3px 10px", borderRadius: 10, background: "#fef9c3", color: "#713f12" }}>⏳ {pendingCount} pending</span>
         <span style={{ fontSize: 12, padding: "3px 10px", borderRadius: 10, background: "#dcfce7", color: "#166534" }}>✅ {approvedCount} approved</span>
+        {canApprove && pendingCount > 0 && (
+          <button onClick={approveAllPending} disabled={bulkApproving} style={{ fontSize: 12, padding: "5px 12px", borderRadius: 6, border: "1px solid #16a34a", background: bulkApproving ? "#dcfce7" : "#16a34a", color: bulkApproving ? "#166534" : "#fff", cursor: bulkApproving ? "not-allowed" : "pointer", fontWeight: 600 }}>
+            {bulkApproving ? "⏳ Approving…" : `✅ Approve All ${pendingCount} Pending`}
+          </button>
+        )}
+        {canApprove && selectedIds.size > 0 && (
+          <button onClick={approveSelected} disabled={bulkApproving} style={{ fontSize: 12, padding: "5px 12px", borderRadius: 6, border: "1px solid #1d4ed8", background: bulkApproving ? "#dbeafe" : "#1d4ed8", color: bulkApproving ? "#1d4ed8" : "#fff", cursor: bulkApproving ? "not-allowed" : "pointer", fontWeight: 600 }}>
+            {bulkApproving ? "⏳ Approving…" : `✅ Approve Selected (${selectedIds.size})`}
+          </button>
+        )}
         <button onClick={load} style={{ fontSize: 12, padding: "5px 10px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>↻ Refresh</button>
         <button onClick={runCron} disabled={cronRunning} style={{ fontSize: 12, padding: "5px 12px", borderRadius: 6, border: "1px solid #6366f1", background: cronRunning ? "#e0e7ff" : "#6366f1", color: cronRunning ? "#6366f1" : "#fff", cursor: cronRunning ? "not-allowed" : "pointer", fontWeight: 600 }}>
           {cronRunning ? "⏳ Running…" : "⚡ Generate Previews"}
