@@ -11265,6 +11265,14 @@ function openEstimateSlipWindow(est, liveRates = {}, clientPhone = "") {
   const fmtN = (n) => n != null ? `₹${Math.round(n).toLocaleString("en-IN")}` : "—";
   const row = (label, value) => `<tr><td style="padding:3px 6px;color:#444;font-size:13px;">${label}</td><td style="padding:3px 6px;text-align:right;font-size:13px;">${value}</td></tr>`;
   const waPhone = phone ? phone.replace(/\D/g, "").replace(/^0/, "91") : "";
+  // Bridge so the popup (plain HTML/JS, no React scope) can trigger the
+  // real PDF-document WhatsApp send that lives in this window — the popup
+  // calls window.opener.ssjSendEstimatePdf(...) instead of a wa.me text-only
+  // link, so "Send WhatsApp" here actually sends the estimate as a document,
+  // same as the Calculator's own Send Estimate button.
+  window.ssjSendEstimatePdf = async (payload) => {
+    try { return await sendEstimatePdfOnWA(payload); } catch (e) { return { ok: false, error: e.message }; }
+  };
   const CSS = `* { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: 'Georgia', serif; background: #fff; color: #222; font-size: 16px; }
   @page { size: A5 portrait; margin: 15mm; }
@@ -11304,41 +11312,53 @@ function openEstimateSlipWindow(est, liveRates = {}, clientPhone = "") {
     const applyGst = it.applyGst ? 1 : 0;
     const metal = metalLabel(it.purityIdx);
     const dRows = [];
-    dRows.push(row("Purity", PURITIES[it.purityIdx]?.l || "Custom"));
-    if (it.grossWt) dRows.push(row("Gross Weight", `${parseFloat(it.grossWt||0).toFixed(3)} g`));
-    if (it.netGold != null) dRows.push(row(`Net ${metal} Weight`, `${netGold.toFixed(3)} g`));
-    if (it.gRate > 0) dRows.push(row(`${metal} Rate`, `₹${Math.round(it.gRate).toLocaleString("en-IN")}/g`));
-    if (it.goldVal > 0) dRows.push(row(`${metal} Value`, fmtN(it.goldVal)));
+    const pdfRows = [];
+    const addRow = (label, value) => { dRows.push(row(label, value)); pdfRows.push([label, value]); };
+    addRow("Purity", PURITIES[it.purityIdx]?.l || "Custom");
+    if (it.grossWt) addRow("Gross Weight", `${parseFloat(it.grossWt||0).toFixed(3)} g`);
+    if (it.netGold != null) addRow(`Net ${metal} Weight`, `${netGold.toFixed(3)} g`);
+    if (it.gRate > 0) addRow(`${metal} Rate`, `₹${Math.round(it.gRate).toLocaleString("en-IN")}/g`);
+    if (it.goldVal > 0) addRow(`${metal} Value`, fmtN(it.goldVal));
     if (making > 0) {
       const makingRateTxt = it.makingMode
         ? makingRateLabel(parseFloat(it.makingMode === "per_g" ? it.makingRatePg : it.makingRatePct) || 0, it.makingMode, it.isBelow1g)
         : (netGold > 0 ? `₹${Math.round(making / netGold).toLocaleString("en-IN")}/g (effective)` : "—");
-      dRows.push(row("Making Rate", makingRateTxt));
-      dRows.push(row("Making Total", fmtN(making)));
+      addRow("Making Rate", makingRateTxt);
+      addRow("Making Total", fmtN(making));
     }
-    if (parseFloat(it.dia1Wt||0) > 0 && it.dia1Rate > 0) dRows.push(row(`Diamond 1 (${parseFloat(it.dia1Wt)}${it.dia1Unit} @ ₹${it.dia1Rate})`, fmtN(parseFloat(it.dia1Wt||0)*parseFloat(it.dia1Rate||0))));
-    if (parseFloat(it.dia2Wt||0) > 0 && it.dia2Rate > 0) dRows.push(row(`Diamond 2 (${parseFloat(it.dia2Wt)}${it.dia2Unit} @ ₹${it.dia2Rate})`, fmtN(parseFloat(it.dia2Wt||0)*parseFloat(it.dia2Rate||0))));
-    if (parseFloat(it.stoneWt||0) > 0 && it.stoneRate > 0) dRows.push(row(`Stone (${parseFloat(it.stoneWt)}${it.stoneUnit} @ ₹${it.stoneRate})`, fmtN(parseFloat(it.stoneWt||0)*parseFloat(it.stoneRate||0))));
+    if (parseFloat(it.dia1Wt||0) > 0 && it.dia1Rate > 0) addRow(`Diamond 1 (${parseFloat(it.dia1Wt)}${it.dia1Unit} @ ₹${it.dia1Rate})`, fmtN(parseFloat(it.dia1Wt||0)*parseFloat(it.dia1Rate||0)));
+    if (parseFloat(it.dia2Wt||0) > 0 && it.dia2Rate > 0) addRow(`Diamond 2 (${parseFloat(it.dia2Wt)}${it.dia2Unit} @ ₹${it.dia2Rate})`, fmtN(parseFloat(it.dia2Wt||0)*parseFloat(it.dia2Rate||0)));
+    if (parseFloat(it.stoneWt||0) > 0 && it.stoneRate > 0) addRow(`Stone (${parseFloat(it.stoneWt)}${it.stoneUnit} @ ₹${it.stoneRate})`, fmtN(parseFloat(it.stoneWt||0)*parseFloat(it.stoneRate||0)));
     [["misc1Lbl","misc1Wt","misc1Unit","misc1Rate"],["misc2Lbl","misc2Wt","misc2Unit","misc2Rate"],["misc3Lbl","misc3Wt","misc3Unit","misc3Rate"]].forEach(([lk,wk,uk,rk]) => {
       const mr = parseFloat(it[rk]||0); if (!mr) return;
       const mw = parseFloat(it[wk]||0);
-      dRows.push(row(mw > 0 ? `${it[lk]||"Misc"} (${mw}${it[uk]})` : (it[lk]||"Misc"), fmtN(mw > 0 ? mw*mr : mr)));
+      addRow(mw > 0 ? `${it[lk]||"Misc"} (${mw}${it[uk]})` : (it[lk]||"Misc"), fmtN(mw > 0 ? mw*mr : mr));
     });
     const qty = Math.max(1, parseInt(it.qty || "1", 10) || 1);
     if (qty > 1 && it.perPieceTotal > 0) {
-      dRows.push(row("Per-piece Total", fmtN(it.perPieceTotal)));
-      dRows.push(row("Pcs", qty));
+      addRow("Per-piece Total", fmtN(it.perPieceTotal));
+      addRow("Pcs", qty);
     }
+    if (it.applyGst && it.gst > 0) addRow("GST @ 3%", fmtN(it.gst));
     const recalcBtnHtml = todayRate > 0 ? `<button class="recalcbtn" onclick="recalcToday()">📊 New estimate — today's rate (₹${todayRate.toLocaleString("en-IN")}/g)</button>` : "";
-    const waBtnHtml = waPhone ? `<button class="wabtn" onclick="sendWA()">📱 Send WhatsApp</button>` : "";
+    const waBtnHtml = waPhone ? `<button class="wabtn" onclick="sendPdf()">📱 Send WhatsApp</button>` : "";
     body = `<div class="om">ॐ</div><div class="title">ESTIMATE</div><div class="date">${date}</div>${clientName ? `<div class="client">Prepared for: ${clientName}</div>` : ""}<hr class="thick"/>
     <div class="item-header">${it.itemImage ? `<img class="item-img" src="${it.itemImage}" alt="item" onclick="expandImg('${it.itemImage}')"/>` : ""}${it.itemName ? `<div class="item-name">${it.itemName}</div>` : ""}</div>
-    <table>${dRows.join("")}${it.applyGst && it.gst > 0 ? row("GST @ 3%", fmtN(it.gst)) : ""}<tr class="total-row"><td>GRAND TOTAL</td><td style="text-align:right;">${fmtN(est.total_amount)}</td></tr></table>
+    <table>${dRows.join("")}<tr class="total-row"><td>GRAND TOTAL</td><td style="text-align:right;">${fmtN(est.total_amount)}</td></tr></table>
     <div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill</div>
     <div class="btnrow"><button class="printbtn" onclick="window.print()">🖨️ Print</button>${waBtnHtml}${recalcBtnHtml}</div>`;
-    const waMsg = encodeURIComponent(`*ESTIMATE — Sun Sea Jewellers*\n${clientName ? "For: " + clientName + "\n" : ""}Date: ${date}\n\n${it.itemName ? it.itemName + "\n" : ""}Purity: ${PURITIES[it.purityIdx]?.l || "Custom"}\nGross Wt: ${it.grossWt || "—"}g\n${qty > 1 ? `Pcs: ${qty}\n` : ""}Total: ${fmtN(est.total_amount)}\n\n_This is an estimate only_`);
+    const waCaption = `*ESTIMATE — Sun Sea Jewellers*\n${clientName ? "For: " + clientName + "\n" : ""}Date: ${date}\n\n${it.itemName ? it.itemName + "\n" : ""}Purity: ${PURITIES[it.purityIdx]?.l || "Custom"}\nGross Wt: ${it.grossWt || "—"}g\n${qty > 1 ? `Pcs: ${qty}\n` : ""}Total: ${fmtN(est.total_amount)}\n\n_This is an estimate only_`;
+    const pdfPayload = JSON.stringify({ phone: waPhone, clientName, title: "ESTIMATE", sections: [{ rows: pdfRows, total: fmtN(est.total_amount) }], caption: waCaption }).replace(/</g, "\\u003c");
     extraScript = `
-function sendWA(){window.open("https://wa.me/${waPhone}?text=${waMsg}","_blank");}
+var SEND_PAYLOAD=${pdfPayload};
+function sendPdf(){
+  var btn=document.querySelector(".wabtn");
+  if(btn){btn.disabled=true;btn.textContent="Sending…";}
+  window.opener.ssjSendEstimatePdf(SEND_PAYLOAD).then(function(r){
+    if(btn){btn.disabled=false;btn.textContent="📱 Send WhatsApp";}
+    alert(r&&r.ok?"✅ Sent on WhatsApp":"❌ "+((r&&(r.error||r.message))||"Send failed"));
+  });
+}
 var TODAY_RATE=${todayRate},NET_GOLD=${netGold},MAKING=${making},DIA_TOTAL=${diaTotal},MISC_TOTAL=${miscTotal},APPLY_GST=${applyGst},QTY=${qty};
 var CLIENT="${clientName.replace(/"/g,"'")}",IMG="${(it.itemImage||"").replace(/"/g,"'")}",INAME="${(it.itemName||"").replace(/"/g,"'")}",PURITY="${(PURITIES[it.purityIdx]?.l||"Custom").replace(/"/g,"'")}",GWGT="${(it.grossWt||"").toString().replace(/"/g,"'")}",NGWGT="${netGold.toFixed(3)}",METAL="${metal}";
 var MAKING_RATE_TXT="${(it.makingMode ? makingRateLabel(parseFloat(it.makingMode === "per_g" ? it.makingRatePg : it.makingRatePct) || 0, it.makingMode, it.isBelow1g) : (netGold > 0 ? `₹${Math.round(making / netGold).toLocaleString("en-IN")}/g (effective)` : "—")).replace(/"/g,"'")}",DIA1="${it.dia1Wt||""}",DIA1U="${it.dia1Unit||""}",DIA1R="${it.dia1Rate||""}",DIA2="${it.dia2Wt||""}",DIA2U="${it.dia2Unit||""}",DIA2R="${it.dia2Rate||""}",STW="${it.stoneWt||""}",STU="${it.stoneUnit||""}",STR="${it.stoneRate||""}";
@@ -11366,34 +11386,60 @@ function recalcToday(){
 }`;
   } else if (est.mode === "solitaire") {
     const dRows = [];
-    if (it.shape) dRows.push(row("Shape", it.shape));
-    if (it.weight) dRows.push(row("Weight", `${it.weight} ct`));
-    if (it.color || it.clarity) dRows.push(row("Colour / Clarity", `${it.color||"—"} / ${it.clarity||"—"}`));
-    if (it.cut) dRows.push(row("Cut", it.cut));
-    if (it.cert) dRows.push(row("Certificate", it.cert));
-    if (it.sellPpc != null) dRows.push(row("Sell Price/ct", fmtN(it.sellPpc)));
-    if (it.sellTotal != null) dRows.push(row("Stone Total", fmtN(it.sellTotal)));
-    if (it.includeGold && (it.goldVal||0) + (it.making||0) > 0) dRows.push(row(`${metalLabel(it.goldPurityIdx)} + Making`, fmtN((it.goldVal||0)+(it.making||0))));
+    const pdfRows = [];
+    const addRow = (label, value) => { dRows.push(row(label, value)); pdfRows.push([label, value]); };
+    if (it.shape) addRow("Shape", it.shape);
+    if (it.weight) addRow("Weight", `${it.weight} ct`);
+    if (it.color || it.clarity) addRow("Colour / Clarity", `${it.color||"—"} / ${it.clarity||"—"}`);
+    if (it.cut) addRow("Cut", it.cut);
+    if (it.cert) addRow("Certificate", it.cert);
+    if (it.sellPpc != null) addRow("Sell Price/ct", fmtN(it.sellPpc));
+    if (it.sellTotal != null) addRow("Stone Total", fmtN(it.sellTotal));
+    if (it.includeGold && (it.goldVal||0) + (it.making||0) > 0) addRow(`${metalLabel(it.goldPurityIdx)} + Making`, fmtN((it.goldVal||0)+(it.making||0)));
     const stoneGst = it.applyGst && it.sellTotal ? it.sellTotal * 0.015 : 0;
     const goldGst = it.applyGst && it.includeGold && it.goldVal ? ((it.goldVal||0)+(it.making||0)) * 0.03 : 0;
-    const waMsg = encodeURIComponent(`*ESTIMATE — Sun Sea Jewellers*\n${clientName ? "For: " + clientName + "\n" : ""}Date: ${date}\n\n${it.shape||""} ${it.weight||""}ct ${it.color||""} ${it.clarity||""} ${it.cert||""}\nTotal: ${fmtN(est.total_amount)}\n\n_This is an estimate only_`);
-    const waBtnHtml = waPhone ? `<button class="wabtn" onclick="window.open('https://wa.me/${waPhone}?text=${waMsg}','_blank')">📱 Send WhatsApp</button>` : "";
+    if (stoneGst > 0) addRow("GST @ 1.5% (stone)", fmtN(stoneGst));
+    if (goldGst > 0) addRow("GST @ 3% (gold setting)", fmtN(goldGst));
+    const waCaption = `*ESTIMATE — Sun Sea Jewellers*\n${clientName ? "For: " + clientName + "\n" : ""}Date: ${date}\n\n${it.shape||""} ${it.weight||""}ct ${it.color||""} ${it.clarity||""} ${it.cert||""}\nTotal: ${fmtN(est.total_amount)}\n\n_This is an estimate only_`;
+    const waBtnHtml = waPhone ? `<button class="wabtn" onclick="sendPdf()">📱 Send WhatsApp</button>` : "";
     body = `<div class="om">ॐ</div><div class="title">ESTIMATE</div><div class="date">${date}</div>${clientName ? `<div class="client">Prepared for: ${clientName}</div>` : ""}<hr class="thick"/>
-    <table>${dRows.join("")}${stoneGst > 0 ? row("GST @ 1.5% (stone)", fmtN(stoneGst)) : ""}${goldGst > 0 ? row("GST @ 3% (gold setting)", fmtN(goldGst)) : ""}<tr class="total-row"><td>GRAND TOTAL</td><td style="text-align:right;">${fmtN(est.total_amount)}</td></tr></table>
+    <table>${dRows.join("")}<tr class="total-row"><td>GRAND TOTAL</td><td style="text-align:right;">${fmtN(est.total_amount)}</td></tr></table>
     <div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill</div>
     <div class="btnrow"><button class="printbtn" onclick="window.print()">🖨️ Print</button>${waBtnHtml}</div>`;
-    extraScript = `function expandImg(src){}`;
+    const pdfPayload = JSON.stringify({ phone: waPhone, clientName, title: "ESTIMATE", sections: [{ rows: pdfRows, total: fmtN(est.total_amount) }], caption: waCaption }).replace(/</g, "\\u003c");
+    extraScript = `
+var SEND_PAYLOAD=${pdfPayload};
+function sendPdf(){
+  var btn=document.querySelector(".wabtn");
+  if(btn){btn.disabled=true;btn.textContent="Sending…";}
+  window.opener.ssjSendEstimatePdf(SEND_PAYLOAD).then(function(r){
+    if(btn){btn.disabled=false;btn.textContent="📱 Send WhatsApp";}
+    alert(r&&r.ok?"✅ Sent on WhatsApp":"❌ "+((r&&(r.error||r.message))||"Send failed"));
+  });
+}
+function expandImg(src){}`;
   } else {
     const quotTotalN = (est.items||[]).reduce((s, r) => s + (r.sellTotal || 0), 0);
-    const stoneLines = (est.items||[]).map((r, i) => `${i+1}. ${r.shape||"—"} ${r.weight||"—"}ct ${r.color||"—"}/${r.clarity||"—"} ${r.cut||""} ${r.cert||""} · Rap ${r.rapInrPerCt != null ? fmtN(r.rapInrPerCt) : "—"} · Disc ${r.sellDisc != null && !isNaN(r.sellDisc) ? r.sellDisc.toFixed(1)+"%" : "—"} — ${r.sellTotal != null ? fmtN(r.sellTotal) : "—"}`).join("\n");
-    const waMsg = encodeURIComponent(`*QUOTATION — Sun Sea Jewellers*\n${clientName ? "For: " + clientName + "\n" : ""}Date: ${date}\n\n${stoneLines}\n\nTotal: ${fmtN(quotTotalN)}\n\n_Prices subject to change · Not a final bill_`);
-    const waBtnHtml = waPhone ? `<button class="wabtn" onclick="window.open('https://wa.me/${waPhone}?text=${waMsg}','_blank')">📱 Send WhatsApp</button>` : "";
+    const waCaption = `*QUOTATION — Sun Sea Jewellers*\n${clientName ? "For: " + clientName + "\n" : ""}Date: ${date}\n\n${(est.items||[]).map((r,i) => `${i+1}. ${r.shape||"—"} ${r.weight||"—"}ct ${r.color||"—"}/${r.clarity||"—"} ${r.cut||""} ${r.cert||""} · Rap ${r.rapInrPerCt != null ? fmtN(r.rapInrPerCt) : "—"} · Disc ${r.sellDisc != null && !isNaN(r.sellDisc) ? r.sellDisc.toFixed(1)+"%" : "—"} — ${r.sellTotal != null ? fmtN(r.sellTotal) : "—"}`).join("\n")}\n\nTotal: ${fmtN(quotTotalN)}\n\n_Prices subject to change · Not a final bill_`;
+    const waBtnHtml = waPhone ? `<button class="wabtn" onclick="sendPdf()">📱 Send WhatsApp</button>` : "";
     const stoneRows = (est.items||[]).map((r, i) => `<tr style="border-bottom:1px solid #eee;"><td style="padding:4px 6px;font-size:12px;color:#888;">${i+1}</td><td style="padding:4px 6px;font-size:12px;">${r.shape||"—"}</td><td style="padding:4px 6px;font-size:12px;">${r.weight||"—"} ct</td><td style="padding:4px 6px;font-size:12px;">${r.color||"—"} / ${r.clarity||"—"}</td><td style="padding:4px 6px;font-size:12px;">${r.cut||"—"}</td><td style="padding:4px 6px;font-size:12px;">${r.cert||"—"}</td><td style="padding:4px 6px;font-size:12px;text-align:right;">${r.rapInrPerCt != null ? fmtN(r.rapInrPerCt) : "—"}</td><td style="padding:4px 6px;font-size:12px;text-align:right;">${r.sellDisc != null && !isNaN(r.sellDisc) ? r.sellDisc.toFixed(1)+"%" : "—"}</td><td style="padding:4px 6px;font-size:12px;text-align:right;font-weight:600;">${r.sellTotal != null ? fmtN(r.sellTotal) : "—"}</td></tr>`).join("");
     body = `<style>@page{size:A4 landscape;margin:12mm;}.wrap{max-width:100%!important;}</style><div class="om">ॐ</div><div class="title">QUOTATION</div><div class="date">${date}</div>${clientName ? `<div class="client">Prepared for: ${clientName}</div>` : ""}<hr class="thick"/>
     <table><thead><tr><th>#</th><th>Shape</th><th>Weight</th><th>Colour/Clarity</th><th>Cut</th><th>Cert</th><th style="text-align:right;">Rap INR/ct</th><th style="text-align:right;">Disc%</th><th style="text-align:right;">Price</th></tr></thead><tbody>${stoneRows}</tbody><tfoot><tr class="total-row"><td colspan="8">Total</td><td style="text-align:right;">${fmtN(quotTotalN)}</td></tr></tfoot></table>
     <div class="disclaimer">This is an estimate only · Prices subject to change · Not a final bill</div>
     <div class="btnrow"><button class="printbtn" onclick="window.print()">🖨️ Print</button>${waBtnHtml}</div>`;
-    extraScript = `function expandImg(src){}`;
+    const pdfRows = (est.items||[]).map((r,i) => [`${i+1}. ${r.shape||"—"} ${r.weight||"—"}ct ${r.color||"—"}/${r.clarity||"—"} ${r.cut||""} ${r.cert||""} · Rap ${r.rapInrPerCt != null ? fmtN(r.rapInrPerCt) : "—"} · Disc ${r.sellDisc != null && !isNaN(r.sellDisc) ? r.sellDisc.toFixed(1)+"%" : "—"}`, r.sellTotal != null ? fmtN(r.sellTotal) : "—"]);
+    const pdfPayload = JSON.stringify({ phone: waPhone, clientName, title: "QUOTATION", sections: [{ rows: pdfRows, total: fmtN(quotTotalN) }], caption: waCaption, orientation: "landscape", format: "a4" }).replace(/</g, "\\u003c");
+    extraScript = `
+var SEND_PAYLOAD=${pdfPayload};
+function sendPdf(){
+  var btn=document.querySelector(".wabtn");
+  if(btn){btn.disabled=true;btn.textContent="Sending…";}
+  window.opener.ssjSendEstimatePdf(SEND_PAYLOAD).then(function(r){
+    if(btn){btn.disabled=false;btn.textContent="📱 Send WhatsApp";}
+    alert(r&&r.ok?"✅ Sent on WhatsApp":"❌ "+((r&&(r.error||r.message))||"Send failed"));
+  });
+}
+function expandImg(src){}`;
   }
 
   const prevChanges = est.metadata?.changes || [];
