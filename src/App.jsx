@@ -196,6 +196,26 @@ function demandTemperature(d) {
   return "cold";
 }
 const tempRank = (t) => ({ hot: 0, warm: 1, cold: 2, converted: 3, dead: 4 }[t] ?? 5);
+// Due-date bucket off `occasion_date` — drives the Demands screen's "nothing
+// is left" summary chips and primary sort order (promoted from what used to
+// be DemandsScreen-local, render-unused urgencyBorder/urgencyLabel helpers).
+// Buckets: overdue (days<0) | today (days===0) | week (0<days<=7) | later (days>7) | none (no date set)
+function dueDateBucket(d) {
+  if (!d.occasion_date) return "none";
+  const days = Math.round((new Date(d.occasion_date) - new Date()) / 86400000);
+  if (days < 0) return "overdue";
+  if (days === 0) return "today";
+  if (days <= 7) return "week";
+  return "later";
+}
+const dueDateRank = (b) => ({ overdue: 0, today: 1, week: 2, later: 3, none: 4 }[b] ?? 5);
+const DUE_BUCKET_META = {
+  overdue: { label: "Overdue", color: C.red },
+  today:   { label: "Due Today", color: C.orange },
+  week:    { label: "Due This Week", color: "#ca8a04" },
+  later:   { label: "Later", color: C.gray },
+  none:    { label: "No Date Set", color: "#bbb" },
+};
 // Next-step engine — one prescribed action per demand card ("do this now").
 // Priority order below; first match wins. Mirrors demandTemperature's urgency
 // signals but resolves them to a single actionable button instead of a pile of pills.
@@ -384,8 +404,8 @@ const Btn = ({ color = C.blue, onClick, children, disabled, small, ghost, style 
   <button onClick={onClick} disabled={disabled} style={{ fontSize: small ? 12 : 13, padding: small ? "5px 10px" : "7px 14px", borderRadius: 8, border: ghost ? `1px solid ${color}` : "none", background: ghost ? "transparent" : color, color: ghost ? color : "#fff", cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 1, fontWeight: 500, ...style }}>{children}</button>
 );
 
-const Card = ({ children, style }) => (
-  <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 12, padding: 14, ...style }}>{children}</div>
+const Card = ({ children, style, ...rest }) => (
+  <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 12, padding: 14, ...style }} {...rest}>{children}</div>
 );
 
 const Modal = ({ title, onClose, children, width = 560 }) => (
@@ -1366,6 +1386,18 @@ function ConversationPane({ lead, funnel, onClose, onChanged, allTags, demand, o
 // ──────────────────────────────────────────────────────────
 // DEMANDS SCREEN — staff primary view
 // ──────────────────────────────────────────────────────────
+// Demand's "what do they want" one-liner — description first, else a
+// summary of the structured enquiry_items array, else the raw category.
+function demandEnquiryLine(d) {
+  if (d.description) return d.description;
+  if (Array.isArray(d.enquiry_items) && d.enquiry_items.length) {
+    const first = d.enquiry_items[0];
+    const parts = [first.product, first.purity, first.weightG ? `${first.weightG}g` : ""].filter(Boolean).join(" ");
+    return d.enquiry_items.length > 1 ? `${parts} +${d.enquiry_items.length - 1} more` : parts;
+  }
+  return d.product_category || "(no description)";
+}
+
 function DemandsScreen({ funnels, allTags }) {
   const [demands, setDemands] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -1373,11 +1405,12 @@ function DemandsScreen({ funnels, allTags }) {
   const [selectedDemand, setSelectedDemand] = useState(null);
   const [filterStep, setFilterStep] = useState("");
   const [filterCat, setFilterCat] = useState("");
-  const [filterSource, setFilterSource] = useState(""); // "" | "walk_in" | "wa_bot"
   const [filterTemp, setFilterTemp] = useState(""); // "" | hot|warm|cold|converted|dead
+  const [activeDueFilter, setActiveDueFilter] = useState(""); // "" | overdue|today|week|later|none — set by tapping a summary chip
   const [search, setSearch] = useState("");
   const [adding, setAdding] = useState(false);
   const [addingWalkin, setAddingWalkin] = useState(false);
+  const [manageMode, setManageMode] = useState(false); // manager+ bulk-select/reassign, off by default to keep the everyday view simple
   const [bulkSelected, setBulkSelected] = useState(new Set());
   const [bulkStaffId, setBulkStaffId] = useState("");
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -1403,9 +1436,13 @@ function DemandsScreen({ funnels, allTags }) {
     if (filterCat) q = q.eq("product_category", filterCat);
     const { data, error } = await q;
     if (error) { console.error("demands load error", error); }
-    // Sort by temperature bucket: hot → warm → cold → converted → dead
-    // Within each bucket, prefer urgent occasion dates and most recent activity.
+    // Sort by due-date urgency first (overdue → today → this week → later →
+    // no date) — "nothing is left" is the point of this screen. Temperature
+    // is the tiebreaker within a due-date bucket, not the primary driver.
     const sorted = (data || []).sort((a, b) => {
+      const da = dueDateRank(dueDateBucket(a));
+      const db = dueDateRank(dueDateBucket(b));
+      if (da !== db) return da - db;
       const ta = tempRank(demandTemperature(a));
       const tb = tempRank(demandTemperature(b));
       if (ta !== tb) return ta - tb;
@@ -1418,24 +1455,19 @@ function DemandsScreen({ funnels, allTags }) {
   useEffect(() => { load(); }, [load]);
   useEffect(() => { const t = setInterval(load, 15000); return () => clearInterval(t); }, [load]);
 
-  const filtered = useMemo(() => {
-    // Supplier / vendor / karigar messages are inbound to your WA but they
-    // aren't sales enquiries — exclude them from the Demands list always.
+  // Category/temp/search filtered, walk-ins and closed demands always
+  // excluded — this is the base the summary chips count against, BEFORE
+  // the chip's own due-date filter narrows it further for display.
+  const openBase = useMemo(() => {
+    // Supplier/vendor/karigar messages are inbound to your WA but aren't
+    // sales enquiries — exclude always. Walk-in demands get dedicated
+    // attention in the Walk-ins tab — exclude always, not a toggle.
     const SUPPLIER_SOURCES = new Set(["seller_enquiry", "supplier", "vendor", "karigar", "wholesale", "kariger"]);
-    let rows = demands.filter((d) => !SUPPLIER_SOURCES.has(d.lead?.source));
-    // Hide closed demands by default (unless temp filter explicitly asks for converted/dead).
-    // Old demands have outcome=null but lead.status='converted'/'dead' — check both signals.
-    if (!["converted", "dead"].includes(filterTemp)) {
-      rows = rows.filter((d) =>
-        !["converted", "lost", "junk"].includes(d.outcome) &&
-        !["converted", "dead"].includes(d.lead?.status)
-      );
-    }
-    if (filterSource === "walk_in") {
-      rows = rows.filter((d) => d.lead?.source === "walk_in");
-    } else if (filterSource === "wa_bot") {
-      rows = rows.filter((d) => d.lead?.source !== "walk_in");
-    }
+    let rows = demands.filter((d) => !SUPPLIER_SOURCES.has(d.lead?.source) && d.lead?.source !== "walk_in");
+    rows = rows.filter((d) =>
+      !["converted", "lost", "junk"].includes(d.outcome) &&
+      !["converted", "dead"].includes(d.lead?.status)
+    );
     if (filterTemp) rows = rows.filter((d) => demandTemperature(d) === filterTemp);
     if (!search) return rows;
     const s = search.toLowerCase();
@@ -1447,17 +1479,26 @@ function DemandsScreen({ funnels, allTags }) {
       (d.ai_summary || "").toLowerCase().includes(s) ||
       (d.occasion || "").toLowerCase().includes(s)
     );
-  }, [demands, search, filterSource, filterTemp]);
+  }, [demands, search, filterTemp]);
+
+  const dueCounts = useMemo(() => {
+    const c = { overdue: 0, today: 0, week: 0, later: 0, none: 0 };
+    openBase.forEach((d) => { c[dueDateBucket(d)]++; });
+    return c;
+  }, [openBase]);
+
+  const filtered = useMemo(() => {
+    if (!activeDueFilter) return openBase;
+    return openBase.filter((d) => dueDateBucket(d) === activeDueFilter);
+  }, [openBase, activeDueFilter]);
 
   const closedFiltered = useMemo(() => {
     const SUPPLIER_SOURCES = new Set(["seller_enquiry", "supplier", "vendor", "karigar", "wholesale", "kariger"]);
-    let rows = demands.filter((d) => !SUPPLIER_SOURCES.has(d.lead?.source));
+    let rows = demands.filter((d) => !SUPPLIER_SOURCES.has(d.lead?.source) && d.lead?.source !== "walk_in");
     rows = rows.filter((d) =>
       ["converted", "lost", "junk"].includes(d.outcome) ||
       ["converted", "dead"].includes(d.lead?.status)
     );
-    if (filterSource === "walk_in") rows = rows.filter((d) => d.lead?.source === "walk_in");
-    else if (filterSource === "wa_bot") rows = rows.filter((d) => d.lead?.source !== "walk_in");
     if (!search) return rows;
     const s = search.toLowerCase();
     return rows.filter((d) =>
@@ -1465,29 +1506,10 @@ function DemandsScreen({ funnels, allTags }) {
       (d.lead?.phone || "").includes(s) ||
       (d.description || "").toLowerCase().includes(s)
     );
-  }, [demands, search, filterSource]);
+  }, [demands, search]);
 
   const selectedLead = selectedLeadId ? demands.find((d) => d.lead?.id === selectedLeadId)?.lead : null;
   const selectedFunnel = selectedLead ? funnels.find((f) => f.id === selectedLead.funnel_id) : null;
-
-  const urgencyBorder = (d) => {
-    if (!d.occasion_date) return "#eee";
-    const days = Math.round((new Date(d.occasion_date) - new Date()) / 86400000);
-    if (days < 0) return C.gray;
-    if (days < 7) return C.red;
-    if (days < 30) return C.orange;
-    return "#eee";
-  };
-
-  const urgencyLabel = (d) => {
-    if (!d.occasion_date) return null;
-    const days = Math.round((new Date(d.occasion_date) - new Date()) / 86400000);
-    if (days < 0) return { text: "Overdue", color: C.gray };
-    if (days === 0) return { text: "Today!", color: C.red };
-    if (days < 7) return { text: `${days}d left`, color: C.red };
-    if (days < 30) return { text: `${days}d`, color: C.orange };
-    return { text: `${days}d`, color: C.gray };
-  };
 
   const bulkReassign = async () => {
     if (!bulkStaffId || bulkSelected.size === 0) return;
@@ -1573,11 +1595,6 @@ function DemandsScreen({ funnels, allTags }) {
             <option value="">All products</option>
             {PRODUCT_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
           </Select>
-          <Select value={filterSource} onChange={(e) => setFilterSource(e.target.value)} style={{ width: 130 }}>
-            <option value="">All sources</option>
-            <option value="walk_in">🏪 Walk-ins only</option>
-            <option value="wa_bot">📱 WA / other</option>
-          </Select>
           <Select value={filterTemp} onChange={(e) => setFilterTemp(e.target.value)} style={{ width: 130 }}>
             <option value="">All temps</option>
             <option value="hot">🔥 Hot</option>
@@ -1589,6 +1606,27 @@ function DemandsScreen({ funnels, allTags }) {
           <Btn ghost small color={C.gray} onClick={load}>↻</Btn>
           <Btn small color="#16a085" onClick={() => setAddingWalkin(true)} style={{ color: "#fff" }}>+ Walk-in</Btn>
           <Btn small color={C.blue} onClick={() => setAdding(true)}>+ New Demand</Btn>
+          {isManagerPlus && <Btn small ghost color={C.gray} onClick={() => { setManageMode((v) => !v); if (manageMode) setBulkSelected(new Set()); }}>⋯ Manage</Btn>}
+        </div>
+
+        {/* On-time summary strip — the whole point of this screen: nothing should silently fall behind. */}
+        <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+          {["overdue", "today", "week", "none"].map((b) => {
+            const meta = DUE_BUCKET_META[b];
+            const count = dueCounts[b];
+            const active = activeDueFilter === b;
+            return (
+              <button key={b} onClick={() => setActiveDueFilter(active ? "" : b)}
+                style={{
+                  padding: "6px 12px", borderRadius: 20, border: `1px solid ${meta.color}`,
+                  background: active ? meta.color : "#fff", color: active ? "#fff" : meta.color,
+                  fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 5,
+                }}>
+                <span>{count}</span><span>{meta.label}</span>
+              </button>
+            );
+          })}
+          {activeDueFilter && <Btn small ghost color={C.gray} onClick={() => setActiveDueFilter("")}>✕ All</Btn>}
         </div>
 
         {adding && (
@@ -1611,8 +1649,8 @@ function DemandsScreen({ funnels, allTags }) {
           {loading ? "Loading…" : `${filtered.length} demand${filtered.length === 1 ? "" : "s"}`}
         </div>
 
-        {/* Bulk reassign floating bar */}
-        {bulkSelected.size > 0 && (
+        {/* Bulk reassign floating bar — manager+ only, behind the "⋯ Manage" toggle */}
+        {manageMode && isManagerPlus && bulkSelected.size > 0 && (
           <div style={{ position: "sticky", top: 0, zIndex: 20, background: "#1e3a8a", color: "#fff", borderRadius: 10, padding: "10px 14px", marginBottom: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", boxShadow: "0 4px 12px rgba(0,0,0,0.2)" }}>
             <span style={{ fontSize: 13, fontWeight: 600 }}>☑ {bulkSelected.size} selected</span>
             <select value={bulkStaffId} onChange={(e) => setBulkStaffId(e.target.value)}
@@ -1628,70 +1666,63 @@ function DemandsScreen({ funnels, allTags }) {
           </div>
         )}
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 10 }}>
           {filtered.map((d) => {
             const sel = d.lead?.id === selectedLeadId;
             const isBulkChecked = bulkSelected.has(d.id);
             const isVip = d.lead?.is_client || d.crm_source === "old_client" || d.lead?.source === "old_client";
+            const dueBucket = dueDateBucket(d);
+            const dueMeta = DUE_BUCKET_META[dueBucket];
+            const dueLine = [d.occasion, d.occasion_date ? fmtD(d.occasion_date) : ""].filter(Boolean).join(" · ") || "No date set";
+            const step = nextStepFor(d);
             return (
               <React.Fragment key={d.id}>
-                <div style={{ position: "relative" }}>
-                {/* Bulk-select checkbox — manager+ only, telecallers only see their own demands anyway */}
-                {isManagerPlus && (
+                <div style={{ position: "relative", gridColumn: sel ? "1 / -1" : "auto" }}>
+                {/* Bulk-select checkbox — behind Manage mode, manager+ only */}
+                {manageMode && isManagerPlus && (
                   <input type="checkbox" checked={isBulkChecked}
                     onChange={(e) => { e.stopPropagation(); setBulkSelected((prev) => { const next = new Set(prev); e.target.checked ? next.add(d.id) : next.delete(d.id); return next; }); }}
                     style={{ position: "absolute", top: 10, left: 8, zIndex: 2, width: 15, height: 15, cursor: "pointer" }} />
                 )}
-                <div
+                <Card
                   onClick={() => {
                     if (sel) { setSelectedLeadId(null); setSelectedDemand(null); }
                     else { setSelectedLeadId(d.lead?.id || null); setSelectedDemand(d); }
                     setPendingAction(null);
                   }}
                   style={{
-                    padding: 10,
-                    paddingLeft: 28,
+                    paddingLeft: manageMode && isManagerPlus ? 28 : 14,
                     background: sel ? "#eef5ff" : isBulkChecked ? "#f0f7ff" : "#fff",
-                    border: `2px solid ${sel ? C.blue : isBulkChecked ? C.blue : urgencyBorder(d)}`,
-                    borderRadius: 10,
+                    border: `2px solid ${sel ? C.blue : isBulkChecked ? C.blue : dueMeta.color}`,
                     cursor: "pointer",
+                    display: "flex", flexDirection: "column", gap: 5,
                   }}
                 >
-                  {(() => {
-                    const step = nextStepFor(d);
-                    const oneLinerParts = [
-                      d.description || "(no description)",
-                      [d.occasion, d.occasion_date ? fmtD(d.occasion_date) : ""].filter(Boolean).join(" "),
-                      d.budget ? `₹${Number(d.budget).toLocaleString("en-IN")}` : "",
-                    ].filter(Boolean);
-                    return (
-                      <>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, gap: 8 }}>
-                          <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap", minWidth: 0 }}>
-                            <strong style={{ fontSize: 13 }}>{d.lead?.name || (isLid(d.lead?.phone) ? (d.lead?.wa_display_name || displayPhone(d.lead?.phone)) : d.lead?.phone) || "Unknown"}</strong>
-                            {(() => { const t = demandTemperature(d); const m = tempMeta(t); return <Pill color={m.color} solid>{m.label}{d.temperature_override ? " 📌" : ""}</Pill>; })()}
-                            {isVip && <Pill color="#d97706" solid>⭐ VIP</Pill>}
-                          </div>
-                          {step.action === "none" ? (
-                            <span style={{ fontSize: 11, color: "#999", whiteSpace: "nowrap" }}>{step.label}</span>
-                          ) : step.disabled ? (
-                            <span style={{ fontSize: 11, color: step.color, padding: "4px 10px", border: `1px solid ${step.color}`, borderRadius: 6, whiteSpace: "nowrap" }}>{step.label}</span>
-                          ) : (
-                            <Btn small color={step.color} style={{ whiteSpace: "nowrap" }} onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedLeadId(d.lead?.id || null);
-                              setSelectedDemand(d);
-                              setPendingAction(step.action === "call" ? "call" : null);
-                            }}>{step.label}</Btn>
-                          )}
-                        </div>
-                        <div style={{ fontSize: 12, color: "#555" }}>
-                          {d.lead?.source === "walk_in" ? "🏪 " : ""}{oneLinerParts.join(" · ")}
-                        </div>
-                      </>
-                    );
-                  })()}
-                </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6 }}>
+                    <strong style={{ fontSize: 13, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {d.lead?.name || (isLid(d.lead?.phone) ? (d.lead?.wa_display_name || displayPhone(d.lead?.phone)) : d.lead?.phone) || "Unknown"}
+                    </strong>
+                    <Pill color={dueMeta.color} solid>{dueBucket === "overdue" ? `🔴 ${dueMeta.label}` : dueBucket === "today" ? `🟠 ${dueMeta.label}` : dueBucket === "week" ? `🟡 ${dueMeta.label}` : dueMeta.label}</Pill>
+                  </div>
+                  <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
+                    {(() => { const t = demandTemperature(d); const m = tempMeta(t); return <Pill color={m.color} solid>{m.label}{d.temperature_override ? " 📌" : ""}</Pill>; })()}
+                    {isVip && <Pill color="#d97706" solid>⭐ VIP</Pill>}
+                  </div>
+                  <div style={{ fontSize: 12, color: "#555" }}>{demandEnquiryLine(d)}</div>
+                  <div style={{ fontSize: 11, color: "#888" }}>Due: {dueLine}</div>
+                  {step.action === "none" ? (
+                    <span style={{ fontSize: 11, color: "#999" }}>{step.label}</span>
+                  ) : step.disabled ? (
+                    <span style={{ fontSize: 11, color: step.color, padding: "4px 10px", border: `1px solid ${step.color}`, borderRadius: 6, alignSelf: "flex-start" }}>{step.label}</span>
+                  ) : (
+                    <Btn small color={step.color} onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedLeadId(d.lead?.id || null);
+                      setSelectedDemand(d);
+                      setPendingAction(step.action === "call" ? "call" : null);
+                    }}>{step.label}</Btn>
+                  )}
+                </Card>
                 </div>{/* end position:relative wrapper */}
                 {sel && selectedLead && selectedDemand?.id === d.id && (
                   <ConversationPane
