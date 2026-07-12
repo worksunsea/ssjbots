@@ -11,6 +11,7 @@ import { getFaqs, faqsForPrompt } from "./_lib/faqs.js";
 import { buildSystemPrompt, buildMessages } from "./_lib/prompt.js";
 import { handleOwnerMessage } from "./_lib/ownerCommand.js";
 import { sendPushNotification } from "./_lib/pushNotify.js";
+import { enrollLeadInDrip } from "./_lib/drip.js";
 import {
   normalizePhone,
   BOT_NUMBERS,
@@ -202,6 +203,31 @@ export default async function handler(req, res) {
           body: `${name || phone} messaged in — unassigned, no funnel yet.`,
           url: "/",
         }).catch(() => {});
+
+        // Ad campaign attribution — a click-to-WhatsApp ad lands with a
+        // pre-filled message; match it against configured lead-source
+        // keywords (only on a genuinely NEW lead, not every message) so
+        // this conversation shows up in AdLeads instead of the regular
+        // inbox, and auto-enrolls into that campaign's funnel if set.
+        try {
+          const { data: adSources } = await sb.from("bullion_lead_sources")
+            .select("id,name,default_funnel_id,enroll_drip")
+            .eq("tenant_id", TENANT_ID).eq("active", true).not("wa_keyword", "is", null);
+          const msgLower = msg.toLowerCase();
+          const matched = (adSources || []).find((s) =>
+            s.wa_keyword.split(",").map((k) => k.trim().toLowerCase()).filter(Boolean).some((k) => msgLower.includes(k))
+          );
+          if (matched) {
+            const patch = { lead_source_id: matched.id };
+            if (matched.default_funnel_id) patch.funnel_id = matched.default_funnel_id;
+            await sb.from("bullion_leads").update(patch).eq("id", leadRow.id);
+            leadRow = { ...leadRow, ...patch };
+            if (matched.default_funnel_id && matched.enroll_drip) {
+              const { data: matchedFunnel } = await sb.from("funnels").select("*").eq("id", matched.default_funnel_id).maybeSingle();
+              if (matchedFunnel?.active) await enrollLeadInDrip({ lead: leadRow, funnel: matchedFunnel }).catch(() => {});
+            }
+          }
+        } catch (e) { console.error("webhook: ad attribution failed", e); }
       }
     }
 

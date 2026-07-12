@@ -128,6 +128,7 @@ const CRM_ALL_TABS = [
   { k: "queue",       l: "My Queue",    icon: "📞" },
   { k: "approvals",   l: "Approvals",   icon: "✅" },
   { k: "demands",     l: "Demands",     icon: "🎯" },
+  { k: "adleads",     l: "AdLeads",     icon: "📢" },
   { k: "contacts",    l: "Contacts",    icon: "📇" },
   { k: "contactsdb",  l: "DB",          icon: "📋" },
   { k: "upcoming",    l: "Upcoming",    icon: "🎂" },
@@ -153,9 +154,9 @@ const CRM_ALL_TABS = [
 const CRM_ROLE_DEFAULT_TABS = {
   superadmin: CRM_ALL_TABS.map((t) => t.k),
   admin:      CRM_ALL_TABS.map((t) => t.k),
-  manager:    ["demands", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors"],
-  staff:      ["demands", "contacts", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
-  telecaller: ["queue", "demands"],
+  manager:    ["demands", "adleads", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors"],
+  staff:      ["demands", "adleads", "contacts", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
+  telecaller: ["queue", "demands", "adleads"],
 };
 
 // ── HELPERS ──
@@ -1398,7 +1399,7 @@ function demandEnquiryLine(d) {
   return d.product_category || "(no description)";
 }
 
-function DemandsScreen({ funnels, allTags }) {
+function DemandsScreen({ funnels, allTags, adOnly = false }) {
   const [demands, setDemands] = useState([]);
   const [loading, setLoading] = useState(false);
   const [selectedLeadId, setSelectedLeadId] = useState(null);
@@ -1429,7 +1430,7 @@ function DemandsScreen({ funnels, allTags }) {
     setLoading(true);
     let q = sb
       .from("bullion_demands")
-      .select("*, lead:bullion_leads(id,name,phone,wa_display_name,status,bot_paused,funnel_id,stage,last_msg,last_msg_at,updated_at,source,is_client,tags), step:bullion_funnel_steps(id,name,step_type)")
+      .select("*, lead:bullion_leads(id,name,phone,wa_display_name,status,bot_paused,funnel_id,stage,last_msg,last_msg_at,updated_at,source,is_client,tags,lead_source_id,lead_source:bullion_lead_sources(id,name)), step:bullion_funnel_steps(id,name,step_type)")
       .eq("tenant_id", getTenantId())
       .order("occasion_date", { ascending: true, nullsFirst: false });
     if (filterStep) q = q.eq("fms_step_id", filterStep);
@@ -1464,6 +1465,9 @@ function DemandsScreen({ funnels, allTags }) {
     // attention in the Walk-ins tab — exclude always, not a toggle.
     const SUPPLIER_SOURCES = new Set(["seller_enquiry", "supplier", "vendor", "karigar", "wholesale", "kariger"]);
     let rows = demands.filter((d) => !SUPPLIER_SOURCES.has(d.lead?.source) && d.lead?.source !== "walk_in");
+    // Ad-campaign-attributed leads split into their own AdLeads tab —
+    // same precedent as walk-ins getting their own Walk-ins tab.
+    rows = rows.filter((d) => adOnly ? d.lead?.lead_source_id != null : d.lead?.lead_source_id == null);
     rows = rows.filter((d) =>
       !["converted", "lost", "junk"].includes(d.outcome) &&
       !["converted", "dead"].includes(d.lead?.status)
@@ -1479,7 +1483,7 @@ function DemandsScreen({ funnels, allTags }) {
       (d.ai_summary || "").toLowerCase().includes(s) ||
       (d.occasion || "").toLowerCase().includes(s)
     );
-  }, [demands, search, filterTemp]);
+  }, [demands, search, filterTemp, adOnly]);
 
   const dueCounts = useMemo(() => {
     const c = { overdue: 0, today: 0, week: 0, later: 0, none: 0 };
@@ -1495,6 +1499,7 @@ function DemandsScreen({ funnels, allTags }) {
   const closedFiltered = useMemo(() => {
     const SUPPLIER_SOURCES = new Set(["seller_enquiry", "supplier", "vendor", "karigar", "wholesale", "kariger"]);
     let rows = demands.filter((d) => !SUPPLIER_SOURCES.has(d.lead?.source) && d.lead?.source !== "walk_in");
+    rows = rows.filter((d) => adOnly ? d.lead?.lead_source_id != null : d.lead?.lead_source_id == null);
     rows = rows.filter((d) =>
       ["converted", "lost", "junk"].includes(d.outcome) ||
       ["converted", "dead"].includes(d.lead?.status)
@@ -1506,7 +1511,7 @@ function DemandsScreen({ funnels, allTags }) {
       (d.lead?.phone || "").includes(s) ||
       (d.description || "").toLowerCase().includes(s)
     );
-  }, [demands, search]);
+  }, [demands, search, adOnly]);
 
   const selectedLead = selectedLeadId ? demands.find((d) => d.lead?.id === selectedLeadId)?.lead : null;
   const selectedFunnel = selectedLead ? funnels.find((f) => f.id === selectedLead.funnel_id) : null;
@@ -1707,6 +1712,7 @@ function DemandsScreen({ funnels, allTags }) {
                   <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
                     {(() => { const t = demandTemperature(d); const m = tempMeta(t); return <Pill color={m.color} solid>{m.label}{d.temperature_override ? " 📌" : ""}</Pill>; })()}
                     {isVip && <Pill color="#d97706" solid>⭐ VIP</Pill>}
+                    {d.lead?.lead_source?.name && <Pill color={C.purple} solid>📢 {d.lead.lead_source.name}</Pill>}
                   </div>
                   <div style={{ fontSize: 12, color: "#555" }}>{demandEnquiryLine(d)}</div>
                   <div style={{ fontSize: 11, color: "#888" }}>Due: {dueLine}</div>
@@ -8348,6 +8354,7 @@ function LeadSourceModal({ source, funnels, onClose, onSaved }) {
     active: source?.active ?? true,
     webhook_token: initialToken,
     field_map: source?.field_map && Object.keys(source.field_map).length ? source.field_map : getDefaultMap(initialType),
+    wa_keyword: source?.wa_keyword || "",
   });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(!isNew);
@@ -8388,6 +8395,7 @@ function LeadSourceModal({ source, funnels, onClose, onSaved }) {
       default_funnel_id: form.default_funnel_id || null,
       enroll_drip: form.enroll_drip,
       active: form.active,
+      wa_keyword: form.wa_keyword.trim() || null,
       updated_at: new Date().toISOString(),
     };
     let error;
@@ -8433,6 +8441,12 @@ function LeadSourceModal({ source, funnels, onClose, onSaved }) {
             Auto-enroll lead in funnel drip
           </label>
         )}
+
+        <label style={{ display: "block", fontSize: 12, color: "#666", marginBottom: 4 }}>WhatsApp ad match keyword (optional)</label>
+        <input value={form.wa_keyword} onChange={(e) => set("wa_keyword", e.target.value)} placeholder="e.g. corporate gift, corporate coin (comma-separated)" style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #ddd", fontSize: 14, marginBottom: 4, boxSizing: "border-box" }} />
+        <div style={{ fontSize: 11, color: "#999", marginBottom: 12 }}>
+          For click-to-WhatsApp ads with a pre-filled message. If a brand-new lead's first message contains any of these phrases (case-insensitive), they're auto-tagged to this source, auto-assigned the funnel above, and show up in the AdLeads tab instead of the regular Demands inbox.
+        </div>
 
         <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 16, cursor: "pointer" }}>
           <input type="checkbox" checked={form.active} onChange={(e) => set("active", e.target.checked)} />
@@ -10593,6 +10607,7 @@ export default function App() {
     { k: "queue",      l: "My Queue",    icon: "📞" },
     { k: "approvals",  l: "Approvals",   icon: "✅" },
     { k: "demands",    l: "Demands",     icon: "🎯" },
+    { k: "adleads",    l: "AdLeads",     icon: "📢" },
     { k: "contacts",   l: "Contacts",    icon: "📇" },
     { k: "contactsdb", l: "DB",          icon: "📋" },
     { k: "upcoming",   l: "Upcoming",    icon: "🎂" },
@@ -10620,9 +10635,9 @@ export default function App() {
   const ROLE_DEFAULT_TABS = {
     superadmin: ALL_TABS.map((t) => t.k),
     admin:      ALL_TABS.map((t) => t.k),
-    manager:    ["demands", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors"],
-    staff:      ["demands", "contacts", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
-    telecaller: ["queue", "demands"],
+    manager:    ["demands", "adleads", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors"],
+    staff:      ["demands", "adleads", "contacts", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
+    telecaller: ["queue", "demands", "adleads"],
   };
 
   // admin/superadmin always get all tabs regardless of stored app_permissions.crm
@@ -10643,7 +10658,7 @@ export default function App() {
   // per-browser preference (localStorage), adjustable via drag-drop reorder
   // and pin/unpin — not tied to app_permissions (that still gates visibility).
   const tabKeySet = new Set(tabs.map((t) => t.k));
-  const DEFAULT_PINNED_TABS = ["demands", "upcoming", "calculator", "walkin", "catalogue", "vendors"];
+  const DEFAULT_PINNED_TABS = ["demands", "adleads", "upcoming", "calculator", "walkin", "catalogue", "vendors"];
   const savedPinned = (() => {
     try {
       const p = JSON.parse(localStorage.getItem("ssj_pinned_tabs") || "null");
@@ -10758,6 +10773,7 @@ export default function App() {
       {activeScreen === "queue" && <TelecallerQueueScreen funnels={funnels} />}
       {activeScreen === "approvals" && <ApprovalsScreen funnels={funnels} canApprove={canWriteTab(user, "approvals")} />}
       {activeScreen === "demands" && <DemandsScreen funnels={funnels} allTags={allTags} />}
+      {activeScreen === "adleads" && <DemandsScreen funnels={funnels} allTags={allTags} adOnly />}
       {activeScreen === "contacts" && <ContactsScreen funnels={funnels} />}
       {activeScreen === "contactsdb" && <ContactsDBScreen />}
       {activeScreen === "upcoming" && <UpcomingEventsScreen />}
