@@ -6108,25 +6108,30 @@ function MessageHistoryScreen({ funnels }) {
   const [msgs, setMsgs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [days, setDays] = useState(7);
-  const [filterDir, setFilterDir] = useState("out");
+  // Default "" (both directions) — this used to default to "out" only,
+  // which hid every customer message and made bot replies look wrong/out
+  // of context since half the conversation was invisible by default.
+  const [filterDir, setFilterDir] = useState("");
   const [filterFunnel, setFilterFunnel] = useState("");
+  const [filterWaClient, setFilterWaClient] = useState("");
   const [search, setSearch] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
     const since = new Date(Date.now() - days * 86400000).toISOString();
     let q = sb.from("bullion_messages")
-      .select("id,direction,body,status,claude_action,created_at,phone,funnel_id,lead:bullion_leads(name,phone)")
+      .select("id,direction,body,status,claude_action,created_at,phone,funnel_id,wa_client,lead:bullion_leads(name,phone)")
       .eq("tenant_id", getTenantId())
       .gte("created_at", since)
       .order("created_at", { ascending: false })
       .limit(500);
     if (filterDir) q = q.eq("direction", filterDir);
     if (filterFunnel) q = q.eq("funnel_id", filterFunnel);
+    if (filterWaClient) q = q.eq("wa_client", filterWaClient);
     const { data } = await q;
     setMsgs(data || []);
     setLoading(false);
-  }, [days, filterDir, filterFunnel]);
+  }, [days, filterDir, filterFunnel, filterWaClient]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -6159,6 +6164,15 @@ function MessageHistoryScreen({ funnels }) {
     return [...map.values()];
   }, [filtered]);
 
+  // Which WA session(s) each contact's messages are on — surfaced in the
+  // group header, since a contact can only ever cross sessions if they
+  // messaged more than one business number.
+  const groupWaClients = (g) => [...new Set(g.msgs.map((m) => m.wa_client).filter(Boolean))];
+
+  // Distinct sessions seen in the loaded window, for the filter dropdown —
+  // no separate lookup needed, wa_client is already on every loaded row.
+  const knownWaClients = useMemo(() => [...new Set(msgs.map((m) => m.wa_client).filter(Boolean))].sort(), [msgs]);
+
   return (
     <div>
       <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
@@ -6177,6 +6191,11 @@ function MessageHistoryScreen({ funnels }) {
           <option value="">All funnels</option>
           {funnels.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
         </select>
+        <select value={filterWaClient} onChange={(e) => setFilterWaClient(e.target.value)}
+          style={{ fontSize: 13, border: "1px solid #ddd", borderRadius: 6, padding: "5px 8px" }}>
+          <option value="">All WA numbers</option>
+          {knownWaClients.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
         <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name / phone / message…"
           style={{ fontSize: 13, border: "1px solid #ddd", borderRadius: 6, padding: "5px 10px", flex: 1, minWidth: 180 }} />
         <span style={{ fontSize: 12, color: "#888" }}>{filtered.length} messages · {grouped.length} contacts</span>
@@ -6188,10 +6207,12 @@ function MessageHistoryScreen({ funnels }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {grouped.map((g) => (
           <div key={g.phone} style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 10, overflow: "hidden" }}>
-            <div style={{ padding: "8px 14px", background: "#f9fafb", borderBottom: "1px solid #e5e7eb", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
+            <div style={{ padding: "8px 14px", background: "#f9fafb", borderBottom: "1px solid #e5e7eb", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                 <span style={{ fontWeight: 600, fontSize: 14 }}>{g.name}</span>
-                <span style={{ fontSize: 12, color: "#888", marginLeft: 8 }}>{g.phone}</span>
+                <span style={{ fontSize: 12, color: "#888" }}>{g.phone}</span>
+                {groupWaClients(g).map((c) => <span key={c} style={{ fontSize: 10, padding: "1px 7px", borderRadius: 8, background: "#e0e7ff", color: "#3730a3", fontWeight: 600 }}>📱 {c}</span>)}
+                {groupWaClients(g).length === 0 && <span style={{ fontSize: 10, padding: "1px 7px", borderRadius: 8, background: "#f3f4f6", color: "#999" }}>📱 unknown (older message)</span>}
               </div>
               <span style={{ fontSize: 12, color: "#888" }}>{g.msgs.length} message{g.msgs.length > 1 ? "s" : ""}</span>
             </div>
@@ -6204,6 +6225,7 @@ function MessageHistoryScreen({ funnels }) {
                     <div style={{ display: "flex", gap: 6, marginTop: 3, alignItems: "center", flexWrap: "wrap" }}>
                       <span style={{ fontSize: 11, color: "#9ca3af" }}>{new Date(m.created_at).toLocaleString("en-IN", { day:"numeric", month:"short", hour:"2-digit", minute:"2-digit" })}</span>
                       {m.funnel_id && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#f3f4f6", color: "#555" }}>{funnels.find((f) => f.id === m.funnel_id)?.name || m.funnel_id}</span>}
+                      {groupWaClients(g).length > 1 && m.wa_client && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#e0e7ff", color: "#3730a3" }}>📱 {m.wa_client}</span>}
                       {actionBadge(m.claude_action)}
                       {m.status === "failed" && <span style={{ fontSize: 10, color: "#dc2626" }}>❌ failed</span>}
                     </div>

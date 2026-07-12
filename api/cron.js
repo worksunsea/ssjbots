@@ -305,6 +305,7 @@ export default async function handler(req, res) {
       tenant_id: row.tenant_id, lead_id: lead.id, phone: lead.phone, funnel_id: funnel.id,
       wbiztool_msg_id: String(wa.msg_id || ""), direction: "out", body: msgBody,
       stage: "drip", claude_action: "DRIP", status: "sent",
+      wa_client: waClient || null,
     });
     await sb.from("bullion_scheduled_messages").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", row.id);
     await sb.from("bullion_leads").update({ last_msg: msgBody, last_msg_at: new Date().toISOString() }).eq("id", lead.id);

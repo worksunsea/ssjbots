@@ -239,6 +239,7 @@ export default async function handler(req, res) {
       body: msg,
       stage: leadRow.stage || "greeting",
       status: "received",
+      wa_client: waClient || null,
     });
     if (inboundErr?.code === "23505") {
       console.log("webhook:duplicate", msgId);
@@ -287,6 +288,7 @@ export default async function handler(req, res) {
       stage: parsed.stage || leadRow.stage || "greeting",
       claude_action: parsed.action,
       status: sent ? "sent" : "failed",
+      wa_client: waClient || null,
     }));
 
     // Extract any volunteered details (name, city, bday, anniversary)

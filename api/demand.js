@@ -279,6 +279,7 @@ export default async function handler(req, res) {
         body: openingMsg,
         stage: "greeting",
         claude_action: "DEMAND_OPENED",
+        wa_client: waClient || null,
         status: sent ? "sent" : "failed",
       });
 
@@ -329,6 +330,7 @@ export default async function handler(req, res) {
             tenant_id: tenantId, lead_id: lead.id, phone, funnel_id: funnelId,
             direction: "out", body: assetMsg,
             stage: "greeting", claude_action: "AUTHORITY_ASSET", status: "sent",
+            wa_client: waClient || null,
           });
         }
       }

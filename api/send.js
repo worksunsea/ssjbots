@@ -42,6 +42,7 @@ export default async function handler(req, res) {
         direction: "out",
         body: message,
         status: "sent",
+        wa_client: client || null,
       });
       await sb
         .from("bullion_leads")
