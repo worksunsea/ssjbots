@@ -143,7 +143,6 @@ const CRM_ALL_TABS = [
   { k: "media",       l: "Media",       icon: "📎" },
   { k: "rates",       l: "Rates",       icon: "📈" },
   { k: "analytics",   l: "Analytics",   icon: "📊" },
-  { k: "leadsources", l: "Lead Sources",icon: "🌐" },
   { k: "formbuilder", l: "Form Builder",icon: "🛠️" },
   { k: "staff",       l: "Staff & Access",icon: "👥" },
   { k: "calculator",  l: "Calculator",     icon: "💎" },
@@ -4320,6 +4319,13 @@ function ConnectionsScreen() {
       )}
 
       {pairing && <QrPairingModal clientId={pairing} onClose={() => { setPairing(null); load(); }} />}
+
+      {/* Lead Sources — folded in here rather than a separate nav tab, this
+          screen had empty space below the paired-devices list and the two
+          are related (both are "where leads/messages come from" config). */}
+      <hr style={{ margin: "24px 0", border: "none", borderTop: "1px solid #eee" }} />
+      <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>🌐 Lead Sources</div>
+      <LeadSourcesScreen funnels={funnels} />
     </div>
   );
 }
@@ -10622,7 +10628,6 @@ export default function App() {
     { k: "media",      l: "Media",       icon: "📎" },
     { k: "rates",      l: "Rates",       icon: "📈" },
     { k: "analytics",  l: "Analytics",   icon: "📊" },
-    { k: "leadsources",l: "Lead Sources", icon: "🌐" },
     { k: "formbuilder",l: "Form Builder", icon: "🛠️" },
     { k: "staff",      l: "Staff & Access", icon: "👥" },
     { k: "calculator", l: "Calculator",    icon: "💎" },
@@ -10788,7 +10793,6 @@ export default function App() {
       {activeScreen === "rates" && <RatesScreen />}
       {activeScreen === "broadcasts" && <BroadcastsScreen allTags={allTags} />}
       {activeScreen === "analytics" && <AnalyticsScreen funnels={funnels} />}
-      {activeScreen === "leadsources" && <LeadSourcesScreen funnels={funnels} />}
       {activeScreen === "formbuilder" && <FormBuilderScreen />}
       {activeScreen === "calculator" && <CalculatorScreen funnels={funnels} allTags={allTags} />}
       {activeScreen === "staff" && <StaffAccessScreen />}
