@@ -91,6 +91,25 @@ function todayIST() {
 }
 const nameEq = (a, b) => String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
 
+// The classifier is instructed to phonetically correct STAFF names against
+// the roster (e.g. "Vineet" -> "Vinit") for task assignment, but that same
+// helpfulness sometimes bleeds into other fields it was never meant to
+// touch — e.g. "shivi" silently resolved to a completely different person,
+// "Shivani", because they merely start similarly. That's a name lookup
+// returning the WRONG PERSON'S PHONE NUMBER, not just a bad guess. Requires
+// the resolved name to actually appear (case-insensitively) in what the
+// owner actually typed before trusting it — a real typo correction keeps
+// the message's own characters; an unrelated different person doesn't.
+function candidateMentionedInMessage(messageText, candidateName) {
+  if (!candidateName) return false;
+  const text = String(messageText || "").toLowerCase();
+  const name = String(candidateName).trim().toLowerCase();
+  if (!name) return false;
+  if (text.includes(name)) return true;
+  const prefixLen = Math.min(4, name.length);
+  return prefixLen > 0 && text.includes(name.slice(0, prefixLen));
+}
+
 const REPORT_TOPICS = [
   "delegations", "my_tasks", "staff_tasks", "help_slips", "leaves", "leave_balance", "petty_cash",
   "walkins", "demands", "staff_demands", "attendance_today", "low_stock", "fms_jobs",
@@ -356,10 +375,22 @@ export async function handleOwnerMessage(sb, messageText) {
     result = { replyText: await executeCreateTask(sb, staff, parsed) };
   } else if (parsed.intent === "get_report") {
     const topic = REPORT_TOPICS.includes(parsed.topic) ? parsed.topic : "full";
-    const resolvedStaffName = parsed.staff_name
+    let resolvedStaffName = parsed.staff_name
       ? staff.find((s) => nameEq(s.name, parsed.staff_name))?.name || null
       : null;
-    result = { replyText: await buildReportText(sb, topic, { staffName: resolvedStaffName, query: parsed.query }) };
+    // Guard against the classifier "correcting" a name into a different,
+    // unrelated staff member — only trust the match if it's actually
+    // traceable to what the owner typed (see candidateMentionedInMessage).
+    if (resolvedStaffName && !candidateMentionedInMessage(messageText, parsed.staff_name)) {
+      resolvedStaffName = null;
+    }
+    let resolvedQuery = parsed.query;
+    // Same guard for customer/order lookups — a "cleaned up" query that no
+    // longer resembles the original message risks matching the wrong person.
+    if (["lead_lookup", "job_lookup"].includes(topic) && resolvedQuery && !candidateMentionedInMessage(messageText, resolvedQuery)) {
+      resolvedQuery = null;
+    }
+    result = { replyText: await buildReportText(sb, topic, { staffName: resolvedStaffName, query: resolvedQuery }) };
   } else if (parsed.intent === "search_resources") {
     const r = await searchResources(sb, parsed.query || messageText);
     result = r.items ? { items: r.items } : { replyText: r.text };
