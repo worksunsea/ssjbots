@@ -6,6 +6,7 @@
 import { askAI, parseBotJson } from "./ai.js";
 import { TENANT_ID, OPENAI_MODEL, normalizePhone, sanitizeErrorForWA } from "./config.js";
 import { getActiveStaff, executeCreateTask } from "./taskCommand.js";
+import { executeScheduleAdd, executeScheduleList, executeScheduleDelete } from "./scheduleCommand.js";
 import { buildReportText, findLeadsForForm } from "./reportQueries.js";
 import { logCommand, getLastCommand, markFeedback, getRecentCorrections } from "./ownerLog.js";
 import { queueDevTask } from "./devAgent.js";
@@ -165,7 +166,16 @@ async function classifyOwnerMessage(messageText, staffNames, corrections, lastCo
     "",
     `8. Asking for LIVE GOLD/SILVER RATES — the current bhav/price, e.g. "what's the gold rate", "aaj ka sona bhav kya hai", "silver rate today", "24kt price": {"intent":"get_rates"}`,
     "",
-    `9. Anything else (chit-chat, unclear, not matching the above): {"intent":"none"}`,
+    `9. Scheduling his OWN appointment/work block (NOT assigning a task to staff — this is his personal calendar): {"intent":"schedule_add","title":"<short description>","date":"YYYY-MM-DD","time":"HH:MM 24hr or omit"}`,
+    "   e.g. \"schedule call with Rohit tomorrow 4pm\", \"block 3pm today for site visit\", \"remind me to pay GST on the 20th\". Resolve relative dates (today/tomorrow/next Monday) against today's date above.",
+    "",
+    `10. Asking to SEE his own schedule/calendar: {"intent":"schedule_list","query":"today"|"upcoming"}`,
+    "    e.g. \"what's my schedule today\", \"show my calendar\", \"what do I have this week\" -> \"upcoming\" if no specific day named.",
+    "",
+    `11. Wanting to CANCEL/DELETE a scheduled event: {"intent":"schedule_delete","query":"<title text to match>"}`,
+    "    e.g. \"cancel my 4pm call\", \"delete the GST reminder\", \"remove site visit from my calendar\".",
+    "",
+    `12. Anything else (chit-chat, unclear, not matching the above): {"intent":"none"}`,
     "",
     "The message may be in English, Hindi, or Hinglish (Devanagari or Latin script, or mixed) for any of the above.",
     ...lastCommandBlock,
@@ -359,6 +369,12 @@ export async function handleOwnerMessage(sb, messageText) {
     result = { replyText: (await addContact(sb, parsed.name, parsed.phone)).text };
   } else if (parsed.intent === "get_rates") {
     result = { replyText: await buildRatesReply() };
+  } else if (parsed.intent === "schedule_add") {
+    result = { replyText: await executeScheduleAdd(sb, { title: parsed.title, date: parsed.date, time: parsed.time }) };
+  } else if (parsed.intent === "schedule_list") {
+    result = { replyText: await executeScheduleList(sb, parsed.query) };
+  } else if (parsed.intent === "schedule_delete") {
+    result = { replyText: await executeScheduleDelete(sb, parsed.query) };
   } else if (parsed.intent === "dev_task") {
     try {
       await queueDevTask(sb, { taskText: parsed.task || messageText, repoHint: parsed.repo_hint });
