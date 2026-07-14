@@ -1,7 +1,8 @@
 // GET /api/staff-task-reminders — fired by cron-job.org every few minutes.
-// Sends a plain-template (no AI) WhatsApp reminder to each staff member with
-// overdue one-time delegated tasks, once per person per day. Only runs during
-// the 11:00-11:59 IST window (self-guarded) so it's safe to schedule the
+// Sends a plain-template (no AI) WhatsApp reminder to each staff member
+// listing ALL their pending one-time delegated tasks (overdue AND upcoming,
+// not overdue-only), once per person per day. Only runs during the
+// 11:00-11:59 IST window (self-guarded) so it's safe to schedule the
 // cron job to fire frequently without a start/end time config.
 //
 // Batched: 30s gap between sends (anti-ban pacing, per Saurav's spec) means
@@ -37,10 +38,20 @@ function todayIST() {
   return new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
 }
 
-function buildReminderText(name, tasks) {
-  const lines = tasks.map((t) => `- ${t.title} (due ${t.due_date})`);
+function buildReminderText(name, tasks, today) {
+  const overdue = tasks.filter((t) => t.due_date < today);
+  const upcoming = tasks.filter((t) => t.due_date >= today);
+  const lines = [];
+  if (overdue.length) {
+    lines.push(`🔴 Overdue (${overdue.length}):`);
+    overdue.forEach((t) => lines.push(`- ${t.title} (was due ${t.due_date})`));
+  }
+  if (upcoming.length) {
+    lines.push(`📋 Pending (${upcoming.length}):`);
+    upcoming.forEach((t) => lines.push(`- ${t.title} (due ${t.due_date})`));
+  }
   return [
-    `⏰ Hi ${name}, you have ${tasks.length} overdue task${tasks.length > 1 ? "s" : ""}:`,
+    `⏰ Hi ${name}, your delegated tasks (${tasks.length} total):`,
     ...lines,
     "Please update the status in the HR app.",
   ].join("\n");
@@ -54,17 +65,16 @@ export default async function handler(req, res) {
   const today = todayIST();
 
   try {
-    const { data: overdueTasks } = await sb
+    const { data: pendingTasks } = await sb
       .from("tasks")
       .select("title,assigned_to,due_date")
       .eq("tenant_id", TENANT_ID)
       .eq("task_type", "one-time")
       .in("status", ["Pending", "In Progress"])
-      .not("assigned_to", "ilike", "Saurav")
-      .lt("due_date", today);
+      .not("assigned_to", "ilike", "Saurav");
 
     const byStaff = new Map();
-    for (const t of overdueTasks || []) {
+    for (const t of pendingTasks || []) {
       const key = (t.assigned_to || "").trim();
       if (!key) continue;
       if (!byStaff.has(key)) byStaff.set(key, []);
@@ -103,7 +113,7 @@ export default async function handler(req, res) {
       if (targetPhone) {
         const wa = await sendWhatsApp({
           phone: targetPhone,
-          msg: buildReminderText(staffRow?.name || staffName, tasks),
+          msg: buildReminderText(staffRow?.name || staffName, tasks, today),
           client: TASKS_WA_CLIENT_ID,
         });
         results.push({ staffName, taskCount: tasks.length, sent: wa.status === 1, error: wa.status === 1 ? null : wa.message });
