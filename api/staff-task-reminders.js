@@ -58,20 +58,24 @@ async function getQuoteOfDay(sb) {
 }
 
 function buildReminderText({ name, quote, delegations, todayTasks, today }) {
+  // Only what actually needs attention today — overdue or due today.
+  // Future-dated delegations don't belong in a daily nudge; they'll surface
+  // here on their own day.
   const overdue = delegations.filter((t) => t.due_date < today);
-  const upcoming = delegations.filter((t) => t.due_date >= today);
+  const dueToday = delegations.filter((t) => t.due_date === today);
+  const relevant = [...overdue, ...dueToday];
   const lines = [`⏰ Good morning, ${name}!`];
   if (quote) lines.push("", `💬 "${quote}"`);
-  lines.push("", `📌 Delegated tasks (${delegations.length} total):`);
+  lines.push("", `📌 Delegated tasks — overdue or due today (${relevant.length}):`);
   if (overdue.length) {
     lines.push(`🔴 Overdue (${overdue.length}):`);
     overdue.forEach((t) => lines.push(`- ${t.title} (was due ${t.due_date})`));
   }
-  if (upcoming.length) {
-    lines.push(`📋 Pending (${upcoming.length}):`);
-    upcoming.forEach((t) => lines.push(`- ${t.title} (due ${t.due_date})`));
+  if (dueToday.length) {
+    lines.push(`📋 Due today (${dueToday.length}):`);
+    dueToday.forEach((t) => lines.push(`- ${t.title}`));
   }
-  if (!delegations.length) lines.push("Nothing pending. 🎉");
+  if (!relevant.length) lines.push("Nothing pending. 🎉");
   lines.push("", `✅ Today's other tasks (${todayTasks.length}):`);
   if (todayTasks.length) todayTasks.forEach((t) => lines.push(`- ${t.title}`));
   else lines.push("Nothing scheduled for today.");
@@ -90,7 +94,7 @@ export default async function handler(req, res) {
     const [{ data: staffRows }, { data: delegationRows }, { data: todayTaskRows }, quote] = await Promise.all([
       sb.from("staff").select("id,name,phone,type").eq("tenant_id", TENANT_ID).eq("active", true),
       sb.from("tasks").select("title,assigned_to,due_date")
-        .eq("tenant_id", TENANT_ID).eq("task_type", "one-time").in("status", ["Pending", "In Progress"]),
+        .eq("tenant_id", TENANT_ID).eq("task_type", "one-time").in("status", ["Pending", "In Progress"]).lte("due_date", today),
       sb.from("tasks").select("title,assigned_to")
         .eq("tenant_id", TENANT_ID).eq("task_type", "recurring").in("status", ["Pending", "In Progress"]).eq("due_date", today),
       getQuoteOfDay(sb),
