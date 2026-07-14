@@ -43,15 +43,20 @@ export default async function handler(req, res) {
   "other_notes": [string],
   "vendor_kind": "jewellery"|"service"|"other"
 }
-- "contacts": the card may list MORE THAN ONE person/number — include every distinct name+phone pair found. Phone digits only where possible.
+- "contacts": business cards VERY OFTEN list MORE THAN ONE person — e.g. an owner and a manager, or two partners — each with their own name and mobile number, sometimes printed on separate lines, in different corners, in a smaller font below the main name, or on the back of the card. Before answering, deliberately scan the ENTIRE image line by line (not just the most prominent name) and list EVERY distinct name+phone pair you find — do not stop after the first one. Phone digits only where possible.
+- "address": capture the COMPLETE address exactly as printed — building/shop number, street/road name, area or locality, landmark if any, city, state, and PIN code. Do NOT shorten this to just a city name (e.g. "Mumbai") if more detail is printed on the card — read every address line present, including ones wrapping onto a second line or printed in a smaller font near the bottom.
 - "deals_in_text": if the card explicitly states what the company deals in / trades in / manufactures, put that raw text here.
 - "other_notes": any other text on the card that doesn't map to a field above (tagline, certifications, additional addresses, etc.) — one string per distinct piece of info.
 - "vendor_kind": classify the business based on everything on the card — "jewellery" if they deal in gold/silver/diamonds/gemstones/findings/jewellery manufacturing/polishing/setting or similar jewellery-trade goods; "service" if they supply packaging, boxes, pouches, display equipment, cleaning chemicals, machinery, or other non-jewellery supplies/services to a jewellery business; "other" if genuinely unclear or unrelated. Best-effort guess from the card content — do not ask for clarification.
 - Use null (or empty array) for anything not present. Do not invent data.`;
 
+  // "low" detail downsamples the image to ~512px before the model ever
+  // sees it — plenty for a single bold name, but it was almost certainly
+  // why a second (smaller-print) contact and full address lines were
+  // getting missed. "high" sends the image at full resolution in tiles.
   const content = [{ type: "text", text: promptText }];
-  if (frontUrl) content.push({ type: "image_url", image_url: { url: frontUrl, detail: "low" } });
-  if (backUrl) content.push({ type: "image_url", image_url: { url: backUrl, detail: "low" } });
+  if (frontUrl) content.push({ type: "image_url", image_url: { url: frontUrl, detail: "high" } });
+  if (backUrl) content.push({ type: "image_url", image_url: { url: backUrl, detail: "high" } });
 
   try {
     const { text } = await askAI({ system, messages: [{ role: "user", content }], maxTokens: 700 });

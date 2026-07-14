@@ -11775,6 +11775,96 @@ async function persistNewVendor(tid, form, dealingIds, itemRows) {
   return vendorId;
 }
 
+// Finds an existing vendor that a form draft is a likely duplicate of —
+// matches by any contact phone already saved under another vendor, or by
+// exact (trimmed, case-insensitive) company name. Shared by the live-form
+// duplicateWarning check and the offline-sync path (syncDrafts), which
+// previously had NO dedupe check at all — the cause of the same card
+// scanned by two people producing two permanent vendor rows.
+function findDuplicateVendorMatch(vendorList, form, excludeId) {
+  const formPhones = new Set((form.contacts || []).map((c) => normalizePhone(c.phone)).filter((p) => p.length >= 8));
+  const formName = (form.company_name || "").trim().toLowerCase();
+  for (const v of vendorList) {
+    if (excludeId && v.id === excludeId) continue;
+    const phoneHit = (v.contacts || []).some((c) => formPhones.has(normalizePhone(c.phone)));
+    const nameHit = formName && (v.company_name || "").trim().toLowerCase() === formName;
+    if (phoneHit || nameHit) return { vendor: v, reason: phoneHit ? "phone" : "name" };
+  }
+  return null;
+}
+
+// Folds a form draft's data INTO an existing vendor row instead of
+// creating a second one. Existing scalar fields (address/email/notes core,
+// images, payment terms) are treated as canonical and kept as-is unless
+// blank; contacts, custom fields, categories, and item rows are UNIONED
+// (deduped) so nothing typed in either copy is lost. Shared by the
+// explicit "Merge into existing" UI action and the offline-sync path.
+async function mergeFormIntoVendor(tid, target, form, dealingIdsArr, itemRows, deactivateVendorId) {
+  const normPh = (p) => normalizePhone(p || "");
+  const existingPhones = new Set((target.contacts || []).map((c) => normPh(c.phone)).filter(Boolean));
+  const mergedContacts = [
+    ...(target.contacts || []),
+    ...(form.contacts || []).filter((c) => (c.name || c.phone) && !(normPh(c.phone) && existingPhones.has(normPh(c.phone)))),
+  ];
+  const existingFieldKeys = new Set((target.custom_fields || []).map((f) => `${(f.label || "").toLowerCase()}|${f.value || ""}`));
+  const mergedCustomFields = [
+    ...(target.custom_fields || []),
+    ...(form.custom_fields || []).filter((f) => (f.label || f.value) && !existingFieldKeys.has(`${(f.label || "").toLowerCase()}|${f.value || ""}`)),
+  ];
+  const mergedNotes = [target.notes, form.notes].filter(Boolean).filter((n, i, arr) => arr.indexOf(n) === i).join("\n");
+  const mergedDealingIds = new Set([...(target.dealings || []).map((d) => d.item_type_id), ...dealingIdsArr]);
+
+  const payload = {
+    contacts: mergedContacts,
+    custom_fields: mergedCustomFields,
+    notes: mergedNotes || null,
+    address: target.address || form.address || null,
+    city: target.city || form.city || null,
+    state: target.state || form.state || null,
+    email: target.email || form.email || null,
+    website: target.website || form.website || null,
+    gstin: target.gstin || form.gstin || null,
+    card_image_front_url: target.card_image_front_url || form.card_image_front_url || null,
+    card_image_back_url: target.card_image_back_url || form.card_image_back_url || null,
+  };
+  const { error } = await sb.from("bullion_vendors").update(payload).eq("id", target.id);
+  if (error) throw error;
+
+  await sb.from("bullion_vendor_dealings").delete().eq("vendor_id", target.id);
+  if (mergedDealingIds.size) {
+    await sb.from("bullion_vendor_dealings").insert([...mergedDealingIds].map((item_type_id) => ({ vendor_id: target.id, item_type_id })));
+  }
+
+  const existingItemKeys = new Set((target.items || []).map((it) => `${it.item_name.trim().toLowerCase()}|${it.item_type_id || ""}`));
+  const newValidItems = (itemRows || []).filter((r) => r.item_name && r.item_name.trim() && r.making_charge !== "" && !existingItemKeys.has(`${r.item_name.trim().toLowerCase()}|${r.item_type_id || ""}`));
+  if (newValidItems.length) {
+    await sb.from("bullion_vendor_items").insert(newValidItems.map((r) => ({
+      tenant_id: tid, vendor_id: target.id,
+      item_type_id: r.item_type_id || null, item_name: r.item_name.trim(),
+      making_charge: Number(r.making_charge), making_charge_unit: r.making_charge_unit || "per_gram",
+      price_note: r.price_note || null, active: r.active !== false,
+      created_by: loadUser()?.name || loadUser()?.username || null,
+    })));
+  }
+
+  if (deactivateVendorId && deactivateVendorId !== target.id) {
+    await sb.from("bullion_vendors").update({ active: false }).eq("id", deactivateVendorId);
+  }
+}
+
+// Sends an already-hosted image (e.g. a scanned business card) to a phone
+// number on WhatsApp via the same wa-service /api/send-media path used for
+// estimate PDFs — no re-upload needed since vendor card photos are already
+// in Supabase Storage by the time this is called.
+async function sendVendorCardOnWA({ phone, mediaUrl, caption }) {
+  const res = await fetch("/api/send-media", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
+    body: JSON.stringify({ phone: normalizePhone(phone), mediaUrl, mediaType: "image", caption: caption || "", client: "Reception" }),
+  });
+  return await res.json();
+}
+
 // Merges AI-extracted card fields into a vendor form draft, filling only
 // blanks — never overwrites what a person already typed. Shared by the
 // live scan path and the offline-sync path.
@@ -11897,7 +11987,17 @@ function VendorsScreen() {
             if (data.fields) form = mergeCardFields(form, data.fields);
           } catch { /* AI extraction failing shouldn't block the vendor from saving */ }
         }
-        await persistNewVendor(tid, form, draft.dealingIds, draft.itemRows);
+        // Same card scanned by two people (e.g. owner + staff at an
+        // exhibition) offline used to always insert a second row here —
+        // check for a phone/name match against what's already saved before
+        // creating a new vendor, same as the live-form duplicate check.
+        const dupe = findDuplicateVendorMatch(vendors, form);
+        if (dupe) {
+          await mergeFormIntoVendor(tid, dupe.vendor, form, draft.dealingIds, draft.itemRows, null);
+          showToast(`✓ Merged offline scan into existing "${dupe.vendor.company_name}"`);
+        } else {
+          await persistNewVendor(tid, form, draft.dealingIds, draft.itemRows);
+        }
         await idbDeleteDraft(draft.id);
         synced++;
       } catch (e) {
@@ -11908,7 +12008,7 @@ function VendorsScreen() {
     if (synced > 0) { showToast(`✓ Synced ${synced} offline vendor${synced === 1 ? "" : "s"}`); load(); }
     refreshPendingCount();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tid, load, refreshPendingCount]);
+  }, [tid, vendors, load, refreshPendingCount]);
 
   useEffect(() => {
     refreshPendingCount();
@@ -12167,60 +12267,10 @@ function VendorsScreen() {
     if (!confirm(`Merge this into "${target.company_name}"? The current form's details will be folded in and this form discarded.`)) return;
     setSaving(true);
     try {
-      const normPh = (p) => normalizePhone(p || "");
-      const existingPhones = new Set((target.contacts || []).map((c) => normPh(c.phone)).filter(Boolean));
-      const mergedContacts = [
-        ...(target.contacts || []),
-        ...(vendorForm.contacts || []).filter((c) => (c.name || c.phone) && !(normPh(c.phone) && existingPhones.has(normPh(c.phone)))),
-      ];
-      const existingFieldKeys = new Set((target.custom_fields || []).map((f) => `${(f.label || "").toLowerCase()}|${f.value || ""}`));
-      const mergedCustomFields = [
-        ...(target.custom_fields || []),
-        ...(vendorForm.custom_fields || []).filter((f) => (f.label || f.value) && !existingFieldKeys.has(`${(f.label || "").toLowerCase()}|${f.value || ""}`)),
-      ];
-      const mergedNotes = [target.notes, vendorForm.notes].filter(Boolean).filter((n, i, arr) => arr.indexOf(n) === i).join("\n");
-      const mergedDealingIds = new Set([...(target.dealings || []).map((d) => d.item_type_id), ...dealingIds]);
-
-      const payload = {
-        contacts: mergedContacts,
-        custom_fields: mergedCustomFields,
-        notes: mergedNotes || null,
-        address: target.address || vendorForm.address || null,
-        city: target.city || vendorForm.city || null,
-        state: target.state || vendorForm.state || null,
-        email: target.email || vendorForm.email || null,
-        website: target.website || vendorForm.website || null,
-        gstin: target.gstin || vendorForm.gstin || null,
-        card_image_front_url: target.card_image_front_url || vendorForm.card_image_front_url || null,
-        card_image_back_url: target.card_image_back_url || vendorForm.card_image_back_url || null,
-      };
-      const { error } = await sb.from("bullion_vendors").update(payload).eq("id", target.id);
-      if (error) throw error;
-
-      await sb.from("bullion_vendor_dealings").delete().eq("vendor_id", target.id);
-      if (mergedDealingIds.size) {
-        await sb.from("bullion_vendor_dealings").insert([...mergedDealingIds].map((item_type_id) => ({ vendor_id: target.id, item_type_id })));
-      }
-
-      const existingItemKeys = new Set((target.items || []).map((it) => `${it.item_name.trim().toLowerCase()}|${it.item_type_id || ""}`));
-      const newValidItems = itemRows.filter((r) => r.item_name.trim() && r.making_charge !== "" && !existingItemKeys.has(`${r.item_name.trim().toLowerCase()}|${r.item_type_id || ""}`));
-      if (newValidItems.length) {
-        await sb.from("bullion_vendor_items").insert(newValidItems.map((r) => ({
-          tenant_id: tid, vendor_id: target.id,
-          item_type_id: r.item_type_id || null, item_name: r.item_name.trim(),
-          making_charge: Number(r.making_charge), making_charge_unit: r.making_charge_unit || "per_gram",
-          price_note: r.price_note || null, active: r.active !== false,
-          created_by: loadUser()?.name || loadUser()?.username || null,
-        })));
-      }
-
-      // If the currently-open form was itself an already-saved vendor
-      // (two real duplicate rows, not a fresh capture merging into one),
+      // If the currently-open form was itself an already-saved vendor (two
+      // real duplicate rows, not a fresh capture merging into one),
       // deactivate the one just merged away so it doesn't linger as a dupe.
-      if (editingVendor?.id && editingVendor.id !== target.id) {
-        await sb.from("bullion_vendors").update({ active: false }).eq("id", editingVendor.id);
-      }
-
+      await mergeFormIntoVendor(tid, target, vendorForm, [...dealingIds], itemRows, editingVendor?.id && editingVendor.id !== target.id ? editingVendor.id : null);
       showToast(`✓ Merged into ${target.company_name}`);
       closeForm();
       load();
@@ -12357,7 +12407,13 @@ function VendorsScreen() {
                       </div>
                     </div>
                     {primaryContact && <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>{primaryContact.name}{primaryContact.designation ? ` · ${primaryContact.designation}` : ""}</div>}
-                    {primaryContact?.phone && <div style={{ fontSize: 12, color: "#666" }}>📞 <a href={`tel:${primaryContact.phone}`} onClick={(e) => e.stopPropagation()} style={{ color: C.blue }}>{primaryContact.phone}</a>{(v.contacts || []).length > 1 ? ` +${v.contacts.length - 1} more` : ""}</div>}
+                    {primaryContact?.phone && (
+                      <div style={{ fontSize: 12, color: "#666" }}>
+                        📞 <a href={`tel:${primaryContact.phone}`} onClick={(e) => e.stopPropagation()} style={{ color: C.blue }}>{primaryContact.phone}</a>{" "}
+                        <a href={`https://wa.me/${normalizePhone(primaryContact.phone)}`} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} title="Message on WhatsApp" style={{ textDecoration: "none" }}>💬</a>
+                        {(v.contacts || []).length > 1 ? ` +${v.contacts.length - 1} more` : ""}
+                      </div>
+                    )}
                     {(v.city || v.state) && <div style={{ fontSize: 11, color: "#999" }}>{[v.city, v.state].filter(Boolean).join(", ")}</div>}
                     {(v.dealings || []).length > 0 && (
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 8 }}>
@@ -12449,13 +12505,37 @@ function VendorsScreen() {
           <div style={{ display: "flex", gap: 16, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <Btn small color={C.purple} onClick={() => frontImgRef.current?.click()} disabled={scanningFront}>{scanningFront ? "Scanning…" : "📷 Front of card"}</Btn>
-              {(vendorForm.card_image_front_url || pendingPreviewUrls.front) && <img src={vendorForm.card_image_front_url || pendingPreviewUrls.front} alt="card front" style={{ height: 40, borderRadius: 4, border: "1px solid #eee" }} />}
+              {(vendorForm.card_image_front_url || pendingPreviewUrls.front) && (
+                <img src={vendorForm.card_image_front_url || pendingPreviewUrls.front} alt="card front" title="Click to view full size"
+                  onClick={() => window.open(vendorForm.card_image_front_url || pendingPreviewUrls.front, "_blank")}
+                  style={{ height: 90, borderRadius: 4, border: "1px solid #eee", cursor: "pointer" }} />
+              )}
               {pendingPreviewUrls.front && <span style={{ fontSize: 10, color: C.orange }}>📴 not uploaded yet</span>}
+              {vendorForm.card_image_front_url && (
+                <Btn small ghost color={C.green} onClick={async () => {
+                  const phone = prompt("Send front of card to this WhatsApp number:");
+                  if (!phone) return;
+                  const r = await sendVendorCardOnWA({ phone, mediaUrl: vendorForm.card_image_front_url, caption: vendorForm.company_name });
+                  showToast(r.ok ? "✓ Sent on WhatsApp" : "❌ " + (r.error || "Send failed"));
+                }}>📤 Send</Btn>
+              )}
             </div>
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <Btn small color={C.purple} onClick={() => backImgRef.current?.click()} disabled={scanningBack}>{scanningBack ? "Scanning…" : "📷 Back of card"}</Btn>
-              {(vendorForm.card_image_back_url || pendingPreviewUrls.back) && <img src={vendorForm.card_image_back_url || pendingPreviewUrls.back} alt="card back" style={{ height: 40, borderRadius: 4, border: "1px solid #eee" }} />}
+              {(vendorForm.card_image_back_url || pendingPreviewUrls.back) && (
+                <img src={vendorForm.card_image_back_url || pendingPreviewUrls.back} alt="card back" title="Click to view full size"
+                  onClick={() => window.open(vendorForm.card_image_back_url || pendingPreviewUrls.back, "_blank")}
+                  style={{ height: 90, borderRadius: 4, border: "1px solid #eee", cursor: "pointer" }} />
+              )}
               {pendingPreviewUrls.back && <span style={{ fontSize: 10, color: C.orange }}>📴 not uploaded yet</span>}
+              {vendorForm.card_image_back_url && (
+                <Btn small ghost color={C.green} onClick={async () => {
+                  const phone = prompt("Send back of card to this WhatsApp number:");
+                  if (!phone) return;
+                  const r = await sendVendorCardOnWA({ phone, mediaUrl: vendorForm.card_image_back_url, caption: vendorForm.company_name });
+                  showToast(r.ok ? "✓ Sent on WhatsApp" : "❌ " + (r.error || "Send failed"));
+                }}>📤 Send</Btn>
+              )}
             </div>
           </div>
 
@@ -12468,10 +12548,11 @@ function VendorsScreen() {
                 <Btn small ghost color={C.green} onClick={addContactRow}>+ Add contact</Btn>
               </div>
               {(vendorForm.contacts || []).map((c, idx) => (
-                <div key={idx} style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr auto", gap: 6, marginBottom: 6 }}>
+                <div key={idx} style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr auto auto", gap: 6, marginBottom: 6, alignItems: "center" }}>
                   <input style={inp} placeholder="Name" value={c.name} onChange={(e) => updateContactRow(idx, { name: e.target.value })} />
                   <input style={inp} placeholder="Phone" value={c.phone} onChange={(e) => updateContactRow(idx, { phone: e.target.value })} />
                   <input style={inp} placeholder="Designation" value={c.designation} onChange={(e) => updateContactRow(idx, { designation: e.target.value })} />
+                  {c.phone ? <a href={`https://wa.me/${normalizePhone(c.phone)}`} target="_blank" rel="noopener noreferrer" title="Message on WhatsApp" style={{ fontSize: 18, textDecoration: "none" }}>💬</a> : <span />}
                   <button onClick={() => removeContactRow(idx)} style={{ background: "none", border: "none", color: "#ccc", cursor: "pointer", fontSize: 16 }}>×</button>
                 </div>
               ))}
