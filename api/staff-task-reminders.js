@@ -1,9 +1,12 @@
 // GET /api/staff-task-reminders — fired by cron-job.org every few minutes.
-// Sends a plain-template (no AI) WhatsApp reminder to each staff member
-// listing ALL their pending one-time delegated tasks (overdue AND upcoming,
-// not overdue-only), once per person per day. Only runs during the
-// 11:00-11:59 IST window (self-guarded) so it's safe to schedule the
-// cron job to fire frequently without a start/end time config.
+// Sends every active staff member (including Saurav) a single daily 11am
+// WhatsApp message: today's motivating/team-building quote (cycles through
+// motivational_quotes, ~75 entries repeating through the year), their
+// pending one-time delegated tasks (overdue AND upcoming), and their
+// recurring KRAs due today. Sent from TASKS_WA_CLIENT_ID (Priyanka's
+// number), once per person per day. Only runs during the 11:00-11:59 IST
+// window (self-guarded) so it's safe to schedule the cron job to fire
+// frequently without a start/end time config.
 //
 // Batched: 30s gap between sends (anti-ban pacing, per Saurav's spec) means
 // only a handful of people fit in one serverless invocation — task_reminder_log
@@ -19,7 +22,6 @@ export const config = { maxDuration: 280 };
 
 const SEND_GAP_MS = 30_000;
 const BATCH_SIZE = 9; // 9 * 30s = 270s, under the 280s function limit
-const nameEq = (a, b) => String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function checkAuth(req) {
@@ -34,14 +36,33 @@ function isReminderWindowIST() {
   return hourIST === 11;
 }
 
+function nowIST() {
+  return new Date(Date.now() + 5.5 * 3600000);
+}
 function todayIST() {
-  return new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+  return nowIST().toISOString().slice(0, 10);
+}
+function dayOfYearIST() {
+  const d = nowIST();
+  const start = Date.UTC(d.getUTCFullYear(), 0, 1);
+  const diffDays = Math.floor((Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - start) / 86400000);
+  return diffDays + 1; // 1-366
 }
 
-function buildReminderText(name, tasks, today) {
-  const overdue = tasks.filter((t) => t.due_date < today);
-  const upcoming = tasks.filter((t) => t.due_date >= today);
-  const lines = [];
+async function getQuoteOfDay(sb) {
+  const { count } = await sb.from("motivational_quotes").select("id", { count: "exact", head: true });
+  if (!count) return null;
+  const idx = (dayOfYearIST() - 1) % count;
+  const { data } = await sb.from("motivational_quotes").select("quote").eq("day_index", idx).maybeSingle();
+  return data?.quote || null;
+}
+
+function buildReminderText({ name, quote, delegations, todayTasks, today }) {
+  const overdue = delegations.filter((t) => t.due_date < today);
+  const upcoming = delegations.filter((t) => t.due_date >= today);
+  const lines = [`⏰ Good morning, ${name}!`];
+  if (quote) lines.push("", `💬 "${quote}"`);
+  lines.push("", `📌 Delegated tasks (${delegations.length} total):`);
   if (overdue.length) {
     lines.push(`🔴 Overdue (${overdue.length}):`);
     overdue.forEach((t) => lines.push(`- ${t.title} (was due ${t.due_date})`));
@@ -50,11 +71,12 @@ function buildReminderText(name, tasks, today) {
     lines.push(`📋 Pending (${upcoming.length}):`);
     upcoming.forEach((t) => lines.push(`- ${t.title} (due ${t.due_date})`));
   }
-  return [
-    `⏰ Hi ${name}, your delegated tasks (${tasks.length} total):`,
-    ...lines,
-    "Please update the status in the HR app.",
-  ].join("\n");
+  if (!delegations.length) lines.push("Nothing pending. 🎉");
+  lines.push("", `✅ Today's other tasks (${todayTasks.length}):`);
+  if (todayTasks.length) todayTasks.forEach((t) => lines.push(`- ${t.title}`));
+  else lines.push("Nothing scheduled for today.");
+  lines.push("", "Please update the status in the HR app. Have a great day! 🚀");
+  return lines.join("\n");
 }
 
 export default async function handler(req, res) {
@@ -65,20 +87,29 @@ export default async function handler(req, res) {
   const today = todayIST();
 
   try {
-    const { data: pendingTasks } = await sb
-      .from("tasks")
-      .select("title,assigned_to,due_date")
-      .eq("tenant_id", TENANT_ID)
-      .eq("task_type", "one-time")
-      .in("status", ["Pending", "In Progress"])
-      .not("assigned_to", "ilike", "Saurav");
+    const [{ data: staffRows }, { data: delegationRows }, { data: todayTaskRows }, quote] = await Promise.all([
+      sb.from("staff").select("id,name,phone,type").eq("tenant_id", TENANT_ID).eq("active", true),
+      sb.from("tasks").select("title,assigned_to,due_date")
+        .eq("tenant_id", TENANT_ID).eq("task_type", "one-time").in("status", ["Pending", "In Progress"]),
+      sb.from("tasks").select("title,assigned_to")
+        .eq("tenant_id", TENANT_ID).eq("task_type", "recurring").in("status", ["Pending", "In Progress"]).eq("due_date", today),
+      getQuoteOfDay(sb),
+    ]);
 
-    const byStaff = new Map();
-    for (const t of pendingTasks || []) {
+    const nameEq = (a, b) => String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
+    const delegationsByStaff = new Map();
+    for (const t of delegationRows || []) {
       const key = (t.assigned_to || "").trim();
       if (!key) continue;
-      if (!byStaff.has(key)) byStaff.set(key, []);
-      byStaff.get(key).push(t);
+      if (!delegationsByStaff.has(key)) delegationsByStaff.set(key, []);
+      delegationsByStaff.get(key).push(t);
+    }
+    const todayTasksByStaff = new Map();
+    for (const t of todayTaskRows || []) {
+      const key = (t.assigned_to || "").trim();
+      if (!key) continue;
+      if (!todayTasksByStaff.has(key)) todayTasksByStaff.set(key, []);
+      todayTasksByStaff.get(key).push(t);
     }
 
     const { data: alreadySent } = await sb
@@ -88,44 +119,41 @@ export default async function handler(req, res) {
       .eq("reminder_date", today);
     const alreadySentSet = new Set((alreadySent || []).map((r) => r.staff_name.toLowerCase()));
 
-    const pendingStaffNames = [...byStaff.keys()].filter((n) => !alreadySentSet.has(n.toLowerCase()));
-    const batch = pendingStaffNames.slice(0, BATCH_SIZE);
+    // Karigars (type=artisan) are not staff and never get app logins or
+    // task assignments — see feedback_karigars_not_staff.
+    const activeStaff = (staffRows || []).filter((s) => s.name && s.type !== "artisan" && !alreadySentSet.has(s.name.trim().toLowerCase()));
+    const batch = activeStaff.slice(0, BATCH_SIZE);
 
     if (!batch.length) {
       return res.status(200).json({ ok: true, sent: 0, remaining: 0 });
     }
 
-    const { data: staffRows } = await sb
-      .from("staff")
-      .select("id,name,phone")
-      .eq("tenant_id", TENANT_ID)
-      .eq("active", true);
     const phones = await staffPhoneMap(sb, TENANT_ID);
 
     let sent = 0;
     const results = [];
     for (let i = 0; i < batch.length; i++) {
-      const staffName = batch[i];
-      const tasks = byStaff.get(staffName);
-      const staffRow = (staffRows || []).find((s) => nameEq(s.name, staffName));
-      const targetPhone = phones.forStaff(staffRow);
+      const staffRow = batch[i];
+      const delegations = [...delegationsByStaff].find(([k]) => nameEq(k, staffRow.name))?.[1] || [];
+      const todayTasks = [...todayTasksByStaff].find(([k]) => nameEq(k, staffRow.name))?.[1] || [];
+      const targetPhone = phones.forStaff(staffRow) || staffRow.phone;
 
       if (targetPhone) {
         const wa = await sendWhatsApp({
           phone: targetPhone,
-          msg: buildReminderText(staffRow?.name || staffName, tasks, today),
+          msg: buildReminderText({ name: staffRow.name, quote, delegations, todayTasks, today }),
           client: TASKS_WA_CLIENT_ID,
         });
-        results.push({ staffName, taskCount: tasks.length, sent: wa.status === 1, error: wa.status === 1 ? null : wa.message });
+        results.push({ staffName: staffRow.name, delegationCount: delegations.length, sent: wa.status === 1, error: wa.status === 1 ? null : wa.message });
         if (wa.status === 1) sent++;
       } else {
-        results.push({ staffName, taskCount: tasks.length, sent: false, error: "no_phone_on_file" });
+        results.push({ staffName: staffRow.name, delegationCount: delegations.length, sent: false, error: "no_phone_on_file" });
       }
 
       // Log as handled regardless of send success — a permanently-missing
       // phone/failed send shouldn't retry every 5 minutes for the rest of
       // the window; it'll get picked up again tomorrow.
-      await sb.from("task_reminder_log").insert({ tenant_id: TENANT_ID, staff_name: staffName, reminder_date: today });
+      await sb.from("task_reminder_log").insert({ tenant_id: TENANT_ID, staff_name: staffRow.name, reminder_date: today });
 
       if (i < batch.length - 1) await sleep(SEND_GAP_MS);
     }
@@ -133,7 +161,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       ok: true,
       sent,
-      remaining: pendingStaffNames.length - batch.length,
+      remaining: activeStaff.length - batch.length,
       results,
     });
   } catch (err) {
