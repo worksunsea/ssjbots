@@ -16,5 +16,20 @@
         { "key": "Content-Security-Policy", "value": "frame-ancestors 'self' https://fms.gemtre.in https://*.vercel.app https://jewelbos.com" }
       ]
     }
+  ],
+  "crons": [
+    { "path": "/api/cron", "schedule": "* * * * *" },
+    { "path": "/api/schedule-reminders", "schedule": "*/5 * * * *" },
+    { "path": "/api/fms-delay-push", "schedule": "0 */2 * * *" },
+    { "path": "/api/digest-ping?mode=morning", "schedule": "30 3 * * *" },
+    { "path": "/api/digest-ping?mode=evening", "schedule": "30 16 * * *" },
+    { "path": "/api/evening-completion-reminder", "schedule": "30,45 14 * * *" },
+    { "path": "/api/evening-completion-reminder", "schedule": "0,15 15 * * *" },
+    { "path": "/api/morning-due-today-push", "schedule": "30,45 5 * * *" },
+    { "path": "/api/morning-due-today-push", "schedule": "0,15 6 * * *" },
+    { "path": "/api/staff-task-reminders", "schedule": "30,40,50 5 * * *" },
+    { "path": "/api/staff-task-reminders", "schedule": "0,10,20 6 * * *" },
+    { "path": "/api/staff-profile-reminders", "schedule": "0 1 * * *" },
+    { "path": "/api/catalogue-backup", "schedule": "30 20 * * *" }
   ]
 }
