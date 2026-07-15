@@ -52,8 +52,8 @@ export const TASKS_WA_CLIENT_ID = process.env.TASKS_WA_CLIENT_ID || WA_SESSION_C
 
 // Only these WA numbers run the bot (reply to inbound messages).
 // Other numbers (birthday/anniversary) are send-only.
-export const BOT_NUMBERS = (process.env.BOT_NUMBERS || "8860866000,9312839912")
-  .split(",").map((n) => n.trim()).filter(Boolean);
+// Hardcoded to 8860866000 only (2026-07-15) — 9312839912 was replying too, unwanted.
+export const BOT_NUMBERS = ["8860866000"];
 
 // Secret shared between CRM frontend and these API functions.
 // Set VITE_CRM_SECRET (frontend) + CRM_SECRET (Vercel env) to the same value.

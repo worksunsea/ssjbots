@@ -128,12 +128,8 @@ export default async function handler(req, res) {
   const sb = supa();
 
   try {
-    // ── Resolve effective bot numbers: DB config first, env var fallback ────────
-    const { data: botNumCfg } = await sb.from("bullion_dropdowns")
-      .select("value").eq("tenant_id", TENANT_ID).eq("field", "bot_numbers").eq("active", true).maybeSingle();
-    const effectiveBotNumbers = botNumCfg?.value
-      ? botNumCfg.value.split(",").map((n) => normalizePhone(n.trim())).filter(Boolean)
-      : BOT_NUMBERS;
+    // ── Effective bot numbers: hardcoded, no DB override ─────────────────────────
+    const effectiveBotNumbers = BOT_NUMBERS;
 
     // ── Gate 1: only reply on sessions whose ACTUAL phone is in bot numbers ─────
     // session_phone is the real connected phone sent by wa-service — use it as
