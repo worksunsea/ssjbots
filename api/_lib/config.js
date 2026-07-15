@@ -19,11 +19,19 @@ export const WBIZTOOL_DEFAULT_CLIENT = process.env.WBIZTOOL_DEFAULT_CLIENT || "7
 export const HARD_EXCHANGE_CAP = Number(process.env.HARD_EXCHANGE_CAP || 100);
 export const OWNER_ALERT_PHONE = process.env.OWNER_ALERT_PHONE || "8860866000";
 
-// Saurav's personal number — the ONLY sender trusted to issue WhatsApp task
-// commands (webhook.js does a strict equality check against this single
-// number). Must stay a single number, never comma-joined — use
-// DIGEST_EXTRA_RECIPIENTS below to add more people to the digest ping only.
+// Saurav's personal number — kept as the single primary owner number for
+// send-only flows (digest-ping, connection-alert, schedule-reminders) that
+// predate the multi-SA rollout below.
 export const OWNER_PHONE = process.env.OWNER_PHONE || "";
+
+// Numbers trusted to issue internal owner WA commands (create_task,
+// get_report, search_resources, edit_contact/add_contact, dev_task, etc —
+// see ownerCommand.js). webhook.js checks membership in this list, not
+// strict equality against OWNER_PHONE, so all 3 SA accounts can command the
+// bot. Only 8860866000 (see BOT_NUMBERS) actually replies — these numbers
+// are senders-to-bot, not bot numbers themselves.
+export const OWNER_PHONES = (process.env.OWNER_PHONES || "9811464488,9810442333,9990942333")
+  .split(",").map((n) => n.trim()).filter(Boolean);
 // Additional people who should also receive the morning/evening digest ping
 // (comma-separated), without being trusted for owner WA commands.
 export const DIGEST_EXTRA_RECIPIENTS = process.env.DIGEST_EXTRA_RECIPIENTS || "";

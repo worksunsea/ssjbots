@@ -16,7 +16,7 @@ import {
   normalizePhone,
   BOT_NUMBERS,
   OWNER_ALERT_PHONE,
-  OWNER_PHONE,
+  OWNER_PHONES,
   WA_SESSION_CLIENT_ID,
   SUPABASE_SERVICE_KEY,
   OPENAI_API_KEY,
@@ -88,9 +88,10 @@ export default async function handler(req, res) {
   if (!phone || !msg) return res.status(200).json({ ok: false, reason: "no_phone_or_msg" });
 
   // ── Owner WhatsApp commands: task assignment, on-demand report, resource search ──
-  // Only Saurav's own number reaches this branch; everyone else falls through
-  // to the normal lead/FAQ bot below.
-  if (OWNER_PHONE && normalizePhone(phone) === normalizePhone(OWNER_PHONE)) {
+  // Only the 3 trusted SA numbers (OWNER_PHONES) reach this branch; everyone
+  // else falls through to the normal lead/FAQ bot below.
+  const normPhone = normalizePhone(phone);
+  if (OWNER_PHONES.some((p) => normalizePhone(p) === normPhone)) {
     try {
       const sb = supa();
       const { replyText, mediaUrl, mediaType, filename, caption, items } = await handleOwnerMessage(sb, msg);
