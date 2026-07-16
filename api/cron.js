@@ -12,7 +12,7 @@ import { sendWhatsApp, sendWhatsAppWbiz, sendWhatsAppMediaWbiz } from "./_lib/wa
 import { transitionLeadToFunnel, enrollLeadInDrip } from "./_lib/drip.js";
 import { askAI } from "./_lib/ai.js";
 import { getFaqs, faqsForPrompt } from "./_lib/faqs.js";
-import { OWNER_ALERT_PHONE, OPENAI_MODEL, CRM_SECRET } from "./_lib/config.js";
+import { OWNER_ALERT_PHONE, OPENAI_MODEL, CRM_SECRET, TENANT_ID } from "./_lib/config.js";
 
 export const config = { maxDuration: 60 };
 
@@ -99,7 +99,7 @@ export default async function handler(req, res) {
       const { leadId, funnelType } = req.body || {};
       if (!leadId || !funnelType) return res.status(400).json({ ok: false, error: "leadId and funnelType required" });
       const sb = supa();
-      const tid = process.env.TENANT_ID;
+      const tid = TENANT_ID;
       const { data: lead } = await sb.from("bullion_leads").select("*").eq("id", leadId).maybeSingle();
       if (!lead) return res.status(404).json({ ok: false, error: "lead not found" });
       const { data: funnel } = await sb.from("funnels").select("*").eq("tenant_id", tid).eq("id", funnelType).maybeSingle();
@@ -138,7 +138,7 @@ export default async function handler(req, res) {
   if (req.query?.action === "enroll_calendar_bulk") {
     try {
       const sb = supa();
-      const tid = process.env.TENANT_ID;
+      const tid = TENANT_ID;
       const nowMs = Date.now();
       const yearNow = new Date(nowMs + 5.5 * 3600000).getUTCFullYear();
       const stats = { considered: 0, enrolled: 0, skipped: {} };
@@ -191,7 +191,7 @@ export default async function handler(req, res) {
   if (req.query?.action === "dnd_report") {
     try {
       const sb = supa();
-      const tid = process.env.TENANT_ID;
+      const tid = TENANT_ID;
       const { data: leads, error } = await sb.from("bullion_leads")
         .select("id,name,phone,dnd_reason,dnd_at")
         .eq("tenant_id", tid).eq("dnd", true)
