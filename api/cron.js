@@ -14,7 +14,7 @@ import { askAI } from "./_lib/ai.js";
 import { getFaqs, faqsForPrompt } from "./_lib/faqs.js";
 import { OWNER_ALERT_PHONE, OPENAI_MODEL, CRM_SECRET, TENANT_ID } from "./_lib/config.js";
 
-export const config = { maxDuration: 60 };
+export const config = { maxDuration: 300 };
 
 const CRON_SECRET = process.env.CRON_SECRET || "";
 const BATCH = 5; // send max 5 per cron tick — anti-ban, each has a delay below
