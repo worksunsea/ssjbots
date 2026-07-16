@@ -241,6 +241,28 @@ export default async function handler(req, res) {
     }
   }
 
+  // One-off repair: re-seed contact_custom_fields defs so keys already
+  // present in extra_fields data (found by field_audit) show up in the UI
+  // again. Refuses to overwrite if defs already exist — pass body.fields.
+  if (req.query?.action === "field_restore") {
+    try {
+      const { fields } = req.body || {};
+      if (!Array.isArray(fields) || !fields.length) return res.status(400).json({ ok: false, error: "fields[] required" });
+      const sb = supa();
+      const tid = TENANT_ID;
+      const { data: ex } = await sb.from("bullion_dropdowns").select("id,value").eq("tenant_id", tid).eq("field", "contact_custom_fields").maybeSingle();
+      if (ex?.value && JSON.parse(ex.value).length) {
+        return res.status(409).json({ ok: false, error: "defs already exist — not overwriting", existing: JSON.parse(ex.value) });
+      }
+      const value = JSON.stringify(fields);
+      if (ex?.id) await sb.from("bullion_dropdowns").update({ value, active: true }).eq("id", ex.id);
+      else await sb.from("bullion_dropdowns").insert({ tenant_id: tid, field: "contact_custom_fields", value, active: true, sort_order: 0 });
+      return res.status(200).json({ ok: true, restored: fields });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   try {
   const sb = supa();
   const nowIso = new Date().toISOString();
