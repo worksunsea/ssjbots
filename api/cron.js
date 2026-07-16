@@ -132,6 +132,77 @@ export default async function handler(req, res) {
     }
   }
 
+  // Bulk catch-up: enroll every non-DND lead with a bday/anniversary that
+  // isn't in a calendar drip yet, ignoring the normal 40-day-before-event
+  // cron window. For backfilling existing data in one shot.
+  if (req.query?.action === "enroll_calendar_bulk") {
+    try {
+      const sb = supa();
+      const tid = process.env.TENANT_ID;
+      const nowMs = Date.now();
+      const yearNow = new Date(nowMs + 5.5 * 3600000).getUTCFullYear();
+      const stats = { considered: 0, enrolled: 0, skipped: {} };
+
+      function parseEventDate(raw, year) {
+        if (!raw) return null;
+        const p = String(raw).split("-").map(Number);
+        let m, d;
+        if (p.length === 3) {
+          if (p[0] > 31) { m = p[1]; d = p[2]; }
+          else if (p[0] >= 1 && p[0] <= 12) { m = p[0]; d = p[1]; }
+          else { m = p[1]; d = p[0]; }
+        } else if (p.length === 2) {
+          if (p[0] >= 1 && p[0] <= 12) { m = p[0]; d = p[1]; }
+          else { m = p[1]; d = p[0]; }
+        }
+        if (!m || !d || isNaN(m) || isNaN(d)) return null;
+        const dt = new Date(Date.UTC(year, m - 1, d));
+        return isNaN(dt) ? null : dt.getTime();
+      }
+
+      for (const [field, kind] of [["bday", "birthday"], ["anniversary", "anniversary"]]) {
+        const { data: funnel } = await sb.from("funnels")
+          .select("*").eq("tenant_id", tid).eq("kind", kind).eq("active", true).maybeSingle();
+        if (!funnel) continue;
+
+        const { data: leads } = await sb.from("bullion_leads")
+          .select("id,name,phone,bday,anniversary,tenant_id")
+          .eq("tenant_id", tid).eq("dnd", false).not(field, "is", null).limit(2000);
+
+        for (const lead of leads || []) {
+          stats.considered++;
+          let eventMs = parseEventDate(lead[field], yearNow);
+          if (eventMs && eventMs < nowMs - 6 * 86400000) eventMs = parseEventDate(lead[field], yearNow + 1);
+          if (!eventMs) { stats.skipped.bad_date = (stats.skipped.bad_date || 0) + 1; continue; }
+
+          const result = await enrollLeadInDrip({ lead, funnel, eventDateMs: eventMs });
+          if (result.ok && result.enrolled) stats.enrolled++;
+          else if (result.skipped) stats.skipped[result.skipped] = (stats.skipped[result.skipped] || 0) + 1;
+        }
+      }
+      return res.status(200).json({ ok: true, stats });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
+  // Report every lead who has opted out (dnd=true), with the message that
+  // triggered it and when.
+  if (req.query?.action === "dnd_report") {
+    try {
+      const sb = supa();
+      const tid = process.env.TENANT_ID;
+      const { data: leads, error } = await sb.from("bullion_leads")
+        .select("id,name,phone,dnd_reason,dnd_at")
+        .eq("tenant_id", tid).eq("dnd", true)
+        .order("dnd_at", { ascending: false });
+      if (error) return res.status(500).json({ ok: false, error: error.message });
+      return res.status(200).json({ ok: true, count: leads?.length || 0, leads });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   try {
   const sb = supa();
   const nowIso = new Date().toISOString();
