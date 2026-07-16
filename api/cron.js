@@ -203,6 +203,44 @@ export default async function handler(req, res) {
     }
   }
 
+  // One-off diagnostic: current custom-field defs (bullion_dropdowns) vs
+  // what keys actually appear in bullion_leads.extra_fields — reveals
+  // custom fields whose values survived but whose definition got lost.
+  if (req.query?.action === "field_audit") {
+    try {
+      const sb = supa();
+      const tid = TENANT_ID;
+      const { data: defs } = await sb.from("bullion_dropdowns")
+        .select("field,value,updated_at").eq("tenant_id", tid).in("field", ["contact_custom_fields", "contact_field_order"]);
+
+      const keyCounts = {};
+      const sampleValues = {};
+      let offset = 0;
+      const PAGE = 1000;
+      for (;;) {
+        const { data: leads } = await sb.from("bullion_leads")
+          .select("id,name,phone,extra_fields")
+          .eq("tenant_id", tid).not("extra_fields", "is", null)
+          .range(offset, offset + PAGE - 1);
+        if (!leads?.length) break;
+        for (const l of leads) {
+          for (const [k, v] of Object.entries(l.extra_fields || {})) {
+            if (v === "" || v == null) continue;
+            keyCounts[k] = (keyCounts[k] || 0) + 1;
+            if (!sampleValues[k]) sampleValues[k] = [];
+            if (sampleValues[k].length < 5) sampleValues[k].push({ id: l.id, name: l.name, phone: l.phone, value: v });
+          }
+        }
+        if (leads.length < PAGE) break;
+        offset += PAGE;
+      }
+
+      return res.status(200).json({ ok: true, dropdown_defs: defs, extra_field_keys_in_use: keyCounts, samples: sampleValues });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   try {
   const sb = supa();
   const nowIso = new Date().toISOString();
