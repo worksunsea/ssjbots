@@ -369,6 +369,21 @@ export default async function handler(req, res) {
       }
     }
 
+    if (isDnd) {
+      sendPushNotification({
+        userId: "admin",
+        title: "🚫 Lead opted out (DND)",
+        body: `${leadRow.name || phone} asked to stop messages: "${msg.slice(0, 120)}"`,
+        url: "/",
+      }).catch(() => {});
+      if (OWNER_ALERT_PHONE) {
+        sendWhatsApp({
+          phone: OWNER_ALERT_PHONE,
+          msg: `🚫 ${leadRow.name || phone} opted out of messages on WhatsApp: "${msg.slice(0, 200)}" — marked DND, all drips stopped.`,
+        }).catch(() => {});
+      }
+    }
+
     // ── Auto-create demand when Claude has enough info ─────────────────────────
     // Telecaller then assigns a funnel in CRM and takes over.
     if (parsed.create_demand && (leadRow.name || ex.name) && parsed.demand_summary) {
