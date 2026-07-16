@@ -194,7 +194,9 @@ One contact can have multiple demands (each for a different product/occasion).
 **Key features:**
 - List view (default) + card view; sortable/filterable columns
 - Fixed fields: name, phone, mobile2, spouse_mobile, city, email, bday, anniversary, source, tags, VIP Score, is_client
-- Custom fields: defined in localStorage (`ssj_contact_custom_fields`), values in `extra_fields` JSONB
+- Custom fields: defs in `bullion_dropdowns` (`field='contact_custom_fields'`, one JSON-array row per tenant; `field='contact_field_order'` for ordering) — read via `fetchContactFieldDefs()`, shared `ContactFieldsContext` feeds both ContactEditModal and WalkinEntryModal. Values live in `extra_fields` JSONB per lead.
+  - ⚠️ Was localStorage (`ssj_contact_custom_fields`) until commit `a2685f0` (2026-06-16) moved it to DB — that migration did NOT copy old localStorage defs forward, so any field def that existed only in one browser's localStorage was silently orphaned (values in `extra_fields` survived fine, just no def → no label/input rendered anywhere). Lost fields `company_name`, `what_they_do`, `affiliate_links`, `where_can_they_help`, `misc` recovered 2026-07-16 by reverse-engineering keys out of `extra_fields` and reseeding the dropdown row.
+  - **Rule: never swap a config/def storage backend without a one-time script that copies existing values into the new store first.** Check this section is current before changing where custom-field defs live again.
 - Search: server-side across all fixed fields + extra_fields values
 - Tags: multi-tag filter (AND/OR toggle), drag-and-drop reorder, source/segment/flag/custom categories
 - Soft delete: `deleted_at`/`deleted_by` — Trash panel + Restore (SA only)
