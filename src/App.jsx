@@ -5432,6 +5432,12 @@ function ContactEditModal({ contact, allTags = [], customFields = [], onClose, o
     let error;
     let savedId = contact.id;
     if (isNew) {
+      const { data: existing } = await sb.from("bullion_leads")
+        .select("id,name").eq("tenant_id", payload.tenant_id).eq("phone", phone).maybeSingle();
+      if (existing?.id) {
+        setSaving(false);
+        return setErr(`Phone already belongs to ${existing.name || "another contact"}. Edit that contact instead.`);
+      }
       const { data, error: e } = await sb.from("bullion_leads")
         .insert({ ...payload, status: "new", funnel_id: "bullion" })
         .select("id").single();
