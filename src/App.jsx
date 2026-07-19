@@ -10439,6 +10439,8 @@ export default function App() {
   if (isProfilePage) return <GenericProfileForm />;
   const catalogueMatch = typeof window !== "undefined" && window.location.pathname.match(/^\/c\/([0-9a-f-]{36})$/);
   if (catalogueMatch) return <PublicCatalogueScreen token={catalogueMatch[1]} />;
+  const isCorpGiftingPage = typeof window !== "undefined" && window.location.pathname === "/corporategiftingcoins";
+  if (isCorpGiftingPage) return <CorporateGiftingScreen />;
 
   const [user, setUser] = useState(() => {
     const u = loadUser();
@@ -13397,6 +13399,170 @@ function PublicCatalogueScreen({ token }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CORPORATE GIFTING COINS — /corporategiftingcoins (no login)
+// Lead-gated public catalogue: capture name/phone/email/qty/needed-by/city,
+// then show gold/silver gifting coins with live pricing, tabbed by category.
+// Reuses the CATALOGUE_FONTS_CSS "Luxury Serif" theme from PublicCatalogueScreen.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CORP_GIFT_TABS = [
+  { k: "gold_bars", l: "Gold Bars" },
+  { k: "gold_coins", l: "Gold Coins" },
+  { k: "silver_bars", l: "Silver Bars" },
+  { k: "silver_coins", l: "Silver Coins" },
+  { k: "silver_bar_coin", l: "Silver Bar & Coins" },
+  { k: "shagun_coins", l: "Shagun Coins" },
+  { k: "basic_coins", l: "Basic Coins" },
+];
+const CORP_GIFT_LEAD_KEY = "corp_gift_lead_done";
+const CORP_GIFT_WA = "918860866000";
+
+function CorporateGiftingScreen() {
+  const [leadDone, setLeadDone] = useState(() => { try { return localStorage.getItem(CORP_GIFT_LEAD_KEY) === "1"; } catch { return false; } });
+  const [form, setForm] = useState({ name: "", phone: "", email: "", quantity: "", neededBy: "", city: "" });
+  const [submitting, setSubmitting] = useState(false);
+  const [formErr, setFormErr] = useState("");
+  const [products, setProducts] = useState(null);
+  const [loadErr, setLoadErr] = useState("");
+  const [tab, setTab] = useState("gold_bars");
+
+  useEffect(() => {
+    if (!leadDone) return;
+    fetch("/api/corporate-gifting?action=products")
+      .then((r) => r.json())
+      .then((d) => { if (d.ok) setProducts(d.products); else setLoadErr(d.error || "load_failed"); })
+      .catch(() => setLoadErr("network_error"));
+  }, [leadDone]);
+
+  const submitLead = async (e) => {
+    e.preventDefault();
+    setFormErr("");
+    const phoneDigits = form.phone.replace(/\D/g, "").replace(/^91/, "");
+    if (phoneDigits.length !== 10) return setFormErr("Enter a valid 10-digit mobile number.");
+    if (!form.name.trim()) return setFormErr("Name is required.");
+    setSubmitting(true);
+    try {
+      const res = await fetch("/api/corporate-gifting?action=lead", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...form, phone: phoneDigits }),
+      });
+      const d = await res.json();
+      if (!d.ok) { setFormErr(d.error || "Something went wrong. Please try again."); setSubmitting(false); return; }
+      try { localStorage.setItem(CORP_GIFT_LEAD_KEY, "1"); } catch {}
+      setLeadDone(true);
+    } catch {
+      setFormErr("Network error — please try again.");
+    }
+    setSubmitting(false);
+  };
+
+  const fmt = (n) => n == null ? null : `₹${Math.round(n).toLocaleString("en-IN")}`;
+  const waLink = (p) => {
+    const priceLine = p.price != null ? ` (${fmt(p.price)})` : "";
+    const msg = encodeURIComponent(`Hi, I'd like to enquire about corporate gifting — ${p.name}${priceLine}.`);
+    return `https://wa.me/${CORP_GIFT_WA}?text=${msg}`;
+  };
+
+  const inputStyle = {
+    width: "100%", minHeight: 44, padding: "10px 12px", borderRadius: 3,
+    border: "1px solid var(--cat-border)", background: "var(--cat-surface)", color: "var(--cat-text)",
+    fontSize: 14, fontFamily: "Montserrat, sans-serif",
+  };
+  const labelStyle = { fontSize: 12, color: "var(--cat-muted)", letterSpacing: 0.3, marginBottom: 6, display: "block" };
+
+  if (!leadDone) {
+    return (
+      <div className="cat-page" style={{ minHeight: "100vh", background: "var(--cat-bg)", fontFamily: "Montserrat, sans-serif" }}>
+        <style>{CATALOGUE_FONTS_CSS}</style>
+        <div style={{ maxWidth: 480, margin: "0 auto", padding: "56px 20px" }}>
+          <div style={{ textAlign: "center", marginBottom: 32 }}>
+            <div style={{ fontFamily: "Cormorant, serif", fontWeight: 600, fontSize: "clamp(26px, 6vw, 38px)", color: "var(--cat-text)" }}>Corporate Gifting — Gold & Silver Coins</div>
+            <div style={{ width: 48, height: 2, background: "var(--cat-gold)", margin: "12px auto" }} />
+            <div style={{ fontSize: 13, color: "var(--cat-muted)" }}>Tell us a bit about your requirement to view our range with today's pricing.</div>
+          </div>
+          <form onSubmit={submitLead} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <div><label style={labelStyle}>Name *</label><input style={inputStyle} value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required /></div>
+            <div><label style={labelStyle}>Phone *</label><input style={inputStyle} type="tel" value={form.phone} onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))} required /></div>
+            <div><label style={labelStyle}>Email</label><input style={inputStyle} type="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} /></div>
+            <div><label style={labelStyle}>Quantity required</label><input style={inputStyle} placeholder="e.g. 100 coins" value={form.quantity} onChange={(e) => setForm((f) => ({ ...f, quantity: e.target.value }))} /></div>
+            <div><label style={labelStyle}>Needed by</label><input style={inputStyle} type="date" value={form.neededBy} onChange={(e) => setForm((f) => ({ ...f, neededBy: e.target.value }))} /></div>
+            <div><label style={labelStyle}>City</label><input style={inputStyle} value={form.city} onChange={(e) => setForm((f) => ({ ...f, city: e.target.value }))} /></div>
+            {formErr && <div style={{ color: "#b91c1c", fontSize: 13 }}>{formErr}</div>}
+            <button type="submit" disabled={submitting} style={{
+              minHeight: 48, borderRadius: 3, border: "none", background: "var(--cat-gold)", color: "#1C1917",
+              fontWeight: 600, fontSize: 14, letterSpacing: 0.5, cursor: submitting ? "wait" : "pointer",
+            }}>
+              {submitting ? "Submitting…" : "View Products & Pricing"}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  const tabProducts = (products || []).filter((p) => p.category === tab);
+
+  return (
+    <div className="cat-page" style={{ minHeight: "100vh", background: "var(--cat-bg)", fontFamily: "Montserrat, sans-serif" }}>
+      <style>{CATALOGUE_FONTS_CSS}</style>
+      <div style={{ maxWidth: 1080, margin: "0 auto", padding: "40px 20px 80px" }}>
+        <div style={{ textAlign: "center", marginBottom: 28 }}>
+          <div style={{ fontFamily: "Cormorant, serif", fontWeight: 600, fontSize: "clamp(26px, 5vw, 38px)", color: "var(--cat-text)" }}>Corporate Gifting — Gold & Silver Coins</div>
+          <div style={{ width: 48, height: 2, background: "var(--cat-gold)", margin: "12px auto" }} />
+        </div>
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center", marginBottom: 32 }}>
+          {CORP_GIFT_TABS.map((t) => (
+            <button key={t.k} onClick={() => setTab(t.k)} style={{
+              minHeight: 40, padding: "0 16px", borderRadius: 20, cursor: "pointer", fontSize: 12.5, fontWeight: 600, letterSpacing: 0.3,
+              border: tab === t.k ? "1px solid var(--cat-gold)" : "1px solid var(--cat-border)",
+              background: tab === t.k ? "var(--cat-gold-soft)" : "transparent", color: "var(--cat-text)",
+            }}>
+              {t.l}
+            </button>
+          ))}
+        </div>
+
+        {loadErr ? (
+          <div style={{ textAlign: "center", color: "var(--cat-muted)", padding: 60 }}>Couldn't load products — please refresh.</div>
+        ) : !products ? (
+          <div style={{ textAlign: "center", color: "var(--cat-muted)", padding: 60 }}>Loading products…</div>
+        ) : tabProducts.length === 0 ? (
+          <div style={{ textAlign: "center", color: "var(--cat-muted)", padding: 60 }}>More products coming soon in this category.</div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 24 }}>
+            {tabProducts.map((p) => (
+              <div key={p.id} className="cat-card" style={{ background: "var(--cat-surface)", border: "1px solid var(--cat-border)", borderRadius: 4, overflow: "hidden" }}>
+                <div style={{ aspectRatio: "1", background: "var(--cat-border)", overflow: "hidden" }}>
+                  {p.imageUrl ? (
+                    <img draggable={false} className="cat-card-img" src={p.imageUrl} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  ) : (
+                    <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--cat-muted)", fontSize: 12 }}>Photo coming soon</div>
+                  )}
+                </div>
+                <div style={{ padding: 14 }}>
+                  <div style={{ fontFamily: "Cormorant, serif", fontSize: 17, fontWeight: 600, color: "var(--cat-text)" }}>{p.name}</div>
+                  {p.weightGrams != null && <div style={{ fontSize: 11, color: "var(--cat-muted)", marginTop: 2 }}>{p.weightGrams}g</div>}
+                  <div style={{ marginTop: 8, fontSize: 14, fontWeight: 600, color: p.price != null ? "var(--cat-gold)" : "var(--cat-muted)", fontStyle: p.price != null ? "normal" : "italic" }}>
+                    {p.price != null ? fmt(p.price) : "Contact for pricing"}
+                  </div>
+                  <a href={waLink(p)} target="_blank" rel="noreferrer" style={{
+                    display: "block", textAlign: "center", marginTop: 10, padding: "10px 0", borderRadius: 3,
+                    border: "1px solid var(--cat-border)", color: "var(--cat-text)", textDecoration: "none", fontSize: 12, fontWeight: 500,
+                  }}>
+                    Enquire on WhatsApp
+                  </a>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
