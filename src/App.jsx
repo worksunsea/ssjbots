@@ -13244,6 +13244,17 @@ const CATALOGUE_FONTS_CSS = `
   .cat-card, .cat-card-img, .cat-drawer { transition: none !important; }
 }
 .cat-drawer { transition: transform 300ms ease; }
+.corp-gift-range::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; pointer-events: auto;
+  width: 16px; height: 16px; border-radius: 50%; background: var(--cat-gold);
+  border: 2px solid var(--cat-surface); box-shadow: 0 1px 3px rgba(0,0,0,0.3); cursor: pointer;
+}
+.corp-gift-range::-moz-range-thumb {
+  pointer-events: auto; width: 16px; height: 16px; border-radius: 50%; background: var(--cat-gold);
+  border: 2px solid var(--cat-surface); box-shadow: 0 1px 3px rgba(0,0,0,0.3); cursor: pointer;
+}
+.corp-gift-range::-webkit-slider-runnable-track { -webkit-appearance: none; background: transparent; }
+.corp-gift-range::-moz-range-track { background: transparent; }
 `;
 
 function PublicCatalogueScreen({ token }) {
@@ -13442,6 +13453,8 @@ function CorporateGiftingScreen() {
   const [cartOpen, setCartOpen] = useState(false);
   const [leadId, setLeadId] = useState(() => { try { return localStorage.getItem(CORP_GIFT_LEAD_ID_KEY) || null; } catch { return null; } });
   const [sendingEnquiry, setSendingEnquiry] = useState(false);
+  const [draftQty, setDraftQty] = useState({});
+  const [note, setNote] = useState("");
   const sentinelRef = useRef(null);
 
   useEffect(() => {
@@ -13511,8 +13524,11 @@ function CorporateGiftingScreen() {
   const cartTotal = cartEntries.reduce((s, e) => s + (e.product.price || 0) * e.qty, 0);
   const cartWaLink = () => {
     const lines = cartEntries.map((e, i) => `${i + 1}. ${e.product.name} x${e.qty}${e.product.price != null ? ` — ${fmt(e.product.price * e.qty)}` : ""}`);
-    const msg = encodeURIComponent([`Hi, I'd like to enquire about corporate gifting — my selection:`, ``, ...lines, ``, `Total: ${fmt(cartTotal) || "on request"}`].join("\n"));
+    const msg = encodeURIComponent([`Hi, I'd like to enquire about corporate gifting — my selection:`, ``, ...lines, ``, `Total: ${fmt(cartTotal) || "on request"}`, ...(note.trim() ? ["", `Note: ${note.trim()}`] : [])].join("\n"));
     return `https://wa.me/${CORP_GIFT_WA}?text=${msg}`;
+  };
+  const commitDraftQty = (productId) => {
+    setQty(productId, draftQty[productId] || 1);
   };
   const sendCartEnquiry = async () => {
     if (sendingEnquiry) return;
@@ -13521,7 +13537,7 @@ function CorporateGiftingScreen() {
       if (leadId) {
         await fetch("/api/corporate-gifting?action=enquire", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ leadId, items: cartEntries.map((e) => ({ name: e.product.name, qty: e.qty, price: e.product.price })) }),
+          body: JSON.stringify({ leadId, note: note.trim() || null, items: cartEntries.map((e) => ({ name: e.product.name, qty: e.qty, price: e.product.price })) }),
         });
       }
     } catch { /* logging to Demands is best-effort — still open WhatsApp either way */ }
@@ -13567,11 +13583,14 @@ function CorporateGiftingScreen() {
   }
 
   const tabProducts = (products || []).filter((p) => p.category === tab);
-  const min = priceMin ? Number(priceMin) : null;
-  const max = priceMax ? Number(priceMax) : null;
+  const tabPrices = tabProducts.map((p) => p.price).filter((p) => p != null);
+  const boundMin = tabPrices.length ? Math.min(...tabPrices) : 0;
+  const boundMax = tabPrices.length ? Math.max(...tabPrices) : 0;
+  const min = priceMin !== "" ? Number(priceMin) : boundMin;
+  const max = priceMax !== "" ? Number(priceMax) : boundMax;
   const filteredProducts = tabProducts.filter((p) => {
-    if (min != null && (p.price == null || p.price < min)) return false;
-    if (max != null && (p.price == null || p.price > max)) return false;
+    if (p.price == null) return priceMin === "" && priceMax === "";
+    if (p.price < min || p.price > max) return false;
     return true;
   });
   const visibleProducts = filteredProducts.slice(0, visibleCount);
@@ -13597,17 +13616,32 @@ function CorporateGiftingScreen() {
           ))}
         </div>
 
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, justifyContent: "center", alignItems: "center", marginBottom: 32, fontSize: 12.5, color: "var(--cat-muted)" }}>
-          <span>Filter by price:</span>
-          <input type="number" placeholder="Min ₹" value={priceMin} onChange={(e) => setPriceMin(e.target.value)}
-            style={{ width: 100, minHeight: 36, padding: "6px 10px", borderRadius: 3, border: "1px solid var(--cat-border)", background: "var(--cat-surface)", color: "var(--cat-text)", fontSize: 12.5 }} />
-          <span>–</span>
-          <input type="number" placeholder="Max ₹" value={priceMax} onChange={(e) => setPriceMax(e.target.value)}
-            style={{ width: 100, minHeight: 36, padding: "6px 10px", borderRadius: 3, border: "1px solid var(--cat-border)", background: "var(--cat-surface)", color: "var(--cat-text)", fontSize: 12.5 }} />
-          {(priceMin || priceMax) && (
-            <button onClick={() => { setPriceMin(""); setPriceMax(""); }} style={{ background: "none", border: "none", color: "var(--cat-gold)", cursor: "pointer", fontSize: 12.5, textDecoration: "underline" }}>Clear</button>
-          )}
-        </div>
+        {boundMax > boundMin && (
+          <div style={{ maxWidth: 380, margin: "0 auto 32px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--cat-muted)", marginBottom: 6 }}>
+              <span>Filter by price: {fmt(min)} – {fmt(max)}</span>
+              {(priceMin !== "" || priceMax !== "") && (
+                <button onClick={() => { setPriceMin(""); setPriceMax(""); }} style={{ background: "none", border: "none", color: "var(--cat-gold)", cursor: "pointer", fontSize: 12, textDecoration: "underline" }}>Reset</button>
+              )}
+            </div>
+            <div style={{ position: "relative", height: 28 }}>
+              <div style={{ position: "absolute", top: 12, left: 0, right: 0, height: 4, borderRadius: 2, background: "var(--cat-border)" }} />
+              <div style={{
+                position: "absolute", top: 12, height: 4, borderRadius: 2, background: "var(--cat-gold)",
+                left: `${boundMax > boundMin ? ((min - boundMin) / (boundMax - boundMin)) * 100 : 0}%`,
+                right: `${boundMax > boundMin ? 100 - ((max - boundMin) / (boundMax - boundMin)) * 100 : 0}%`,
+              }} />
+              <input type="range" min={boundMin} max={boundMax} value={min}
+                onChange={(e) => setPriceMin(String(Math.min(Number(e.target.value), max)))}
+                style={{ position: "absolute", top: 0, left: 0, right: 0, width: "100%", margin: 0, background: "transparent", pointerEvents: "none", WebkitAppearance: "none", appearance: "none" }}
+                className="corp-gift-range" />
+              <input type="range" min={boundMin} max={boundMax} value={max}
+                onChange={(e) => setPriceMax(String(Math.max(Number(e.target.value), min)))}
+                style={{ position: "absolute", top: 0, left: 0, right: 0, width: "100%", margin: 0, background: "transparent", pointerEvents: "none", WebkitAppearance: "none", appearance: "none" }}
+                className="corp-gift-range" />
+            </div>
+          </div>
+        )}
 
         {loadErr ? (
           <div style={{ textAlign: "center", color: "var(--cat-muted)", padding: 60 }}>Couldn't load products — please refresh.</div>
@@ -13636,12 +13670,19 @@ function CorporateGiftingScreen() {
                         {p.price != null ? fmt(p.price) : "Contact for pricing"}
                       </div>
                       {qty === 0 ? (
-                        <button onClick={() => setQty(p.id, 1)} style={{
-                          width: "100%", marginTop: 10, minHeight: 40, borderRadius: 3, cursor: "pointer",
-                          border: "1px solid var(--cat-border)", background: "transparent", color: "var(--cat-text)", fontSize: 12, fontWeight: 500,
-                        }}>
-                          + Add to cart
-                        </button>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
+                          <div style={{ display: "flex", alignItems: "center", border: "1px solid var(--cat-border)", borderRadius: 3 }}>
+                            <button onClick={() => setDraftQty((d) => ({ ...d, [p.id]: Math.max(1, (d[p.id] || 1) - 1) }))} style={{ minWidth: 36, minHeight: 40, border: "none", background: "none", color: "var(--cat-text)", fontSize: 16, cursor: "pointer" }}>−</button>
+                            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--cat-text)", minWidth: 20, textAlign: "center" }}>{draftQty[p.id] || 1}</span>
+                            <button onClick={() => setDraftQty((d) => ({ ...d, [p.id]: (d[p.id] || 1) + 1 }))} style={{ minWidth: 36, minHeight: 40, border: "none", background: "none", color: "var(--cat-text)", fontSize: 16, cursor: "pointer" }}>+</button>
+                          </div>
+                          <button onClick={() => commitDraftQty(p.id)} style={{
+                            flex: 1, minHeight: 40, borderRadius: 3, cursor: "pointer",
+                            border: "1px solid var(--cat-border)", background: "transparent", color: "var(--cat-text)", fontSize: 12, fontWeight: 500,
+                          }}>
+                            + Add to cart
+                          </button>
+                        </div>
                       ) : (
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 10, border: "1px solid var(--cat-gold)", borderRadius: 3, background: "var(--cat-gold-soft)" }}>
                           <button onClick={() => setQty(p.id, qty - 1)} style={{ minWidth: 40, minHeight: 40, border: "none", background: "none", color: "var(--cat-text)", fontSize: 16, cursor: "pointer" }}>−</button>
@@ -13698,7 +13739,12 @@ function CorporateGiftingScreen() {
             ))}
             {cartEntries.length > 0 && (
               <>
-                <div style={{ borderTop: "1px solid var(--cat-border)", paddingTop: 14, marginTop: 8, display: "flex", justifyContent: "space-between", fontSize: 14, fontWeight: 600, color: "var(--cat-text)" }}>
+                <div style={{ marginTop: 8 }}>
+                  <label style={{ fontSize: 12, color: "var(--cat-muted)", letterSpacing: 0.3, marginBottom: 6, display: "block" }}>Add a note (optional)</label>
+                  <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={3} placeholder="e.g. branding on the box, delivery instructions…"
+                    style={{ width: "100%", padding: "10px 12px", borderRadius: 3, border: "1px solid var(--cat-border)", background: "var(--cat-bg)", color: "var(--cat-text)", fontSize: 13, fontFamily: "Montserrat, sans-serif", resize: "vertical" }} />
+                </div>
+                <div style={{ borderTop: "1px solid var(--cat-border)", paddingTop: 14, marginTop: 14, display: "flex", justifyContent: "space-between", fontSize: 14, fontWeight: 600, color: "var(--cat-text)" }}>
                   <span>Total ({cartCount} items)</span><span>{fmt(cartTotal) || "On request"}</span>
                 </div>
                 <button onClick={sendCartEnquiry} disabled={sendingEnquiry} style={{

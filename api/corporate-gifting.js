@@ -32,6 +32,16 @@ function computePrice(p, rates) {
     if (rate != null && p.weight_grams != null) return Math.round(Number(p.weight_grams) * rate);
     return p.manual_price != null ? Number(p.manual_price) : null;
   }
+  // live_gold_markup / live_silver_markup: weight x today's rate + a fixed
+  // markup captured once (competitor price - metal value on the day it was
+  // priced), so it tracks our rates tab daily but keeps the same margin.
+  if (p.price_mode === "live_gold_markup" || p.price_mode === "live_silver_markup") {
+    const rate = p.price_mode === "live_gold_markup" ? rates.spot.gold24kt : rates.spot.silverPerGram;
+    if (rate != null && p.weight_grams != null && p.markup_amount != null) {
+      return Math.round(Number(p.weight_grams) * rate + Number(p.markup_amount));
+    }
+    return p.manual_price != null ? Number(p.manual_price) : null;
+  }
   return null;
 }
 
@@ -47,7 +57,7 @@ export default async function handler(req, res) {
   // ── GET action=products — public catalogue data ──────────────────────
   if (req.method === "GET" && action === "products") {
     const { data: rows, error } = await sb.from("corporate_gifting_products")
-      .select("id, category, name, description, image_url, sort_order, price_mode, gifting_sheet_name, weight_grams, manual_price")
+      .select("id, category, name, description, image_url, sort_order, price_mode, gifting_sheet_name, weight_grams, manual_price, markup_amount")
       .eq("tenant_id", TENANT_ID).eq("active", true)
       .order("category", { ascending: true }).order("sort_order", { ascending: true });
     if (error) return res.status(500).json({ ok: false, error: error.message });
@@ -122,13 +132,17 @@ export default async function handler(req, res) {
     const { data: lead } = await sb.from("bullion_leads").select("id, tenant_id").eq("id", leadId).maybeSingle();
     if (!lead) return res.status(404).json({ ok: false, error: "lead_not_found" });
 
+    const note = body.note ? String(body.note).trim().slice(0, 500) : null;
     const enquiryItems = items.map((i) => ({
       name: String(i.name || "").slice(0, 150),
       qty: Math.max(1, Math.round(Number(i.qty) || 1)),
       price: i.price != null ? Number(i.price) : null,
     }));
     const total = enquiryItems.reduce((s, i) => s + (i.price || 0) * i.qty, 0);
-    const description = enquiryItems.map((i) => `${i.qty} x ${i.name}${i.price != null ? ` (₹${i.price})` : ""}`).join(", ");
+    const description = [
+      enquiryItems.map((i) => `${i.qty} x ${i.name}${i.price != null ? ` (₹${i.price})` : ""}`).join(", "),
+      note ? `Note: ${note}` : null,
+    ].filter(Boolean).join(" — ");
 
     const { data: demand, error } = await sb.from("bullion_demands").insert({
       tenant_id: lead.tenant_id,
