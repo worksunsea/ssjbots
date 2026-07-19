@@ -150,11 +150,12 @@ const CRM_ALL_TABS = [
   { k: "catalogue",   l: "Catalogue",      icon: "🗂️" },
   { k: "vendors",     l: "Vendors",        icon: "🏭" },
   { k: "corpgift",    l: "Corp Gifting Pricing", icon: "💰" },
+  { k: "corpgiftdesigns", l: "Corp Gifting Designs", icon: "🎨" },
 ];
 const CRM_ROLE_DEFAULT_TABS = {
   superadmin: CRM_ALL_TABS.map((t) => t.k),
   admin:      CRM_ALL_TABS.map((t) => t.k),
-  manager:    ["demands", "adleads", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift"],
+  manager:    ["demands", "adleads", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift", "corpgiftdesigns"],
   staff:      ["demands", "adleads", "contacts", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
   telecaller: ["queue", "demands", "adleads"],
 };
@@ -10644,13 +10645,14 @@ export default function App() {
     { k: "catalogue",  l: "Catalogue",      icon: "🗂️" },
     { k: "vendors",    l: "Vendors",        icon: "🏭" },
     { k: "corpgift",   l: "Corp Gifting Pricing", icon: "💰" },
+    { k: "corpgiftdesigns", l: "Corp Gifting Designs", icon: "🎨" },
   ];
 
   // Role-based defaults when app_permissions.crm is not set
   const ROLE_DEFAULT_TABS = {
     superadmin: ALL_TABS.map((t) => t.k),
     admin:      ALL_TABS.map((t) => t.k),
-    manager:    ["demands", "adleads", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift"],
+    manager:    ["demands", "adleads", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift", "corpgiftdesigns"],
     staff:      ["demands", "adleads", "contacts", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
     telecaller: ["queue", "demands", "adleads"],
   };
@@ -10813,6 +10815,7 @@ export default function App() {
       {activeScreen === "catalogue" && <CatalogueScreen />}
       {activeScreen === "vendors" && <VendorsScreen />}
       {activeScreen === "corpgift" && <CorpGiftPricingScreen />}
+      {activeScreen === "corpgiftdesigns" && <CorpGiftDesignApprovalsScreen />}
     </div>
     </ContactFieldsContext.Provider>
   );
@@ -13535,6 +13538,77 @@ function CorpGiftPricingScreen() {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CORPORATE GIFTING DESIGN APPROVALS — staff admin section
+// Every branded-packaging design batch a customer has generated. Staff use
+// this to unlock more design batches for a lead after their order is
+// confirmed (calls the staff-only action=design-approve-more endpoint).
+// ─────────────────────────────────────────────────────────────────────────────
+
+function CorpGiftDesignApprovalsScreen() {
+  const [rows, setRows] = useState(null);
+  const [approving, setApproving] = useState({});
+  const [toast, setToast] = useState("");
+
+  const load = () => {
+    sb.from("corporate_gifting_designs")
+      .select("id, lead_id, color, custom_text, images, batch_count, max_batches, status, updated_at, lead:bullion_leads(name,phone)")
+      .order("updated_at", { ascending: false })
+      .then(({ data }) => setRows(data || []));
+  };
+  useEffect(load, []);
+
+  const approveMore = async (row) => {
+    setApproving((s) => ({ ...s, [row.id]: true }));
+    await fetch("/api/corporate-gifting?action=design-approve-more", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
+      body: JSON.stringify({ designId: row.id, extraBatches: 3 }),
+    });
+    setApproving((s) => ({ ...s, [row.id]: false }));
+    setToast("Approved 3 more batches");
+    setTimeout(() => setToast(""), 1500);
+    load();
+  };
+
+  if (!rows) return <div style={{ padding: 20, color: "#888" }}>Loading…</div>;
+
+  return (
+    <div style={{ padding: 20 }}>
+      <h2 style={{ marginTop: 0 }}>Corporate Gifting — Design Approvals</h2>
+      <div style={{ fontSize: 12.5, color: "#666", marginBottom: 14, maxWidth: 640 }}>
+        Every customer gets 1 free design batch (4 packaging mockups) on the public page. Once they've used it, "Generate" is blocked until you approve more here — do this after their order is confirmed.
+        {toast && <span style={{ color: "#16a34a", marginLeft: 10 }}>{toast}</span>}
+      </div>
+      {rows.length === 0 ? (
+        <div style={{ color: "#888", fontSize: 13 }}>No design requests yet.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {rows.map((r) => (
+            <div key={r.id} style={{ border: "1px solid #eee", borderRadius: 6, padding: 14, display: "flex", gap: 14, alignItems: "center" }}>
+              <div style={{ display: "flex", gap: 6 }}>
+                {(r.images || []).slice(0, 4).map((img, i) => (
+                  <img key={i} src={img.url} alt={img.label} style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 4, border: "1px solid #eee" }} />
+                ))}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 13.5 }}>{r.lead?.name || r.lead?.phone || "Unknown lead"}</div>
+                <div style={{ fontSize: 11.5, color: "#888" }}>{r.lead?.phone}{r.custom_text ? ` · "${r.custom_text}"` : ""}{r.color ? ` · ${r.color}` : ""}</div>
+                <div style={{ fontSize: 11.5, color: "#888" }}>Batches used: {r.batch_count} / {r.max_batches} · {r.status}</div>
+              </div>
+              <button onClick={() => approveMore(r)} disabled={approving[r.id]} style={{
+                padding: "6px 14px", fontSize: 12, borderRadius: 5, border: "1px solid #2563eb", background: "#2563eb", color: "#fff", cursor: "pointer", whiteSpace: "nowrap",
+              }}>
+                {approving[r.id] ? "…" : "Approve +3 more"}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

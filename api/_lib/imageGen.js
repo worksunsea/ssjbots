@@ -6,6 +6,7 @@
 // card/coin-slot layout from image 1, and only swap the branding-plate
 // print / accent color per style variant, inserting image 2 into the plate.
 
+import sharp from "sharp";
 import { OPENAI_API_KEY } from "./config.js";
 
 // Real product packaging photo (open box + card + closed box) — same
@@ -41,6 +42,24 @@ function extFor(contentType) {
   return contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
 }
 
+// Deterministic watermark — AI-rendered text is unreliable (garbled fine
+// print), so "Sun Sea Jewellers" is composited on afterward as real text,
+// not asked for in the generation prompt.
+async function addWatermark(pngBuffer) {
+  const width = 1024;
+  const svg = `
+    <svg width="${width}" height="60" xmlns="http://www.w3.org/2000/svg">
+      <rect x="0" y="0" width="${width}" height="60" fill="black" fill-opacity="0.32" />
+      <text x="${width - 16}" y="38" text-anchor="end" font-family="Georgia, serif" font-size="26"
+        font-style="italic" fill="white" fill-opacity="0.92">Sun Sea Jewellers</text>
+    </svg>`;
+  const watermark = Buffer.from(svg);
+  return sharp(pngBuffer)
+    .composite([{ input: watermark, gravity: "south" }])
+    .png()
+    .toBuffer();
+}
+
 // Returns [{ label, base64 }] — 4 generated PNG images (base64, no data: prefix).
 export async function generateBrandedDesigns({ logoUrl, color, customText }) {
   if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY missing");
@@ -54,8 +73,7 @@ export async function generateBrandedDesigns({ logoUrl, color, customText }) {
       color ? `Lean the accent color toward: ${color}.` : "",
       customText ? `Also print this text near the logo on the box/card: "${customText}".` : "",
       `Show both the open box (with card and coin visible) and the closed box, matching reference image 1's composition.`,
-      `Add a small, tasteful "Sun Sea Jewellers" watermark in one corner — this is a preview mockup, not the final product.`,
-      `Plain neutral studio background, soft shadow, square 1:1 composition.`,
+      `Plain neutral studio background, soft shadow, square 1:1 composition. Do not add any watermark or extra text beyond what's specified above — one will be added separately.`,
     ].filter(Boolean).join(" ");
 
     const form = new FormData();
@@ -78,7 +96,8 @@ export async function generateBrandedDesigns({ logoUrl, color, customText }) {
     const data = await res.json();
     const b64 = data?.data?.[0]?.b64_json;
     if (!b64) throw new Error("no image returned");
-    return { label: variant.label, base64: b64 };
+    const watermarked = await addWatermark(Buffer.from(b64, "base64"));
+    return { label: variant.label, base64: watermarked.toString("base64") };
   }));
 
   return results;
