@@ -13420,7 +13420,9 @@ const CORP_GIFT_TABS = [
   { k: "basic_coins", l: "Basic Coins" },
 ];
 const CORP_GIFT_LEAD_KEY = "corp_gift_lead_done";
+const CORP_GIFT_CART_KEY = "corp_gift_cart";
 const CORP_GIFT_WA = "918860866000";
+const CORP_GIFT_PAGE_SIZE = 12;
 
 function CorporateGiftingScreen() {
   const [leadDone, setLeadDone] = useState(() => { try { return localStorage.getItem(CORP_GIFT_LEAD_KEY) === "1"; } catch { return false; } });
@@ -13430,6 +13432,14 @@ function CorporateGiftingScreen() {
   const [products, setProducts] = useState(null);
   const [loadErr, setLoadErr] = useState("");
   const [tab, setTab] = useState("gold_bars");
+  const [priceMin, setPriceMin] = useState("");
+  const [priceMax, setPriceMax] = useState("");
+  const [visibleCount, setVisibleCount] = useState(CORP_GIFT_PAGE_SIZE);
+  const [cart, setCart] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(CORP_GIFT_CART_KEY) || "{}"); } catch { return {}; }
+  });
+  const [cartOpen, setCartOpen] = useState(false);
+  const sentinelRef = useRef(null);
 
   useEffect(() => {
     if (!leadDone) return;
@@ -13438,6 +13448,28 @@ function CorporateGiftingScreen() {
       .then((d) => { if (d.ok) setProducts(d.products); else setLoadErr(d.error || "load_failed"); })
       .catch(() => setLoadErr("network_error"));
   }, [leadDone]);
+
+  useEffect(() => { try { localStorage.setItem(CORP_GIFT_CART_KEY, JSON.stringify(cart)); } catch {} }, [cart]);
+  useEffect(() => { setVisibleCount(CORP_GIFT_PAGE_SIZE); }, [tab, priceMin, priceMax]);
+
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting) setVisibleCount((c) => c + CORP_GIFT_PAGE_SIZE);
+    }, { rootMargin: "400px" });
+    io.observe(el);
+    return () => io.disconnect();
+  });
+
+  const setQty = (productId, qty) => {
+    setCart((c) => {
+      const next = { ...c };
+      if (qty <= 0) delete next[productId];
+      else next[productId] = qty;
+      return next;
+    });
+  };
 
   const submitLead = async (e) => {
     e.preventDefault();
@@ -13462,9 +13494,17 @@ function CorporateGiftingScreen() {
   };
 
   const fmt = (n) => n == null ? null : `₹${Math.round(n).toLocaleString("en-IN")}`;
-  const waLink = (p) => {
-    const priceLine = p.price != null ? ` (${fmt(p.price)})` : "";
-    const msg = encodeURIComponent(`Hi, I'd like to enquire about corporate gifting — ${p.name}${priceLine}.`);
+  const productsById = useMemo(() => {
+    const m = new Map();
+    (products || []).forEach((p) => m.set(p.id, p));
+    return m;
+  }, [products]);
+  const cartEntries = Object.entries(cart).map(([id, qty]) => ({ product: productsById.get(id), qty })).filter((e) => e.product);
+  const cartCount = cartEntries.reduce((s, e) => s + e.qty, 0);
+  const cartTotal = cartEntries.reduce((s, e) => s + (e.product.price || 0) * e.qty, 0);
+  const cartWaLink = () => {
+    const lines = cartEntries.map((e, i) => `${i + 1}. ${e.product.name} x${e.qty}${e.product.price != null ? ` — ${fmt(e.product.price * e.qty)}` : ""}`);
+    const msg = encodeURIComponent([`Hi, I'd like to enquire about corporate gifting — my selection:`, ``, ...lines, ``, `Total: ${fmt(cartTotal) || "on request"}`].join("\n"));
     return `https://wa.me/${CORP_GIFT_WA}?text=${msg}`;
   };
 
@@ -13506,17 +13546,25 @@ function CorporateGiftingScreen() {
   }
 
   const tabProducts = (products || []).filter((p) => p.category === tab);
+  const min = priceMin ? Number(priceMin) : null;
+  const max = priceMax ? Number(priceMax) : null;
+  const filteredProducts = tabProducts.filter((p) => {
+    if (min != null && (p.price == null || p.price < min)) return false;
+    if (max != null && (p.price == null || p.price > max)) return false;
+    return true;
+  });
+  const visibleProducts = filteredProducts.slice(0, visibleCount);
 
   return (
     <div className="cat-page" style={{ minHeight: "100vh", background: "var(--cat-bg)", fontFamily: "Montserrat, sans-serif" }}>
       <style>{CATALOGUE_FONTS_CSS}</style>
-      <div style={{ maxWidth: 1080, margin: "0 auto", padding: "40px 20px 80px" }}>
+      <div style={{ maxWidth: 1080, margin: "0 auto", padding: "40px 20px 100px" }}>
         <div style={{ textAlign: "center", marginBottom: 28 }}>
           <div style={{ fontFamily: "Cormorant, serif", fontWeight: 600, fontSize: "clamp(26px, 5vw, 38px)", color: "var(--cat-text)" }}>Corporate Gifting — Gold & Silver Coins</div>
           <div style={{ width: 48, height: 2, background: "var(--cat-gold)", margin: "12px auto" }} />
         </div>
 
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center", marginBottom: 32 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center", marginBottom: 20 }}>
           {CORP_GIFT_TABS.map((t) => (
             <button key={t.k} onClick={() => setTab(t.k)} style={{
               minHeight: 40, padding: "0 16px", borderRadius: 20, cursor: "pointer", fontSize: 12.5, fontWeight: 600, letterSpacing: 0.3,
@@ -13528,41 +13576,121 @@ function CorporateGiftingScreen() {
           ))}
         </div>
 
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, justifyContent: "center", alignItems: "center", marginBottom: 32, fontSize: 12.5, color: "var(--cat-muted)" }}>
+          <span>Filter by price:</span>
+          <input type="number" placeholder="Min ₹" value={priceMin} onChange={(e) => setPriceMin(e.target.value)}
+            style={{ width: 100, minHeight: 36, padding: "6px 10px", borderRadius: 3, border: "1px solid var(--cat-border)", background: "var(--cat-surface)", color: "var(--cat-text)", fontSize: 12.5 }} />
+          <span>–</span>
+          <input type="number" placeholder="Max ₹" value={priceMax} onChange={(e) => setPriceMax(e.target.value)}
+            style={{ width: 100, minHeight: 36, padding: "6px 10px", borderRadius: 3, border: "1px solid var(--cat-border)", background: "var(--cat-surface)", color: "var(--cat-text)", fontSize: 12.5 }} />
+          {(priceMin || priceMax) && (
+            <button onClick={() => { setPriceMin(""); setPriceMax(""); }} style={{ background: "none", border: "none", color: "var(--cat-gold)", cursor: "pointer", fontSize: 12.5, textDecoration: "underline" }}>Clear</button>
+          )}
+        </div>
+
         {loadErr ? (
           <div style={{ textAlign: "center", color: "var(--cat-muted)", padding: 60 }}>Couldn't load products — please refresh.</div>
         ) : !products ? (
           <div style={{ textAlign: "center", color: "var(--cat-muted)", padding: 60 }}>Loading products…</div>
-        ) : tabProducts.length === 0 ? (
-          <div style={{ textAlign: "center", color: "var(--cat-muted)", padding: 60 }}>More products coming soon in this category.</div>
+        ) : filteredProducts.length === 0 ? (
+          <div style={{ textAlign: "center", color: "var(--cat-muted)", padding: 60 }}>{tabProducts.length === 0 ? "More products coming soon in this category." : "No products in this price range."}</div>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 24 }}>
-            {tabProducts.map((p) => (
-              <div key={p.id} className="cat-card" style={{ background: "var(--cat-surface)", border: "1px solid var(--cat-border)", borderRadius: 4, overflow: "hidden" }}>
-                <div style={{ aspectRatio: "1", background: "var(--cat-border)", overflow: "hidden" }}>
-                  {p.imageUrl ? (
-                    <img draggable={false} className="cat-card-img" src={p.imageUrl} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                  ) : (
-                    <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--cat-muted)", fontSize: 12 }}>Photo coming soon</div>
-                  )}
-                </div>
-                <div style={{ padding: 14 }}>
-                  <div style={{ fontFamily: "Cormorant, serif", fontSize: 17, fontWeight: 600, color: "var(--cat-text)" }}>{p.name}</div>
-                  {p.weightGrams != null && <div style={{ fontSize: 11, color: "var(--cat-muted)", marginTop: 2 }}>{p.weightGrams}g</div>}
-                  <div style={{ marginTop: 8, fontSize: 14, fontWeight: 600, color: p.price != null ? "var(--cat-gold)" : "var(--cat-muted)", fontStyle: p.price != null ? "normal" : "italic" }}>
-                    {p.price != null ? fmt(p.price) : "Contact for pricing"}
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 24 }}>
+              {visibleProducts.map((p) => {
+                const qty = cart[p.id] || 0;
+                return (
+                  <div key={p.id} className="cat-card" style={{ background: "var(--cat-surface)", border: "1px solid var(--cat-border)", borderRadius: 4, overflow: "hidden" }}>
+                    <div style={{ aspectRatio: "1", background: "var(--cat-border)", overflow: "hidden" }}>
+                      {p.imageUrl ? (
+                        <img draggable={false} className="cat-card-img" src={p.imageUrl} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                      ) : (
+                        <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--cat-muted)", fontSize: 12 }}>Photo coming soon</div>
+                      )}
+                    </div>
+                    <div style={{ padding: 14 }}>
+                      <div style={{ fontFamily: "Cormorant, serif", fontSize: 17, fontWeight: 600, color: "var(--cat-text)" }}>{p.name}</div>
+                      {p.weightGrams != null && <div style={{ fontSize: 11, color: "var(--cat-muted)", marginTop: 2 }}>{p.weightGrams}g</div>}
+                      <div style={{ marginTop: 8, fontSize: 14, fontWeight: 600, color: p.price != null ? "var(--cat-gold)" : "var(--cat-muted)", fontStyle: p.price != null ? "normal" : "italic" }}>
+                        {p.price != null ? fmt(p.price) : "Contact for pricing"}
+                      </div>
+                      {qty === 0 ? (
+                        <button onClick={() => setQty(p.id, 1)} style={{
+                          width: "100%", marginTop: 10, minHeight: 40, borderRadius: 3, cursor: "pointer",
+                          border: "1px solid var(--cat-border)", background: "transparent", color: "var(--cat-text)", fontSize: 12, fontWeight: 500,
+                        }}>
+                          + Add to cart
+                        </button>
+                      ) : (
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 10, border: "1px solid var(--cat-gold)", borderRadius: 3, background: "var(--cat-gold-soft)" }}>
+                          <button onClick={() => setQty(p.id, qty - 1)} style={{ minWidth: 40, minHeight: 40, border: "none", background: "none", color: "var(--cat-text)", fontSize: 16, cursor: "pointer" }}>−</button>
+                          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--cat-text)" }}>{qty}</span>
+                          <button onClick={() => setQty(p.id, qty + 1)} style={{ minWidth: 40, minHeight: 40, border: "none", background: "none", color: "var(--cat-text)", fontSize: 16, cursor: "pointer" }}>+</button>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <a href={waLink(p)} target="_blank" rel="noreferrer" style={{
-                    display: "block", textAlign: "center", marginTop: 10, padding: "10px 0", borderRadius: 3,
-                    border: "1px solid var(--cat-border)", color: "var(--cat-text)", textDecoration: "none", fontSize: 12, fontWeight: 500,
-                  }}>
-                    Enquire on WhatsApp
-                  </a>
+                );
+              })}
+            </div>
+            {visibleCount < filteredProducts.length && (
+              <div ref={sentinelRef} style={{ textAlign: "center", padding: 30, color: "var(--cat-muted)", fontSize: 12 }}>Loading more…</div>
+            )}
+          </>
+        )}
+      </div>
+
+      {cartCount > 0 && (
+        <button onClick={() => setCartOpen(true)} style={{
+          position: "fixed", bottom: 20, right: 20, minHeight: 48, padding: "0 20px", borderRadius: 24,
+          background: "var(--cat-text)", color: "var(--cat-bg)", border: "none", cursor: "pointer",
+          fontSize: 13, fontWeight: 600, letterSpacing: 0.5, boxShadow: "0 6px 20px rgba(0,0,0,0.25)", zIndex: 40,
+        }}>
+          Cart ({cartCount}) · {fmt(cartTotal) || "—"}
+        </button>
+      )}
+
+      {cartOpen && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 50, display: "flex", justifyContent: "flex-end" }} onClick={() => setCartOpen(false)}>
+          <div className="cat-drawer" onClick={(e) => e.stopPropagation()} style={{ width: "min(420px, 92vw)", height: "100%", background: "var(--cat-surface)", padding: 24, overflowY: "auto" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+              <div style={{ fontFamily: "Cormorant, serif", fontSize: 24, fontWeight: 600, color: "var(--cat-text)" }}>Your Cart</div>
+              <button onClick={() => setCartOpen(false)} style={{ background: "none", border: "none", fontSize: 22, color: "var(--cat-muted)", cursor: "pointer", minWidth: 44, minHeight: 44 }}>×</button>
+            </div>
+            {cartEntries.length === 0 ? (
+              <div style={{ color: "var(--cat-muted)", fontSize: 13 }}>Your cart is empty.</div>
+            ) : cartEntries.map(({ product: p, qty }) => (
+              <div key={p.id} style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "center" }}>
+                <div style={{ width: 56, height: 56, borderRadius: 3, overflow: "hidden", background: "var(--cat-border)", flexShrink: 0 }}>
+                  {p.imageUrl && <img draggable={false} src={p.imageUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--cat-text)" }}>{p.name}</div>
+                  <div style={{ fontSize: 12, color: "var(--cat-gold)" }}>{fmt(p.price) || "Enquire for price"} × {qty} = {fmt((p.price || 0) * qty) || "on request"}</div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <button onClick={() => setQty(p.id, qty - 1)} style={{ minWidth: 32, minHeight: 32, border: "1px solid var(--cat-border)", background: "none", color: "var(--cat-text)", borderRadius: 3, cursor: "pointer" }}>−</button>
+                  <span style={{ fontSize: 12, minWidth: 18, textAlign: "center" }}>{qty}</span>
+                  <button onClick={() => setQty(p.id, qty + 1)} style={{ minWidth: 32, minHeight: 32, border: "1px solid var(--cat-border)", background: "none", color: "var(--cat-text)", borderRadius: 3, cursor: "pointer" }}>+</button>
                 </div>
               </div>
             ))}
+            {cartEntries.length > 0 && (
+              <>
+                <div style={{ borderTop: "1px solid var(--cat-border)", paddingTop: 14, marginTop: 8, display: "flex", justifyContent: "space-between", fontSize: 14, fontWeight: 600, color: "var(--cat-text)" }}>
+                  <span>Total ({cartCount} items)</span><span>{fmt(cartTotal) || "On request"}</span>
+                </div>
+                <a href={cartWaLink()} target="_blank" rel="noreferrer" style={{
+                  display: "block", textAlign: "center", marginTop: 20, padding: "13px 0", borderRadius: 3,
+                  background: "var(--cat-gold)", color: "#1C1917", textDecoration: "none", fontWeight: 600, fontSize: 13, letterSpacing: 0.5,
+                }}>
+                  Send Cart via WhatsApp
+                </a>
+              </>
+            )}
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
