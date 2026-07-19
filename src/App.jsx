@@ -13597,11 +13597,19 @@ function CorporateGiftingScreen() {
 
   useEffect(() => {
     if (!leadDone) return;
+    // Sessions from before leadId was persisted (or any other loss of it)
+    // have leadDone=true but no leadId — self-heal by sending them back
+    // through the short lead form so it re-captures and stores leadId.
+    if (!leadId) {
+      try { localStorage.removeItem(CORP_GIFT_LEAD_KEY); } catch {}
+      setLeadDone(false);
+      return;
+    }
     fetch("/api/corporate-gifting?action=products")
       .then((r) => r.json())
       .then((d) => { if (d.ok) setProducts(d.products); else setLoadErr(d.error || "load_failed"); })
       .catch(() => setLoadErr("network_error"));
-  }, [leadDone]);
+  }, [leadDone, leadId]);
 
   useEffect(() => { try { localStorage.setItem(CORP_GIFT_CART_KEY, JSON.stringify(cart)); } catch {} }, [cart]);
   useEffect(() => { setVisibleCount(CORP_GIFT_PAGE_SIZE); }, [tab, priceMinIdx, priceMaxIdx]);
@@ -13692,7 +13700,8 @@ function CorporateGiftingScreen() {
   };
 
   const generateDesigns = async () => {
-    if (!designLogoFile || !leadId || designSubmitting) return;
+    if (!designLogoFile || designSubmitting) return;
+    if (!leadId) { setDesignError("Session lost your details — please refresh the page and fill the form again."); return; }
     setDesignSubmitting(true);
     setDesignError("");
     try {
