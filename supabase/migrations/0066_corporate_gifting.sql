@@ -27,9 +27,10 @@ create table if not exists corporate_gifting_products (
 
 create index if not exists idx_corp_gift_products_category on corporate_gifting_products(tenant_id, category, active, sort_order);
 
--- Corporate gifting drip funnel — inactive until Saurav assigns a WA session
--- and drip steps via the Funnels tab (FunnelsScreen / FunnelStepsEditor).
-insert into funnels (id, tenant_id, name, description, kind, active, goal, product_focus)
+-- Corporate gifting drip funnel — inactive until Saurav assigns a dedicated WA
+-- session (wa_number/wbiztool_client placeholder = Reception, same default
+-- used by other funnels) and drip steps via the Funnels tab.
+insert into funnels (id, tenant_id, name, description, kind, active, goal, product_focus, wa_number, wbiztool_client)
 values (
   'corporate_gifting',
   'a1b2c3d4-0000-0000-0000-000000000001',
@@ -38,7 +39,9 @@ values (
   'acquisition',
   false,
   'Convert bulk gifting enquiry into an order',
-  'gold_silver_coins'
+  'gold_silver_coins',
+  '8860866000',
+  '7560'
 )
 on conflict (id) do nothing;
 
