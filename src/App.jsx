@@ -13420,6 +13420,7 @@ const CORP_GIFT_TABS = [
   { k: "basic_coins", l: "Basic Coins" },
 ];
 const CORP_GIFT_LEAD_KEY = "corp_gift_lead_done";
+const CORP_GIFT_LEAD_ID_KEY = "corp_gift_lead_id";
 const CORP_GIFT_CART_KEY = "corp_gift_cart";
 const CORP_GIFT_WA = "918860866000";
 const CORP_GIFT_PAGE_SIZE = 12;
@@ -13439,6 +13440,8 @@ function CorporateGiftingScreen() {
     try { return JSON.parse(localStorage.getItem(CORP_GIFT_CART_KEY) || "{}"); } catch { return {}; }
   });
   const [cartOpen, setCartOpen] = useState(false);
+  const [leadId, setLeadId] = useState(() => { try { return localStorage.getItem(CORP_GIFT_LEAD_ID_KEY) || null; } catch { return null; } });
+  const [sendingEnquiry, setSendingEnquiry] = useState(false);
   const sentinelRef = useRef(null);
 
   useEffect(() => {
@@ -13485,7 +13488,11 @@ function CorporateGiftingScreen() {
       });
       const d = await res.json();
       if (!d.ok) { setFormErr(d.error || "Something went wrong. Please try again."); setSubmitting(false); return; }
-      try { localStorage.setItem(CORP_GIFT_LEAD_KEY, "1"); } catch {}
+      try {
+        localStorage.setItem(CORP_GIFT_LEAD_KEY, "1");
+        if (d.leadId) localStorage.setItem(CORP_GIFT_LEAD_ID_KEY, d.leadId);
+      } catch {}
+      if (d.leadId) setLeadId(d.leadId);
       setLeadDone(true);
     } catch {
       setFormErr("Network error — please try again.");
@@ -13506,6 +13513,20 @@ function CorporateGiftingScreen() {
     const lines = cartEntries.map((e, i) => `${i + 1}. ${e.product.name} x${e.qty}${e.product.price != null ? ` — ${fmt(e.product.price * e.qty)}` : ""}`);
     const msg = encodeURIComponent([`Hi, I'd like to enquire about corporate gifting — my selection:`, ``, ...lines, ``, `Total: ${fmt(cartTotal) || "on request"}`].join("\n"));
     return `https://wa.me/${CORP_GIFT_WA}?text=${msg}`;
+  };
+  const sendCartEnquiry = async () => {
+    if (sendingEnquiry) return;
+    setSendingEnquiry(true);
+    try {
+      if (leadId) {
+        await fetch("/api/corporate-gifting?action=enquire", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ leadId, items: cartEntries.map((e) => ({ name: e.product.name, qty: e.qty, price: e.product.price })) }),
+        });
+      }
+    } catch { /* logging to Demands is best-effort — still open WhatsApp either way */ }
+    setSendingEnquiry(false);
+    window.open(cartWaLink(), "_blank", "noreferrer");
   };
 
   const inputStyle = {
@@ -13680,12 +13701,12 @@ function CorporateGiftingScreen() {
                 <div style={{ borderTop: "1px solid var(--cat-border)", paddingTop: 14, marginTop: 8, display: "flex", justifyContent: "space-between", fontSize: 14, fontWeight: 600, color: "var(--cat-text)" }}>
                   <span>Total ({cartCount} items)</span><span>{fmt(cartTotal) || "On request"}</span>
                 </div>
-                <a href={cartWaLink()} target="_blank" rel="noreferrer" style={{
-                  display: "block", textAlign: "center", marginTop: 20, padding: "13px 0", borderRadius: 3,
-                  background: "var(--cat-gold)", color: "#1C1917", textDecoration: "none", fontWeight: 600, fontSize: 13, letterSpacing: 0.5,
+                <button onClick={sendCartEnquiry} disabled={sendingEnquiry} style={{
+                  display: "block", width: "100%", textAlign: "center", marginTop: 20, padding: "13px 0", borderRadius: 3, border: "none",
+                  background: "var(--cat-gold)", color: "#1C1917", fontWeight: 600, fontSize: 13, letterSpacing: 0.5, cursor: sendingEnquiry ? "wait" : "pointer",
                 }}>
-                  Send Cart via WhatsApp
-                </a>
+                  {sendingEnquiry ? "Sending…" : "Send Cart via WhatsApp"}
+                </button>
               </>
             )}
           </div>

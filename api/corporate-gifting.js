@@ -4,6 +4,10 @@
 //      (name, phone, email, quantity, neededBy, city), upserts bullion_leads,
 //      and enrolls into the 'corporate_gifting' funnel (no-op until Saurav
 //      configures its WA session + drip steps in the Funnels tab).
+// POST /api/corporate-gifting?action=enquire   — public, no auth. Logs a cart
+//      enquiry as a bullion_demands row (visible on the Demands sheet) so
+//      staff see it even though the actual message goes out via wa.me, not
+//      the bot — bot_active stays false, no AI opening message is sent.
 
 import { supa } from "./_lib/supabase.js";
 import { normalizePhone, TENANT_ID } from "./_lib/config.js";
@@ -104,6 +108,42 @@ export default async function handler(req, res) {
     }
 
     return res.status(200).json({ ok: true, leadId });
+  }
+
+  // ── POST action=enquire — public, log cart enquiry to Demands ────────
+  if (req.method === "POST" && action === "enquire") {
+    let body = req.body; if (typeof body === "string") { try { body = JSON.parse(body); } catch { body = {}; } }
+    body = body || {};
+
+    const leadId = body.leadId;
+    const items = Array.isArray(body.items) ? body.items : [];
+    if (!leadId || !items.length) return res.status(400).json({ ok: false, error: "lead_and_items_required" });
+
+    const { data: lead } = await sb.from("bullion_leads").select("id, tenant_id").eq("id", leadId).maybeSingle();
+    if (!lead) return res.status(404).json({ ok: false, error: "lead_not_found" });
+
+    const enquiryItems = items.map((i) => ({
+      name: String(i.name || "").slice(0, 150),
+      qty: Math.max(1, Math.round(Number(i.qty) || 1)),
+      price: i.price != null ? Number(i.price) : null,
+    }));
+    const total = enquiryItems.reduce((s, i) => s + (i.price || 0) * i.qty, 0);
+    const description = enquiryItems.map((i) => `${i.qty} x ${i.name}${i.price != null ? ` (₹${i.price})` : ""}`).join(", ");
+
+    const { data: demand, error } = await sb.from("bullion_demands").insert({
+      tenant_id: lead.tenant_id,
+      lead_id: lead.id,
+      funnel_id: "corporate_gifting",
+      description,
+      product_category: "gold_coin",
+      enquiry_items: enquiryItems,
+      budget: total || null,
+      crm_source: "corporate_gifting_web",
+      bot_active: false,
+    }).select("id").single();
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+
+    return res.status(200).json({ ok: true, demandId: demand.id });
   }
 
   return res.status(400).json({ ok: false, error: "unknown_action" });
