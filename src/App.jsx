@@ -13455,6 +13455,17 @@ function CorporateGiftingScreen() {
   const [sendingEnquiry, setSendingEnquiry] = useState(false);
   const [draftQty, setDraftQty] = useState({});
   const [note, setNote] = useState("");
+  const [designOpen, setDesignOpen] = useState(false);
+  const [designLogoFile, setDesignLogoFile] = useState(null);
+  const [designLogoPreview, setDesignLogoPreview] = useState(null);
+  const [designColor, setDesignColor] = useState("#B8860B");
+  const [designText, setDesignText] = useState("");
+  const [designImages, setDesignImages] = useState(null);
+  const [designId, setDesignId] = useState(null);
+  const [designSelectedIndex, setDesignSelectedIndex] = useState(null);
+  const [designFinalized, setDesignFinalized] = useState(false);
+  const [designSubmitting, setDesignSubmitting] = useState(false);
+  const [designError, setDesignError] = useState("");
   const sentinelRef = useRef(null);
 
   useEffect(() => {
@@ -13545,6 +13556,61 @@ function CorporateGiftingScreen() {
     window.open(cartWaLink(), "_blank", "noreferrer");
   };
 
+  const handleLogoSelect = (file) => {
+    if (!file) return;
+    setDesignLogoFile(file);
+    const reader = new FileReader();
+    reader.onload = () => setDesignLogoPreview(reader.result);
+    reader.readAsDataURL(file);
+  };
+
+  const generateDesigns = async () => {
+    if (!designLogoFile || !leadId || designSubmitting) return;
+    setDesignSubmitting(true);
+    setDesignError("");
+    try {
+      const dataUrl = designLogoPreview || await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = reject;
+        r.readAsDataURL(designLogoFile);
+      });
+      const base64 = dataUrl.split(",")[1];
+      const upRes = await fetch("/api/corporate-gifting?action=design-upload-logo", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leadId, dataBase64: base64 }),
+      });
+      const upD = await upRes.json();
+      if (!upD.ok) { setDesignError("Couldn't upload your logo — try a different file."); setDesignSubmitting(false); return; }
+
+      const genRes = await fetch("/api/corporate-gifting?action=design-generate", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leadId, logoUrl: upD.logoUrl, color: designColor, customText: designText.trim() || null }),
+      });
+      const genD = await genRes.json();
+      if (!genD.ok) { setDesignError(genD.message || "Couldn't generate designs — try again."); setDesignSubmitting(false); return; }
+      setDesignImages(genD.images);
+      setDesignId(genD.designId);
+      setDesignSelectedIndex(null);
+    } catch {
+      setDesignError("Network error — please try again.");
+    }
+    setDesignSubmitting(false);
+  };
+
+  const confirmDesignSelection = async () => {
+    if (designSelectedIndex == null || !designId) return;
+    setDesignSubmitting(true);
+    try {
+      await fetch("/api/corporate-gifting?action=design-select", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ designId, selectedIndex: designSelectedIndex }),
+      });
+      setDesignFinalized(true);
+    } catch { /* best-effort */ }
+    setDesignSubmitting(false);
+  };
+
   const inputStyle = {
     width: "100%", minHeight: 44, padding: "10px 12px", borderRadius: 3,
     border: "1px solid var(--cat-border)", background: "var(--cat-surface)", color: "var(--cat-text)",
@@ -13602,6 +13668,72 @@ function CorporateGiftingScreen() {
         <div style={{ textAlign: "center", marginBottom: 28 }}>
           <div style={{ fontFamily: "Cormorant, serif", fontWeight: 600, fontSize: "clamp(26px, 5vw, 38px)", color: "var(--cat-text)" }}>Corporate Gifting — Gold & Silver Coins</div>
           <div style={{ width: 48, height: 2, background: "var(--cat-gold)", margin: "12px auto" }} />
+        </div>
+
+        <div style={{ maxWidth: 560, margin: "0 auto 32px", border: "1px solid var(--cat-border)", borderRadius: 4, background: "var(--cat-surface)" }}>
+          <button onClick={() => setDesignOpen((o) => !o)} style={{
+            width: "100%", minHeight: 48, padding: "0 16px", display: "flex", justifyContent: "space-between", alignItems: "center",
+            background: "none", border: "none", cursor: "pointer", fontSize: 13.5, fontWeight: 600, color: "var(--cat-text)",
+          }}>
+            🎨 Design Your Branded Packaging
+            <span style={{ color: "var(--cat-muted)" }}>{designOpen ? "−" : "+"}</span>
+          </button>
+          {designOpen && (
+            <div style={{ padding: "0 16px 20px" }}>
+              <div style={{ fontSize: 12, color: "var(--cat-muted)", marginBottom: 14 }}>Upload your company logo and we'll mock up 4 branded box/card design options for you — free preview, one batch per order.</div>
+              {designFinalized ? (
+                <div style={{ textAlign: "center", padding: "20px 0" }}>
+                  <img src={designImages[designSelectedIndex]?.url} alt="Selected design" style={{ width: 160, height: 160, objectFit: "cover", borderRadius: 4, marginBottom: 10 }} />
+                  <div style={{ fontSize: 13, color: "var(--cat-gold)", fontWeight: 600 }}>✓ Design confirmed — {designImages[designSelectedIndex]?.label}</div>
+                  <div style={{ fontSize: 11, color: "var(--cat-muted)", marginTop: 4 }}>Mention this when you send your enquiry. Want more options? Confirm your order and our team can unlock extra design batches.</div>
+                </div>
+              ) : designImages ? (
+                <div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
+                    {designImages.map((img, i) => (
+                      <div key={i} onClick={() => setDesignSelectedIndex(i)} style={{
+                        cursor: "pointer", borderRadius: 4, overflow: "hidden",
+                        border: designSelectedIndex === i ? "2px solid var(--cat-gold)" : "1px solid var(--cat-border)",
+                      }}>
+                        <img src={img.url} alt={img.label} style={{ width: "100%", aspectRatio: "1", objectFit: "cover", display: "block" }} />
+                        <div style={{ fontSize: 11, padding: "6px 8px", color: "var(--cat-text)", background: designSelectedIndex === i ? "var(--cat-gold-soft)" : "transparent" }}>{img.label}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {designError && <div style={{ color: "#b91c1c", fontSize: 12, marginBottom: 10 }}>{designError}</div>}
+                  <button onClick={confirmDesignSelection} disabled={designSelectedIndex == null || designSubmitting} style={{
+                    width: "100%", minHeight: 44, borderRadius: 3, border: "none", background: "var(--cat-gold)", color: "#1C1917",
+                    fontWeight: 600, fontSize: 13, cursor: designSelectedIndex == null ? "not-allowed" : "pointer", opacity: designSelectedIndex == null ? 0.5 : 1,
+                  }}>
+                    {designSubmitting ? "Confirming…" : "Confirm This Design"}
+                  </button>
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  <div>
+                    <label style={labelStyle}>Your logo</label>
+                    <input type="file" accept="image/*" onChange={(e) => handleLogoSelect(e.target.files?.[0])} style={{ fontSize: 12, color: "var(--cat-text)" }} />
+                    {designLogoPreview && <img src={designLogoPreview} alt="Logo preview" style={{ width: 60, height: 60, objectFit: "contain", marginTop: 8, borderRadius: 3, border: "1px solid var(--cat-border)" }} />}
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Accent color</label>
+                    <input type="color" value={designColor} onChange={(e) => setDesignColor(e.target.value)} style={{ width: 60, height: 36, border: "1px solid var(--cat-border)", borderRadius: 3, cursor: "pointer" }} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Text on box/card (optional)</label>
+                    <input style={inputStyle} maxLength={100} placeholder="e.g. your company name" value={designText} onChange={(e) => setDesignText(e.target.value)} />
+                  </div>
+                  {designError && <div style={{ color: "#b91c1c", fontSize: 12 }}>{designError}</div>}
+                  <button onClick={generateDesigns} disabled={!designLogoFile || designSubmitting} style={{
+                    minHeight: 44, borderRadius: 3, border: "none", background: "var(--cat-gold)", color: "#1C1917",
+                    fontWeight: 600, fontSize: 13, cursor: !designLogoFile ? "not-allowed" : "pointer", opacity: !designLogoFile ? 0.5 : 1,
+                  }}>
+                    {designSubmitting ? "Generating…" : "Generate 4 Designs"}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center", marginBottom: 20 }}>

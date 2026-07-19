@@ -10,11 +10,21 @@
 //      the bot — bot_active stays false, no AI opening message is sent.
 
 import { supa } from "./_lib/supabase.js";
-import { normalizePhone, TENANT_ID } from "./_lib/config.js";
+import { normalizePhone, TENANT_ID, checkCrmSecret } from "./_lib/config.js";
 import { getRates } from "./_lib/rates.js";
 import { enrollLeadInDrip } from "./_lib/drip.js";
+import { generateBrandedDesigns } from "./_lib/imageGen.js";
 
-export const config = { maxDuration: 30 };
+export const config = { maxDuration: 60 };
+
+const LOGO_MAGIC = [
+  { bytes: [0xff, 0xd8, 0xff], ext: "jpg", mime: "image/jpeg" },
+  { bytes: [0x89, 0x50, 0x4e, 0x47], ext: "png", mime: "image/png" },
+  { bytes: [0x52, 0x49, 0x46, 0x46], ext: "webp", mime: "image/webp" },
+];
+function sniffImage(buf) {
+  return LOGO_MAGIC.find((m) => m.bytes.every((b, i) => buf[i] === b)) || null;
+}
 
 function computePrice(p, rates) {
   if (p.price_mode === "manual") return p.manual_price != null ? Number(p.manual_price) : null;
@@ -158,6 +168,112 @@ export default async function handler(req, res) {
     if (error) return res.status(500).json({ ok: false, error: error.message });
 
     return res.status(200).json({ ok: true, demandId: demand.id });
+  }
+
+  // ── POST action=design-upload-logo — public. Accepts a base64 image,
+  // stores it in the media bucket, returns its public URL. ────────────
+  if (req.method === "POST" && action === "design-upload-logo") {
+    let body = req.body; if (typeof body === "string") { try { body = JSON.parse(body); } catch { body = {}; } }
+    body = body || {};
+    const leadId = body.leadId;
+    if (!leadId) return res.status(400).json({ ok: false, error: "lead_id_required" });
+    if (!body.dataBase64) return res.status(400).json({ ok: false, error: "data_required" });
+
+    let buf;
+    try { buf = Buffer.from(String(body.dataBase64), "base64"); } catch { return res.status(400).json({ ok: false, error: "invalid_base64" }); }
+    if (buf.length > 8 * 1024 * 1024) return res.status(400).json({ ok: false, error: "file_too_large" });
+    const kind = sniffImage(buf);
+    if (!kind) return res.status(400).json({ ok: false, error: "unsupported_image_type" });
+
+    const path = `uploads/corporate-gifting/logos/${leadId}/${Date.now()}.${kind.ext}`;
+    const { error: upErr } = await sb.storage.from("media").upload(path, buf, { contentType: kind.mime, upsert: true });
+    if (upErr) return res.status(500).json({ ok: false, error: upErr.message });
+    const { data: pub } = sb.storage.from("media").getPublicUrl(path);
+
+    return res.status(200).json({ ok: true, logoUrl: pub.publicUrl });
+  }
+
+  // ── POST action=design-generate — public, rate-limited. Generates 4
+  // branded packaging mockups from a logo + optional color/text. ──────
+  if (req.method === "POST" && action === "design-generate") {
+    let body = req.body; if (typeof body === "string") { try { body = JSON.parse(body); } catch { body = {}; } }
+    body = body || {};
+    const leadId = body.leadId;
+    const logoUrl = body.logoUrl;
+    if (!leadId || !logoUrl) return res.status(400).json({ ok: false, error: "lead_id_and_logo_required" });
+    const color = body.color ? String(body.color).slice(0, 30) : null;
+    const customText = body.customText ? String(body.customText).trim().slice(0, 100) : null;
+
+    const { data: lead } = await sb.from("bullion_leads").select("id, tenant_id").eq("id", leadId).maybeSingle();
+    if (!lead) return res.status(404).json({ ok: false, error: "lead_not_found" });
+
+    let { data: design } = await sb.from("corporate_gifting_designs").select("*").eq("lead_id", leadId).maybeSingle();
+    if (!design) {
+      const { data: created, error: insErr } = await sb.from("corporate_gifting_designs")
+        .insert({ tenant_id: lead.tenant_id, lead_id: leadId, logo_url: logoUrl, color, custom_text: customText })
+        .select("*").single();
+      if (insErr) return res.status(500).json({ ok: false, error: insErr.message });
+      design = created;
+    }
+    if (design.batch_count >= design.max_batches) {
+      return res.status(200).json({ ok: false, error: "generation_limit_reached", message: "You've used your free design batch. Confirm your order and our team can generate more options for you." });
+    }
+
+    let generated;
+    try {
+      generated = await generateBrandedDesigns({ logoUrl, color, customText });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: "generation_failed", detail: String(e.message || e) });
+    }
+
+    const images = [];
+    for (let i = 0; i < generated.length; i++) {
+      const g = generated[i];
+      const path = `uploads/corporate-gifting/designs/${leadId}/${Date.now()}_${i}.png`;
+      const { error: upErr } = await sb.storage.from("media").upload(path, Buffer.from(g.base64, "base64"), { contentType: "image/png", upsert: true });
+      if (upErr) continue;
+      const { data: pub } = sb.storage.from("media").getPublicUrl(path);
+      images.push({ label: g.label, url: pub.publicUrl });
+    }
+    if (!images.length) return res.status(500).json({ ok: false, error: "no_images_saved" });
+
+    await sb.from("corporate_gifting_designs").update({
+      logo_url: logoUrl, color, custom_text: customText, images,
+      batch_count: design.batch_count + 1, status: "generated", updated_at: new Date().toISOString(),
+    }).eq("id", design.id);
+
+    return res.status(200).json({ ok: true, designId: design.id, images });
+  }
+
+  // ── POST action=design-select — public. Locks in the chosen design. ─
+  if (req.method === "POST" && action === "design-select") {
+    let body = req.body; if (typeof body === "string") { try { body = JSON.parse(body); } catch { body = {}; } }
+    body = body || {};
+    const { designId, selectedIndex } = body;
+    if (!designId || selectedIndex == null) return res.status(400).json({ ok: false, error: "design_id_and_index_required" });
+    const { error } = await sb.from("corporate_gifting_designs")
+      .update({ selected_index: selectedIndex, status: "finalized", updated_at: new Date().toISOString() })
+      .eq("id", designId);
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.status(200).json({ ok: true });
+  }
+
+  // ── POST action=design-approve-more — staff-only (x-crm-secret). Lets
+  // a customer generate more design batches after their order is confirmed. ─
+  if (req.method === "POST" && action === "design-approve-more") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return authFail;
+    let body = req.body; if (typeof body === "string") { try { body = JSON.parse(body); } catch { body = {}; } }
+    body = body || {};
+    const { designId, extraBatches } = body;
+    if (!designId) return res.status(400).json({ ok: false, error: "design_id_required" });
+    const { data: design } = await sb.from("corporate_gifting_designs").select("max_batches").eq("id", designId).maybeSingle();
+    if (!design) return res.status(404).json({ ok: false, error: "design_not_found" });
+    const { error } = await sb.from("corporate_gifting_designs")
+      .update({ max_batches: design.max_batches + (Number(extraBatches) || 3), updated_at: new Date().toISOString() })
+      .eq("id", designId);
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.status(200).json({ ok: true });
   }
 
   return res.status(400).json({ ok: false, error: "unknown_action" });
