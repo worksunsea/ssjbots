@@ -20,7 +20,15 @@ const STYLE_VARIANTS = [
 ];
 
 async function fetchAsBase64(url) {
-  const res = await fetch(url);
+  // jewelflix's CDN 403s plain server-to-server fetches (hotlink protection) —
+  // it only serves images to requests that look like they came from a
+  // browser on their own site.
+  const res = await fetch(url, {
+    headers: {
+      Referer: "https://www.shaguncoins.com/",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    },
+  });
   if (!res.ok) throw new Error(`image fetch failed: ${res.status} (${url})`);
   const buf = Buffer.from(await res.arrayBuffer());
   const contentType = res.headers.get("content-type") || "image/png";
