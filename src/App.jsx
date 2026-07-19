@@ -149,11 +149,12 @@ const CRM_ALL_TABS = [
   { k: "walkin",      l: "Walk-ins",       icon: "🏪" },
   { k: "catalogue",   l: "Catalogue",      icon: "🗂️" },
   { k: "vendors",     l: "Vendors",        icon: "🏭" },
+  { k: "corpgift",    l: "Corp Gifting Pricing", icon: "💰" },
 ];
 const CRM_ROLE_DEFAULT_TABS = {
   superadmin: CRM_ALL_TABS.map((t) => t.k),
   admin:      CRM_ALL_TABS.map((t) => t.k),
-  manager:    ["demands", "adleads", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors"],
+  manager:    ["demands", "adleads", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift"],
   staff:      ["demands", "adleads", "contacts", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
   telecaller: ["queue", "demands", "adleads"],
 };
@@ -10642,13 +10643,14 @@ export default function App() {
     { k: "walkin",     l: "Walk-ins",       icon: "🏪" },
     { k: "catalogue",  l: "Catalogue",      icon: "🗂️" },
     { k: "vendors",    l: "Vendors",        icon: "🏭" },
+    { k: "corpgift",   l: "Corp Gifting Pricing", icon: "💰" },
   ];
 
   // Role-based defaults when app_permissions.crm is not set
   const ROLE_DEFAULT_TABS = {
     superadmin: ALL_TABS.map((t) => t.k),
     admin:      ALL_TABS.map((t) => t.k),
-    manager:    ["demands", "adleads", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors"],
+    manager:    ["demands", "adleads", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift"],
     staff:      ["demands", "adleads", "contacts", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
     telecaller: ["queue", "demands", "adleads"],
   };
@@ -10810,6 +10812,7 @@ export default function App() {
       }} />}
       {activeScreen === "catalogue" && <CatalogueScreen />}
       {activeScreen === "vendors" && <VendorsScreen />}
+      {activeScreen === "corpgift" && <CorpGiftPricingScreen />}
     </div>
     </ContactFieldsContext.Provider>
   );
@@ -13415,6 +13418,112 @@ function PublicCatalogueScreen({ token }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CORPORATE GIFTING PRICING — staff admin tab (CRM, login required)
+// Edit making_charge/tax_percent/weight/manual_price/active per product.
+// Final price = weight_grams x live rate (rates tab) + making_charge x
+// (1 + tax_percent/100). Same table backs both the MMTC-sourced products
+// and the shagun_coins sheet (once Saurav sends that rate card too).
+// ─────────────────────────────────────────────────────────────────────────────
+
+function CorpGiftPricingScreen() {
+  const [rows, setRows] = useState(null);
+  const [category, setCategory] = useState("all");
+  const [saving, setSaving] = useState({});
+  const [toast, setToast] = useState("");
+
+  const load = () => {
+    sb.from("corporate_gifting_products")
+      .select("id, category, name, weight_grams, price_mode, making_charge, tax_percent, manual_price, markup_amount, active, image_url")
+      .eq("tenant_id", getTenantId())
+      .order("category", { ascending: true }).order("sort_order", { ascending: true })
+      .then(({ data }) => setRows(data || []));
+  };
+  useEffect(load, []);
+
+  const updateField = (id, field, value) => {
+    setRows((rs) => rs.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
+  };
+
+  const saveRow = async (row) => {
+    setSaving((s) => ({ ...s, [row.id]: true }));
+    await sb.from("corporate_gifting_products").update({
+      weight_grams: row.weight_grams === "" ? null : Number(row.weight_grams),
+      making_charge: row.making_charge === "" ? null : Number(row.making_charge),
+      tax_percent: row.tax_percent === "" ? 0 : Number(row.tax_percent),
+      manual_price: row.manual_price === "" ? null : Number(row.manual_price),
+      active: row.active,
+      updated_at: new Date().toISOString(),
+    }).eq("id", row.id);
+    setSaving((s) => ({ ...s, [row.id]: false }));
+    setToast("Saved");
+    setTimeout(() => setToast(""), 1500);
+  };
+
+  if (!rows) return <div style={{ padding: 20, color: "#888" }}>Loading…</div>;
+  const categories = ["all", ...Array.from(new Set(rows.map((r) => r.category)))];
+  const visible = category === "all" ? rows : rows.filter((r) => r.category === category);
+
+  const th = { textAlign: "left", padding: "8px 10px", fontSize: 11, color: "#888", borderBottom: "2px solid #eee", whiteSpace: "nowrap" };
+  const td = { padding: "6px 10px", fontSize: 12.5, borderBottom: "1px solid #f0f0f0", verticalAlign: "middle" };
+  const cellInput = { width: 80, padding: "5px 7px", fontSize: 12.5, borderRadius: 4, border: "1px solid #ddd" };
+
+  return (
+    <div style={{ padding: 20 }}>
+      <h2 style={{ marginTop: 0 }}>Corporate Gifting Pricing</h2>
+      <div style={{ fontSize: 12.5, color: "#666", marginBottom: 14, maxWidth: 720 }}>
+        Price = weight (g) × today's live rate (Rates tab) + making charge × (1 + tax%). Products with price_mode "manual" ignore this formula and just use Manual Price ("Contact for pricing" if blank).
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+        {categories.map((c) => (
+          <button key={c} onClick={() => setCategory(c)} style={{
+            padding: "5px 12px", borderRadius: 14, fontSize: 12, cursor: "pointer",
+            border: category === c ? "1px solid #2563eb" : "1px solid #ddd",
+            background: category === c ? "#eef5ff" : "#fff", color: category === c ? "#2563eb" : "#555",
+          }}>
+            {c === "all" ? "All" : c.replace(/_/g, " ")} ({c === "all" ? rows.length : rows.filter((r) => r.category === c).length})
+          </button>
+        ))}
+        {toast && <span style={{ fontSize: 12, color: "#16a34a", alignSelf: "center", marginLeft: 8 }}>{toast}</span>}
+      </div>
+      <div style={{ overflowX: "auto", border: "1px solid #eee", borderRadius: 6 }}>
+        <table style={{ borderCollapse: "collapse", width: "100%" }}>
+          <thead>
+            <tr>
+              <th style={th}>Active</th>
+              <th style={th}>Name</th>
+              <th style={th}>Mode</th>
+              <th style={th}>Weight (g)</th>
+              <th style={th}>Making Charge</th>
+              <th style={th}>Tax %</th>
+              <th style={th}>Manual Price</th>
+              <th style={th}>Photo</th>
+              <th style={th}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map((r) => (
+              <tr key={r.id}>
+                <td style={td}><input type="checkbox" checked={r.active} onChange={(e) => updateField(r.id, "active", e.target.checked)} /></td>
+                <td style={{ ...td, maxWidth: 260 }}>{r.name}</td>
+                <td style={{ ...td, fontSize: 11, color: "#888" }}>{r.price_mode}</td>
+                <td style={td}><input style={cellInput} type="number" value={r.weight_grams ?? ""} onChange={(e) => updateField(r.id, "weight_grams", e.target.value)} /></td>
+                <td style={td}><input style={cellInput} type="number" value={r.making_charge ?? ""} onChange={(e) => updateField(r.id, "making_charge", e.target.value)} /></td>
+                <td style={td}><input style={{ ...cellInput, width: 50 }} type="number" value={r.tax_percent ?? ""} onChange={(e) => updateField(r.id, "tax_percent", e.target.value)} /></td>
+                <td style={td}><input style={cellInput} type="number" value={r.manual_price ?? ""} onChange={(e) => updateField(r.id, "manual_price", e.target.value)} /></td>
+                <td style={{ ...td, fontSize: 11, color: r.image_url ? "#16a34a" : "#b91c1c" }}>{r.image_url ? "✓" : "missing"}</td>
+                <td style={td}><button onClick={() => saveRow(r)} disabled={saving[r.id]} style={{
+                  padding: "4px 10px", fontSize: 11.5, borderRadius: 4, border: "1px solid #2563eb", background: "#2563eb", color: "#fff", cursor: "pointer",
+                }}>{saving[r.id] ? "…" : "Save"}</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CORPORATE GIFTING COINS — /corporategiftingcoins (no login)
 // Lead-gated public catalogue: capture name/phone/email/qty/needed-by/city,
 // then show gold/silver gifting coins with live pricing, tabbed by category.
@@ -13422,6 +13531,7 @@ function PublicCatalogueScreen({ token }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const CORP_GIFT_TABS = [
+  { k: "all", l: "All Products" },
   { k: "gold_bars", l: "Gold Bars" },
   { k: "gold_coins", l: "Gold Coins" },
   { k: "silver_bars", l: "Silver Bars" },
@@ -13443,7 +13553,7 @@ function CorporateGiftingScreen() {
   const [formErr, setFormErr] = useState("");
   const [products, setProducts] = useState(null);
   const [loadErr, setLoadErr] = useState("");
-  const [tab, setTab] = useState("gold_bars");
+  const [tab, setTab] = useState("all");
   const [priceMin, setPriceMin] = useState("");
   const [priceMax, setPriceMax] = useState("");
   const [visibleCount, setVisibleCount] = useState(CORP_GIFT_PAGE_SIZE);
@@ -13648,7 +13758,7 @@ function CorporateGiftingScreen() {
     );
   }
 
-  const tabProducts = (products || []).filter((p) => p.category === tab);
+  const tabProducts = tab === "all" ? (products || []) : (products || []).filter((p) => p.category === tab);
   const tabPrices = tabProducts.map((p) => p.price).filter((p) => p != null);
   const boundMin = tabPrices.length ? Math.min(...tabPrices) : 0;
   const boundMax = tabPrices.length ? Math.max(...tabPrices) : 0;
