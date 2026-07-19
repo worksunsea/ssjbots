@@ -43,17 +43,19 @@ function computePrice(p, rates) {
     return p.manual_price != null ? Number(p.manual_price) : null;
   }
   // live_gold_markup / live_silver_markup: (weight x today's rate from our
-  // rates tab + making_charge) x (1 + tax_percent/100) — GST is charged on
-  // the full invoice value (metal + making), not just the making charge;
-  // default 3% on both gold and silver. Falls back to markup_amount for
-  // rows that don't have a real making_charge set yet (no tax applied,
-  // since markup_amount was already a tax-inclusive flat figure).
+  // rates tab + making_charge) x (1 + tax_percent/100) + price_diff — GST
+  // is charged on the full invoice value (metal + making), not just the
+  // making charge; default 3% on both gold and silver. price_diff is a
+  // staff-editable adjustment (set once from today's competitor price,
+  // editable anytime) that lands the total on their price today, while
+  // the bullion component keeps tracking our rates tab daily. Falls back
+  // to markup_amount for rows that don't have a real making_charge yet.
   if (p.price_mode === "live_gold_markup" || p.price_mode === "live_silver_markup") {
     const rate = p.price_mode === "live_gold_markup" ? rates.spot.gold24kt : rates.spot.silverPerGram;
     if (rate != null && p.weight_grams != null) {
       const bullionValue = Number(p.weight_grams) * rate;
       if (p.making_charge != null) {
-        return Math.round((bullionValue + Number(p.making_charge)) * (1 + Number(p.tax_percent ?? 3) / 100));
+        return Math.round((bullionValue + Number(p.making_charge)) * (1 + Number(p.tax_percent ?? 3) / 100) + Number(p.price_diff || 0));
       }
       if (p.markup_amount != null) return Math.round(bullionValue + Number(p.markup_amount));
     }
@@ -74,7 +76,7 @@ export default async function handler(req, res) {
   // ── GET action=products — public catalogue data ──────────────────────
   if (req.method === "GET" && action === "products") {
     const { data: rows, error } = await sb.from("corporate_gifting_products")
-      .select("id, category, name, description, image_url, sort_order, price_mode, gifting_sheet_name, weight_grams, manual_price, markup_amount, making_charge, tax_percent")
+      .select("id, category, name, description, image_url, sort_order, price_mode, gifting_sheet_name, weight_grams, manual_price, markup_amount, making_charge, tax_percent, price_diff")
       .eq("tenant_id", TENANT_ID).eq("active", true)
       .order("category", { ascending: true }).order("sort_order", { ascending: true });
     if (error) return res.status(500).json({ ok: false, error: error.message });

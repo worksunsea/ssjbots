@@ -13434,7 +13434,7 @@ function CorpGiftPricingScreen() {
 
   const load = () => {
     sb.from("corporate_gifting_products")
-      .select("id, category, name, weight_grams, price_mode, making_charge, tax_percent, manual_price, markup_amount, reference_price, active, image_url")
+      .select("id, category, name, weight_grams, price_mode, making_charge, tax_percent, price_diff, markup_amount, reference_price, active, image_url")
       .eq("tenant_id", getTenantId())
       .order("category", { ascending: true }).order("sort_order", { ascending: true })
       .then(({ data }) => setRows(data || []));
@@ -13454,7 +13454,7 @@ function CorpGiftPricingScreen() {
       weight_grams: row.weight_grams === "" ? null : Number(row.weight_grams),
       making_charge: row.making_charge === "" ? null : Number(row.making_charge),
       tax_percent: row.tax_percent === "" ? 0 : Number(row.tax_percent),
-      manual_price: row.manual_price === "" ? null : Number(row.manual_price),
+      price_diff: row.price_diff === "" ? 0 : Number(row.price_diff),
       active: row.active,
       updated_at: new Date().toISOString(),
     }).eq("id", row.id);
@@ -13475,7 +13475,7 @@ function CorpGiftPricingScreen() {
     <div style={{ padding: 20 }}>
       <h2 style={{ marginTop: 0 }}>Corporate Gifting Pricing</h2>
       <div style={{ fontSize: 12.5, color: "#666", marginBottom: 14, maxWidth: 720 }}>
-        Price = (weight (g) × today's live rate from the Rates tab + making charge) × (1 + tax%) — GST 3% by default, applied to the whole invoice value like real gold/silver billing, not just the making charge. Products with price_mode "manual" ignore this formula and just use Manual Price ("Contact for pricing" if blank). "Diff" compares against the reference price scraped from MMTC/shaguncoins on 2026-07-19 — re-check it periodically, it won't auto-update.
+        Price = (weight (g) × today's live rate from the Rates tab + making charge) × (1 + tax%) + Adjustment. GST 3% by default, applied to the whole invoice value like real gold/silver billing, not just the making charge. Adjustment was set once to land exactly on MMTC/shaguncoins' price on 2026-07-19 — edit it anytime; the bullion component still updates daily off the Rates tab regardless. Products with price_mode "manual" (no weight/making charge) show "Contact for pricing" instead.
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
         {categories.map((c) => (
@@ -13499,10 +13499,10 @@ function CorpGiftPricingScreen() {
               <th style={th}>Weight (g)</th>
               <th style={th}>Making Charge</th>
               <th style={th}>Tax %</th>
-              <th style={th}>Manual Price</th>
+              <th style={th}>Adjustment</th>
               <th style={th}>Our Price</th>
               <th style={th}>Reference Price</th>
-              <th style={th}>Diff (Ours − Ref)</th>
+              <th style={th}>Live Diff</th>
               <th style={th}>Photo</th>
               <th style={th}></th>
             </tr>
@@ -13519,7 +13519,7 @@ function CorpGiftPricingScreen() {
                   <td style={td}><input style={cellInput} type="number" value={r.weight_grams ?? ""} onChange={(e) => updateField(r.id, "weight_grams", e.target.value)} /></td>
                   <td style={td}><input style={cellInput} type="number" value={r.making_charge ?? ""} onChange={(e) => updateField(r.id, "making_charge", e.target.value)} /></td>
                   <td style={td}><input style={{ ...cellInput, width: 50 }} type="number" value={r.tax_percent ?? ""} onChange={(e) => updateField(r.id, "tax_percent", e.target.value)} /></td>
-                  <td style={td}><input style={cellInput} type="number" value={r.manual_price ?? ""} onChange={(e) => updateField(r.id, "manual_price", e.target.value)} /></td>
+                  <td style={td}><input style={cellInput} type="number" value={r.price_diff ?? ""} onChange={(e) => updateField(r.id, "price_diff", e.target.value)} /></td>
                   <td style={{ ...td, fontWeight: 600 }}>{ourPrice != null ? `₹${ourPrice.toLocaleString("en-IN")}` : "—"}</td>
                   <td style={td}>{r.reference_price != null ? `₹${Number(r.reference_price).toLocaleString("en-IN")}` : "—"}</td>
                   <td style={{ ...td, color: diff == null ? "#888" : diff > 0 ? "#b91c1c" : "#16a34a", fontWeight: 600 }}>
@@ -13561,6 +13561,7 @@ const CORP_GIFT_LEAD_ID_KEY = "corp_gift_lead_id";
 const CORP_GIFT_CART_KEY = "corp_gift_cart";
 const CORP_GIFT_WA = "918860866000";
 const CORP_GIFT_PAGE_SIZE = 12;
+const CORP_GIFT_PRICE_STEPS = [0, 500, 1000, 3000, 5000, 7500, 10000, 20000, 35000, 50000, 100000];
 
 function CorporateGiftingScreen() {
   const [leadDone, setLeadDone] = useState(() => { try { return localStorage.getItem(CORP_GIFT_LEAD_KEY) === "1"; } catch { return false; } });
@@ -13570,8 +13571,8 @@ function CorporateGiftingScreen() {
   const [products, setProducts] = useState(null);
   const [loadErr, setLoadErr] = useState("");
   const [tab, setTab] = useState("all");
-  const [priceMin, setPriceMin] = useState("");
-  const [priceMax, setPriceMax] = useState("");
+  const [priceMinIdx, setPriceMinIdx] = useState("");
+  const [priceMaxIdx, setPriceMaxIdx] = useState("");
   const [visibleCount, setVisibleCount] = useState(CORP_GIFT_PAGE_SIZE);
   const [cart, setCart] = useState(() => {
     try { return JSON.parse(localStorage.getItem(CORP_GIFT_CART_KEY) || "{}"); } catch { return {}; }
@@ -13603,7 +13604,7 @@ function CorporateGiftingScreen() {
   }, [leadDone]);
 
   useEffect(() => { try { localStorage.setItem(CORP_GIFT_CART_KEY, JSON.stringify(cart)); } catch {} }, [cart]);
-  useEffect(() => { setVisibleCount(CORP_GIFT_PAGE_SIZE); }, [tab, priceMin, priceMax]);
+  useEffect(() => { setVisibleCount(CORP_GIFT_PAGE_SIZE); }, [tab, priceMinIdx, priceMaxIdx]);
 
   useEffect(() => {
     const el = sentinelRef.current;
@@ -13776,12 +13777,15 @@ function CorporateGiftingScreen() {
 
   const tabProducts = tab === "all" ? (products || []) : (products || []).filter((p) => p.category === tab);
   const tabPrices = tabProducts.map((p) => p.price).filter((p) => p != null);
-  const boundMin = tabPrices.length ? Math.min(...tabPrices) : 0;
-  const boundMax = tabPrices.length ? Math.max(...tabPrices) : 0;
-  const min = priceMin !== "" ? Number(priceMin) : boundMin;
-  const max = priceMax !== "" ? Number(priceMax) : boundMax;
+  const hasPrices = tabPrices.length > 0;
+  const minStepIdx = priceMinIdx !== "" ? Number(priceMinIdx) : 0;
+  const maxStepIdx = priceMaxIdx !== "" ? Number(priceMaxIdx) : CORP_GIFT_PRICE_STEPS.length - 1;
+  const min = CORP_GIFT_PRICE_STEPS[minStepIdx];
+  const max = maxStepIdx === CORP_GIFT_PRICE_STEPS.length - 1 ? Infinity : CORP_GIFT_PRICE_STEPS[maxStepIdx];
+  const isFiltered = priceMinIdx !== "" || priceMaxIdx !== "";
   const filteredProducts = tabProducts.filter((p) => {
-    if (p.price == null) return priceMin === "" && priceMax === "";
+    if (!isFiltered) return true;
+    if (p.price == null) return false;
     if (p.price < min || p.price > max) return false;
     return true;
   });
@@ -13874,29 +13878,32 @@ function CorporateGiftingScreen() {
           ))}
         </div>
 
-        {boundMax > boundMin && (
-          <div style={{ maxWidth: 380, margin: "0 auto 32px" }}>
+        {hasPrices && (
+          <div style={{ maxWidth: 420, margin: "0 auto 32px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--cat-muted)", marginBottom: 6 }}>
-              <span>Filter by price: {fmt(min)} – {fmt(max)}</span>
-              {(priceMin !== "" || priceMax !== "") && (
-                <button onClick={() => { setPriceMin(""); setPriceMax(""); }} style={{ background: "none", border: "none", color: "var(--cat-gold)", cursor: "pointer", fontSize: 12, textDecoration: "underline" }}>Reset</button>
+              <span>Filter by price: {fmt(min)} – {maxStepIdx === CORP_GIFT_PRICE_STEPS.length - 1 ? "₹1,00,000+" : fmt(max)}</span>
+              {isFiltered && (
+                <button onClick={() => { setPriceMinIdx(""); setPriceMaxIdx(""); }} style={{ background: "none", border: "none", color: "var(--cat-gold)", cursor: "pointer", fontSize: 12, textDecoration: "underline" }}>Reset</button>
               )}
             </div>
             <div style={{ position: "relative", height: 28 }}>
               <div style={{ position: "absolute", top: 12, left: 0, right: 0, height: 4, borderRadius: 2, background: "var(--cat-border)" }} />
               <div style={{
                 position: "absolute", top: 12, height: 4, borderRadius: 2, background: "var(--cat-gold)",
-                left: `${boundMax > boundMin ? ((min - boundMin) / (boundMax - boundMin)) * 100 : 0}%`,
-                right: `${boundMax > boundMin ? 100 - ((max - boundMin) / (boundMax - boundMin)) * 100 : 0}%`,
+                left: `${(minStepIdx / (CORP_GIFT_PRICE_STEPS.length - 1)) * 100}%`,
+                right: `${100 - (maxStepIdx / (CORP_GIFT_PRICE_STEPS.length - 1)) * 100}%`,
               }} />
-              <input type="range" min={boundMin} max={boundMax} value={min}
-                onChange={(e) => setPriceMin(String(Math.min(Number(e.target.value), max)))}
+              <input type="range" min={0} max={CORP_GIFT_PRICE_STEPS.length - 1} step={1} value={minStepIdx}
+                onChange={(e) => setPriceMinIdx(String(Math.min(Number(e.target.value), maxStepIdx)))}
                 style={{ position: "absolute", top: 0, left: 0, right: 0, width: "100%", margin: 0, background: "transparent", pointerEvents: "none", WebkitAppearance: "none", appearance: "none" }}
                 className="corp-gift-range" />
-              <input type="range" min={boundMin} max={boundMax} value={max}
-                onChange={(e) => setPriceMax(String(Math.max(Number(e.target.value), min)))}
+              <input type="range" min={0} max={CORP_GIFT_PRICE_STEPS.length - 1} step={1} value={maxStepIdx}
+                onChange={(e) => setPriceMaxIdx(String(Math.max(Number(e.target.value), minStepIdx)))}
                 style={{ position: "absolute", top: 0, left: 0, right: 0, width: "100%", margin: 0, background: "transparent", pointerEvents: "none", WebkitAppearance: "none", appearance: "none" }}
                 className="corp-gift-range" />
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9.5, color: "var(--cat-muted)", marginTop: 4 }}>
+              <span>₹500</span><span>₹1,00,000+</span>
             </div>
           </div>
         )}
