@@ -42,16 +42,18 @@ function computePrice(p, rates) {
     if (rate != null && p.weight_grams != null) return Math.round(Number(p.weight_grams) * rate);
     return p.manual_price != null ? Number(p.manual_price) : null;
   }
-  // live_gold_markup / live_silver_markup: weight x today's rate (from our
-  // rates tab, live) + making_charge (from a real rate card, GST applied
-  // to the making charge only) — falls back to markup_amount for rows that
-  // don't have making_charge set yet.
+  // live_gold_markup / live_silver_markup: (weight x today's rate from our
+  // rates tab + making_charge) x (1 + tax_percent/100) — GST is charged on
+  // the full invoice value (metal + making), not just the making charge;
+  // default 3% on both gold and silver. Falls back to markup_amount for
+  // rows that don't have a real making_charge set yet (no tax applied,
+  // since markup_amount was already a tax-inclusive flat figure).
   if (p.price_mode === "live_gold_markup" || p.price_mode === "live_silver_markup") {
     const rate = p.price_mode === "live_gold_markup" ? rates.spot.gold24kt : rates.spot.silverPerGram;
     if (rate != null && p.weight_grams != null) {
       const bullionValue = Number(p.weight_grams) * rate;
       if (p.making_charge != null) {
-        return Math.round(bullionValue + Number(p.making_charge) * (1 + Number(p.tax_percent || 0) / 100));
+        return Math.round((bullionValue + Number(p.making_charge)) * (1 + Number(p.tax_percent ?? 3) / 100));
       }
       if (p.markup_amount != null) return Math.round(bullionValue + Number(p.markup_amount));
     }

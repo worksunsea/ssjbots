@@ -13427,16 +13427,20 @@ function PublicCatalogueScreen({ token }) {
 
 function CorpGiftPricingScreen() {
   const [rows, setRows] = useState(null);
+  const [priceMap, setPriceMap] = useState({});
   const [category, setCategory] = useState("all");
   const [saving, setSaving] = useState({});
   const [toast, setToast] = useState("");
 
   const load = () => {
     sb.from("corporate_gifting_products")
-      .select("id, category, name, weight_grams, price_mode, making_charge, tax_percent, manual_price, markup_amount, active, image_url")
+      .select("id, category, name, weight_grams, price_mode, making_charge, tax_percent, manual_price, markup_amount, reference_price, active, image_url")
       .eq("tenant_id", getTenantId())
       .order("category", { ascending: true }).order("sort_order", { ascending: true })
       .then(({ data }) => setRows(data || []));
+    fetch("/api/corporate-gifting?action=products")
+      .then((r) => r.json())
+      .then((d) => { if (d.ok) setPriceMap(Object.fromEntries(d.products.map((p) => [p.id, p.price]))); });
   };
   useEffect(load, []);
 
@@ -13471,7 +13475,7 @@ function CorpGiftPricingScreen() {
     <div style={{ padding: 20 }}>
       <h2 style={{ marginTop: 0 }}>Corporate Gifting Pricing</h2>
       <div style={{ fontSize: 12.5, color: "#666", marginBottom: 14, maxWidth: 720 }}>
-        Price = weight (g) × today's live rate (Rates tab) + making charge × (1 + tax%). Products with price_mode "manual" ignore this formula and just use Manual Price ("Contact for pricing" if blank).
+        Price = (weight (g) × today's live rate from the Rates tab + making charge) × (1 + tax%) — GST 3% by default, applied to the whole invoice value like real gold/silver billing, not just the making charge. Products with price_mode "manual" ignore this formula and just use Manual Price ("Contact for pricing" if blank). "Diff" compares against the reference price scraped from MMTC/shaguncoins on 2026-07-19 — re-check it periodically, it won't auto-update.
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
         {categories.map((c) => (
@@ -13496,26 +13500,38 @@ function CorpGiftPricingScreen() {
               <th style={th}>Making Charge</th>
               <th style={th}>Tax %</th>
               <th style={th}>Manual Price</th>
+              <th style={th}>Our Price</th>
+              <th style={th}>Reference Price</th>
+              <th style={th}>Diff (Ours − Ref)</th>
               <th style={th}>Photo</th>
               <th style={th}></th>
             </tr>
           </thead>
           <tbody>
-            {visible.map((r) => (
-              <tr key={r.id}>
-                <td style={td}><input type="checkbox" checked={r.active} onChange={(e) => updateField(r.id, "active", e.target.checked)} /></td>
-                <td style={{ ...td, maxWidth: 260 }}>{r.name}</td>
-                <td style={{ ...td, fontSize: 11, color: "#888" }}>{r.price_mode}</td>
-                <td style={td}><input style={cellInput} type="number" value={r.weight_grams ?? ""} onChange={(e) => updateField(r.id, "weight_grams", e.target.value)} /></td>
-                <td style={td}><input style={cellInput} type="number" value={r.making_charge ?? ""} onChange={(e) => updateField(r.id, "making_charge", e.target.value)} /></td>
-                <td style={td}><input style={{ ...cellInput, width: 50 }} type="number" value={r.tax_percent ?? ""} onChange={(e) => updateField(r.id, "tax_percent", e.target.value)} /></td>
-                <td style={td}><input style={cellInput} type="number" value={r.manual_price ?? ""} onChange={(e) => updateField(r.id, "manual_price", e.target.value)} /></td>
-                <td style={{ ...td, fontSize: 11, color: r.image_url ? "#16a34a" : "#b91c1c" }}>{r.image_url ? "✓" : "missing"}</td>
-                <td style={td}><button onClick={() => saveRow(r)} disabled={saving[r.id]} style={{
-                  padding: "4px 10px", fontSize: 11.5, borderRadius: 4, border: "1px solid #2563eb", background: "#2563eb", color: "#fff", cursor: "pointer",
-                }}>{saving[r.id] ? "…" : "Save"}</button></td>
-              </tr>
-            ))}
+            {visible.map((r) => {
+              const ourPrice = priceMap[r.id];
+              const diff = ourPrice != null && r.reference_price != null ? ourPrice - Number(r.reference_price) : null;
+              return (
+                <tr key={r.id}>
+                  <td style={td}><input type="checkbox" checked={r.active} onChange={(e) => updateField(r.id, "active", e.target.checked)} /></td>
+                  <td style={{ ...td, maxWidth: 260 }}>{r.name}</td>
+                  <td style={{ ...td, fontSize: 11, color: "#888" }}>{r.price_mode}</td>
+                  <td style={td}><input style={cellInput} type="number" value={r.weight_grams ?? ""} onChange={(e) => updateField(r.id, "weight_grams", e.target.value)} /></td>
+                  <td style={td}><input style={cellInput} type="number" value={r.making_charge ?? ""} onChange={(e) => updateField(r.id, "making_charge", e.target.value)} /></td>
+                  <td style={td}><input style={{ ...cellInput, width: 50 }} type="number" value={r.tax_percent ?? ""} onChange={(e) => updateField(r.id, "tax_percent", e.target.value)} /></td>
+                  <td style={td}><input style={cellInput} type="number" value={r.manual_price ?? ""} onChange={(e) => updateField(r.id, "manual_price", e.target.value)} /></td>
+                  <td style={{ ...td, fontWeight: 600 }}>{ourPrice != null ? `₹${ourPrice.toLocaleString("en-IN")}` : "—"}</td>
+                  <td style={td}>{r.reference_price != null ? `₹${Number(r.reference_price).toLocaleString("en-IN")}` : "—"}</td>
+                  <td style={{ ...td, color: diff == null ? "#888" : diff > 0 ? "#b91c1c" : "#16a34a", fontWeight: 600 }}>
+                    {diff != null ? `${diff > 0 ? "+" : ""}₹${diff.toLocaleString("en-IN")}` : "—"}
+                  </td>
+                  <td style={{ ...td, fontSize: 11, color: r.image_url ? "#16a34a" : "#b91c1c" }}>{r.image_url ? "✓" : "missing"}</td>
+                  <td style={td}><button onClick={() => saveRow(r)} disabled={saving[r.id]} style={{
+                    padding: "4px 10px", fontSize: 11.5, borderRadius: 4, border: "1px solid #2563eb", background: "#2563eb", color: "#fff", cursor: "pointer",
+                  }}>{saving[r.id] ? "…" : "Save"}</button></td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
