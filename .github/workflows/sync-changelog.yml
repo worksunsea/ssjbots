@@ -1,0 +1,42 @@
+name: Sync change to ssj-suite migration changelog
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip changelog]')"
+    steps:
+      - name: Append commit to ssj-suite MIGRATION_CHANGELOG.md
+        env:
+          GH_TOKEN: ${{ secrets.CHANGELOG_SYNC_TOKEN }}
+        run: |
+          set -e
+          REPO_NAME="ssjbots"
+          COMMIT_SHA="${GITHUB_SHA:0:7}"
+          COMMIT_MSG=$(git log -1 --pretty=%s "$GITHUB_SHA")
+          COMMIT_MSG_ESCAPED=$(printf '%s' "$COMMIT_MSG" | sed 's/[\/&]/\\&/g')
+
+          git clone https://x-access-token:${GH_TOKEN}@github.com/worksunsea/ssj-suite.git /tmp/ssj-suite
+          cd /tmp/ssj-suite
+
+          NEW_LINE="- [ ] \`${COMMIT_SHA}\` ${COMMIT_MSG_ESCAPED}"
+
+          # Find the "### <repo>" section header and insert the new line right after it
+          # (as the first pending item in that section, most-recent-first).
+          awk -v repo="### ${REPO_NAME}" -v newline="$NEW_LINE" '
+            { print }
+            $0 ~ "^" repo && !done {
+              print newline
+              done = 1
+            }
+          ' MIGRATION_CHANGELOG.md > MIGRATION_CHANGELOG.md.tmp
+          mv MIGRATION_CHANGELOG.md.tmp MIGRATION_CHANGELOG.md
+
+          git config user.name "changelog-sync-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add MIGRATION_CHANGELOG.md
+          git commit -m "docs: log ${REPO_NAME} commit ${COMMIT_SHA} — ${COMMIT_MSG}" || echo "nothing to commit"
+          git push origin master
