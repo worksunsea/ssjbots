@@ -20,7 +20,7 @@ const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxGazdRhKxkjOLk
 // ── Internal API secret (set VITE_CRM_SECRET in Vercel env) ──
 const CRM_SECRET = (import.meta.env.VITE_CRM_SECRET || "").trim();
 
-// ── WA Service (Baileys on Synology) — public URL for QR iframes ──
+// ── WA Service — public URL for QR iframes ──
 // wa-service calls are proxied through /api/wa-proxy to avoid mixed-content issues
 const WA_SERVICE_URL = "/api/wa-proxy?path=";
 
@@ -10476,8 +10476,8 @@ export default function App() {
   const [moreTabsOpen, setMoreTabsOpen] = useState(false);
   const [draggingTabKey, setDraggingTabKey] = useState(null);
 
-  // In-header alert for superadmin/admin when a Baileys WA session is down —
-  // the watchdog (wa-service/watchdog.ps1) already pushes + WhatsApps admins
+  // In-header alert for superadmin/admin when a WA session is down —
+  // the watchdog (wa-service/watchdog.py) already pushes + WhatsApps admins
   // within ~10min of a drop; this covers the gap while someone's actively in
   // the app, and while the tab is open (watchdog only checks every 5 min).
   const [disconnectedClients, setDisconnectedClients] = useState([]);
@@ -11396,7 +11396,7 @@ function downloadEstimatePdf({ title, clientName, rows, total, orientation, form
 }
 
 // Builds the PDF, uploads it to Supabase storage, and sends it as a WhatsApp
-// document via the Baileys wa-service, office session (phone 8860866000).
+// document via the wa-service, office session (phone 8860866000).
 // sections: same shape as buildEstimatePdfDoc.
 async function sendEstimatePdfOnWA({ phone, clientName, title, sections, caption, orientation, format }) {
   const doc = buildEstimatePdfDoc({ title, clientName, sections, orientation, format });
