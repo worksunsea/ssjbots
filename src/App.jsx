@@ -4213,7 +4213,7 @@ function ConnectionsScreen() {
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
         <div style={{ fontSize: 13, color: "#666", flex: 1 }}>
-          WhatsApp sessions paired with your Synology Baileys service. Each session can back one or more funnels — match a funnel's <em>WA session id</em> to one of these.
+          WhatsApp sessions paired with your WA service. Each session can back one or more funnels — match a funnel's <em>WA session id</em> to one of these.
         </div>
         <div style={{ display: "flex", gap: 6 }}>
           <Btn ghost small color={C.gray} onClick={load}>↻</Btn>
