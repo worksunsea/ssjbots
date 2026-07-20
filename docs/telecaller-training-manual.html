@@ -1,0 +1,554 @@
+<title>Demands CRM — Telecaller Training Manual</title>
+<style>
+  :root {
+    --bg: #F6F1E7;
+    --bg-raised: #FFFFFF;
+    --ink: #2A2118;
+    --ink-soft: #6B5E4F;
+    --rule: #E4D9C4;
+    --gold: #9C6B1F;
+    --gold-soft: #F0E2C4;
+    --maroon: #7A2A32;
+    --maroon-soft: #F3E1E1;
+
+    --red: #C0392B;    --red-bg: #FBEAE7;
+    --orange: #C77A1E; --orange-bg: #FBEEDA;
+    --green: #2F7A4F;  --green-bg: #E6F1EA;
+    --gray: #6B6459;   --gray-bg: #ECE7DD;
+    --blue: #3A6EA5;   --blue-bg: #E7EEF5;
+
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Noto Serif", serif;
+    --sans: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1B1712; --bg-raised: #241F18; --ink: #EEE6D6; --ink-soft: #B3A791; --rule: #3A3226;
+      --gold: #D9A94C; --gold-soft: #3C3018; --maroon: #D98A93; --maroon-soft: #3A2226;
+      --red: #E28579; --red-bg: #3A2420; --orange: #E0A15C; --orange-bg: #3A2E1C;
+      --green: #7CBE97; --green-bg: #1F3327; --gray: #A79D8B; --gray-bg: #2B271F;
+      --blue: #8FB3D9; --blue-bg: #202B38;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1B1712; --bg-raised: #241F18; --ink: #EEE6D6; --ink-soft: #B3A791; --rule: #3A3226;
+    --gold: #D9A94C; --gold-soft: #3C3018; --maroon: #D98A93; --maroon-soft: #3A2226;
+    --red: #E28579; --red-bg: #3A2420; --orange: #E0A15C; --orange-bg: #3A2E1C;
+    --green: #7CBE97; --green-bg: #1F3327; --gray: #A79D8B; --gray-bg: #2B271F;
+    --blue: #8FB3D9; --blue-bg: #202B38;
+  }
+  :root[data-theme="light"] {
+    --bg: #F6F1E7; --bg-raised: #FFFFFF; --ink: #2A2118; --ink-soft: #6B5E4F; --rule: #E4D9C4;
+    --gold: #9C6B1F; --gold-soft: #F0E2C4; --maroon: #7A2A32; --maroon-soft: #F3E1E1;
+    --red: #C0392B; --red-bg: #FBEAE7; --orange: #C77A1E; --orange-bg: #FBEEDA;
+    --green: #2F7A4F; --green-bg: #E6F1EA; --gray: #6B6459; --gray-bg: #ECE7DD;
+    --blue: #3A6EA5; --blue-bg: #E7EEF5;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); -webkit-font-smoothing: antialiased; }
+
+  .wrap { max-width: 780px; margin: 0 auto; padding: 48px 24px 100px; }
+
+  /* ── print controls (hidden in print) ── */
+  .print-bar {
+    position: sticky; top: 0; z-index: 40;
+    display: flex; justify-content: flex-end; gap: 8px;
+    padding: 10px 24px; background: var(--bg);
+    border-bottom: 1px solid var(--rule);
+  }
+  .print-btn {
+    font-family: var(--sans); font-size: 12.5px; font-weight: 700;
+    padding: 7px 14px; border-radius: 6px; border: 1px solid var(--gold);
+    background: var(--gold); color: #fff; cursor: pointer;
+  }
+  .print-btn:hover { opacity: 0.9; }
+  @media print { .print-bar { display: none; } }
+
+  /* ── cover ── */
+  .cover { padding: 40px 0 30px; }
+  .kicker { font-size: 11px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gold); margin: 0 0 10px; }
+  h1.title { font-family: var(--serif); font-size: clamp(2rem, 1.5rem + 2vw, 2.9rem); line-height: 1.1; font-weight: 600; margin: 0 0 10px; text-wrap: balance; }
+  .dek { font-size: 16.5px; line-height: 1.6; color: var(--ink-soft); max-width: 58ch; margin: 0 0 20px; }
+  .meta-row { display: flex; gap: 22px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink-soft); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); padding: 12px 0; margin-bottom: 8px; }
+  .meta-row b { color: var(--ink); }
+
+  /* ── contents ── */
+  .toc { margin: 32px 0 8px; }
+  .toc-title { font-family: var(--serif); font-size: 13px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--maroon); margin-bottom: 10px; }
+  .toc-list { list-style: none; margin: 0; padding: 0; columns: 2; column-gap: 28px; }
+  .toc-list li { font-size: 13.5px; padding: 4px 0; color: var(--ink-soft); }
+  .toc-list b { color: var(--ink); font-weight: 600; }
+
+  .top-rule { height: 1px; background: linear-gradient(90deg, var(--gold), var(--rule) 45%, var(--rule)); margin: 8px 0 0; }
+  .rule { height: 1px; background: var(--rule); margin: 40px 0; }
+
+  section.chapter { margin-bottom: 44px; page-break-inside: avoid; }
+  section.chapter.allow-break { page-break-inside: auto; }
+  .chapter-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 14px; page-break-after: avoid; }
+  .chapter-num { font-family: var(--serif); font-size: 14px; color: var(--gold); font-weight: 700; letter-spacing: 0.02em; flex-shrink: 0; min-width: 26px; }
+  h2 { font-family: var(--serif); font-size: 22px; font-weight: 600; margin: 0; text-wrap: balance; }
+  h3 { font-family: var(--serif); font-size: 15.5px; font-weight: 650; margin: 22px 0 8px; color: var(--maroon); }
+
+  p { font-size: 15px; line-height: 1.65; margin: 0 0 13px; }
+  p.lead { color: var(--ink-soft); }
+  strong { color: var(--ink); font-weight: 650; }
+  ul.plain, ol.plain { margin: 0 0 14px; padding-left: 20px; }
+  ul.plain li, ol.plain li { font-size: 14.5px; line-height: 1.6; margin-bottom: 5px; }
+
+  .callout { background: var(--gold-soft); border: 1px solid var(--gold); border-radius: 3px; padding: 14px 18px; margin: 14px 0; font-size: 14px; line-height: 1.55; }
+  .callout strong { color: var(--gold); }
+  .callout.warn { background: var(--red-bg); border-color: var(--red); }
+  .callout.warn strong { color: var(--red); }
+  .callout.tip { background: var(--green-bg); border-color: var(--green); }
+  .callout.tip strong { color: var(--green); }
+
+  /* mock card reused */
+  .mock-card { background: var(--bg-raised); border: 1px solid var(--rule); border-left: 4px solid var(--red); border-radius: 6px; padding: 12px 16px; margin: 10px 0 16px; }
+  .mock-row1 { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
+  .mock-name-group { display: flex; align-items: center; gap: 6px; }
+  .mock-name { font-weight: 700; font-size: 14px; }
+  .chip { font-size: 10.5px; padding: 3px 8px; border-radius: 10px; font-weight: 600; white-space: nowrap; }
+  .chip.hot { background: var(--red); color: #fff; }
+  .chip.vip { background: var(--gold); color: #fff; }
+  .mock-btn { font-size: 11.5px; font-weight: 700; padding: 6px 12px; border-radius: 6px; color: #fff; background: var(--red); white-space: nowrap; }
+  .mock-line { font-size: 12px; color: var(--ink-soft); }
+
+  table.legend { width: 100%; border-collapse: collapse; margin: 6px 0 8px; font-size: 13px; }
+  table.legend th { text-align: left; font-size: 10px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-soft); padding: 0 10px 8px 0; border-bottom: 1px solid var(--rule); }
+  table.legend td { padding: 9px 10px 9px 0; border-bottom: 1px solid var(--rule); vertical-align: top; line-height: 1.5; }
+  table.legend tr:last-child td { border-bottom: none; }
+  .btn-tag { display: inline-block; font-size: 11px; font-weight: 700; padding: 4px 9px; border-radius: 5px; white-space: nowrap; }
+  .btn-tag.red { background: var(--red-bg); color: var(--red); }
+  .btn-tag.orange { background: var(--orange-bg); color: var(--orange); }
+  .btn-tag.green { background: var(--green-bg); color: var(--green); }
+  .btn-tag.gray { background: var(--gray-bg); color: var(--gray); }
+  .meaning { color: var(--ink-soft); font-size: 12.5px; }
+
+  .action-groups { display: flex; flex-direction: column; gap: 10px; margin: 8px 0; }
+  .action-group { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 6px; padding: 13px 16px; }
+  .ag-head { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+  .ag-badge { font-family: var(--serif); font-size: 10.5px; font-weight: 700; color: var(--bg-raised); background: var(--maroon); border-radius: 4px; padding: 2px 8px; letter-spacing: 0.03em; }
+  .ag-title { font-weight: 700; font-size: 13.5px; }
+  .ag-items { margin: 0; padding-left: 0; list-style: none; font-size: 13px; color: var(--ink-soft); }
+  .ag-items li { padding: 2px 0; }
+  .ag-items li::before { content: "—  "; color: var(--rule); }
+  .ag-note { font-size: 11.5px; color: var(--ink-soft); font-style: italic; margin-top: 7px; }
+
+  .fieldrow { display: flex; align-items: center; gap: 12px; padding: 7px 0; border-bottom: 1px dashed var(--rule); font-size: 13.5px; }
+  .fieldrow:last-child { border-bottom: none; }
+  .field-n { font-family: var(--serif); font-weight: 600; color: var(--gold); font-size: 12.5px; min-width: 16px; }
+  .field-name { font-weight: 650; min-width: 150px; }
+  .field-note { color: var(--ink-soft); font-size: 12.5px; }
+
+  .optional-box { margin-top: 14px; border: 1px dashed var(--rule); border-radius: 6px; padding: 11px 16px; font-size: 13px; color: var(--ink-soft); background: var(--maroon-soft); }
+  .optional-box strong { color: var(--maroon); }
+
+  .flow { display: flex; flex-wrap: wrap; align-items: center; gap: 0; margin: 10px 0 16px; font-size: 12.5px; }
+  .flow-step { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 6px; padding: 8px 12px; font-weight: 650; }
+  .flow-arrow { color: var(--gold); padding: 0 8px; font-weight: 700; }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 620px) { .two-col { grid-template-columns: 1fr; } }
+
+  .temp-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--rule); }
+  .temp-row:last-child { border-bottom: none; }
+  .temp-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .temp-label { font-weight: 650; min-width: 70px; font-size: 13.5px; }
+  .temp-desc { font-size: 13px; color: var(--ink-soft); }
+
+  .card-num-list { counter-reset: cardnum; list-style: none; padding: 0; margin: 8px 0 14px; }
+  .card-num-list li { counter-increment: cardnum; position: relative; padding: 8px 0 8px 32px; border-bottom: 1px dashed var(--rule); font-size: 14px; line-height: 1.55; }
+  .card-num-list li:last-child { border-bottom: none; }
+  .card-num-list li::before { content: counter(cardnum); position: absolute; left: 0; top: 8px; width: 20px; height: 20px; border-radius: 50%; background: var(--maroon); color: #fff; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+
+  .faq-item { margin-bottom: 16px; }
+  .faq-q { font-weight: 700; font-size: 14px; margin-bottom: 4px; color: var(--maroon); }
+  .faq-a { font-size: 13.5px; color: var(--ink-soft); line-height: 1.6; }
+
+  .reason-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 18px; margin: 8px 0 14px; }
+  .reason-item { font-size: 13px; padding: 6px 0; border-bottom: 1px solid var(--rule); }
+
+  .cheat-sheet { background: var(--bg-raised); border: 2px solid var(--gold); border-radius: 8px; padding: 20px 22px; margin-top: 10px; }
+  .cheat-title { font-family: var(--serif); font-size: 17px; font-weight: 700; color: var(--gold); margin: 0 0 12px; }
+
+  footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule); font-size: 12px; color: var(--ink-soft); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+
+  /* ── print pagination ── */
+  @media print {
+    body { background: #fff; }
+    .wrap { max-width: none; padding: 0 8mm; }
+    section.chapter { page-break-before: always; }
+    section.chapter:first-of-type { page-break-before: avoid; }
+    .cover { page-break-before: avoid; }
+    a { color: inherit; text-decoration: none; }
+  }
+
+  @media (max-width: 520px) {
+    .wrap { padding: 0 16px 72px; }
+    .print-bar { padding: 10px 16px; }
+    .toc-list { columns: 1; }
+    .field-name { min-width: 120px; }
+  }
+</style>
+
+<div class="print-bar">
+  <button class="print-btn" onclick="window.print()">🖨 Print / Save as PDF</button>
+</div>
+
+<div class="wrap">
+
+  <div class="cover">
+    <p class="kicker">Sun Sea Jewellers · Demands CRM</p>
+    <h1 class="title">Telecaller Training Manual</h1>
+    <p class="dek">The complete Demands module, start to end — how a purchase enquiry is born, how you work it,
+      and how it closes. Read once fully, then keep the cheat sheet at the back on your desk.</p>
+    <div class="meta-row">
+      <span>Module: <b>Demands</b></span>
+      <span>Audience: <b>Telecallers</b></span>
+      <span>Version: <b>Jul 2026</b></span>
+      <span>Reading time: <b>~18 min</b></span>
+    </div>
+
+    <div class="toc">
+      <div class="toc-title">Contents</div>
+      <ul class="toc-list">
+        <li><b>01</b> What a "demand" is</li>
+        <li><b>02</b> Where demands come from</li>
+        <li><b>03</b> Temperature — hot, warm, cold</li>
+        <li><b>04</b> Reading a demand card</li>
+        <li><b>05</b> The funnel — bot steps vs. call steps</li>
+        <li><b>06</b> Logging a call, start to finish</li>
+        <li><b>07</b> Call cadence &amp; what happens if no one answers</li>
+        <li><b>08</b> Scheduling and running a visit</li>
+        <li><b>09</b> Sending a design reference</li>
+        <li><b>10</b> Closing a demand</li>
+        <li><b>11</b> Adding a walk-in customer</li>
+        <li><b>12</b> Returning clients &amp; VIPs</li>
+        <li><b>13</b> Tags, family members, hidden numbers</li>
+        <li><b>14</b> Common situations &amp; what to do</li>
+        <li><b>15</b> Cheat sheet</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="top-rule"></div>
+
+  <!-- 01 -->
+  <section class="chapter">
+    <div class="chapter-head"><span class="chapter-num">01</span><h2>What a "demand" is</h2></div>
+    <p>A <strong>contact</strong> is a person — their phone number, name, city, birthday, tags. A
+      <strong>demand</strong> is one specific purchase enquiry belonging to that contact — a particular thing they
+      want to buy, for a particular occasion, at a particular budget.</p>
+    <p>One contact can have several demands over time: the same client might enquire about a wedding necklace in
+      March and a gift ring in December — two separate demands, one contact record.</p>
+    <div class="callout">
+      <strong>Why this matters:</strong> when you open a demand, you're looking at one enquiry's story — not the
+      client's whole history. Their contact record (tags, family, past visits) sits inside the same screen so you
+      always have the fuller picture too.
+    </div>
+  </section>
+
+  <!-- 02 -->
+  <section class="chapter">
+    <div class="chapter-head"><span class="chapter-num">02</span><h2>Where demands come from</h2></div>
+    <div class="two-col">
+      <div>
+        <h3>🤖 WhatsApp bot (most common)</h3>
+        <p>A customer messages the shop's WhatsApp number. The bot chats with them, works out what they're looking
+          for, and automatically creates the demand — no telecaller action needed at this stage. The bot keeps
+          messaging until it either qualifies them (sets a call step) or hands off to a human.</p>
+      </div>
+      <div>
+        <h3>🏪 Walk-in</h3>
+        <p>A customer walks into the shop. Staff use <strong>+ Walk-in</strong> in the Demands tab to log them —
+          covered fully in Chapter 11.</p>
+      </div>
+    </div>
+    <p>A manager can also add a demand manually via <strong>+ New Demand</strong> (for phone enquiries, referrals,
+      etc.) — as a telecaller you'll rarely need this button yourself.</p>
+  </section>
+
+  <!-- 03 -->
+  <section class="chapter">
+    <div class="chapter-head"><span class="chapter-num">03</span><h2>Temperature — hot, warm, cold</h2></div>
+    <p class="lead">Every demand gets an automatic temperature. It's the system doing triage for you — always work
+      hot before warm before cold.</p>
+    <div class="temp-row"><span class="temp-dot" style="background:var(--red)"></span><span class="temp-label">🔥 Hot</span><span class="temp-desc">Needs a human right now — call is due, visit is within 36 hours, bot handed off, or the lead is brand new (under an hour old)</span></div>
+    <div class="temp-row"><span class="temp-dot" style="background:var(--orange)"></span><span class="temp-label">🌤 Warm</span><span class="temp-desc">Active conversation in the last 24 hours, visit within a week, or a returning client (who never auto-drops to cold)</span></div>
+    <div class="temp-row"><span class="temp-dot" style="background:var(--blue)"></span><span class="temp-label">❄️ Cold</span><span class="temp-desc">Open, but quiet for over a day — still worth a call, just not urgent</span></div>
+    <div class="temp-row"><span class="temp-dot" style="background:var(--green)"></span><span class="temp-label">✅ Converted</span><span class="temp-desc">Sale closed</span></div>
+    <div class="temp-row"><span class="temp-dot" style="background:var(--gray)"></span><span class="temp-label">💀 Dead</span><span class="temp-desc">Lost, junk, or opted out</span></div>
+    <p style="margin-top:10px;">A manager can manually <strong>pin</strong> a temperature (🔥 / 🌤 / ❄️) inside the
+      full record when they know something the system doesn't — a pinned temperature overrides the automatic one
+      until it's removed.</p>
+  </section>
+
+  <!-- 04 -->
+  <section class="chapter">
+    <div class="chapter-head"><span class="chapter-num">04</span><h2>Reading a demand card</h2></div>
+    <p class="lead">Every card in your list boils down to two lines and one button.</p>
+
+    <div class="mock-card">
+      <div class="mock-row1">
+        <div class="mock-name-group">
+          <span class="mock-name">Priya Sharma</span>
+          <span class="chip hot">🔥 Hot</span>
+        </div>
+        <span class="mock-btn">📞 Call now · overdue 2h</span>
+      </div>
+      <div class="mock-line">Wedding necklace in polki · Wedding 15 Dec · ₹5,00,000</div>
+    </div>
+
+    <p>Line one: name, temperature chip, a gold ⭐ VIP chip if they're a returning client, and the button. Line two:
+      what they want · occasion + date · budget, in plain text.</p>
+
+    <p><strong>The button is always the single correct thing to do next.</strong> It's computed from the demand's
+      state, so you never have to work out priority yourself:</p>
+
+    <table class="legend">
+      <tr><th style="width:34%">Button</th><th>Meaning</th><th style="width:26%">On tap</th></tr>
+      <tr><td><span class="btn-tag red">Call back NOW — promised 5:30pm</span></td><td class="meaning">You promised a callback and that time has arrived</td><td class="meaning">Opens the call-log form directly</td></tr>
+      <tr><td><span class="btn-tag red">Call now · overdue 2h</span></td><td class="meaning">Scheduled call time has passed</td><td class="meaning">Opens the call-log form directly</td></tr>
+      <tr><td><span class="btn-tag gray">Call at 5:30pm</span></td><td class="meaning">Not due yet</td><td class="meaning">Nothing — wait</td></tr>
+      <tr><td><span class="btn-tag green">Visit TODAY 11am — prepare pieces</span></td><td class="meaning">Client is coming in today</td><td class="meaning">Opens full record</td></tr>
+      <tr><td><span class="btn-tag orange">Confirm visit for tomorrow</span></td><td class="meaning">Visit tomorrow, unconfirmed</td><td class="meaning">Opens record — call/WA to confirm</td></tr>
+      <tr><td><span class="btn-tag orange">Visited — mark result</span></td><td class="meaning">Visit date passed, no outcome yet</td><td class="meaning">Opens record — log what happened</td></tr>
+      <tr><td><span class="btn-tag red">Reply personally — bot handed off</span></td><td class="meaning">Bot couldn't handle it</td><td class="meaning">Opens the chat</td></tr>
+      <tr><td><span class="meaning" style="font-style:italic">🤖 Bot chatting · no action</span></td><td class="meaning">Bot's got it</td><td class="meaning">Nothing for you to do</td></tr>
+    </table>
+    <p class="ag-note">Tapping anywhere else on the card opens the full record.</p>
+  </section>
+
+  <!-- 05 -->
+  <section class="chapter">
+    <div class="chapter-head"><span class="chapter-num">05</span><h2>The funnel — bot steps vs. call steps</h2></div>
+    <p>Behind every demand is a <strong>funnel</strong> — a sequence of steps that decides what happens next. Two
+      kinds of step exist:</p>
+    <div class="flow">
+      <span class="flow-step">💬 Message step</span><span class="flow-arrow">→</span>
+      <span class="flow-step">📞 Call step</span><span class="flow-arrow">→</span>
+      <span class="flow-step">💬 Message step</span><span class="flow-arrow">→</span>
+      <span class="flow-step">🏁 Done</span>
+    </div>
+    <ul class="plain">
+      <li><strong>💬 Message steps</strong> — the bot sends WhatsApp messages on a timer. No action needed from you;
+        the card shows <em>"🤖 Bot chatting · no action."</em></li>
+      <li><strong>📞 Call steps</strong> — this is where you come in. The system schedules a call time and the card's
+        button turns into a call prompt when it's due.</li>
+    </ul>
+    <p>Managers can see and change the full funnel picture (current step, next step, step history) behind a
+      <strong>"🛤 Funnel ▾"</strong> disclosure in the full record — as a telecaller you don't need to touch this;
+      just work the button in front of you.</p>
+  </section>
+
+  <!-- 06 -->
+  <section class="chapter allow-break">
+    <div class="chapter-head"><span class="chapter-num">06</span><h2>Logging a call, start to finish</h2></div>
+    <ol class="card-num-list">
+      <li>Tap the red/orange call button on the card (or inside the record). The call-log form opens straight away — you don't need to find it in a menu.</li>
+      <li>A <strong>script</strong> appears on the right, already filled in with the client's name and product. Which script you get depends on the attempt number: <strong>S1</strong> for the first call, <strong>S2</strong> for the middle attempts, <strong>S3</strong> for the last one or two. Below it, an objections cheat-sheet of common pushbacks and suggested responses.</li>
+      <li>A timer starts the moment the form opens, so call duration is tracked automatically — you don't fill this in.</li>
+      <li>Make the call, then record what happened as the <strong>disposition</strong>:
+        <ul class="plain" style="margin-top:6px;">
+          <li>✅ Answered — interested (moves the demand forward to messaging)</li>
+          <li>🕒 Answered — not now (callback)</li>
+          <li>❌ Answered — not interested</li>
+          <li>🔕 No answer</li>
+          <li>📞 Busy (system retries in 15 min)</li>
+          <li>📩 Voicemail left</li>
+          <li>📅 Callback requested</li>
+          <li>🚫 Wrong number</li>
+          <li>⛔ Do not call (DNC)</li>
+        </ul>
+      </li>
+      <li>If you picked <strong>"Answered — not now"</strong> or <strong>"Callback requested"</strong>, you must set a callback time — this is exactly what makes the card turn red again at the right moment later.</li>
+      <li>Add notes — anything specific they said. Future-you (or whoever picks this up next) will thank you.</li>
+      <li>Save. The card and the demand's cadence counter both update immediately.</li>
+    </ol>
+    <div class="callout tip"><strong>Tip:</strong> read the script before dialling, not while the phone is ringing.</div>
+  </section>
+
+  <!-- 07 -->
+  <section class="chapter">
+    <div class="chapter-head"><span class="chapter-num">07</span><h2>Call cadence &amp; what happens if no one answers</h2></div>
+    <p>Every call-step demand has a maximum number of attempts (set by the shop, commonly 6). The full record shows
+      a dot tracker — filled dots for attempts used, empty for attempts remaining — plus when the next attempt is
+      due.</p>
+    <p>If the customer never answers and the cadence is exhausted, the system automatically moves the demand into a
+      <strong>cold_revive</strong> path instead of just abandoning it — it isn't lost, it drops in priority and
+      switches to a longer-term nurture flow.</p>
+    <p>If you called and there was <strong>no answer</strong>, you can send a one-tap <strong>"📲 Send 'tried to
+      call' WA"</strong> message from the call-cadence section — a polite WhatsApp letting them know you tried, so
+      the silence on their end doesn't feel like being ignored.</p>
+  </section>
+
+  <!-- 08 -->
+  <section class="chapter">
+    <div class="chapter-head"><span class="chapter-num">08</span><h2>Scheduling and running a visit</h2></div>
+    <p>Open the full record → <strong>⋯ More → 📅 Schedule visit</strong>. Pick a date and time and, optionally, a
+      note for the salesperson who'll host the visit (e.g. "coming with husband, wants to see polki set"). The
+      demand will now surface in your queue on that day.</p>
+    <p>From there, the card's button carries you through automatically:</p>
+    <ul class="plain">
+      <li><strong>🟠 Confirm visit for tomorrow</strong> — call or WhatsApp to confirm they're still coming.</li>
+      <li><strong>🟢 Visit TODAY — prepare pieces</strong> — the day has arrived; review the demand notes before they walk in.</li>
+      <li><strong>🟠 Visited — mark result</strong> — appears automatically once the visit time has passed with no outcome logged yet. Open the record and close the demand (Chapter 10) with what actually happened.</li>
+    </ul>
+  </section>
+
+  <!-- 09 -->
+  <section class="chapter">
+    <div class="chapter-head"><span class="chapter-num">09</span><h2>Sending a design reference</h2></div>
+    <p>Open the full record → <strong>⋯ More → 📤 Send design</strong>. Paste an image/file link, add a caption if
+      you like, and send — it goes out over the shop's connected WhatsApp session and is logged against the demand
+      automatically, so anyone opening the record later can see what was shared and when.</p>
+  </section>
+
+  <!-- 10 -->
+  <section class="chapter">
+    <div class="chapter-head"><span class="chapter-num">10</span><h2>Closing a demand</h2></div>
+    <p>Open the full record → <strong>Close demand ▾</strong>:</p>
+    <div class="action-groups">
+      <div class="action-group">
+        <div class="ag-head"><span class="ag-badge">✅</span><span class="ag-title">Converted</span></div>
+        <p style="margin:0; font-size:13px; color:var(--ink-soft);">They bought. Triggers the post-sale sequence automatically — a thank-you, then a feedback check-in, then a review request, then a longer-term check-in.</p>
+      </div>
+      <div class="action-group">
+        <div class="ag-head"><span class="ag-badge">❌</span><span class="ag-title">Lost…</span></div>
+        <p style="margin:0 0 6px; font-size:13px; color:var(--ink-soft);">Didn't buy — pick the real reason, it matters for what management sees later:</p>
+        <div class="reason-grid">
+          <div class="reason-item">💰 Price too high</div>
+          <div class="reason-item">⏰ Bad timing / not ready</div>
+          <div class="reason-item">🏪 Went to competitor</div>
+          <div class="reason-item">🚫 Not interested at all</div>
+          <div class="reason-item">💸 Budget too low</div>
+          <div class="reason-item">👻 No show / ghosted</div>
+          <div class="reason-item">🗑 Junk / wrong number</div>
+        </div>
+      </div>
+      <div class="action-group">
+        <div class="ag-head"><span class="ag-badge">🤔</span><span class="ag-title">Not interested</span></div>
+        <p style="margin:0; font-size:13px; color:var(--ink-soft);">They engaged but genuinely don't want to proceed — softer than Lost, no reason needed.</p>
+      </div>
+      <div class="action-group">
+        <div class="ag-head"><span class="ag-badge">🗑</span><span class="ag-title">Junk</span></div>
+        <p style="margin:0; font-size:13px; color:var(--ink-soft);">Not a real enquiry at all.</p>
+      </div>
+      <div class="action-group">
+        <div class="ag-head"><span class="ag-badge">🏷</span><span class="ag-title">Supplier</span></div>
+        <p style="margin:0; font-size:13px; color:var(--ink-soft);">Wrong category — this was a vendor/supplier message, not a customer.</p>
+      </div>
+      <div class="action-group">
+        <div class="ag-head"><span class="ag-badge">🚫</span><span class="ag-title">Opt Out / DNC</span></div>
+        <p style="margin:0; font-size:13px; color:var(--ink-soft);">They asked to never be contacted again. Blocks all future calls and messages.</p>
+      </div>
+    </div>
+    <div class="callout warn"><strong>Cannot be undone:</strong> Opt Out / DNC is permanent. Only use it when the customer explicitly asked to be left alone.</div>
+  </section>
+
+  <!-- 11 -->
+  <section class="chapter allow-break">
+    <div class="chapter-head"><span class="chapter-num">11</span><h2>Adding a walk-in customer</h2></div>
+    <p class="lead">Click <strong>+ Walk-in</strong> at the top of the Demands tab. This is built to fill in about
+      thirty seconds, while the customer is still standing at the counter.</p>
+    <div class="fieldrow"><span class="field-n">a</span><span class="field-name">Name</span><span class="field-note">required</span></div>
+    <div class="fieldrow"><span class="field-n">b</span><span class="field-name">Phone</span><span class="field-note">required</span></div>
+    <div class="fieldrow"><span class="field-n">c</span><span class="field-name">Product category</span><span class="field-note">gold, diamond, silver…</span></div>
+    <div class="fieldrow"><span class="field-n">d</span><span class="field-name">Estimate / budget</span><span class="field-note">rough figure is fine</span></div>
+    <div class="fieldrow"><span class="field-n">e</span><span class="field-name">Description</span><span class="field-note">what they're looking for</span></div>
+    <div class="fieldrow"><span class="field-n">f</span><span class="field-name">Occasion + date</span><span class="field-note">if there is one</span></div>
+    <p style="margin-top:14px;">Press <strong>Save Walk-in</strong>. Contact and demand are both created, and the
+      card appears in your list right away.</p>
+    <div class="optional-box">
+      <strong>Everything else is optional</strong> — city, birthday, exchange/trade-in, items seen, price quoted,
+      competitor mentioned, design reference photo, and more. It's collapsed under
+      <strong>"▼ Complete visit details"</strong> at the bottom of the same form. Open it if you have a spare minute
+      right then; otherwise leave it closed — saving never requires it.
+    </div>
+    <p style="margin-top:12px;">If the phone number already exists in the system, you'll be offered the existing
+      contact instead of creating a duplicate — always use the existing one unless you're certain it's a different
+      person.</p>
+  </section>
+
+  <!-- 12 -->
+  <section class="chapter">
+    <div class="chapter-head"><span class="chapter-num">12</span><h2>Returning clients &amp; VIPs</h2></div>
+    <p>When a contact is marked as a known client (has bought before), their demand card gets a gold
+      <strong>⭐ VIP</strong> chip, and the full record shows a yellow banner:</p>
+    <div class="callout"><strong>⭐ Returning client</strong> — known customer, treat as priority. Confirm their
+      previous purchase preference before calling.</div>
+    <p>Returning clients also never automatically cool down to ❄️ Cold, even if they've gone quiet — the system
+      keeps them warm until a human decides otherwise. Past estimates and visit history are visible in the record so
+      you can reference what they've bought or asked about before.</p>
+  </section>
+
+  <!-- 13 -->
+  <section class="chapter">
+    <div class="chapter-head"><span class="chapter-num">13</span><h2>Tags, family members, hidden numbers</h2></div>
+    <h3>Tags</h3>
+    <p>Every contact can carry tags (source tags like <em>walk_in</em>, plus custom ones the shop has set up). Tags
+      live on the contact, not the demand — visible and editable at the bottom of the full record.</p>
+    <h3>Family members</h3>
+    <p>The record also shows linked family members for the contact — useful for gifting occasions and for spotting
+      when two enquiries are actually the same household.</p>
+    <h3>Hidden numbers (LID)</h3>
+    <p>Occasionally WhatsApp hides a sender's real phone number and shows a "WA hidden #" placeholder instead. You'll
+      see an orange banner: <strong>"⚠️ This is a WA-hidden sender. Real phone unknown."</strong> If you learn their
+      real number in conversation, use <strong>🔗 Link to existing contact</strong> to merge it into their proper
+      contact record — otherwise you'll never be able to call them directly.</p>
+  </section>
+
+  <!-- 14 -->
+  <section class="chapter allow-break">
+    <div class="chapter-head"><span class="chapter-num">14</span><h2>Common situations &amp; what to do</h2></div>
+
+    <div class="faq-item">
+      <div class="faq-q">The button says "Call at 5:30pm" and it's greyed out — can I still call early?</div>
+      <div class="faq-a">Yes, calling early is fine — the button is just telling you it's not urgent yet. Open the record and use Log Call from there.</div>
+    </div>
+    <div class="faq-item">
+      <div class="faq-q">I found a duplicate — the same person has two contact records.</div>
+      <div class="faq-a">Ask a manager to merge them (⋯ More → Merge duplicate, manager-only) — merging moves all messages and demands onto one record so history isn't lost.</div>
+    </div>
+    <div class="faq-item">
+      <div class="faq-q">The customer wants to speak to a manager, not the bot or me.</div>
+      <div class="faq-a">A manager can set the lead to Handoff, which pauses the bot and flags it — you'll then see "💬 Reply personally — bot handed off" until it's resolved.</div>
+    </div>
+    <div class="faq-item">
+      <div class="faq-q">I marked the wrong disposition on a call.</div>
+      <div class="faq-a">Log a fresh call attempt with the correct outcome and note the correction — call logs are kept as history, not edited after the fact.</div>
+    </div>
+    <div class="faq-item">
+      <div class="faq-q">A demand looks stuck — no button, no bot activity, nothing.</div>
+      <div class="faq-a">Open the record — if the funnel section shows "⚠ No step set yet," the bot will assign the first step automatically the next time it replies. If it's been quiet a long time, flag it to a manager.</div>
+    </div>
+  </section>
+
+  <div class="rule"></div>
+
+  <!-- 15 CHEAT SHEET -->
+  <section class="chapter">
+    <div class="chapter-head"><span class="chapter-num">15</span><h2>Cheat sheet</h2></div>
+    <div class="cheat-sheet">
+      <p class="cheat-title">Keep this page open on a second tab</p>
+      <table class="legend">
+        <tr><th style="width:30%">You see…</th><th>You do…</th></tr>
+        <tr><td><span class="btn-tag red">Call now</span></td><td class="meaning">Tap it → fill disposition → save</td></tr>
+        <tr><td><span class="btn-tag orange">Confirm / mark visit</span></td><td class="meaning">Open record → confirm by call/WA, or log the outcome</td></tr>
+        <tr><td><span class="btn-tag green">Visit TODAY</span></td><td class="meaning">Review notes before they arrive</td></tr>
+        <tr><td><span class="meaning">🤖 Bot chatting</span></td><td class="meaning">Nothing — leave it</td></tr>
+        <tr><td>Sale closed</td><td class="meaning">Close demand ▾ → ✅ Converted</td></tr>
+        <tr><td>Didn't buy</td><td class="meaning">Close demand ▾ → ❌ Lost… → pick a reason</td></tr>
+        <tr><td>Wrong number / not a lead</td><td class="meaning">Close demand ▾ → 🗑 Junk</td></tr>
+        <tr><td>Asked to never be contacted</td><td class="meaning">Close demand ▾ → 🚫 Opt Out / DNC</td></tr>
+        <tr><td>New walk-in at counter</td><td class="meaning">+ Walk-in → 6 fields → Save (rest is optional)</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    <span>Demands CRM · Sun Sea Jewellers</span>
+    <span>Telecaller Training Manual · Jul 2026</span>
+  </footer>
+
+</div>

@@ -44,3 +44,4 @@ downloads/
 
 # Large binary backups
 scripts/*.sql.gz
+.env*
