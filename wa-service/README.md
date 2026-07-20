@@ -1,5 +1,7 @@
 # SSJ WA Service
 
+**Deployment (2026-07-20):** runs on the Synology NAS (`/volume1/docker/ssjbots-live/wa-service`), not the office PC. Watchdog is `watchdog.py`, scheduled via NAS `/etc/crontab` every 5 min (not DSM Task Scheduler GUI — added directly to crontab). `watchdog.ps1` is the old PC-era version, kept for reference only; the PC's `SSJ-WA-Watchdog` scheduled task is disabled.
+
 A tiny Node.js service that pairs with WhatsApp Web (via Baileys) and:
 
 1. **Receives** every incoming message and forwards it to the Vercel bot at `/api/webhook`.
