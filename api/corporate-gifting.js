@@ -246,22 +246,28 @@ export default async function handler(req, res) {
     }
     if (!images.length) return res.status(500).json({ ok: false, error: "no_images_saved" });
 
+    const batchNumber = design.batch_count + 1;
+    const newBatch = { batchNumber, generatedAt: new Date().toISOString(), color, customText, images };
+    const imageBatches = [...(design.image_batches || []), newBatch];
+
     await sb.from("corporate_gifting_designs").update({
-      logo_url: logoUrl, color, custom_text: customText, images,
-      batch_count: design.batch_count + 1, status: "generated", updated_at: new Date().toISOString(),
+      logo_url: logoUrl, color, custom_text: customText, images, image_batches: imageBatches,
+      batch_count: batchNumber, status: "generated", updated_at: new Date().toISOString(),
     }).eq("id", design.id);
 
-    return res.status(200).json({ ok: true, designId: design.id, images });
+    return res.status(200).json({ ok: true, designId: design.id, images, batchNumber, imageBatches });
   }
 
-  // ── POST action=design-select — public. Locks in the chosen design. ─
+  // ── POST action=design-select — public. Locks in the chosen design.
+  // batchNumber is optional for back-compat (older clients that only ever
+  // saw one batch); defaults to the most recent one. ──────────────────
   if (req.method === "POST" && action === "design-select") {
     let body = req.body; if (typeof body === "string") { try { body = JSON.parse(body); } catch { body = {}; } }
     body = body || {};
-    const { designId, selectedIndex } = body;
+    const { designId, selectedIndex, batchNumber } = body;
     if (!designId || selectedIndex == null) return res.status(400).json({ ok: false, error: "design_id_and_index_required" });
     const { error } = await sb.from("corporate_gifting_designs")
-      .update({ selected_index: selectedIndex, status: "finalized", updated_at: new Date().toISOString() })
+      .update({ selected_index: selectedIndex, selected_batch_number: batchNumber ?? null, status: "finalized", updated_at: new Date().toISOString() })
       .eq("id", designId);
     if (error) return res.status(500).json({ ok: false, error: error.message });
     return res.status(200).json({ ok: true });

@@ -13662,8 +13662,11 @@ function CorporateGiftingScreen() {
   const [designColor, setDesignColor] = useState("#B8860B");
   const [designText, setDesignText] = useState("");
   const [designImages, setDesignImages] = useState(null);
+  const [designBatches, setDesignBatches] = useState([]); // all batches ever generated this session, most-recent last
   const [designId, setDesignId] = useState(null);
   const [designSelectedIndex, setDesignSelectedIndex] = useState(null);
+  const [designSelectedBatch, setDesignSelectedBatch] = useState(null); // which batch the selected index belongs to
+  const [showOlderBatches, setShowOlderBatches] = useState(false);
   const [designFinalized, setDesignFinalized] = useState(false);
   const [designSubmitting, setDesignSubmitting] = useState(false);
   const [designError, setDesignError] = useState("");
@@ -13800,8 +13803,11 @@ function CorporateGiftingScreen() {
       const genD = await genRes.json();
       if (!genD.ok) { setDesignError(genD.message || "Couldn't generate designs — try again."); setDesignSubmitting(false); return; }
       setDesignImages(genD.images);
+      setDesignBatches(genD.imageBatches || []);
       setDesignId(genD.designId);
       setDesignSelectedIndex(null);
+      setDesignSelectedBatch(genD.batchNumber ?? null);
+      setShowOlderBatches(false);
     } catch {
       setDesignError("Network error — please try again.");
     }
@@ -13814,12 +13820,19 @@ function CorporateGiftingScreen() {
     try {
       await fetch("/api/corporate-gifting?action=design-select", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ designId, selectedIndex: designSelectedIndex }),
+        body: JSON.stringify({ designId, selectedIndex: designSelectedIndex, batchNumber: designSelectedBatch }),
       });
       setDesignFinalized(true);
     } catch { /* best-effort */ }
     setDesignSubmitting(false);
   };
+
+  // The confirmed image can belong to any past batch, not just the latest.
+  const selectedDesignImage = (() => {
+    if (designSelectedBatch == null) return designImages?.[designSelectedIndex];
+    const batch = designBatches.find((b) => b.batchNumber === designSelectedBatch);
+    return batch?.images?.[designSelectedIndex] ?? designImages?.[designSelectedIndex];
+  })();
 
   const inputStyle = {
     width: "100%", minHeight: 44, padding: "10px 12px", borderRadius: 3,
@@ -13896,23 +13909,58 @@ function CorporateGiftingScreen() {
               <div style={{ fontSize: 12, color: "var(--cat-muted)", marginBottom: 14 }}>Upload your company logo and we'll mock up 4 branded box/card design options for you — free preview, one batch per order.</div>
               {designFinalized ? (
                 <div style={{ textAlign: "center", padding: "20px 0" }}>
-                  <img src={designImages[designSelectedIndex]?.url} alt="Selected design" style={{ width: 160, height: 160, objectFit: "cover", borderRadius: 4, marginBottom: 10 }} />
-                  <div style={{ fontSize: 13, color: "var(--cat-gold)", fontWeight: 600 }}>✓ Design confirmed — {designImages[designSelectedIndex]?.label}</div>
+                  <img src={selectedDesignImage?.url} alt="Selected design" style={{ width: 160, height: 160, objectFit: "cover", borderRadius: 4, marginBottom: 10 }} />
+                  <div style={{ fontSize: 13, color: "var(--cat-gold)", fontWeight: 600 }}>✓ Design confirmed — {selectedDesignImage?.label}{designSelectedBatch ? ` (batch ${designSelectedBatch})` : ""}</div>
                   <div style={{ fontSize: 11, color: "var(--cat-muted)", marginTop: 4 }}>Mention this when you send your enquiry. Want more options? Confirm your order and our team can unlock extra design batches.</div>
                 </div>
               ) : designImages ? (
                 <div>
+                  <div style={{ fontSize: 11, color: "var(--cat-muted)", marginBottom: 8 }}>Batch {designBatches[designBatches.length - 1]?.batchNumber || 1} — latest options:</div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
-                    {designImages.map((img, i) => (
-                      <div key={i} onClick={() => setDesignSelectedIndex(i)} style={{
-                        cursor: "pointer", borderRadius: 4, overflow: "hidden",
-                        border: designSelectedIndex === i ? "2px solid var(--cat-gold)" : "1px solid var(--cat-border)",
-                      }}>
-                        <img src={img.url} alt={img.label} style={{ width: "100%", aspectRatio: "1", objectFit: "cover", display: "block" }} />
-                        <div style={{ fontSize: 11, padding: "6px 8px", color: "var(--cat-text)", background: designSelectedIndex === i ? "var(--cat-gold-soft)" : "transparent" }}>{img.label}</div>
-                      </div>
-                    ))}
+                    {designImages.map((img, i) => {
+                      const isSelected = designSelectedIndex === i && designSelectedBatch === (designBatches[designBatches.length - 1]?.batchNumber ?? null);
+                      return (
+                        <div key={i} onClick={() => { setDesignSelectedIndex(i); setDesignSelectedBatch(designBatches[designBatches.length - 1]?.batchNumber ?? null); }} style={{
+                          cursor: "pointer", borderRadius: 4, overflow: "hidden",
+                          border: isSelected ? "2px solid var(--cat-gold)" : "1px solid var(--cat-border)",
+                        }}>
+                          <img src={img.url} alt={img.label} style={{ width: "100%", aspectRatio: "1", objectFit: "cover", display: "block" }} />
+                          <div style={{ fontSize: 11, padding: "6px 8px", color: "var(--cat-text)", background: isSelected ? "var(--cat-gold-soft)" : "transparent" }}>{img.label}</div>
+                        </div>
+                      );
+                    })}
                   </div>
+
+                  {designBatches.length > 1 && (
+                    <div style={{ marginBottom: 14 }}>
+                      <button onClick={() => setShowOlderBatches((o) => !o)} style={{
+                        background: "none", border: "none", padding: 0, cursor: "pointer",
+                        fontSize: 11.5, color: "var(--cat-gold)", fontWeight: 600, marginBottom: showOlderBatches ? 10 : 0,
+                      }}>
+                        {showOlderBatches ? "− Hide" : "+ View"} previously generated batches ({designBatches.length - 1})
+                      </button>
+                      {showOlderBatches && designBatches.slice(0, -1).reverse().map((batch) => (
+                        <div key={batch.batchNumber} style={{ marginBottom: 12 }}>
+                          <div style={{ fontSize: 11, color: "var(--cat-muted)", marginBottom: 6 }}>Batch {batch.batchNumber} — {new Date(batch.generatedAt).toLocaleString()}</div>
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                            {batch.images.map((img, i) => {
+                              const isSelected = designSelectedIndex === i && designSelectedBatch === batch.batchNumber;
+                              return (
+                                <div key={i} onClick={() => { setDesignSelectedIndex(i); setDesignSelectedBatch(batch.batchNumber); }} style={{
+                                  cursor: "pointer", borderRadius: 4, overflow: "hidden",
+                                  border: isSelected ? "2px solid var(--cat-gold)" : "1px solid var(--cat-border)",
+                                }}>
+                                  <img src={img.url} alt={img.label} style={{ width: "100%", aspectRatio: "1", objectFit: "cover", display: "block" }} />
+                                  <div style={{ fontSize: 11, padding: "6px 8px", color: "var(--cat-text)", background: isSelected ? "var(--cat-gold-soft)" : "transparent" }}>{img.label}</div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   {designError && <div style={{ color: "#b91c1c", fontSize: 12, marginBottom: 10 }}>{designError}</div>}
                   <button onClick={confirmDesignSelection} disabled={designSelectedIndex == null || designSubmitting} style={{
                     width: "100%", minHeight: 44, borderRadius: 3, border: "none", background: "var(--cat-gold)", color: "#1C1917",

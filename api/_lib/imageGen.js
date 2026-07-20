@@ -42,15 +42,28 @@ function extFor(contentType) {
   return contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
 }
 
-// Deterministic watermark — AI-rendered text is unreliable (garbled fine
-// print), so "Sun Sea Jewellers" is composited on afterward as real text,
-// not asked for in the generation prompt.
-async function addWatermark(pngBuffer) {
+// Deterministic text overlay — AI-rendered text is unreliable (garbled fine
+// print), so both "Sun Sea Jewellers" and the customer's custom text are
+// composited on afterward as real text, never asked for in the generation
+// prompt (that was the bug: customText used to go into the AI prompt and
+// came out garbled same as any other AI-rendered text would).
+function escapeXml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" }[c]));
+}
+
+async function addWatermark(pngBuffer, customText) {
   const width = 1024;
+  const height = customText ? 92 : 60;
+  const customLine = customText
+    ? `<text x="${width - 16}" y="34" text-anchor="end" font-family="Montserrat, sans-serif" font-size="28"
+        font-weight="600" fill="white" fill-opacity="0.96">${escapeXml(customText)}</text>`
+    : "";
+  const brandY = customText ? 72 : 38;
   const svg = `
-    <svg width="${width}" height="60" xmlns="http://www.w3.org/2000/svg">
-      <rect x="0" y="0" width="${width}" height="60" fill="black" fill-opacity="0.32" />
-      <text x="${width - 16}" y="38" text-anchor="end" font-family="Georgia, serif" font-size="26"
+    <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+      <rect x="0" y="0" width="${width}" height="${height}" fill="black" fill-opacity="0.32" />
+      ${customLine}
+      <text x="${width - 16}" y="${brandY}" text-anchor="end" font-family="Georgia, serif" font-size="22"
         font-style="italic" fill="white" fill-opacity="0.92">Sun Sea Jewellers</text>
     </svg>`;
   const watermark = Buffer.from(svg);
@@ -71,7 +84,6 @@ export async function generateBrandedDesigns({ logoUrl, color, customText }) {
       `Reference image 2 is the customer's company logo.`,
       `Task: ${variant.prompt}. Replace the blank rectangular branding plate on the box lid (and the corresponding spot on the card) with reference image 2's logo, rendered cleanly and legibly, same placement and size as the blank plate in reference image 1.`,
       color ? `Lean the accent color toward: ${color}.` : "",
-      customText ? `Also print this text near the logo on the box/card: "${customText}".` : "",
       `Show both the open box (with card and coin visible) and the closed box, matching reference image 1's composition.`,
       `Plain neutral studio background, soft shadow, square 1:1 composition. Do not add any watermark or extra text beyond what's specified above — one will be added separately.`,
     ].filter(Boolean).join(" ");
@@ -96,7 +108,7 @@ export async function generateBrandedDesigns({ logoUrl, color, customText }) {
     const data = await res.json();
     const b64 = data?.data?.[0]?.b64_json;
     if (!b64) throw new Error("no image returned");
-    const watermarked = await addWatermark(Buffer.from(b64, "base64"));
+    const watermarked = await addWatermark(Buffer.from(b64, "base64"), customText);
     return { label: variant.label, base64: watermarked.toString("base64") };
   }));
 
