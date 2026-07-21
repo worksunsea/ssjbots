@@ -79,7 +79,9 @@ app.post("/clients", async (req, reply) => {
   if (guarded) return;
   const { client_id } = req.body || {};
   if (!client_id) return reply.code(400).send({ ok: false, error: "client_id_required" });
-  await connectClient(client_id);
+  // force: true — this is the one deliberate "create/recreate" action,
+  // distinct from the passive lazy-connect in /status and /qr below.
+  await connectClient(client_id, { force: true });
   return { ok: true, ...getClientState(client_id) };
 });
 

@@ -67,6 +67,23 @@ function listClientDirs() {
   }
 }
 
+// Deny-list of explicitly-deleted client ids. Without this, the passive
+// GET /clients/:id/status and /qr routes (which lazily boot a session so
+// the "Add connection" QR-pairing flow works) will silently recreate ANY
+// id someone deletes, the moment anything hits that route again — a stray
+// browser tab left open on an old pairing modal, a leftover funnel row
+// pointing at a stale client id, etc. "main" and "7563" kept coming back
+// for exactly this reason. Only an explicit POST /clients (force: true)
+// can remove an id from this list and legitimately recreate it.
+const DENYLIST_FILE = path.join(AUTH_ROOT, "_deleted.json");
+function loadDenylist() {
+  try { return new Set(JSON.parse(fs.readFileSync(DENYLIST_FILE, "utf8"))); } catch { return new Set(); }
+}
+function saveDenylist(set) {
+  try { fs.mkdirSync(AUTH_ROOT, { recursive: true }); fs.writeFileSync(DENYLIST_FILE, JSON.stringify([...set])); } catch {}
+}
+let deniedIds = loadDenylist();
+
 export async function bootAllSessions(opts = {}) {
   if (opts.onIncoming) onIncoming = opts.onIncoming;
   migrateLegacyAuth();
@@ -79,9 +96,16 @@ export async function bootAllSessions(opts = {}) {
   }
 }
 
-export async function connectClient(clientIdRaw) {
+export async function connectClient(clientIdRaw, { force = false } = {}) {
   const clientId = sanitize(clientIdRaw);
   if (!clientId) throw new Error("invalid_client_id");
+
+  if (force) {
+    deniedIds.delete(clientId);
+    saveDenylist(deniedIds);
+  } else if (deniedIds.has(clientId)) {
+    throw new Error(`deleted:${clientId}`);
+  }
 
   // Idempotency: if already connecting/connected, return existing state
   const existing = sessions.get(clientId);
@@ -254,6 +278,8 @@ export async function logoutClient(clientIdRaw) {
   }
   // Always remove auth dir — even if session wasn't in memory (disconnected state)
   try { fs.rmSync(clientDir(clientId), { recursive: true, force: true }); } catch {}
+  deniedIds.add(clientId);
+  saveDenylist(deniedIds);
   return { ok: true };
 }
 

@@ -4143,15 +4143,35 @@ function ConnectionsScreen() {
     setPairing(id);
     setAdding(false);
     setNewId("");
-    // Trigger the session to boot and generate a QR
-    try { await fetch(`${WA_SERVICE_URL}/clients/${id}/status`); } catch { /* ignore */ }
+    // POST /clients (not the passive /status route) — this is the one
+    // deliberate "create" action, which also un-deletes the id if it was
+    // previously removed. The QrPairingModal's own poll (GET .../status)
+    // stays passive so it can never resurrect a deleted session on its own.
+    try {
+      await fetch(`${WA_SERVICE_URL}/clients`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_id: id }),
+      });
+    } catch { /* ignore */ }
     setTimeout(load, 2000);
   };
 
   const rePair = async (clientId) => {
     if (!confirm(`Re-pair session "${clientId}"? This unlinks the current WhatsApp session.`)) return;
     try { await fetch(`${WA_SERVICE_URL}/clients/${clientId}/logout`, { method: "POST" }); } catch { /* ignore */ }
-    setTimeout(() => { setPairing(clientId); load(); }, 1500);
+    // logout adds clientId to the server-side deny-list, so re-creating it
+    // needs the same explicit POST /clients (force) startPair uses — the
+    // modal's own status poll is passive and won't undo the deny-list.
+    setTimeout(async () => {
+      try {
+        await fetch(`${WA_SERVICE_URL}/clients`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ client_id: clientId }),
+        });
+      } catch { /* ignore */ }
+      setPairing(clientId);
+      load();
+    }, 1500);
   };
 
   const disconnect = async (clientId) => {
