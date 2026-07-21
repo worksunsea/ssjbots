@@ -1,12 +1,13 @@
-// GET /api/evening-completion-reminder — fired by cron-job.org before 9pm IST.
+// GET /api/evening-completion-reminder — fired by Vercel cron at 7:30pm IST.
 // For each active staff member (not karigars, not Saurav — he gets the
 // owner-facing view via digest-ping/reporting instead), checks:
 //   1. Today's KRAs (recurring tasks) not yet marked done today
 //   2. One-time delegations due today, not yet completed (about to go overdue)
 //   3. One-time delegations already overdue
-// and sends ONE combined WhatsApp + push notification if anything's missing.
-// Self-guarded to the 20:00 IST hour so the cron can fire frequently without
-// a start/end config, same pattern as staff-task-reminders.js.
+// and sends ONE combined WhatsApp + push notification if anything's missing,
+// including a direct link to the Tasks screen to go complete them.
+// Self-guarded to the 19:30–20:20 IST window so the cron can fire every 15
+// min without a start/end config, same pattern as staff-task-reminders.js.
 
 import { supa } from "./_lib/supabase.js";
 import { sendWhatsApp } from "./_lib/wa.js";
@@ -29,8 +30,9 @@ function checkAuth(req) {
 }
 
 function isEveningWindowIST() {
-  const hourIST = new Date(Date.now() + 5.5 * 3600000).getUTCHours();
-  return hourIST === 20; // 8-9pm IST — "before 9"
+  const ist = new Date(Date.now() + 5.5 * 3600000);
+  const minutesOfDay = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+  return minutesOfDay >= 19 * 60 + 25 && minutesOfDay <= 20 * 60 + 20; // 7:25–8:20pm IST
 }
 
 function todayIST() {
@@ -114,11 +116,11 @@ export default async function handler(req, res) {
       if (b.kras.length) lines.push(`\nKRAs not marked done today (${b.kras.length}):`, ...b.kras.map((t) => `- ${t.title}`));
       if (b.dueToday.length) lines.push(`\nDue today, not yet completed (${b.dueToday.length}):`, ...b.dueToday.map((t) => `- ${t.title}`));
       if (b.overdue.length) lines.push(`\nAlready overdue (${b.overdue.length}):`, ...b.overdue.map((t) => `- ${t.title} (due ${t.due_date})`));
-      lines.push("\nPlease update in the HR app.");
+      lines.push("\nComplete them here: https://hr.gemtre.in/?goto=tasks");
       const msg = lines.join("\n");
 
       let waSent = false, waError = null;
-      const targetPhone = phones.forStaff(staffRow);
+      const targetPhone = phones.forStaff(staffRow, { preferPersonal: true });
       if (targetPhone) {
         const wa = await sendWhatsApp({ phone: targetPhone, msg, client: TASKS_WA_CLIENT_ID });
         waSent = wa.status === 1;
