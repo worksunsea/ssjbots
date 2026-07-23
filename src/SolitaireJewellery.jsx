@@ -609,6 +609,42 @@ export function SolitaireAdminGenerator() {
   const [pendingDesigns, setPendingDesigns] = useState([]);
   const [candidateProgress, setCandidateProgress] = useState(null);
 
+  // Cascade queue — approving 2+ candidate designs used to fire their
+  // cascades concurrently (racing each other on the same shared "cascade"
+  // progress state and OpenAI rate limit, with no visible per-design
+  // status). Now every cascade goes through this queue and runs strictly
+  // one design at a time, with a visible card per design regardless of
+  // which design happens to be selected in the main dropdown.
+  const cascadeJobsRef = useRef([]); // [{ id, design, referenceVariant }] — processing source of truth
+  const processingRef = useRef(false);
+  const [queueStatus, setQueueStatus] = useState([]); // [{ id, name, done, total, status }] — render-only mirror
+
+  const updateQueueItem = (id, patch) => {
+    setQueueStatus((qs) => qs.map((q) => (q.id === id ? { ...q, ...patch } : q)));
+  };
+
+  const processCascadeQueue = async () => {
+    if (processingRef.current) return;
+    processingRef.current = true;
+    while (cascadeJobsRef.current.length) {
+      const job = cascadeJobsRef.current[0];
+      updateQueueItem(job.id, { status: "generating" });
+      await cascadeRemaining(job.design, job.referenceVariant, (p) => {
+        updateQueueItem(job.id, p ? { done: p.done, total: p.total } : {});
+      });
+      updateQueueItem(job.id, { status: "done" });
+      if (job.onDone) await job.onDone();
+      cascadeJobsRef.current.shift();
+    }
+    processingRef.current = false;
+  };
+
+  const enqueueCascade = (design, referenceVariant, onDone) => {
+    cascadeJobsRef.current.push({ id: design.id, design, referenceVariant, onDone });
+    setQueueStatus((qs) => [...qs, { id: design.id, name: design.name, done: 0, total: null, status: "queued" }]);
+    processCascadeQueue();
+  };
+
   const loadPendingDesigns = useCallback(() => {
     apiGet("pending-designs", { category }, true).then((r) => { if (r.ok) setPendingDesigns(r.designs); });
   }, [category]);
@@ -636,17 +672,19 @@ export function SolitaireAdminGenerator() {
     const res = await apiPost("approve-design-candidate", { designId: candidate.id }, true);
     if (!res.ok) { setMsg(`⚠️ Failed to approve: ${res.error}`); return; }
     setPendingDesigns((ds) => ds.filter((d) => d.id !== candidate.id));
-    setMsg(`Approved "${candidate.name}" — now generating its remaining gold-colour/shape combinations…`);
+    setMsg(`Approved "${candidate.name}" — queued for its remaining gold-colour/shape combinations (see the queue below).`);
     // Keep whatever design was already selected in view — approving a
     // candidate shouldn't yank the admin away to look at it (that's what
     // read as "the old design vanished"). It'll show up in the dropdown
     // once loadDesigns() below refreshes the list.
     loadDesigns();
-    // Trigger the same cascade every other approval gets — all other
-    // gold-colour x shape combos for this newly-approved design.
+    // Queued, not awaited directly — approving a second candidate while the
+    // first's cascade is still running now queues behind it instead of
+    // firing concurrently (which raced on OpenAI's rate limit and on the
+    // shared progress display with no way to tell which design was doing what).
     const variant = candidate.variants?.[0];
     if (variant) {
-      await cascadeRemaining(
+      enqueueCascade(
         { id: candidate.id, name: candidate.name, variants: [{ goldColor: variant.goldColor, diamondShape: variant.diamondShape }] },
         { caratSize: null, promptOverride: null, estGoldWeightG: variant.estGoldWeightG || null }
       );
@@ -676,7 +714,7 @@ export function SolitaireAdminGenerator() {
   // the just-approved variant's est_gold_weight_g as the starting estimate
   // (admin can still edit each one individually afterward). Sequential
   // (not parallel) to stay within OpenAI rate limits and keep progress visible.
-  const cascadeRemaining = async (design, referenceVariant) => {
+  const cascadeRemaining = async (design, referenceVariant, onProgress = (p) => setCascade(p)) => {
     const have = new Set(design.variants.map((v) => `${v.goldColor}|${v.diamondShape}`));
     const missing = [];
     for (const gc of GOLD_COLORS) {
@@ -686,7 +724,7 @@ export function SolitaireAdminGenerator() {
       }
     }
     if (!missing.length) return;
-    setCascade({ done: 0, total: missing.length });
+    onProgress({ done: 0, total: missing.length });
     const failed = [];
     let firstFailureDetail = "";
     for (let i = 0; i < missing.length; i++) {
@@ -710,9 +748,9 @@ export function SolitaireAdminGenerator() {
         failed.push(`${combo.goldColor}/${combo.diamondShape}`);
         if (!firstFailureDetail) firstFailureDetail = res.detail || res.error || "unknown error";
       }
-      setCascade({ done: i + 1, total: missing.length });
+      onProgress({ done: i + 1, total: missing.length });
     }
-    setCascade(null);
+    onProgress(null);
     const succeeded = missing.length - failed.length;
     setMsg(
       failed.length
@@ -741,8 +779,12 @@ export function SolitaireAdminGenerator() {
     await apiPost("update-variant", { variantId: variant.id, status: "approved" }, true);
     loadDesigns();
     if (wasFirstApproval && currentDesign) {
-      await cascadeRemaining(currentDesign, { ...variant, estGoldWeightG: variant.estGoldWeightG });
-      if (!currentDesign.sizeChartImageUrl) await generateSizeChart(currentDesign.id);
+      // Queued rather than awaited directly — keeps this in the same
+      // one-at-a-time line as candidate-design approvals instead of
+      // racing them on OpenAI's rate limit.
+      enqueueCascade(currentDesign, { ...variant, estGoldWeightG: variant.estGoldWeightG }, async () => {
+        if (!currentDesign.sizeChartImageUrl) await generateSizeChart(currentDesign.id);
+      });
     }
   };
 
@@ -951,6 +993,30 @@ export function SolitaireAdminGenerator() {
       {loadErr && <div style={{ marginBottom: 12, fontSize: 13, color: "#c0392b" }}>{loadErr}</div>}
       {msg && <div style={{ marginBottom: 12, fontSize: 13, fontWeight: msg.startsWith("⚠️") ? 600 : 400, color: msg.startsWith("⚠️") ? "#c0392b" : msg.startsWith("✅") ? "#27ae60" : "inherit" }}>{msg}</div>}
       {cascade && <div style={{ marginBottom: 12, fontSize: 13, color: "#2980b9" }}>Auto-generating remaining combinations… {cascade.done}/{cascade.total}</div>}
+
+      {/* Always visible regardless of which design is selected in the
+          dropdown above — this is what was missing: approving a candidate
+          design's cascade had NO visible progress unless you happened to
+          still be looking at that exact design. Runs strictly one design
+          at a time (see cascadeJobsRef/processCascadeQueue). */}
+      {!!queueStatus.length && (
+        <div style={{ border: "1px solid #ddd", borderRadius: 4, padding: 10, marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+            <strong style={{ fontSize: 13 }}>Generation Queue</strong>
+            <button style={{ fontSize: 11 }} onClick={() => setQueueStatus((qs) => qs.filter((q) => q.status !== "done"))}>Clear completed</button>
+          </div>
+          {queueStatus.map((q) => (
+            <div key={q.id} style={{ fontSize: 12, display: "flex", justifyContent: "space-between", padding: "3px 0" }}>
+              <span>{q.name}</span>
+              <span style={{ color: q.status === "done" ? "#27ae60" : q.status === "generating" ? "#2980b9" : "#888" }}>
+                {q.status === "queued" && "waiting…"}
+                {q.status === "generating" && (q.total ? `generating ${q.done}/${q.total}` : "starting…")}
+                {q.status === "done" && "✓ done"}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Always-visible basic summary — shows the DESIGN as one product, not
           whichever variant happened to be picked as "primary". No more
