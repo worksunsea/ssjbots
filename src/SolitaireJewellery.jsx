@@ -596,6 +596,14 @@ export function SolitaireAdminGenerator() {
   }, []);
 
   const currentDesign = designs.find((d) => d.id === designId) || null;
+  // Sibling designs (created via "Create N New Designs to Review") nest
+  // under their root design instead of appearing as flat top-level dropdown
+  // entries — the main dropdown lists roots only; a second selector appears
+  // once a root with siblings is picked, to choose the specific one.
+  const rootDesigns = designs.filter((d) => !d.parentDesignId);
+  const currentRoot = currentDesign
+    ? (currentDesign.parentDesignId ? designs.find((d) => d.id === currentDesign.parentDesignId) : currentDesign)
+    : null;
   const variants = currentDesign?.variants || [];
 
   const generateOne = async ({ designId: dId, goldColor: gc, diamondShape: sh, caratSize: cs, promptOverride: po, referenceImageBase64: ref, includeWorn = true, viewKeys }) => {
@@ -882,10 +890,16 @@ export function SolitaireAdminGenerator() {
         <select value={category} onChange={(e) => setCategory(e.target.value)}>
           {CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
         </select>
-        <select value={designId} onChange={(e) => setDesignId(e.target.value)} style={{ minWidth: 240 }} disabled={!designs.length}>
-          {!designs.length && <option value="">No designs in this category</option>}
-          {designs.map((d) => <option key={d.id} value={d.id}>{d.name} ({d.variants.length} variants)</option>)}
+        <select value={currentRoot?.id || ""} onChange={(e) => setDesignId(e.target.value)} style={{ minWidth: 240 }} disabled={!rootDesigns.length}>
+          {!rootDesigns.length && <option value="">No designs in this category</option>}
+          {rootDesigns.map((d) => <option key={d.id} value={d.id}>{d.name} ({d.variants.length} variants{d.children.length ? ` + ${d.children.length} sibling design${d.children.length !== 1 ? "s" : ""}` : ""})</option>)}
         </select>
+        {!!currentRoot?.children.length && (
+          <select value={designId} onChange={(e) => setDesignId(e.target.value)} style={{ minWidth: 200 }}>
+            <option value={currentRoot.id}>↳ {currentRoot.name} (original)</option>
+            {currentRoot.children.map((c) => <option key={c.id} value={c.id}>↳ {c.name} ({c.variantCount} variants)</option>)}
+          </select>
+        )}
         <select value={goldColor} onChange={(e) => setGoldColor(e.target.value)}>
           <option value="yellow">Yellow Gold</option><option value="white">White Gold</option><option value="rose">Rose Gold</option>
         </select>
