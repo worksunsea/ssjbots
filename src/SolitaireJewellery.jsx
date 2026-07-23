@@ -935,24 +935,34 @@ export function SolitaireAdminGenerator() {
         {currentDesign?.conceptPrompt && <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>Base concept: {currentDesign.conceptPrompt}</div>}
       </div>
 
-      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
-        <label style={{ fontSize: 13 }}>
-          Reference image (optional):{" "}
-          <input type="file" accept="image/*" onChange={(e) => setRefImageFile(e.target.files?.[0] || null)} />
-        </label>
-        {refImageFile && <button onClick={() => setRefImageFile(null)}>Clear</button>}
-        <button disabled={busy || !designId || !!cascade} onClick={generate}>{busy ? "Generating…" : "Generate Variant"}</button>
-        <button disabled={!designId || !!cascade || !!batchProgress} onClick={() => createVariantsBatch(5)}>
-          {batchProgress ? `Creating variants… ${batchProgress.done}/${batchProgress.total}` : "Create 5 Variants to Review"}
-        </button>
-        <button disabled={!designId || !!cascade || !variants.length} onClick={fillRemaining}>Fill Remaining Combinations</button>
+      <div style={{ border: "1px solid #ddd", borderRadius: 6, padding: 10, marginBottom: 10 }}>
+        <div style={{ fontSize: 11, color: "#888", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
+          A. Images of THIS ONE design — {currentDesign?.name || "selected design"} (gold-colour x shape combos)
+        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <label style={{ fontSize: 13 }}>
+            Reference image (optional):{" "}
+            <input type="file" accept="image/*" onChange={(e) => setRefImageFile(e.target.files?.[0] || null)} />
+          </label>
+          {refImageFile && <button onClick={() => setRefImageFile(null)}>Clear</button>}
+          <button disabled={busy || !designId || !!cascade} onClick={generate}>{busy ? "Generating…" : "Generate Variant"}</button>
+          <button disabled={!designId || !!cascade || !!batchProgress} onClick={() => createVariantsBatch(5)}>
+            {batchProgress ? `Creating…  ${batchProgress.done}/${batchProgress.total}` : "Create 5 Alternate Renders of This Combo"}
+          </button>
+          <button disabled={!designId || !!cascade || !variants.length} onClick={fillRemaining}>Fill Remaining Combinations</button>
+        </div>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
-        <button disabled={!designId || !!candidateProgress} onClick={() => createDesignCandidates(5)}>
-          {candidateProgress ? `Creating new designs… ${candidateProgress.done}/${candidateProgress.total}` : "Create 5 New Designs to Review"}
-        </button>
-        <span style={{ fontSize: 12, color: "#888" }}>Whole new sibling designs (own name + concept), not variants of {currentDesign?.name || "the selected design"} — review and approve/reject below.</span>
+      <div style={{ border: "2px solid #2980b9", borderRadius: 6, padding: 10, marginBottom: 16, background: "#eaf3fa" }}>
+        <div style={{ fontSize: 11, color: "#2980b9", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6, fontWeight: 700 }}>
+          B. Brand new, DIFFERENT designs (not this one)
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <button disabled={!designId || !!candidateProgress} onClick={() => createDesignCandidates(5)} style={{ fontWeight: 700 }}>
+            {candidateProgress ? `Creating new designs… ${candidateProgress.done}/${candidateProgress.total}` : "★ Create 5 New Designs to Review"}
+          </button>
+          <span style={{ fontSize: 12, color: "#555" }}>Whole new sibling products (own name + concept), inspired by but NOT variants of {currentDesign?.name || "the selected design"} — review and approve/reject below.</span>
+        </div>
       </div>
 
       {!!pendingDesigns.length && (
