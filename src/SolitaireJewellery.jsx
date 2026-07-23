@@ -806,7 +806,18 @@ export function SolitaireAdminGenerator() {
           {!designs.length && <option value="">No designs in this category</option>}
           {designs.map((d) => <option key={d.id} value={d.id}>{d.name} ({d.variants.length} variants)</option>)}
         </select>
-        <button onClick={() => setNewDesignOpen((v) => !v)}>{newDesignOpen ? "Cancel" : "+ New Design in this Category"}</button>
+        <button onClick={() => {
+          // Prefill from whatever design is currently selected — "+ New
+          // Design" while viewing Classic Solitaire Ring should start as a
+          // VARIATION of it (name + concept prompt carried over, editable),
+          // not an unrelated blank design that happens to share a category.
+          if (!newDesignOpen && currentDesign) {
+            setNewDesignName(`${currentDesign.name} II`);
+            setNewDesignPrompt(currentDesign.conceptPrompt || "");
+            setNewDesignSideDiamonds(!!currentDesign.hasSideDiamonds);
+          }
+          setNewDesignOpen((v) => !v);
+        }}>{newDesignOpen ? "Cancel" : "+ New Design (Variation of Selected)"}</button>
         <select value={goldColor} onChange={(e) => setGoldColor(e.target.value)}>
           <option value="yellow">Yellow Gold</option><option value="white">White Gold</option><option value="rose">Rose Gold</option>
         </select>
@@ -819,7 +830,9 @@ export function SolitaireAdminGenerator() {
       {newDesignOpen && (
         <div style={{ border: "1px solid #ccc", borderRadius: 4, padding: 12, marginBottom: 16 }}>
           <div style={{ fontSize: 13, marginBottom: 8 }}>
-            Add a new named design to <strong>{CATEGORIES.find((c) => c.key === category)?.label}</strong> — it gets its own independent set of gold-colour x shape x carat combos, same as any of the original designs.
+            {currentDesign
+              ? <>Pre-filled as a variation of <strong>{currentDesign.name}</strong> — tweak the name/concept below for a distinct look, or leave as-is for a near-identical twin. This creates a fully independent design with its own gold-colour x shape x carat combos — it does NOT add anything inside {currentDesign.name} itself, and won't have any images until you click "Generate Variant" for it.</>
+              : <>Add a new named design to <strong>{CATEGORIES.find((c) => c.key === category)?.label}</strong> — it gets its own independent set of gold-colour x shape x carat combos. Won't have any images until you click "Generate Variant" for it.</>}
           </div>
           <input placeholder="Design name (optional — auto-named if left blank, e.g. Classic Solitaire Ring II)" value={newDesignName} onChange={(e) => setNewDesignName(e.target.value)}
             style={{ width: "100%", boxSizing: "border-box", marginBottom: 8, padding: 6 }} />
