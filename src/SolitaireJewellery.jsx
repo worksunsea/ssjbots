@@ -946,22 +946,27 @@ export function SolitaireAdminGenerator() {
 function CategoryCoversPanel() {
   const [busyKey, setBusyKey] = useState(null);
   const [results, setResults] = useState({});
+  // Freshly generated URLs come back cache-busted from the server (?v=timestamp)
+  // — used here so the admin's own preview updates immediately. The static
+  // categoryCoverUrl() (no bust) is only a fallback for "never generated yet".
+  const [freshUrls, setFreshUrls] = useState({});
 
   const generate = async (categoryKey) => {
     setBusyKey(categoryKey);
     const res = await apiPost("generate-category-cover", { category: categoryKey }, true);
     setBusyKey(null);
+    if (res.ok) setFreshUrls((u) => ({ ...u, [categoryKey]: res.imageUrl }));
     setResults((r) => ({ ...r, [categoryKey]: res.ok ? "done" : `failed: ${res.error}` }));
   };
 
   return (
     <div>
       <h4>Category Picker Cover Images</h4>
-      <div style={{ fontSize: 12, color: "#888", marginBottom: 10 }}>Attractive hero photos shown on the public landing page's category tiles (Rings / Gents Rings / Pendants / Earrings). Generate once, or regenerate anytime to replace.</div>
+      <div style={{ fontSize: 12, color: "#888", marginBottom: 10 }}>Attractive hero photos shown on the public landing page's category tiles (Rings / Gents Rings / Pendants / Earrings). Generate once, or regenerate anytime to replace — the public page picks up the new image on a fresh page load.</div>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
         {CATEGORIES.map((c) => (
           <div key={c.key} style={{ textAlign: "center" }}>
-            <img src={categoryCoverUrl(c.key)} alt={c.label} style={{ width: 90, height: 90, objectFit: "cover", borderRadius: 4, border: "1px solid #ddd", display: "block", marginBottom: 4 }} onError={(e) => { e.target.style.visibility = "hidden"; }} />
+            <img src={freshUrls[c.key] || categoryCoverUrl(c.key)} alt={c.label} style={{ width: 90, height: 90, objectFit: "cover", borderRadius: 4, border: "1px solid #ddd", display: "block", marginBottom: 4 }} onError={(e) => { e.target.style.visibility = "hidden"; }} />
             <button disabled={busyKey === c.key} onClick={() => generate(c.key)} style={{ fontSize: 11 }}>
               {busyKey === c.key ? "Generating…" : `${c.label}`}
             </button>

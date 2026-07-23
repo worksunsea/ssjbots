@@ -322,7 +322,9 @@ export default async function handler(req, res) {
     const { error: upErr } = await sb.storage.from("media").upload(path, Buffer.from(image.base64, "base64"), { contentType: "image/png", upsert: true });
     if (upErr) return res.status(500).json({ ok: false, error: upErr.message });
     const { data: pub } = sb.storage.from("media").getPublicUrl(path);
-    return res.status(200).json({ ok: true, category, imageUrl: pub.publicUrl });
+    // Same deterministic-path caching issue as the size chart — bust it.
+    const imageUrl = `${pub.publicUrl}?v=${Date.now()}`;
+    return res.status(200).json({ ok: true, category, imageUrl });
   }
 
   // ── POST action=generate-size-chart — staff-only. One wide image per
@@ -350,9 +352,14 @@ export default async function handler(req, res) {
     const { error: upErr } = await sb.storage.from("media").upload(path, Buffer.from(image.base64, "base64"), { contentType: "image/png", upsert: true });
     if (upErr) return res.status(500).json({ ok: false, error: upErr.message });
     const { data: pub } = sb.storage.from("media").getPublicUrl(path);
-    const { error: updErr } = await sb.from("solitaire_designs").update({ size_chart_image_url: pub.publicUrl }).eq("id", designId);
+    // Deterministic upsert path = same URL every regeneration, so browsers
+    // (and any CDN in front of Storage) keep serving the stale cached image
+    // even though the file was overwritten. Append a cache-busting query
+    // param so each regeneration is a genuinely new URL.
+    const imageUrl = `${pub.publicUrl}?v=${Date.now()}`;
+    const { error: updErr } = await sb.from("solitaire_designs").update({ size_chart_image_url: imageUrl }).eq("id", designId);
     if (updErr) return res.status(500).json({ ok: false, error: updErr.message });
-    return res.status(200).json({ ok: true, designId, imageUrl: pub.publicUrl });
+    return res.status(200).json({ ok: true, designId, imageUrl });
   }
 
   // ── POST action=update-variant — staff-only. Edit gold weight estimate
