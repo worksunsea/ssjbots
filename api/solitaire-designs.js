@@ -190,14 +190,24 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, leadId });
   }
 
-  // ── POST action=create-design — staff-only. Adds a new design concept. ─
+  // ── POST action=create-design — staff-only. Adds a new design concept.
+  // Categories are NOT capped at the original 25 seeded designs — admins
+  // can keep adding as many named designs as they want per category, each
+  // gets its own full gold-colour x shape x carat combo set. designNumber
+  // is auto-assigned (next free number in the category) unless supplied. ─
   if (req.method === "POST" && action === "create-design") {
     const authFail = checkCrmSecret(req, res);
     if (authFail) return authFail;
     const body = parseBody(req);
-    const { category, designNumber, name, conceptPrompt, hasSideDiamonds } = body;
-    if (!category || !designNumber || !name || !conceptPrompt) {
-      return res.status(400).json({ ok: false, error: "category_designNumber_name_conceptPrompt_required" });
+    const { category, name, conceptPrompt, hasSideDiamonds } = body;
+    let { designNumber } = body;
+    if (!category || !name || !conceptPrompt) {
+      return res.status(400).json({ ok: false, error: "category_name_conceptPrompt_required" });
+    }
+    if (!designNumber) {
+      const { data: maxRow } = await sb.from("solitaire_designs").select("design_number")
+        .eq("tenant_id", TENANT_ID).eq("category", category).order("design_number", { ascending: false }).limit(1).maybeSingle();
+      designNumber = (maxRow?.design_number || 0) + 1;
     }
     const { data, error } = await sb.from("solitaire_designs").insert({
       tenant_id: TENANT_ID, category, design_number: designNumber, name,

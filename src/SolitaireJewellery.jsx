@@ -568,13 +568,33 @@ export function SolitaireAdminGenerator() {
   const [prices, setPrices] = useState([]);
   const [pricingConfig, setPricingConfig] = useState(null);
   const [gridExpanded, setGridExpanded] = useState(false);
+  const [newDesignOpen, setNewDesignOpen] = useState(false);
+  const [newDesignName, setNewDesignName] = useState("");
+  const [newDesignPrompt, setNewDesignPrompt] = useState("");
+  const [newDesignSideDiamonds, setNewDesignSideDiamonds] = useState(false);
+  const [creatingDesign, setCreatingDesign] = useState(false);
 
-  const loadDesigns = useCallback(() => {
+  const loadDesigns = useCallback((selectId) => {
     apiGet("admin-designs", { category }, true).then((r) => {
-      if (r.ok) { setDesigns(r.designs); setLoadErr(""); setDesignId((cur) => (r.designs.some((d) => d.id === cur) ? cur : r.designs[0]?.id || "")); }
+      if (r.ok) { setDesigns(r.designs); setLoadErr(""); setDesignId((cur) => (selectId || (r.designs.some((d) => d.id === cur) ? cur : r.designs[0]?.id || ""))); }
       else { setDesigns([]); setLoadErr(r.error || "Couldn't load designs."); }
     });
   }, [category]);
+
+  // Categories aren't capped at the original 25 seeded designs — admins can
+  // keep adding new named designs (e.g. 15 variations under a theme), each
+  // gets its own independent set of gold-colour x shape x carat combos to
+  // generate exactly like any seeded design.
+  const createDesign = async () => {
+    if (!newDesignName.trim() || !newDesignPrompt.trim()) { setMsg("Name and concept prompt are required."); return; }
+    setCreatingDesign(true);
+    const res = await apiPost("create-design", { category, name: newDesignName.trim(), conceptPrompt: newDesignPrompt.trim(), hasSideDiamonds: newDesignSideDiamonds }, true);
+    setCreatingDesign(false);
+    if (!res.ok) { setMsg(`Failed to create design: ${res.error}`); return; }
+    setNewDesignOpen(false); setNewDesignName(""); setNewDesignPrompt(""); setNewDesignSideDiamonds(false);
+    setMsg(`Created "${res.design.name}" — now generate variants for it below.`);
+    loadDesigns(res.design.id);
+  };
 
   useEffect(() => { loadDesigns(); }, [loadDesigns]);
   const [prevDesignId, setPrevDesignId] = useState(designId);
@@ -739,6 +759,7 @@ export function SolitaireAdminGenerator() {
           {!designs.length && <option value="">No designs in this category</option>}
           {designs.map((d) => <option key={d.id} value={d.id}>{d.name} ({d.variants.length} variants)</option>)}
         </select>
+        <button onClick={() => setNewDesignOpen((v) => !v)}>{newDesignOpen ? "Cancel" : "+ New Design in this Category"}</button>
         <select value={goldColor} onChange={(e) => setGoldColor(e.target.value)}>
           <option value="yellow">Yellow Gold</option><option value="white">White Gold</option><option value="rose">Rose Gold</option>
         </select>
@@ -747,6 +768,23 @@ export function SolitaireAdminGenerator() {
         </select>
         <input placeholder="carat (optional)" value={caratSize} onChange={(e) => setCaratSize(e.target.value)} style={{ width: 100 }} />
       </div>
+
+      {newDesignOpen && (
+        <div style={{ border: "1px solid #ccc", borderRadius: 4, padding: 12, marginBottom: 16 }}>
+          <div style={{ fontSize: 13, marginBottom: 8 }}>
+            Add a new named design to <strong>{CATEGORIES.find((c) => c.key === category)?.label}</strong> — it gets its own independent set of gold-colour x shape x carat combos, same as any of the original designs.
+          </div>
+          <input placeholder="Design name (e.g. Classic Solitaire Ring II)" value={newDesignName} onChange={(e) => setNewDesignName(e.target.value)}
+            style={{ width: "100%", boxSizing: "border-box", marginBottom: 8, padding: 6 }} />
+          <textarea placeholder="Design concept — style direction for the AI generator (e.g. a slim tapered band with a bezel-set center stone...)"
+            value={newDesignPrompt} onChange={(e) => setNewDesignPrompt(e.target.value)} rows={3}
+            style={{ width: "100%", boxSizing: "border-box", marginBottom: 8, padding: 6, fontFamily: "inherit", fontSize: 13 }} />
+          <label style={{ fontSize: 13, display: "block", marginBottom: 8 }}>
+            <input type="checkbox" checked={newDesignSideDiamonds} onChange={(e) => setNewDesignSideDiamonds(e.target.checked)} /> Has side diamonds
+          </label>
+          <button disabled={creatingDesign} onClick={createDesign}>{creatingDesign ? "Creating…" : "Create Design"}</button>
+        </div>
+      )}
 
       <div style={{ marginBottom: 12 }}>
         <textarea
