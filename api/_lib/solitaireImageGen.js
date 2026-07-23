@@ -148,6 +148,31 @@ export async function suggestDesignName({ imageUrl, category, conceptPrompt }) {
   return name;
 }
 
+// Generates a genuinely DIFFERENT design concept in the same category,
+// loosely inspired by an existing one — used to spin up new sibling
+// designs (e.g. "Classic Solitaire Ring 2") for the admin to review as
+// distinct products, not alternate renders of the same design.
+export async function suggestDesignVariationConcept({ baseConceptPrompt, category }) {
+  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY missing");
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      messages: [{
+        role: "user",
+        content: `You design fine jewellery. Here is an existing solitaire ${category.replace("_", " ")} design concept: "${baseConceptPrompt}". Invent ONE genuinely DIFFERENT solitaire ${category.replace("_", " ")} design in the same general spirit (similar quality tier and formality) but with a clearly distinct setting style, band treatment, or silhouette — not just a minor tweak. Write it as a single descriptive sentence, the same style as the example (style direction for an AI image generator, no marketing fluff, no product name). Reply with ONLY that sentence.`,
+      }],
+      max_tokens: 100,
+    }),
+  });
+  if (!res.ok) throw new Error(`OpenAI chat/completions ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const data = await res.json();
+  const concept = data?.choices?.[0]?.message?.content?.trim().replace(/^["']|["']$/g, "");
+  if (!concept) throw new Error("no concept suggested");
+  return concept;
+}
+
 // One attractive editorial hero shot per category, used for the public
 // landing page's category-picker tiles (not a design variant).
 const CATEGORY_COVER_PROMPTS = {

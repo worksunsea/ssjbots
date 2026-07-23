@@ -30,13 +30,22 @@
 //      wide image per design showing .30ct-5ct size progression side by side.
 // POST /api/solitaire-designs?action=suggest-design-name    — staff-only. Vision
 //      model looks at the design's actual generated image and suggests a name.
+// POST /api/solitaire-designs?action=generate-design-candidates — staff-only. Spins
+//      up N whole NEW sibling designs (own concept + one preview image each),
+//      inactive until approved — for reviewing brand-new products, not variants.
+// GET  /api/solitaire-designs?action=pending-designs        — staff-only. Lists
+//      not-yet-approved candidate designs (active=false) for a category.
+// POST /api/solitaire-designs?action=approve-design-candidate — staff-only. Activates
+//      a candidate design and approves its preview variant.
+// POST /api/solitaire-designs?action=delete-design          — staff-only. Deletes
+//      a design (and its variants via FK cascade) — used to reject a candidate.
 // POST /api/solitaire-designs?action=save-selection        — public. Saves a
 //      client's finished configuration (like "Save Estimate").
 
 import { supa } from "./_lib/supabase.js";
 import { normalizePhone, TENANT_ID, checkCrmSecret } from "./_lib/config.js";
 import { enrollLeadInDrip } from "./_lib/drip.js";
-import { generateSolitaireDesignViews, generateCategoryCoverImage, generateSizeChartImage, suggestDesignName } from "./_lib/solitaireImageGen.js";
+import { generateSolitaireDesignViews, generateCategoryCoverImage, generateSizeChartImage, suggestDesignName, suggestDesignVariationConcept } from "./_lib/solitaireImageGen.js";
 import { getRates } from "./_lib/rates.js";
 
 // 120s — sequential per-view generation with 429 retry/backoff (see
@@ -403,6 +412,141 @@ export default async function handler(req, res) {
       return res.status(500).json({ ok: false, error: "suggestion_failed", detail: String(e.message || e) });
     }
     return res.status(200).json({ ok: true, name });
+  }
+
+  // ── POST action=generate-design-candidates — staff-only. Creates ONE new
+  // sibling design (own name/concept, inactive until approved) with ONE
+  // cheap front-view preview variant. Called once per candidate wanted —
+  // the client loops this N times with pacing, same pattern as the variant
+  // preview batch, to stay within OpenAI rate limits. ───────────────────
+  if (req.method === "POST" && action === "generate-design-candidates") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return authFail;
+    const body = parseBody(req);
+    const baseDesignId = body.baseDesignId;
+    if (!baseDesignId) return res.status(400).json({ ok: false, error: "baseDesignId_required" });
+
+    const { data: base } = await sb.from("solitaire_designs").select("*").eq("id", baseDesignId).maybeSingle();
+    if (!base) return res.status(404).json({ ok: false, error: "base_design_not_found" });
+
+    let concept;
+    try {
+      concept = await suggestDesignVariationConcept({ baseConceptPrompt: base.concept_prompt, category: base.category });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: "concept_generation_failed", detail: String(e.message || e) });
+    }
+
+    const { data: maxRow } = await sb.from("solitaire_designs").select("design_number")
+      .eq("tenant_id", TENANT_ID).eq("category", base.category).order("design_number", { ascending: false }).limit(1).maybeSingle();
+    const designNumber = (maxRow?.design_number || 0) + 1;
+    // Count existing siblings sharing this base's name prefix, for a "Name 2", "Name 3"... label.
+    const baseName = base.name.replace(/\s+\d+$/, "");
+    const { count: siblingCount } = await sb.from("solitaire_designs")
+      .select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).eq("category", base.category).ilike("name", `${baseName}%`);
+    const name = `${baseName} ${(siblingCount || 1) + 1}`;
+
+    const { data: newDesign, error: insErr } = await sb.from("solitaire_designs").insert({
+      tenant_id: TENANT_ID, category: base.category, design_number: designNumber, name,
+      concept_prompt: concept, has_side_diamonds: base.has_side_diamonds, active: false, // pending review
+    }).select("*").single();
+    if (insErr) return res.status(500).json({ ok: false, error: insErr.message });
+
+    let views;
+    try {
+      views = await generateSolitaireDesignViews({
+        conceptPrompt: concept, category: base.category, goldColor: "yellow", diamondShape: "Round",
+        hasSideDiamonds: base.has_side_diamonds, viewKeys: ["front"], quality: body.quality || "low",
+      });
+    } catch (e) {
+      // Design row exists but with no preview image — surface it as a
+      // failure the client can retry (delete-design + try again), rather
+      // than leaving a silently image-less candidate.
+      return res.status(500).json({ ok: false, error: "image_generation_failed", detail: String(e.message || e), design: newDesign });
+    }
+
+    const variantIdPlaceholder = `${Date.now()}`;
+    const viewImages = {};
+    for (const v of views) {
+      const path = `uploads/solitaire-designs/${newDesign.id}/${variantIdPlaceholder}/${v.key}.png`;
+      const { error: upErr } = await sb.storage.from("media").upload(path, Buffer.from(v.base64, "base64"), { contentType: "image/png", upsert: true });
+      if (upErr) continue;
+      const { data: pub } = sb.storage.from("media").getPublicUrl(path);
+      viewImages[v.key] = pub.publicUrl;
+    }
+    if (!Object.keys(viewImages).length) return res.status(500).json({ ok: false, error: "no_images_saved", design: newDesign });
+
+    const { data: variant, error: varErr } = await sb.from("solitaire_design_variants").insert({
+      tenant_id: TENANT_ID, design_id: newDesign.id, gold_color: "yellow", diamond_shape: "Round",
+      view_images: viewImages, status: "generated",
+    }).select("*").single();
+    if (varErr) return res.status(500).json({ ok: false, error: varErr.message, design: newDesign });
+
+    return res.status(200).json({ ok: true, design: newDesign, variant });
+  }
+
+  // ── GET action=pending-designs — staff-only. Candidate designs not yet
+  // approved (active=false) for a category, with their preview variant. ─
+  if (req.method === "GET" && action === "pending-designs") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return authFail;
+    const category = req.query?.category;
+    let query = sb.from("solitaire_designs").select("*").eq("tenant_id", TENANT_ID).eq("active", false)
+      .order("created_at", { ascending: false });
+    if (category) query = query.eq("category", category);
+    const { data: designs, error } = await query;
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+
+    const ids = (designs || []).map((d) => d.id);
+    let variants = [];
+    if (ids.length) {
+      const { data: vRows } = await sb.from("solitaire_design_variants").select("*").eq("tenant_id", TENANT_ID).in("design_id", ids);
+      variants = vRows || [];
+    }
+    const byDesign = {};
+    for (const v of variants) (byDesign[v.design_id] ||= []).push(v);
+
+    const result = (designs || []).map((d) => ({
+      id: d.id, category: d.category, name: d.name, conceptPrompt: d.concept_prompt, hasSideDiamonds: d.has_side_diamonds,
+      variants: (byDesign[d.id] || []).map((v) => ({ id: v.id, goldColor: v.gold_color, diamondShape: v.diamond_shape, viewImages: v.view_images, estGoldWeightG: v.est_gold_weight_g })),
+    }));
+    return res.status(200).json({ ok: true, designs: result });
+  }
+
+  // ── POST action=approve-design-candidate — staff-only. Activates a
+  // candidate design (now shows up as a real, sellable design) and
+  // approves its preview variant. The client then kicks off that
+  // variant's normal cascade (all other gold-colour x shape combos). ───
+  if (req.method === "POST" && action === "approve-design-candidate") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return authFail;
+    const body = parseBody(req);
+    const designId = body.designId;
+    if (!designId) return res.status(400).json({ ok: false, error: "designId_required" });
+
+    const { error: actErr } = await sb.from("solitaire_designs").update({ active: true }).eq("id", designId);
+    if (actErr) return res.status(500).json({ ok: false, error: actErr.message });
+
+    const { data: variant, error: varErr } = await sb.from("solitaire_design_variants")
+      .update({ status: "approved", updated_at: new Date().toISOString() })
+      .eq("design_id", designId).select("*").limit(1).single();
+    if (varErr) return res.status(500).json({ ok: false, error: varErr.message });
+
+    return res.status(200).json({ ok: true, variant });
+  }
+
+  // ── POST action=delete-design — staff-only. Deletes a design and its
+  // variants (FK cascade) — used to reject a candidate, or remove a
+  // mistaken design entirely. Storage objects are left orphaned (same as
+  // rejected variants elsewhere in this file — no cleanup job exists yet). ─
+  if (req.method === "POST" && action === "delete-design") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return authFail;
+    const body = parseBody(req);
+    const designId = body.designId;
+    if (!designId) return res.status(400).json({ ok: false, error: "designId_required" });
+    const { error } = await sb.from("solitaire_designs").delete().eq("id", designId);
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.status(200).json({ ok: true });
   }
 
   // ── POST action=update-variant — staff-only. Edit gold weight estimate

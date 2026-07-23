@@ -651,6 +651,60 @@ export function SolitaireAdminGenerator() {
       : `Created ${count} variants — review below and approve your favourite.`);
   };
 
+  // "Create N New Designs to Review" — genuinely NEW sibling designs (own
+  // name/concept, e.g. "Classic Solitaire Ring 2"), each with one cheap
+  // preview image, inactive until approved. This is the "5 different
+  // designs, not variations of the same one" flow — separate from
+  // createVariantsBatch above, which only re-rolls the SAME design's combo.
+  const [pendingDesigns, setPendingDesigns] = useState([]);
+  const [candidateProgress, setCandidateProgress] = useState(null);
+
+  const loadPendingDesigns = useCallback(() => {
+    apiGet("pending-designs", { category }, true).then((r) => { if (r.ok) setPendingDesigns(r.designs); });
+  }, [category]);
+
+  useEffect(() => { loadPendingDesigns(); }, [loadPendingDesigns]);
+
+  const createDesignCandidates = async (count = 5) => {
+    if (!currentDesign) { setMsg("⚠️ Select a design to base new ones on first."); return; }
+    setMsg(""); setCandidateProgress({ done: 0, total: count });
+    let failures = 0;
+    for (let i = 0; i < count; i++) {
+      if (i > 0) await new Promise((r) => setTimeout(r, 1500));
+      const res = await apiPost("generate-design-candidates", { baseDesignId: currentDesign.id, quality: pricingConfig?.imageQuality || "low" }, true);
+      if (!res.ok) failures++;
+      setCandidateProgress({ done: i + 1, total: count });
+      loadPendingDesigns();
+    }
+    setCandidateProgress(null);
+    setMsg(failures
+      ? `Created ${count - failures}/${count} new designs to review (${failures} failed).`
+      : `Created ${count} new designs — review and approve/reject below.`);
+  };
+
+  const approveDesignCandidate = async (candidate) => {
+    const res = await apiPost("approve-design-candidate", { designId: candidate.id }, true);
+    if (!res.ok) { setMsg(`⚠️ Failed to approve: ${res.error}`); return; }
+    setPendingDesigns((ds) => ds.filter((d) => d.id !== candidate.id));
+    setMsg(`Approved "${candidate.name}" — now generating its remaining gold-colour/shape combinations…`);
+    loadDesigns(candidate.id);
+    // Trigger the same cascade every other approval gets — all other
+    // gold-colour x shape combos for this newly-approved design.
+    const variant = candidate.variants?.[0];
+    if (variant) {
+      await cascadeRemaining(
+        { id: candidate.id, name: candidate.name, variants: [{ goldColor: variant.goldColor, diamondShape: variant.diamondShape }] },
+        { caratSize: null, promptOverride: null, estGoldWeightG: variant.estGoldWeightG || null }
+      );
+    }
+  };
+
+  const rejectDesignCandidate = async (candidate) => {
+    const res = await apiPost("delete-design", { designId: candidate.id }, true);
+    if (!res.ok) { setMsg(`⚠️ Failed to reject: ${res.error}`); return; }
+    setPendingDesigns((ds) => ds.filter((d) => d.id !== candidate.id));
+  };
+
   const generate = async () => {
     setBusy(true); setMsg("");
     const refBase64 = refImageFile ? await fileToBase64(refImageFile) : null;
@@ -893,6 +947,32 @@ export function SolitaireAdminGenerator() {
         </button>
         <button disabled={!designId || !!cascade || !variants.length} onClick={fillRemaining}>Fill Remaining Combinations</button>
       </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+        <button disabled={!designId || !!candidateProgress} onClick={() => createDesignCandidates(5)}>
+          {candidateProgress ? `Creating new designs… ${candidateProgress.done}/${candidateProgress.total}` : "Create 5 New Designs to Review"}
+        </button>
+        <span style={{ fontSize: 12, color: "#888" }}>Whole new sibling designs (own name + concept), not variants of {currentDesign?.name || "the selected design"} — review and approve/reject below.</span>
+      </div>
+
+      {!!pendingDesigns.length && (
+        <div style={{ marginBottom: 24 }}>
+          <h4>New Designs Pending Review ({pendingDesigns.length})</h4>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
+            {pendingDesigns.map((d) => (
+              <div key={d.id} style={{ border: "1px solid #ddd", borderRadius: 4, padding: 8 }}>
+                {d.variants?.[0]?.viewImages?.front && <img src={d.variants[0].viewImages.front} alt="" style={{ width: "100%", aspectRatio: "1/1", objectFit: "cover" }} />}
+                <div style={{ fontSize: 13, fontWeight: 600, marginTop: 6 }}>{d.name}</div>
+                <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>{d.conceptPrompt}</div>
+                <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                  <button style={{ flex: 1 }} onClick={() => approveDesignCandidate(d)}>Approve</button>
+                  <button style={{ flex: 1 }} onClick={() => rejectDesignCandidate(d)}>Reject</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {currentDesign && (
         <div style={{ marginBottom: 12, display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
