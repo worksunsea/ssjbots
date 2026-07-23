@@ -888,8 +888,8 @@ export function SolitaireAdminGenerator() {
         </label>
         {refImageFile && <button onClick={() => setRefImageFile(null)}>Clear</button>}
         <button disabled={busy || !designId || !!cascade} onClick={generate}>{busy ? "Generating…" : "Generate Variant"}</button>
-        <button disabled={!designId || !!cascade || !!batchProgress} onClick={() => createVariantsBatch(25)}>
-          {batchProgress ? `Creating variants… ${batchProgress.done}/${batchProgress.total}` : "Create 25 Variants to Review"}
+        <button disabled={!designId || !!cascade || !!batchProgress} onClick={() => createVariantsBatch(5)}>
+          {batchProgress ? `Creating variants… ${batchProgress.done}/${batchProgress.total}` : "Create 5 Variants to Review"}
         </button>
         <button disabled={!designId || !!cascade || !variants.length} onClick={fillRemaining}>Fill Remaining Combinations</button>
       </div>
