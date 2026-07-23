@@ -620,3 +620,18 @@ Scan supplier business cards → auto-fill contact details via AI vision → tag
 - **Rule going forward**: any change to `vercel.json`'s `rewrites` array MUST keep these two entries ahead of the catch-all. Do not delete, rename, or move `public/goldmenu.html` / `public/diamondmenu.html` / `public/menus/*` without the owner explicitly asking for it — these are static assets, not app logic, they have zero reason to be touched by unrelated CRM feature work.
 
 ---
+
+## 24. SOLITAIRE JEWELLERY DESIGNER — `/solitairejewellery` (2026-07-23)
+
+**Status: built, migrations NOT yet run in Supabase — do not assume this is live.**
+
+- Public route `/solitairejewellery` (same pattern as `/corporategiftingcoins`: early-return in `App()` before the auth gate, `vercel.json`'s catch-all already covers it, no new rewrite entry needed). Lead-capture popup for anonymous visitors; skipped when a staff/associate session (`loadUser()`) already exists.
+- New standalone file `src/SolitaireJewellery.jsx` (NOT folded into `App.jsx`) — exports `SolitaireJewelleryScreen` (public flow) and `SolitaireAdminGenerator` (staff-only AI design tool, mounted as the `solitairedesigns` tab, superadmin/admin/manager only).
+- Pricing logic lives in `src/utils/solitairePricing.js` — an independent copy of `App.jsx`'s Rapaport lookup constants/`rapLookup()` (not a refactor of the Calculator, to avoid touching stable code), plus new lab-grown/gold-purity math.
+- New tables (migrations `0081`–`0084`, **must be run in Supabase before this feature can work**): `solitaire_designs` (75 seeded design concepts, migration `0085`), `solitaire_design_variants` (AI-generated image sets per design × gold-colour × shape — this is what gates client-facing pricing; a combo with no `approved` variant shows no price), `solitaire_labgrown_prices` (admin-editable ₹/ct grid, seeded with 0 — **must be filled in from the admin screen before go-live**), `solitaire_design_selections` (client save record, same role as `bullion_estimates`).
+- New endpoint `api/solitaire-designs.js` + `api/_lib/solitaireImageGen.js` (OpenAI `gpt-image-1`, same provider/pattern as `api/_lib/imageGen.js`'s corporate-gifting mockups, but text-to-image not image-edits since there's no fixed reference photo). Uses the existing `OPENAI_API_KEY`, `x-crm-secret` auth for all admin actions.
+- USD/INR rate for Rapaport conversion is admin-set via `action=update-config`, stored in `bullion_dropdowns` (field `solitaire_usd_inr`), same "insert a new row, read latest by `updated_at`" convention as `rapaport_data` — defaults to 87 if never set.
+- Try-on uses `face-api.js` (new dependency) loaded client-side with models fetched from a public CDN (`cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js`) — no new backend, degrades to plain photo capture if face detection fails to load.
+- **Before this is usable**: run migrations `0081`–`0085` in Supabase, generate + approve at least one variant per design via the `solitairedesigns` admin tab, and fill in the lab-grown price grid (currently seeded at ₹0/ct for every carat size).
+
+---

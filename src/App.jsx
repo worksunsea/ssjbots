@@ -5,6 +5,7 @@ import { jsPDF } from "jspdf";
 import { secureImageUpload, secureNonImageUpload, compressImageOnly } from "./utils/imageUpload";
 import { getDeviceToken, shouldForceLogout, SESSION_POLL_MS } from "./utils/session-security";
 import { sendPushNotification } from "./utils/pushNotify";
+import { SolitaireJewelleryScreen, SolitaireAdminGenerator } from "./SolitaireJewellery";
 
 // ── SUPABASE (shared Sun Sea project — same as ssj-hr / fms-tracker) ──
 const SUPABASE_URL = "https://uppyxzellmuissdlxsmy.supabase.co";
@@ -151,11 +152,12 @@ const CRM_ALL_TABS = [
   { k: "vendors",     l: "Vendors",        icon: "🏭" },
   { k: "corpgift",    l: "Corp Gifting Pricing", icon: "💰" },
   { k: "corpgiftdesigns", l: "Corp Gifting Designs", icon: "🎨" },
+  { k: "solitairedesigns", l: "Solitaire Designs", icon: "💍" },
 ];
 const CRM_ROLE_DEFAULT_TABS = {
   superadmin: CRM_ALL_TABS.map((t) => t.k),
   admin:      CRM_ALL_TABS.map((t) => t.k),
-  manager:    ["demands", "adleads", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift", "corpgiftdesigns"],
+  manager:    ["demands", "adleads", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift", "corpgiftdesigns", "solitairedesigns"],
   staff:      ["demands", "adleads", "contacts", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
   telecaller: ["queue", "demands", "adleads"],
 };
@@ -10463,6 +10465,8 @@ export default function App() {
   if (catalogueMatch) return <PublicCatalogueScreen token={catalogueMatch[1]} />;
   const isCorpGiftingPage = typeof window !== "undefined" && window.location.pathname === "/corporategiftingcoins";
   if (isCorpGiftingPage) return <CorporateGiftingScreen />;
+  const isSolitairePage = typeof window !== "undefined" && window.location.pathname === "/solitairejewellery";
+  if (isSolitairePage) return <SolitaireJewelleryScreen />;
 
   const [user, setUser] = useState(() => {
     const u = loadUser();
@@ -10666,13 +10670,14 @@ export default function App() {
     { k: "vendors",    l: "Vendors",        icon: "🏭" },
     { k: "corpgift",   l: "Corp Gifting Pricing", icon: "💰" },
     { k: "corpgiftdesigns", l: "Corp Gifting Designs", icon: "🎨" },
+    { k: "solitairedesigns", l: "Solitaire Designs", icon: "💍" },
   ];
 
   // Role-based defaults when app_permissions.crm is not set
   const ROLE_DEFAULT_TABS = {
     superadmin: ALL_TABS.map((t) => t.k),
     admin:      ALL_TABS.map((t) => t.k),
-    manager:    ["demands", "adleads", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift", "corpgiftdesigns"],
+    manager:    ["demands", "adleads", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift", "corpgiftdesigns", "solitairedesigns"],
     staff:      ["demands", "adleads", "contacts", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
     telecaller: ["queue", "demands", "adleads"],
   };
@@ -10836,6 +10841,7 @@ export default function App() {
       {activeScreen === "vendors" && <VendorsScreen />}
       {activeScreen === "corpgift" && <CorpGiftPricingScreen />}
       {activeScreen === "corpgiftdesigns" && <CorpGiftDesignApprovalsScreen />}
+      {activeScreen === "solitairedesigns" && <SolitaireAdminGenerator />}
     </div>
     </ContactFieldsContext.Provider>
   );

@@ -15,6 +15,7 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.103.3",
     "busboy": "^1.6.0",
+    "face-api.js": "^0.22.2",
     "imapflow": "^1.0.191",
     "jspdf": "^4.2.1",
     "otpauth": "^9.5.1",
