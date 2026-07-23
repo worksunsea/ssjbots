@@ -258,6 +258,8 @@ function Configurator({ design, leadId, staffUser, onBack }) {
         rates, rapData, usdInr, labgrownPrices,
         diamondSource, caratSize, shape, diamondColor, diamondClarity, sellDiscPct: pricingConfig.sellDiscPct,
         purityKey, estGoldWeightG: variant.estGoldWeightG, makingChargePerGram: pricingConfig.makingChargePerGram,
+        sideDiamondWeightCt: design.hasSideDiamonds ? design.sideDiamondWeightCt : 0,
+        sideDiamondPricePerCt: pricingConfig.sideDiamondPricePerCt,
       })
     : { priceable: false };
 
@@ -342,6 +344,7 @@ function Configurator({ design, leadId, staffUser, onBack }) {
               <>
                 <Row label="Gold value" value={price.goldValue} />
                 <Row label="Diamond value" value={price.diamondValue} />
+                {price.sideDiamondValue > 0 && <Row label={`Side diamonds (${design.sideDiamondWeightCt}ct)`} value={price.sideDiamondValue} />}
                 <Row label="Making charges" value={price.making} />
                 <div style={{ borderTop: `1px solid ${THEME.border}`, marginTop: 10, paddingTop: 10, display: "flex", justifyContent: "space-between" }}>
                   <span style={{ ...heading, fontSize: 17 }}>Total</span>
@@ -724,6 +727,14 @@ export function SolitaireAdminGenerator() {
     setMsg("Pricing settings updated.");
   };
 
+  // Design names are AI-suggested (or admin-typed) at creation but always
+  // renameable afterward, same for the side-diamond flag/weight.
+  const updateDesignField = async (patch) => {
+    if (!currentDesign) return;
+    await apiPost("update-design", { designId: currentDesign.id, ...patch }, true);
+    loadDesigns(currentDesign.id);
+  };
+
   // Re-roll — generates a fresh alternate "take" of the SAME combo (design x
   // gold-colour x shape x carat) so the admin can pick a favourite before
   // approving. Approving any one automatically rejects its siblings
@@ -804,6 +815,25 @@ export function SolitaireAdminGenerator() {
         <button disabled={busy || !designId || !!cascade} onClick={generate}>{busy ? "Generating…" : "Generate Variant"}</button>
         <button disabled={!designId || !!cascade || !variants.length} onClick={fillRemaining}>Fill Remaining Combinations</button>
       </div>
+
+      {currentDesign && (
+        <div style={{ marginBottom: 12, display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
+          <label style={{ fontSize: 13 }}>
+            Product name:{" "}
+            <input key={currentDesign.id} type="text" defaultValue={currentDesign.name} onBlur={(e) => e.target.value.trim() && e.target.value.trim() !== currentDesign.name && updateDesignField({ name: e.target.value.trim() })} style={{ width: 220 }} />
+          </label>
+          <label style={{ fontSize: 13 }}>
+            <input type="checkbox" checked={!!currentDesign.hasSideDiamonds} onChange={(e) => updateDesignField({ hasSideDiamonds: e.target.checked })} /> Has side diamonds
+          </label>
+          {currentDesign.hasSideDiamonds && (
+            <label style={{ fontSize: 13 }}>
+              Side diamond weight (ct total):{" "}
+              <input key={`sd-${currentDesign.id}`} type="number" placeholder="e.g. 0.25" defaultValue={currentDesign.sideDiamondWeightCt || ""}
+                onBlur={(e) => e.target.value !== "" && updateDesignField({ sideDiamondWeightCt: Number(e.target.value) })} style={{ width: 90 }} />
+            </label>
+          )}
+        </div>
+      )}
 
       {currentDesign && (
         <div style={{ marginBottom: 12 }}>
@@ -897,6 +927,10 @@ export function SolitaireAdminGenerator() {
         <label style={{ fontSize: 13 }}>
           Natural diamond sell discount (%):{" "}
           <input type="number" defaultValue={pricingConfig?.sellDiscPct ?? ""} onBlur={(e) => savePricingConfig({ sellDiscPct: Number(e.target.value) })} style={{ width: 90 }} />
+        </label>
+        <label style={{ fontSize: 13 }}>
+          Side diamond price (₹/ct):{" "}
+          <input type="number" defaultValue={pricingConfig?.sideDiamondPricePerCt ?? ""} onBlur={(e) => savePricingConfig({ sideDiamondPricePerCt: Number(e.target.value) })} style={{ width: 90 }} />
         </label>
         <div style={{ fontSize: 13 }}>USD/INR (live): {usdInr != null ? `₹${usdInr} per $1 — from the Rates sheet` : "unavailable — check the Rates sheet's USD row"}</div>
       </div>

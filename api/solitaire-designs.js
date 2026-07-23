@@ -18,10 +18,13 @@
 // POST /api/solitaire-designs?action=update-labgrown-price — staff-only. Edit
 //      the lab-grown price grid.
 // GET  /api/solitaire-designs?action=pricing-config       — public. Making
-//      charge (₹/g) + natural-diamond sell discount (%), admin-editable.
+//      charge (₹/g), natural-diamond sell discount (%), side-diamond price
+//      (₹/ct) — all admin-editable.
 // POST /api/solitaire-designs?action=update-pricing-config — staff-only.
 // POST /api/solitaire-designs?action=set-design-gold-weight — staff-only.
 //      Applies one gold weight estimate to every variant of a design.
+// POST /api/solitaire-designs?action=update-design         — staff-only. Rename
+//      a design and/or edit concept prompt / side-diamond flag + weight (ct).
 // POST /api/solitaire-designs?action=generate-size-chart   — staff-only. One
 //      wide image per design showing .30ct-5ct size progression side by side.
 // POST /api/solitaire-designs?action=save-selection        — public. Saves a
@@ -78,6 +81,7 @@ export default async function handler(req, res) {
       designNumber: d.design_number,
       name: d.name,
       hasSideDiamonds: d.has_side_diamonds,
+      sideDiamondWeightCt: d.side_diamond_weight_ct,
       sizeChartImageUrl: d.size_chart_image_url,
       variants: (byDesign[d.id] || []).map((v) => ({
         id: v.id,
@@ -125,6 +129,7 @@ export default async function handler(req, res) {
       name: d.name,
       conceptPrompt: d.concept_prompt,
       hasSideDiamonds: d.has_side_diamonds,
+      sideDiamondWeightCt: d.side_diamond_weight_ct,
       sizeChartImageUrl: d.size_chart_image_url,
       variants: (byDesign[d.id] || []).map((v) => ({
         id: v.id,
@@ -213,6 +218,27 @@ export default async function handler(req, res) {
       tenant_id: TENANT_ID, category, design_number: designNumber, name,
       concept_prompt: conceptPrompt, has_side_diamonds: !!hasSideDiamonds,
     }).select("*").single();
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.status(200).json({ ok: true, design: data });
+  }
+
+  // ── POST action=update-design — staff-only. Rename a design and/or edit
+  // its concept prompt / side-diamond flag / side-diamond weight. Product
+  // names are AI-suggested (or admin-typed) at creation but always editable
+  // afterward — this is that edit path. ────────────────────────────────
+  if (req.method === "POST" && action === "update-design") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return authFail;
+    const body = parseBody(req);
+    const { designId, name, conceptPrompt, hasSideDiamonds, sideDiamondWeightCt } = body;
+    if (!designId) return res.status(400).json({ ok: false, error: "designId_required" });
+    const update = {};
+    if (name != null) update.name = String(name).trim().slice(0, 150);
+    if (conceptPrompt != null) update.concept_prompt = String(conceptPrompt).trim();
+    if (hasSideDiamonds != null) update.has_side_diamonds = !!hasSideDiamonds;
+    if (sideDiamondWeightCt != null) update.side_diamond_weight_ct = Number(sideDiamondWeightCt);
+    if (!Object.keys(update).length) return res.status(400).json({ ok: false, error: "nothing_to_update" });
+    const { data, error } = await sb.from("solitaire_designs").update(update).eq("id", designId).select("*").single();
     if (error) return res.status(500).json({ ok: false, error: error.message });
     return res.status(200).json({ ok: true, design: data });
   }
@@ -389,21 +415,24 @@ export default async function handler(req, res) {
   // These were previously hardcoded (350/g, 30%) in the client — real values
   // must come from here now. ────────────────────────────────────────────
   if (req.method === "GET" && action === "pricing-config") {
-    const [mc, sd] = await Promise.all([
+    const [mc, sd, sdc] = await Promise.all([
       sb.from("bullion_dropdowns").select("value, updated_at").eq("tenant_id", TENANT_ID)
         .eq("field", "solitaire_making_charge_per_gram").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
       sb.from("bullion_dropdowns").select("value, updated_at").eq("tenant_id", TENANT_ID)
         .eq("field", "solitaire_sell_disc_pct").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
+      sb.from("bullion_dropdowns").select("value, updated_at").eq("tenant_id", TENANT_ID)
+        .eq("field", "solitaire_side_diamond_price_per_ct").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
     ]);
     return res.status(200).json({
       ok: true,
       makingChargePerGram: mc.data?.value ? Number(mc.data.value) : 350,
       sellDiscPct: sd.data?.value ? Number(sd.data.value) : 30,
+      sideDiamondPricePerCt: sdc.data?.value ? Number(sdc.data.value) : 0,
     });
   }
 
-  // ── POST action=update-pricing-config — staff-only. Sets makingChargePerGram
-  // and/or sellDiscPct. ──────────────────────────────────────────────────
+  // ── POST action=update-pricing-config — staff-only. Sets makingChargePerGram,
+  // sellDiscPct, and/or sideDiamondPricePerCt. ─────────────────────────
   if (req.method === "POST" && action === "update-pricing-config") {
     const authFail = checkCrmSecret(req, res);
     if (authFail) return authFail;
@@ -414,6 +443,9 @@ export default async function handler(req, res) {
     }
     if (body.sellDiscPct != null) {
       writes.push(sb.from("bullion_dropdowns").insert({ tenant_id: TENANT_ID, field: "solitaire_sell_disc_pct", value: String(Number(body.sellDiscPct)) }));
+    }
+    if (body.sideDiamondPricePerCt != null) {
+      writes.push(sb.from("bullion_dropdowns").insert({ tenant_id: TENANT_ID, field: "solitaire_side_diamond_price_per_ct", value: String(Number(body.sideDiamondPricePerCt)) }));
     }
     if (!writes.length) return res.status(400).json({ ok: false, error: "nothing_to_update" });
     const results = await Promise.all(writes);

@@ -103,12 +103,15 @@ export function computeGoldValue({ rates, purityKey, customPct, weightG }) {
  * @param {number} params.customPct
  * @param {number} params.estGoldWeightG
  * @param {number} params.makingChargePerGram
+ * @param {number} params.sideDiamondWeightCt - total ct of side/accent diamonds on this design (0/null if none)
+ * @param {number} params.sideDiamondPricePerCt - admin-set ₹/ct rate for side melee, separate from the center stone
  */
 export function computeSolitairePrice(params) {
   const {
     rates, rapData, usdInr, labgrownPrices,
     diamondSource, caratSize, shape, diamondColor, diamondClarity, sellDiscPct = 0,
     purityKey, customPct, estGoldWeightG, makingChargePerGram = 0,
+    sideDiamondWeightCt = 0, sideDiamondPricePerCt = 0,
   } = params;
 
   const goldValue = computeGoldValue({ rates, purityKey, customPct, weightG: estGoldWeightG });
@@ -118,11 +121,12 @@ export function computeSolitairePrice(params) {
     : computeNaturalDiamondValue({ rapData, usdInr, weightCt: caratSize, color: diamondColor, clarity: diamondClarity, shape, sellDiscPct });
 
   const making = goldValue != null ? Math.round(estGoldWeightG * makingChargePerGram) : null;
+  const sideDiamondValue = sideDiamondWeightCt > 0 ? Math.round(sideDiamondWeightCt * sideDiamondPricePerCt) : 0;
 
   if (goldValue == null || diamondValue == null) {
-    return { goldValue, diamondValue, making, total: null, priceable: false };
+    return { goldValue, diamondValue, making, sideDiamondValue, total: null, priceable: false };
   }
 
-  const total = goldValue + diamondValue + (making || 0);
-  return { goldValue, diamondValue, making: making || 0, total, priceable: true };
+  const total = goldValue + diamondValue + (making || 0) + sideDiamondValue;
+  return { goldValue, diamondValue, making: making || 0, sideDiamondValue, total, priceable: true };
 }
