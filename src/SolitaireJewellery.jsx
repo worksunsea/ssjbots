@@ -704,6 +704,29 @@ export function SolitaireAdminGenerator() {
     setMsg("Pricing settings updated.");
   };
 
+  // Re-roll — generates a fresh alternate "take" of the SAME combo (design x
+  // gold-colour x shape x carat) so the admin can pick a favourite before
+  // approving. Approving any one automatically rejects its siblings
+  // server-side (see api/solitaire-designs.js action=update-variant).
+  const regenerateVariant = async (v) => {
+    setBusy(true); setMsg("");
+    const res = await generateOne({ designId, goldColor: v.goldColor, diamondShape: v.diamondShape, caratSize: v.caratSize, promptOverride: v.promptOverride });
+    setBusy(false);
+    if (!res.ok) return setMsg(`Failed: ${res.error}${res.detail ? ` — ${res.detail}` : ""}`);
+    setMsg("New version generated — review below and approve your favourite.");
+    loadDesigns();
+  };
+
+  // Group variants by combo (gold-colour x shape x carat) so alternate
+  // "takes" of the same combo sit together instead of looking like
+  // unrelated extra options.
+  const comboGroups = {};
+  for (const v of variants) {
+    const key = `${v.goldColor}|${v.diamondShape}|${v.caratSize ?? ""}`;
+    (comboGroups[key] ||= []).push(v);
+  }
+  const primaryVariant = variants.find((v) => v.status === "approved") || variants[0] || null;
+
   return (
     <div style={{ padding: 20, maxWidth: 960 }}>
       <h3>Solitaire Jewellery — AI Design Generator</h3>
@@ -770,24 +793,45 @@ export function SolitaireAdminGenerator() {
       {msg && <div style={{ marginBottom: 12, fontSize: 13 }}>{msg}</div>}
       {cascade && <div style={{ marginBottom: 12, fontSize: 13, color: "#2980b9" }}>Auto-generating remaining combinations… {cascade.done}/{cascade.total}</div>}
 
-      {!!variants.length && (
-        <div style={{ marginBottom: 8 }}>
-          <button onClick={() => setGridExpanded((v) => !v)}>
-            {gridExpanded ? "Hide" : "Show"} all {variants.length} variant{variants.length !== 1 ? "s" : ""} {gridExpanded ? "▲" : "▼"}
-          </button>
-        </div>
+      {/* Always-visible basic summary — no more "nothing shown until expanded"
+          confusion. Expand reveals every combo, grouped, with alternates. */}
+      {currentDesign && (
+        primaryVariant ? (
+          <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 8, padding: 8, border: "1px solid #ddd", borderRadius: 4 }}>
+            {primaryVariant.viewImages?.front && <img src={primaryVariant.viewImages.front} alt="" style={{ width: 70, height: 70, objectFit: "cover", borderRadius: 4 }} />}
+            <div style={{ fontSize: 13 }}>
+              <div><strong>{currentDesign.name}</strong></div>
+              <div style={{ color: "#888" }}>{primaryVariant.goldColor} / {primaryVariant.diamondShape} — {primaryVariant.status}{variants.length > 1 ? ` · ${variants.length} variants total` : ""}</div>
+            </div>
+            <button style={{ marginLeft: "auto" }} onClick={() => setGridExpanded((v) => !v)}>
+              {gridExpanded ? "Hide" : "Show"} all {variants.length} variant{variants.length !== 1 ? "s" : ""} {gridExpanded ? "▲" : "▼"}
+            </button>
+          </div>
+        ) : (
+          <div style={{ fontSize: 13, color: "#888", marginBottom: 8 }}>No variants generated yet for this design — use "Generate Variant" above.</div>
+        )
       )}
       {gridExpanded && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12, marginBottom: 30 }}>
-          {variants.map((v) => (
-            <div key={v.id} style={{ border: "1px solid #ddd", borderRadius: 4, padding: 8 }}>
-              {v.viewImages?.front && <img src={v.viewImages.front} alt="" style={{ width: "100%", aspectRatio: "1/1", objectFit: "cover" }} />}
-              <div style={{ fontSize: 12, marginTop: 6 }}>{v.goldColor} / {v.diamondShape}{v.caratSize ? ` / ${v.caratSize}ct` : ""}</div>
-              <div style={{ fontSize: 11, color: v.status === "approved" ? "#27ae60" : v.status === "rejected" ? "#c0392b" : "#888" }}>{v.status}</div>
-              <input type="number" placeholder="est. gold weight (g)" defaultValue={v.estGoldWeightG || ""} onBlur={(e) => setDesignGoldWeight(e.target.value)} style={{ width: "100%", marginTop: 6 }} />
-              {v.status !== "approved"
-                ? <button style={{ marginTop: 6, width: "100%" }} disabled={!!cascade} onClick={() => approveAndCascade(v)}>Approve</button>
-                : <button style={{ marginTop: 6, width: "100%" }} onClick={() => updateVariant(v.id, { status: "rejected" })}>Reject</button>}
+        <div style={{ marginBottom: 30 }}>
+          {Object.entries(comboGroups).map(([key, group]) => (
+            <div key={key} style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 12, color: "#888", marginBottom: 6 }}>
+                {group[0].goldColor} / {group[0].diamondShape}{group[0].caratSize ? ` / ${group[0].caratSize}ct` : ""}
+                {group.length > 1 ? ` — ${group.length} versions` : ""}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
+                {group.map((v) => (
+                  <div key={v.id} style={{ border: "1px solid #ddd", borderRadius: 4, padding: 8 }}>
+                    {v.viewImages?.front && <img src={v.viewImages.front} alt="" style={{ width: "100%", aspectRatio: "1/1", objectFit: "cover" }} />}
+                    <div style={{ fontSize: 11, color: v.status === "approved" ? "#27ae60" : v.status === "rejected" ? "#c0392b" : "#888" }}>{v.status}</div>
+                    <input type="number" placeholder="est. gold weight (g)" defaultValue={v.estGoldWeightG || ""} onBlur={(e) => setDesignGoldWeight(e.target.value)} style={{ width: "100%", marginTop: 6 }} />
+                    {v.status !== "approved"
+                      ? <button style={{ marginTop: 6, width: "100%" }} disabled={!!cascade} onClick={() => approveAndCascade(v)}>Approve</button>
+                      : <button style={{ marginTop: 6, width: "100%" }} onClick={() => updateVariant(v.id, { status: "rejected" })}>Reject</button>}
+                    <button style={{ marginTop: 4, width: "100%" }} disabled={busy} onClick={() => regenerateVariant(v)}>Generate Another Version</button>
+                  </div>
+                ))}
+              </div>
             </div>
           ))}
         </div>

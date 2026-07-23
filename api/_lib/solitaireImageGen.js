@@ -108,17 +108,22 @@ export const SIZE_CHART_CARATS = [0.30, 0.50, 0.70, 0.90, 1, 1.5, 2, 3, 3.5, 4, 
 // One wide reference image per DESIGN (not per gold-colour/shape variant)
 // showing the same setting repeated with diamonds from .30ct to 5ct side by
 // side, each labelled, so the size progression is visible in a single photo.
+// Laid out as a 2-row x 6-column grid (not one long row) — a single row of
+// 12 distinct pieces was where the model was merging/dropping sizes.
 export async function generateSizeChartImage({ conceptPrompt, category, hasSideDiamonds }) {
   if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY missing");
-  const caratList = SIZE_CHART_CARATS.join(", ");
+  const topRow = SIZE_CHART_CARATS.slice(0, 6);
+  const bottomRow = SIZE_CHART_CARATS.slice(6);
   const prompt = [
-    `A single wide jewellery-catalogue comparison photograph, ${SIZE_CHART_CARATS.length} identical solitaire ${category.replace("_", " ")} settings arranged in one evenly-spaced horizontal row on a plain neutral studio background.`,
-    `Every setting is the SAME design: ${conceptPrompt}.`,
+    `A single jewellery-catalogue size-comparison chart image, laid out as a clean 2-row x 6-column grid — exactly 12 separate photographs of the same solitaire ${category.replace("_", " ")} setting, one per grid cell, each shot as a straight-on FRONT VIEW product photo only (no angled/3-4 view, no "worn by a model" shot, no hands, no people — product-only front-facing shots on a plain neutral studio background for every single cell).`,
+    `Every one of the 12 pieces is the exact SAME design: ${conceptPrompt}.`,
     hasSideDiamonds ? "Each includes the same smaller pave/accent side diamonds as described." : "No side diamonds on any of them — only the center stone.",
-    `Polished yellow gold metal, consistent for every piece in the row.`,
-    `Each setting holds a round brilliant center diamond, with the diamond size increasing left to right through this exact carat progression: ${caratList} carat — the size difference between each piece MUST be clearly visible and proportionally accurate (a 5 carat stone should look dramatically larger than a 0.30 carat stone, not just slightly bigger).`,
-    `A small, elegant carat-weight label (e.g. "0.30ct", "1.00ct", "5.00ct") is printed directly beneath each piece in the row, in a clean serif font.`,
-    `Even studio lighting across the whole row, sharp focus, photorealistic, high-end jewellery catalogue quality, landscape composition. No watermark, no other text besides the carat labels.`,
+    `Polished yellow gold metal, identical for all 12 pieces.`,
+    `Top row (left to right), 6 pieces with center diamond carat sizes exactly: ${topRow.join(", ")} carat.`,
+    `Bottom row (left to right), 6 pieces with center diamond carat sizes exactly: ${bottomRow.join(", ")} carat.`,
+    `All 12 cells MUST be present — do not skip, merge, or combine any of the 12 sizes into fewer pieces. The diamond size must increase visibly and proportionally from the smallest (0.30ct) to the largest (5.00ct) — a 5 carat stone should look dramatically larger than a 0.30 carat stone.`,
+    `A small elegant carat-weight label (e.g. "0.30ct", "1.00ct", "5.00ct") is printed directly beneath each of the 12 pieces, in a clean serif font, matching that cell's exact carat size.`,
+    `Even studio lighting across the whole grid, sharp focus, photorealistic, high-end jewellery catalogue quality. No watermark, no other text besides the 12 carat labels.`,
   ].filter(Boolean).join(" ");
   const b64 = await generateOne(prompt, null, "1536x1024");
   if (!b64) throw new Error("no image returned");

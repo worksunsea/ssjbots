@@ -320,7 +320,11 @@ export default async function handler(req, res) {
   }
 
   // ── POST action=update-variant — staff-only. Edit gold weight estimate
-  // and/or approve/reject a generated variant. ─────────────────────────
+  // and/or approve/reject a generated variant. Approving one variant
+  // auto-rejects any OTHER (unapproved) variant for the same design x
+  // gold-colour x shape combo — admins can generate multiple alternate
+  // "takes" of the same combo to pick a favourite, but only one can ever
+  // be the live approved version a client sees. ────────────────────────
   if (req.method === "POST" && action === "update-variant") {
     const authFail = checkCrmSecret(req, res);
     if (authFail) return authFail;
@@ -332,6 +336,13 @@ export default async function handler(req, res) {
     if (status && ["generated", "approved", "rejected"].includes(status)) update.status = status;
     const { data, error } = await sb.from("solitaire_design_variants").update(update).eq("id", variantId).select("*").single();
     if (error) return res.status(500).json({ ok: false, error: error.message });
+
+    if (status === "approved") {
+      await sb.from("solitaire_design_variants")
+        .update({ status: "rejected", updated_at: new Date().toISOString() })
+        .eq("design_id", data.design_id).eq("gold_color", data.gold_color).eq("diamond_shape", data.diamond_shape)
+        .neq("id", data.id).neq("status", "approved");
+    }
     return res.status(200).json({ ok: true, variant: data });
   }
 
