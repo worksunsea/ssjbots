@@ -209,16 +209,20 @@ export default async function handler(req, res) {
     const authFail = checkCrmSecret(req, res);
     if (authFail) return authFail;
     const body = parseBody(req);
-    const { category, name, conceptPrompt, hasSideDiamonds } = body;
-    let { designNumber } = body;
-    if (!category || !name || !conceptPrompt) {
-      return res.status(400).json({ ok: false, error: "category_name_conceptPrompt_required" });
-    }
+    const { category, hasSideDiamonds } = body;
+    let { designNumber, name, conceptPrompt } = body;
+    if (!category) return res.status(400).json({ ok: false, error: "category_required" });
     if (!designNumber) {
       const { data: maxRow } = await sb.from("solitaire_designs").select("design_number")
         .eq("tenant_id", TENANT_ID).eq("category", category).order("design_number", { ascending: false }).limit(1).maybeSingle();
       designNumber = (maxRow?.design_number || 0) + 1;
     }
+    // Both name and concept prompt are optional — a nice name can be
+    // suggested later from the actual generated image (action=suggest-
+    // design-name), and the concept prompt just needs SOME style direction
+    // to seed the AI generator with, admin can refine it anytime.
+    if (!name) name = `${category.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase())} Design ${designNumber}`;
+    if (!conceptPrompt) conceptPrompt = `an elegant solitaire ${category.replace("_", " ")} design, classic and refined styling`;
     const { data, error } = await sb.from("solitaire_designs").insert({
       tenant_id: TENANT_ID, category, design_number: designNumber, name,
       concept_prompt: conceptPrompt, has_side_diamonds: !!hasSideDiamonds,

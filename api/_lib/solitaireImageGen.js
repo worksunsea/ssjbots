@@ -163,6 +163,14 @@ export async function generateCategoryCoverImage(category) {
 // (up to 12ct) would be illegible crammed into one image anyway.
 export const SIZE_CHART_CARATS = [0.30, 0.50, 0.70, 0.90, 1, 1.5, 2, 3, 3.5, 4, 4.5, 5];
 
+// Real round-brilliant diameters (mm) at each carat weight — standard GIA-ish
+// reference. Earlier prompt just said "dramatically larger", which pushed
+// the model toward exaggerated fantasy-scale stones (a 5ct read as a golf
+// ball, not the ~11mm stone it actually is). Anchoring each size to its real
+// mm diameter keeps the whole chart proportionally honest.
+const CARAT_MM = { 0.30: 4.4, 0.50: 5.2, 0.70: 5.7, 0.90: 6.2, 1: 6.5, 1.5: 7.4, 2: 8.2, 3: 9.4, 3.5: 9.7, 4: 10.4, 4.5: 10.8, 5: 11.0 };
+const rowLabel = (row) => row.map((c) => `${c}ct (~${CARAT_MM[c]}mm diameter)`).join(", ");
+
 // One wide reference image per DESIGN (not per gold-colour/shape variant)
 // showing the same setting repeated with diamonds from .30ct to 5ct side by
 // side, each labelled, so the size progression is visible in a single photo.
@@ -176,10 +184,11 @@ export async function generateSizeChartImage({ conceptPrompt, category, hasSideD
     `A single jewellery-catalogue size-comparison chart image, laid out as a clean 2-row x 6-column grid — exactly 12 separate photographs of the same solitaire ${category.replace("_", " ")} setting, one per grid cell, each shot as a straight-on FRONT VIEW product photo only (no angled/3-4 view, no "worn by a model" shot, no hands, no people — product-only front-facing shots on a plain neutral studio background for every single cell).`,
     `Every one of the 12 pieces is the exact SAME design: ${conceptPrompt}.`,
     hasSideDiamonds ? "Each includes the same smaller pave/accent side diamonds as described." : "No side diamonds on any of them — only the center stone.",
-    `Polished yellow gold metal, identical for all 12 pieces.`,
-    `Top row (left to right), 6 pieces with center diamond carat sizes exactly: ${topRow.join(", ")} carat.`,
-    `Bottom row (left to right), 6 pieces with center diamond carat sizes exactly: ${bottomRow.join(", ")} carat.`,
-    `All 12 cells MUST be present — do not skip, merge, or combine any of the 12 sizes into fewer pieces. The diamond size must increase visibly and proportionally from the smallest (0.30ct) to the largest (5.00ct) — a 5 carat stone should look dramatically larger than a 0.30 carat stone.`,
+    `Polished yellow gold metal, identical for all 12 pieces. The band/setting itself is the SAME real-world physical size in every cell (a normal finger-ring/pendant/earring size) — only the center diamond's size changes between cells, never the metalwork.`,
+    `REALISM IS CRITICAL: use the actual real-world diamond diameter for each carat weight given below — do not exaggerate or dramatize the size. A 5 carat round brilliant is approximately 11mm across (roughly the size of a small pea/chickpea) — noticeably large for a ring, but NOT an oversized boulder or costume-jewellery-scale stone. Keep every stone believably wearable and true to its real mm size relative to the band.`,
+    `Top row (left to right), 6 pieces with center diamond sizes exactly: ${rowLabel(topRow)}.`,
+    `Bottom row (left to right), 6 pieces with center diamond sizes exactly: ${rowLabel(bottomRow)}.`,
+    `All 12 cells MUST be present — do not skip, merge, or combine any of the 12 sizes into fewer pieces.`,
     `A small elegant carat-weight label (e.g. "0.30ct", "1.00ct", "5.00ct") is printed directly beneath each of the 12 pieces, in a clean serif font, matching that cell's exact carat size.`,
     `Even studio lighting across the whole grid, sharp focus, photorealistic, high-end jewellery catalogue quality. No watermark, no other text besides the 12 carat labels.`,
   ].filter(Boolean).join(" ");

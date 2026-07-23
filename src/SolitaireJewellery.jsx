@@ -592,16 +592,12 @@ export function SolitaireAdminGenerator() {
   // gets its own independent set of gold-colour x shape x carat combos to
   // generate exactly like any seeded design.
   const createDesign = async () => {
-    const name = newDesignName.trim();
-    if (!name) { setMsg("⚠️ Please enter a design name first."); return; }
-    // Concept prompt is optional here — a reasonable default gets generated
-    // from the name if left blank, rather than silently blocking creation
-    // (this was the actual "Create Design button not working" cause: it
-    // WAS working, it was just refusing to submit with an empty prompt and
-    // showing a message easy to miss).
-    const conceptPrompt = newDesignPrompt.trim() || `an elegant solitaire ${CATEGORIES.find((c) => c.key === category)?.label.toLowerCase().replace(/s$/, "") || "piece"} design named "${name}", classic and refined styling`;
+    // Both name and concept prompt are fully optional — the backend auto-fills
+    // a placeholder name (e.g. "Ring Design 26") and a generic concept if
+    // left blank. Rename anytime afterward, or use "Suggest Name from Image"
+    // once a variant exists for a nicer AI-picked name.
     setCreatingDesign(true);
-    const res = await apiPost("create-design", { category, name, conceptPrompt, hasSideDiamonds: newDesignSideDiamonds }, true);
+    const res = await apiPost("create-design", { category, name: newDesignName.trim() || undefined, conceptPrompt: newDesignPrompt.trim() || undefined, hasSideDiamonds: newDesignSideDiamonds }, true);
     setCreatingDesign(false);
     if (!res.ok) { setMsg(`⚠️ Failed to create design: ${res.error}${res.detail ? ` — ${res.detail}` : ""}`); return; }
     setNewDesignOpen(false); setNewDesignName(""); setNewDesignPrompt(""); setNewDesignSideDiamonds(false);
@@ -825,9 +821,9 @@ export function SolitaireAdminGenerator() {
           <div style={{ fontSize: 13, marginBottom: 8 }}>
             Add a new named design to <strong>{CATEGORIES.find((c) => c.key === category)?.label}</strong> — it gets its own independent set of gold-colour x shape x carat combos, same as any of the original designs.
           </div>
-          <input placeholder="Design name (e.g. Classic Solitaire Ring II)" value={newDesignName} onChange={(e) => setNewDesignName(e.target.value)}
+          <input placeholder="Design name (optional — auto-named if left blank, e.g. Classic Solitaire Ring II)" value={newDesignName} onChange={(e) => setNewDesignName(e.target.value)}
             style={{ width: "100%", boxSizing: "border-box", marginBottom: 8, padding: 6 }} />
-          <textarea placeholder="Design concept — style direction for the AI generator (e.g. a slim tapered band with a bezel-set center stone...)"
+          <textarea placeholder="Design concept (optional — auto-filled if left blank) — style direction for the AI generator (e.g. a slim tapered band with a bezel-set center stone...)"
             value={newDesignPrompt} onChange={(e) => setNewDesignPrompt(e.target.value)} rows={3}
             style={{ width: "100%", boxSizing: "border-box", marginBottom: 8, padding: 6, fontFamily: "inherit", fontSize: 13 }} />
           <label style={{ fontSize: 13, display: "block", marginBottom: 8 }}>
@@ -904,15 +900,16 @@ export function SolitaireAdminGenerator() {
       {msg && <div style={{ marginBottom: 12, fontSize: 13, fontWeight: msg.startsWith("⚠️") ? 600 : 400, color: msg.startsWith("⚠️") ? "#c0392b" : msg.startsWith("✅") ? "#27ae60" : "inherit" }}>{msg}</div>}
       {cascade && <div style={{ marginBottom: 12, fontSize: 13, color: "#2980b9" }}>Auto-generating remaining combinations… {cascade.done}/{cascade.total}</div>}
 
-      {/* Always-visible basic summary — no more "nothing shown until expanded"
-          confusion. Expand reveals every combo, grouped, with alternates. */}
+      {/* Always-visible basic summary — shows the DESIGN as one product, not
+          whichever variant happened to be picked as "primary". No more
+          "nothing shown until expanded" confusion either. */}
       {currentDesign && (
         primaryVariant ? (
           <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 8, padding: 8, border: "1px solid #ddd", borderRadius: 4 }}>
             {primaryVariant.viewImages?.front && <img src={primaryVariant.viewImages.front} alt="" style={{ width: 70, height: 70, objectFit: "cover", borderRadius: 4 }} />}
             <div style={{ fontSize: 13 }}>
               <div><strong>{currentDesign.name}</strong></div>
-              <div style={{ color: "#888" }}>{primaryVariant.goldColor} / {primaryVariant.diamondShape} — {primaryVariant.status}{variants.length > 1 ? ` · ${variants.length} variants total` : ""}</div>
+              <div style={{ color: "#888" }}>{variants.filter((v) => v.status === "approved").length} approved · {variants.length} variant{variants.length !== 1 ? "s" : ""} generated</div>
             </div>
             <button style={{ marginLeft: "auto" }} onClick={() => setGridExpanded((v) => !v)}>
               {gridExpanded ? "Hide" : "Show"} all {variants.length} variant{variants.length !== 1 ? "s" : ""} {gridExpanded ? "▲" : "▼"}
