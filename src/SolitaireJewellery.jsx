@@ -232,6 +232,7 @@ function Configurator({ design, leadId, staffUser, onBack }) {
   const [showTryOn, setShowTryOn] = useState(false);
   const [tryonUrl, setTryonUrl] = useState(null);
   const [activeView, setActiveView] = useState("front");
+  const [showSizeChart, setShowSizeChart] = useState(false);
 
   useEffect(() => {
     apiGet("rates").then((r) => setRates(r.ok ? r.rates : null));
@@ -313,6 +314,11 @@ function Configurator({ design, leadId, staffUser, onBack }) {
             <select style={selectStyle} value={caratSize} onChange={(e) => setCaratSize(Number(e.target.value))}>
               {LABGROWN_CARAT_SIZES.map((c) => <option key={c} value={c}>{c} ct</option>)}
             </select>
+            {design.sizeChartImageUrl && (
+              <button onClick={() => setShowSizeChart(true)} style={{ ...btnGhost, marginTop: 8, padding: "6px 12px", fontSize: 12 }}>
+                See size comparison (.30ct–5ct)
+              </button>
+            )}
           </Field>
           <Field label="Diamond Type">
             <Choices options={["labgrown", "natural"]} value={diamondSource} onChange={setDiamondSource} render={(o) => (o === "labgrown" ? "Lab-Grown" : "Natural")} />
@@ -357,6 +363,17 @@ function Configurator({ design, leadId, staffUser, onBack }) {
         <TryOnModal jewelleryImageUrl={variant?.viewImages?.worn || variant?.viewImages?.front} category={design.category}
           onClose={() => setShowTryOn(false)}
           onSaved={(url) => { setTryonUrl(url); setShowTryOn(false); }} />
+      )}
+
+      {showSizeChart && design.sizeChartImageUrl && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(28,25,23,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1100, padding: 16 }}
+          onClick={() => setShowSizeChart(false)}>
+          <div style={{ background: THEME.surface, border: `1px solid ${THEME.border}`, borderRadius: 4, padding: 16, maxWidth: 900, width: "100%" }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ ...heading, fontSize: 16, marginBottom: 10 }}>Size Comparison — .30ct to 5ct</div>
+            <img src={design.sizeChartImageUrl} alt="size comparison" style={{ width: "100%", borderRadius: 4 }} />
+            <button style={{ ...btnGhost, marginTop: 12 }} onClick={() => setShowSizeChart(false)}>Close</button>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -604,6 +621,7 @@ export function SolitaireAdminGenerator() {
     }
     if (!missing.length) return;
     setCascade({ done: 0, total: missing.length });
+    const failed = [];
     for (let i = 0; i < missing.length; i++) {
       const combo = missing[i];
       const res = await generateOne({
@@ -612,11 +630,18 @@ export function SolitaireAdminGenerator() {
       });
       if (res.ok && res.variant) {
         await apiPost("update-variant", { variantId: res.variant.id, estGoldWeightG: referenceVariant.estGoldWeightG, status: "approved" }, true);
+      } else {
+        failed.push(`${combo.goldColor}/${combo.diamondShape}`);
       }
       setCascade({ done: i + 1, total: missing.length });
     }
     setCascade(null);
-    setMsg(`Auto-generated and approved ${missing.length} remaining combination${missing.length !== 1 ? "s" : ""} for "${design.name}".`);
+    const succeeded = missing.length - failed.length;
+    setMsg(
+      failed.length
+        ? `Generated ${succeeded}/${missing.length} remaining combinations for "${design.name}". Failed: ${failed.join(", ")} — click "Fill Remaining Combinations" again to retry just these.`
+        : `Auto-generated and approved ${missing.length} remaining combination${missing.length !== 1 ? "s" : ""} for "${design.name}".`
+    );
     loadDesigns();
   };
 
@@ -640,7 +665,21 @@ export function SolitaireAdminGenerator() {
     loadDesigns();
     if (wasFirstApproval && currentDesign) {
       await cascadeRemaining(currentDesign, { ...variant, estGoldWeightG: variant.estGoldWeightG });
+      if (!currentDesign.sizeChartImageUrl) await generateSizeChart(currentDesign.id);
     }
+  };
+
+  // .30ct-5ct size-comparison image, one per design — generated automatically
+  // the first time a design's first variant is approved (same moment the
+  // combo cascade kicks off), and also available as a manual button below
+  // for designs made before this existed.
+  const [chartBusy, setChartBusy] = useState(null); // designId currently generating
+  const generateSizeChart = async (designId) => {
+    setChartBusy(designId);
+    const res = await apiPost("generate-size-chart", { designId }, true);
+    setChartBusy(null);
+    if (!res.ok) setMsg(`Size chart failed: ${res.error}${res.detail ? ` — ${res.detail}` : ""}`);
+    loadDesigns();
   };
 
   // Manual retry/complete — independent of the auto-cascade-on-first-approval
@@ -713,6 +752,17 @@ export function SolitaireAdminGenerator() {
               defaultValue={variants.find((v) => v.estGoldWeightG)?.estGoldWeightG || ""}
               onBlur={(e) => setDesignGoldWeight(e.target.value)} style={{ width: 100 }} />
           </label>
+        </div>
+      )}
+
+      {currentDesign && (
+        <div style={{ marginBottom: 16, display: "flex", alignItems: "center", gap: 12 }}>
+          {currentDesign.sizeChartImageUrl && (
+            <img src={currentDesign.sizeChartImageUrl} alt="size chart" style={{ width: 220, height: "auto", border: "1px solid #ddd", borderRadius: 4 }} />
+          )}
+          <button disabled={chartBusy === currentDesign.id} onClick={() => generateSizeChart(currentDesign.id)}>
+            {chartBusy === currentDesign.id ? "Generating…" : currentDesign.sizeChartImageUrl ? "Regenerate Size Chart (.30ct–5ct)" : "Generate Size Chart (.30ct–5ct)"}
+          </button>
         </div>
       )}
 

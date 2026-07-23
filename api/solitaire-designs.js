@@ -22,13 +22,15 @@
 // POST /api/solitaire-designs?action=update-pricing-config — staff-only.
 // POST /api/solitaire-designs?action=set-design-gold-weight — staff-only.
 //      Applies one gold weight estimate to every variant of a design.
+// POST /api/solitaire-designs?action=generate-size-chart   — staff-only. One
+//      wide image per design showing .30ct-5ct size progression side by side.
 // POST /api/solitaire-designs?action=save-selection        — public. Saves a
 //      client's finished configuration (like "Save Estimate").
 
 import { supa } from "./_lib/supabase.js";
 import { normalizePhone, TENANT_ID, checkCrmSecret } from "./_lib/config.js";
 import { enrollLeadInDrip } from "./_lib/drip.js";
-import { generateSolitaireDesignViews, generateCategoryCoverImage } from "./_lib/solitaireImageGen.js";
+import { generateSolitaireDesignViews, generateCategoryCoverImage, generateSizeChartImage } from "./_lib/solitaireImageGen.js";
 import { getRates } from "./_lib/rates.js";
 
 export const config = { maxDuration: 60 };
@@ -76,6 +78,7 @@ export default async function handler(req, res) {
       designNumber: d.design_number,
       name: d.name,
       hasSideDiamonds: d.has_side_diamonds,
+      sizeChartImageUrl: d.size_chart_image_url,
       variants: (byDesign[d.id] || []).map((v) => ({
         id: v.id,
         goldColor: v.gold_color,
@@ -122,6 +125,7 @@ export default async function handler(req, res) {
       name: d.name,
       conceptPrompt: d.concept_prompt,
       hasSideDiamonds: d.has_side_diamonds,
+      sizeChartImageUrl: d.size_chart_image_url,
       variants: (byDesign[d.id] || []).map((v) => ({
         id: v.id,
         goldColor: v.gold_color,
@@ -283,6 +287,36 @@ export default async function handler(req, res) {
     if (upErr) return res.status(500).json({ ok: false, error: upErr.message });
     const { data: pub } = sb.storage.from("media").getPublicUrl(path);
     return res.status(200).json({ ok: true, category, imageUrl: pub.publicUrl });
+  }
+
+  // ── POST action=generate-size-chart — staff-only. One wide image per
+  // design showing the same setting with diamonds from .30ct to 5ct side by
+  // side, so the size progression is visible in a single photo. Stored on
+  // the design, not a variant (it's design-level, not gold-colour/shape
+  // specific). Deterministic path (upsert). ────────────────────────────
+  if (req.method === "POST" && action === "generate-size-chart") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return authFail;
+    const body = parseBody(req);
+    const designId = body.designId;
+    if (!designId) return res.status(400).json({ ok: false, error: "designId_required" });
+
+    const { data: design } = await sb.from("solitaire_designs").select("*").eq("id", designId).maybeSingle();
+    if (!design) return res.status(404).json({ ok: false, error: "design_not_found" });
+
+    let image;
+    try {
+      image = await generateSizeChartImage({ conceptPrompt: design.concept_prompt, category: design.category, hasSideDiamonds: design.has_side_diamonds });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: "generation_failed", detail: String(e.message || e) });
+    }
+    const path = `uploads/solitaire-designs/${designId}/size-chart.png`;
+    const { error: upErr } = await sb.storage.from("media").upload(path, Buffer.from(image.base64, "base64"), { contentType: "image/png", upsert: true });
+    if (upErr) return res.status(500).json({ ok: false, error: upErr.message });
+    const { data: pub } = sb.storage.from("media").getPublicUrl(path);
+    const { error: updErr } = await sb.from("solitaire_designs").update({ size_chart_image_url: pub.publicUrl }).eq("id", designId);
+    if (updErr) return res.status(500).json({ ok: false, error: updErr.message });
+    return res.status(200).json({ ok: true, designId, imageUrl: pub.publicUrl });
   }
 
   // ── POST action=update-variant — staff-only. Edit gold weight estimate
