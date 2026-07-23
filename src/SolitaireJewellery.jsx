@@ -640,27 +640,24 @@ export function SolitaireAdminGenerator() {
     processingRef.current = true;
     while (cascadeJobsRef.current.length) {
       const job = cascadeJobsRef.current[0];
-      updateQueueItem(job.id, { status: "generating" });
 
-      let design = job.design;
-      let referenceVariant = job.referenceVariant;
-      // Zero-variant designs (most of the original 25 seeded ones — nothing
-      // auto-generates for them, it's all admin-triggered) need one combo
-      // generated + approved first before there's anything to cascade from.
-      if (job.needsInitial) {
-        const res = await generateOne({ designId: design.id, goldColor: "yellow", diamondShape: "Round", includeWorn: false });
-        if (res.ok && res.variant) {
-          await apiPost("update-variant", { variantId: res.variant.id, status: "approved" }, true);
-          design = { ...design, variants: [...design.variants, { goldColor: "yellow", diamondShape: "Round" }] };
-          referenceVariant = { caratSize: null, promptOverride: null, estGoldWeightG: null };
-        } else {
-          updateQueueItem(job.id, { status: "failed" });
-          cascadeJobsRef.current.shift();
-          continue;
-        }
+      // Preview-only job (zero-variant design, no approval yet) — generate
+      // ONE cheap combo and STOP. Deliberately does NOT auto-approve or
+      // cascade: spending on 29 more combos for a design nobody's looked at
+      // yet is exactly the wasted cost this is meant to avoid. Sits in the
+      // normal review grid ('generated' status) until approved by hand,
+      // which triggers its own cascade same as any other design.
+      if (job.previewOnly) {
+        updateQueueItem(job.id, { status: "generating" });
+        const res = await generateOne({ designId: job.design.id, goldColor: "yellow", diamondShape: "Round", includeWorn: false });
+        updateQueueItem(job.id, { status: res.ok ? "awaiting your review" : "failed" });
+        cascadeJobsRef.current.shift();
+        loadDesigns();
+        continue;
       }
 
-      await cascadeRemaining(design, referenceVariant, (p) => {
+      updateQueueItem(job.id, { status: "generating" });
+      await cascadeRemaining(job.design, job.referenceVariant, (p) => {
         updateQueueItem(job.id, p ? { done: p.done, total: p.total } : {});
       });
       updateQueueItem(job.id, { status: "done" });
@@ -671,29 +668,38 @@ export function SolitaireAdminGenerator() {
     processingRef.current = false;
   };
 
-  const enqueueCascade = (design, referenceVariant, onDone, needsInitial = false) => {
-    cascadeJobsRef.current.push({ id: design.id, design, referenceVariant, onDone, needsInitial });
+  const enqueueCascade = (design, referenceVariant, onDone) => {
+    cascadeJobsRef.current.push({ id: design.id, design, referenceVariant, onDone });
     setQueueStatus((qs) => [...qs, { id: design.id, name: design.name, done: 0, total: null, status: "queued" }]);
     processCascadeQueue();
   };
 
-  // "Fill All Designs in Category" — queues every design (roots + siblings)
-  // currently loaded for this category through the same one-at-a-time
-  // cascade queue, generating a first combo for any design that has none.
-  // This is a LOT of OpenAI calls (25+ designs x up to 30 combos each) —
-  // real cost and real time, can be left running or resumed later via
-  // per-design "Fill Remaining Combinations" for anything interrupted.
+  const enqueuePreviewOnly = (design) => {
+    cascadeJobsRef.current.push({ id: design.id, design, previewOnly: true });
+    setQueueStatus((qs) => [...qs, { id: design.id, name: design.name, done: 0, total: null, status: "queued" }]);
+    processCascadeQueue();
+  };
+
+  // "Fill All Designs in Category" — only auto-cascades (spends on all 30
+  // combos) for designs that ALREADY have an approved variant, i.e. you've
+  // already looked at and liked that design. Zero-variant designs just get
+  // ONE cheap preview generated and wait in the review grid for your
+  // approval — never auto-approved, so no cost gets spent on a design with
+  // a flaw you haven't seen yet.
   const fillAllDesignsInCategory = () => {
     if (!designs.length) return;
+    let toCascade = 0, toPreview = 0;
     for (const d of designs) {
-      const reference = d.variants.find((v) => v.status === "approved") || d.variants[0];
-      if (reference) {
-        enqueueCascade(d, { caratSize: reference.caratSize, promptOverride: reference.promptOverride, estGoldWeightG: reference.estGoldWeightG }, undefined, false);
+      const approved = d.variants.find((v) => v.status === "approved");
+      if (approved) {
+        enqueueCascade(d, { caratSize: approved.caratSize, promptOverride: approved.promptOverride, estGoldWeightG: approved.estGoldWeightG });
+        toCascade++;
       } else {
-        enqueueCascade(d, null, undefined, true);
+        enqueuePreviewOnly(d);
+        toPreview++;
       }
     }
-    setMsg(`Queued ${designs.length} designs for full generation — see the Generation Queue below. This will take a while and real OpenAI cost.`);
+    setMsg(`Queued ${toCascade} already-approved design${toCascade !== 1 ? "s" : ""} to fill their remaining combos, and ${toPreview} new design${toPreview !== 1 ? "s" : ""} for a single preview each — those will wait for your approval before generating the rest.`);
   };
 
   const loadPendingDesigns = useCallback(() => {
@@ -990,7 +996,7 @@ export function SolitaireAdminGenerator() {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <button onClick={fillAllDesignsInCategory} style={{ fontWeight: 700 }}>Fill All {designs.length} Designs in {CATEGORIES.find((c) => c.key === category)?.label}</button>
-          <span style={{ fontSize: 12, color: "#555" }}>Different counts across designs are normal — nothing auto-generates, each design only has as many combos as someone triggered. This queues ALL of them (generating a first combo for any at 0) through the same one-at-a-time queue below — real OpenAI cost and time for every combo, can be left running.</span>
+          <span style={{ fontSize: 12, color: "#555" }}>Only this category (switch categories above and click again to do another). Designs you've already approved a variant for get their remaining combos filled automatically; brand-new (0-variant) designs only get ONE cheap preview generated and wait in the review grid for your approval — nothing spends on 29 more combos for a design you haven't seen yet.</span>
         </div>
       </div>
 
