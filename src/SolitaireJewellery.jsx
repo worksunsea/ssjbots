@@ -637,7 +637,11 @@ export function SolitaireAdminGenerator() {
     if (!res.ok) { setMsg(`⚠️ Failed to approve: ${res.error}`); return; }
     setPendingDesigns((ds) => ds.filter((d) => d.id !== candidate.id));
     setMsg(`Approved "${candidate.name}" — now generating its remaining gold-colour/shape combinations…`);
-    loadDesigns(candidate.id);
+    // Keep whatever design was already selected in view — approving a
+    // candidate shouldn't yank the admin away to look at it (that's what
+    // read as "the old design vanished"). It'll show up in the dropdown
+    // once loadDesigns() below refreshes the list.
+    loadDesigns();
     // Trigger the same cascade every other approval gets — all other
     // gold-colour x shape combos for this newly-approved design.
     const variant = candidate.variants?.[0];
