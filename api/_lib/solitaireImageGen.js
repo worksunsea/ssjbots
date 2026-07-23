@@ -126,6 +126,17 @@ export async function generateSolitaireDesignViews({ conceptPrompt, promptOverri
 // action=suggest-design-name / action=update-design).
 export async function suggestDesignName({ imageUrl, category, conceptPrompt }) {
   if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY missing");
+  // Fetch the image ourselves and send it as a base64 data URI rather than
+  // handing OpenAI the raw Supabase Storage URL — OpenAI's own server-side
+  // fetch of that URL was timing out ("Timeout while downloading ...front.png"),
+  // even though the URL is perfectly reachable from here. Embedding the
+  // bytes directly removes that extra network hop from OpenAI's side.
+  const imgRes = await fetch(imageUrl);
+  if (!imgRes.ok) throw new Error(`couldn't fetch the design image (${imgRes.status})`);
+  const contentType = imgRes.headers.get("content-type") || "image/png";
+  const b64 = Buffer.from(await imgRes.arrayBuffer()).toString("base64");
+  const dataUri = `data:${contentType};base64,${b64}`;
+
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
@@ -135,7 +146,7 @@ export async function suggestDesignName({ imageUrl, category, conceptPrompt }) {
         role: "user",
         content: [
           { type: "text", text: `Look at this solitaire ${category.replace("_", " ")} jewellery photo and suggest ONE short, elegant product name for it (3-5 words, jewellery-catalogue style, e.g. "Classic Solitaire Ring" or "Royal Halo Pendant" — no quotes, no punctuation, no explanation, just the name). Design direction it was generated from: ${conceptPrompt}` },
-          { type: "image_url", image_url: { url: imageUrl } },
+          { type: "image_url", image_url: { url: dataUri } },
         ],
       }],
       max_tokens: 20,

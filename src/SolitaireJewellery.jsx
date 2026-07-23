@@ -725,6 +725,30 @@ export function SolitaireAdminGenerator() {
       : `Created ${count} new designs — review and approve/reject below.`);
   };
 
+  // One new candidate design per category (Rings, Gents Rings, Pendants,
+  // Earrings) in a single click — each independently reviewable, approving
+  // one only starts combos for THAT design (existing per-design cascade),
+  // never the other 3. Uses each category's design #1 as the inspiration
+  // base, regardless of which category is currently selected on screen.
+  const createOneDesignPerCategory = async () => {
+    setMsg(""); setCandidateProgress({ done: 0, total: CATEGORIES.length });
+    let created = 0;
+    for (let i = 0; i < CATEGORIES.length; i++) {
+      if (i > 0) await new Promise((r) => setTimeout(r, 1500));
+      const cat = CATEGORIES[i];
+      const listRes = await apiGet("admin-designs", { category: cat.key }, true);
+      const base = listRes.ok ? listRes.designs.find((d) => !d.parentDesignId) : null;
+      if (base) {
+        const res = await apiPost("generate-design-candidates", { baseDesignId: base.id, quality: pricingConfig?.imageQuality || "low" }, true);
+        if (res.ok) created++;
+      }
+      setCandidateProgress({ done: i + 1, total: CATEGORIES.length });
+      if (cat.key === category) loadPendingDesigns();
+    }
+    setCandidateProgress(null);
+    setMsg(`Created ${created}/${CATEGORIES.length} new designs, one per category — switch categories above to review each (approving one only builds combos for that design).`);
+  };
+
   const approveDesignCandidate = async (candidate) => {
     const res = await apiPost("approve-design-candidate", { designId: candidate.id }, true);
     if (!res.ok) { setMsg(`⚠️ Failed to approve: ${res.error}`); return; }
@@ -987,6 +1011,12 @@ export function SolitaireAdminGenerator() {
             {candidateProgress ? `Creating new designs… ${candidateProgress.done}/${candidateProgress.total}` : "★ Create 5 New Designs to Review"}
           </button>
           <span style={{ fontSize: 12, color: "#555" }}>Whole new sibling products (own name + concept), inspired by but NOT variants of {currentDesign?.name || "the selected design"} — review and approve/reject below.</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 8, paddingTop: 8, borderTop: "1px solid #cfe3f0" }}>
+          <button disabled={!!candidateProgress} onClick={createOneDesignPerCategory} style={{ fontWeight: 700 }}>
+            {candidateProgress ? `Creating… ${candidateProgress.done}/${candidateProgress.total}` : "★ Create 1 New Design per Category"}
+          </button>
+          <span style={{ fontSize: 12, color: "#555" }}>One candidate in Rings, Gents Rings, Pendants, AND Earrings at once — switch categories to review/approve each separately; approving one only builds combos for that one design.</span>
         </div>
       </div>
 
