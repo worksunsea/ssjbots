@@ -439,6 +439,13 @@ export default async function handler(req, res) {
     if (authFail) return authFail;
     const body = parseBody(req);
     const baseDesignId = body.baseDesignId;
+    // standalone=true: create a fresh ROOT design (own top-level dropdown
+    // entry), only using baseDesignId for style/category inspiration — used
+    // by "Create 1 New Design per Category", where each result should stand
+    // on its own rather than nesting under whatever design #1 happened to
+    // be. Default (false): nests under baseDesignId as a sibling, used by
+    // "Create N New Designs to Review" for the currently selected design.
+    const standalone = !!body.standalone;
     if (!baseDesignId) return res.status(400).json({ ok: false, error: "baseDesignId_required" });
 
     const { data: base } = await sb.from("solitaire_designs").select("*").eq("id", baseDesignId).maybeSingle();
@@ -454,20 +461,28 @@ export default async function handler(req, res) {
     const { data: maxRow } = await sb.from("solitaire_designs").select("design_number")
       .eq("tenant_id", TENANT_ID).eq("category", base.category).order("design_number", { ascending: false }).limit(1).maybeSingle();
     const designNumber = (maxRow?.design_number || 0) + 1;
-    // Nest under the true ROOT design, never a grandchild — if "base" is
-    // itself already a sibling (e.g. generating more variations while
-    // viewing "Classic Solitaire Ring 6"), new candidates still attach to
-    // the original "Classic Solitaire Ring", keeping the hierarchy 2 levels.
-    const rootId = base.parent_design_id || base.id;
-    const rootName = base.parent_design_id ? base.name.replace(/\s+\d+$/, "") : base.name;
-    const { count: siblingCount } = await sb.from("solitaire_designs")
-      .select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).eq("parent_design_id", rootId);
-    const name = `${rootName} ${(siblingCount || 0) + 2}`; // +2: "2" is the first sibling name (root itself is "1")
+
+    let name, parentDesignId;
+    if (standalone) {
+      parentDesignId = null;
+      name = `${base.category.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase())} Concept ${designNumber}`;
+    } else {
+      // Nest under the true ROOT design, never a grandchild — if "base" is
+      // itself already a sibling (e.g. generating more variations while
+      // viewing "Classic Solitaire Ring 6"), new candidates still attach to
+      // the original "Classic Solitaire Ring", keeping the hierarchy 2 levels.
+      const rootId = base.parent_design_id || base.id;
+      const rootName = base.parent_design_id ? base.name.replace(/\s+\d+$/, "") : base.name;
+      const { count: siblingCount } = await sb.from("solitaire_designs")
+        .select("id", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).eq("parent_design_id", rootId);
+      parentDesignId = rootId;
+      name = `${rootName} ${(siblingCount || 0) + 2}`; // +2: "2" is the first sibling name (root itself is "1")
+    }
 
     const { data: newDesign, error: insErr } = await sb.from("solitaire_designs").insert({
       tenant_id: TENANT_ID, category: base.category, design_number: designNumber, name,
       concept_prompt: concept, has_side_diamonds: base.has_side_diamonds, active: false, // pending review
-      parent_design_id: rootId,
+      parent_design_id: parentDesignId,
     }).select("*").single();
     if (insErr) return res.status(500).json({ ok: false, error: insErr.message });
 

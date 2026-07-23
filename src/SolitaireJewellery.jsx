@@ -739,7 +739,7 @@ export function SolitaireAdminGenerator() {
       const listRes = await apiGet("admin-designs", { category: cat.key }, true);
       const base = listRes.ok ? listRes.designs.find((d) => !d.parentDesignId) : null;
       if (base) {
-        const res = await apiPost("generate-design-candidates", { baseDesignId: base.id, quality: pricingConfig?.imageQuality || "low" }, true);
+        const res = await apiPost("generate-design-candidates", { baseDesignId: base.id, standalone: true, quality: pricingConfig?.imageQuality || "low" }, true);
         if (res.ok) created++;
       }
       setCandidateProgress({ done: i + 1, total: CATEGORIES.length });
