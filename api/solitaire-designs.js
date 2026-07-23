@@ -63,6 +63,12 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type,x-crm-secret");
+  // Newly created/approved designs were mysteriously not appearing in the
+  // admin list on some devices — every data-changing action here is
+  // immediately followed by a re-fetch of the same GET endpoint, so any
+  // caching layer (mobile carrier proxy, browser HTTP cache) serving a
+  // stale response would show exactly this symptom. Force no caching.
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
   if (req.method === "OPTIONS") return res.status(200).end();
 
   const sb = supa();

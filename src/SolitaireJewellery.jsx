@@ -36,9 +36,13 @@ const loadStaffUser = () => loadLocal("ssj_bullion_user", null);
 
 async function apiGet(action, params = {}, staffOnly = false) {
   try {
-    const qs = new URLSearchParams({ action, ...params }).toString();
+    // Cache-bust every GET — newly created/approved designs were
+    // intermittently not showing up (some mobile carrier proxies cache GETs
+    // regardless of Cache-Control headers); a differing URL each call plus
+    // cache:"no-store" defeats both browser and proxy caching.
+    const qs = new URLSearchParams({ action, ...params, _: Date.now() }).toString();
     const headers = staffOnly ? { "x-crm-secret": CRM_SECRET } : undefined;
-    const r = await fetch(`${API}?${qs}`, headers ? { headers } : undefined);
+    const r = await fetch(`${API}?${qs}`, { cache: "no-store", ...(headers ? { headers } : {}) });
     return await r.json();
   } catch (e) {
     return { ok: false, error: "network_error", detail: String(e.message || e) };
