@@ -99,13 +99,17 @@ async function generateOne(prompt, referenceImageBase64, size = "1024x1024", qua
 // pass true only for the one variant an admin deliberately reviews by hand
 // (manual "Generate Variant" / "Generate Another Version"); cascade-filled
 // combos default to front+angle only (2 images instead of 3).
+// viewKeys: explicit override — e.g. ["front"] for a cheap preview batch
+// (see action=generate-variant's "Create Variants" bulk-preview flow) where
+// only a front shot is needed to pick a favourite before committing to the
+// full multi-view/multi-combo cost.
 // quality: "low" | "medium" | "high" — OpenAI's real cost lever (no separate
 // "mini" image model exists). Admin-configurable, see pricing-config's
 // imageQuality; defaults to "low" here only as a safety net.
-export async function generateSolitaireDesignViews({ conceptPrompt, promptOverride, category, goldColor, diamondShape, caratSize, hasSideDiamonds, referenceImageBase64, includeWorn = true, quality = "low" }) {
+export async function generateSolitaireDesignViews({ conceptPrompt, promptOverride, category, goldColor, diamondShape, caratSize, hasSideDiamonds, referenceImageBase64, includeWorn = true, viewKeys, quality = "low" }) {
   if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY missing");
 
-  const views = includeWorn ? VIEWS : VIEWS.filter((v) => v.key !== "worn");
+  const views = viewKeys ? VIEWS.filter((v) => viewKeys.includes(v.key)) : (includeWorn ? VIEWS : VIEWS.filter((v) => v.key !== "worn"));
   const results = [];
   for (const view of views) {
     const prompt = buildPrompt({ conceptPrompt, promptOverride, category, goldColor, diamondShape, caratSize, hasSideDiamonds, view, hasReference: !!referenceImageBase64 });

@@ -10,7 +10,8 @@
 //      + funnel enrollment, mirrors corporate-gifting's lead action.
 // POST /api/solitaire-designs?action=generate-variant      — staff-only (x-crm-secret).
 //      Calls the AI Design Generator for one design x gold-colour x shape combo.
-//      Accepts optional promptOverride + referenceImageBase64.
+//      Accepts optional promptOverride + referenceImageBase64 + viewKeys
+//      (e.g. ["front"] for a cheap single-view preview batch).
 // POST /api/solitaire-designs?action=generate-category-cover — staff-only. Generates
 //      the public landing page's category-picker hero image (deterministic path).
 // POST /api/solitaire-designs?action=update-variant        — staff-only. Edit
@@ -258,7 +259,7 @@ export default async function handler(req, res) {
     const authFail = checkCrmSecret(req, res);
     if (authFail) return authFail;
     const body = parseBody(req);
-    const { designId, goldColor, diamondShape, caratSize, generatedBy, promptOverride, referenceImageBase64, includeWorn, quality } = body;
+    const { designId, goldColor, diamondShape, caratSize, generatedBy, promptOverride, referenceImageBase64, includeWorn, viewKeys, quality } = body;
     if (!designId || !goldColor || !diamondShape) {
       return res.status(400).json({ ok: false, error: "designId_goldColor_diamondShape_required" });
     }
@@ -284,6 +285,7 @@ export default async function handler(req, res) {
         hasSideDiamonds: design.has_side_diamonds,
         referenceImageBase64,
         includeWorn: includeWorn !== false, // default true — cascade calls explicitly pass false
+        viewKeys: Array.isArray(viewKeys) ? viewKeys : undefined,
         quality: quality || "low",
       });
     } catch (e) {

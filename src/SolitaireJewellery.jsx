@@ -617,12 +617,38 @@ export function SolitaireAdminGenerator() {
   const currentDesign = designs.find((d) => d.id === designId) || null;
   const variants = currentDesign?.variants || [];
 
-  const generateOne = async ({ designId: dId, goldColor: gc, diamondShape: sh, caratSize: cs, promptOverride: po, referenceImageBase64: ref, includeWorn = true }) => {
+  const generateOne = async ({ designId: dId, goldColor: gc, diamondShape: sh, caratSize: cs, promptOverride: po, referenceImageBase64: ref, includeWorn = true, viewKeys }) => {
     return apiPost("generate-variant", {
       designId: dId, goldColor: gc, diamondShape: sh, caratSize: cs ? Number(cs) : null,
       generatedBy: loadStaffUser()?.name, promptOverride: po || null, referenceImageBase64: ref || null,
-      includeWorn, quality: pricingConfig?.imageQuality || "low",
+      includeWorn, viewKeys, quality: pricingConfig?.imageQuality || "low",
     }, true);
+  };
+
+  // "Create Variants" — generates N cheap single-view (front only) preview
+  // takes of the SAME design x gold-colour x shape x carat combo, all under
+  // the SAME design (never a new design/category — these are alternate
+  // renders to choose from, not new products). Admin approves/rejects each
+  // in the expanded grid below; approving one auto-triggers the existing
+  // cascade (all other gold-colour x shape combos + size chart) same as any
+  // other approval.
+  const [batchProgress, setBatchProgress] = useState(null); // { done, total }
+  const createVariantsBatch = async (count = 25) => {
+    if (!designId) return;
+    setMsg(""); setBatchProgress({ done: 0, total: count });
+    let failures = 0;
+    for (let i = 0; i < count; i++) {
+      if (i > 0) await new Promise((r) => setTimeout(r, 1200));
+      const res = await generateOne({ designId, goldColor, diamondShape: shape, caratSize, promptOverride, viewKeys: ["front"] });
+      if (!res.ok) failures++;
+      setBatchProgress({ done: i + 1, total: count });
+    }
+    setBatchProgress(null);
+    setGridExpanded(true);
+    setMsg(failures
+      ? `Created ${count - failures}/${count} variants to review (${failures} failed — retry individually with "New Version" below if needed).`
+      : `Created ${count} variants — review below and approve your favourite.`);
+    loadDesigns();
   };
 
   const generate = async () => {
@@ -862,6 +888,9 @@ export function SolitaireAdminGenerator() {
         </label>
         {refImageFile && <button onClick={() => setRefImageFile(null)}>Clear</button>}
         <button disabled={busy || !designId || !!cascade} onClick={generate}>{busy ? "Generating…" : "Generate Variant"}</button>
+        <button disabled={!designId || !!cascade || !!batchProgress} onClick={() => createVariantsBatch(25)}>
+          {batchProgress ? `Creating variants… ${batchProgress.done}/${batchProgress.total}` : "Create 25 Variants to Review"}
+        </button>
         <button disabled={!designId || !!cascade || !variants.length} onClick={fillRemaining}>Fill Remaining Combinations</button>
       </div>
 
