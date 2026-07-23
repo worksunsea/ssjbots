@@ -636,19 +636,19 @@ export function SolitaireAdminGenerator() {
   const createVariantsBatch = async (count = 25) => {
     if (!designId) return;
     setMsg(""); setBatchProgress({ done: 0, total: count });
+    setGridExpanded(true); // open the grid up front so each one appears as it lands, not just at the end
     let failures = 0;
     for (let i = 0; i < count; i++) {
       if (i > 0) await new Promise((r) => setTimeout(r, 1200));
       const res = await generateOne({ designId, goldColor, diamondShape: shape, caratSize, promptOverride, viewKeys: ["front"] });
       if (!res.ok) failures++;
       setBatchProgress({ done: i + 1, total: count });
+      loadDesigns(designId); // refresh after EVERY image, not just once at the end — this is what was missing
     }
     setBatchProgress(null);
-    setGridExpanded(true);
     setMsg(failures
       ? `Created ${count - failures}/${count} variants to review (${failures} failed — retry individually with "New Version" below if needed).`
       : `Created ${count} variants — review below and approve your favourite.`);
-    loadDesigns();
   };
 
   const generate = async () => {
