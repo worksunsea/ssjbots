@@ -17,6 +17,11 @@
 //      est_gold_weight_g / approve / reject a generated variant.
 // POST /api/solitaire-designs?action=update-labgrown-price — staff-only. Edit
 //      the lab-grown price grid.
+// GET  /api/solitaire-designs?action=pricing-config       — public. Making
+//      charge (₹/g) + natural-diamond sell discount (%), admin-editable.
+// POST /api/solitaire-designs?action=update-pricing-config — staff-only.
+// POST /api/solitaire-designs?action=set-design-gold-weight — staff-only.
+//      Applies one gold weight estimate to every variant of a design.
 // POST /api/solitaire-designs?action=save-selection        — public. Saves a
 //      client's finished configuration (like "Save Estimate").
 
@@ -321,6 +326,62 @@ export default async function handler(req, res) {
     }).select("*").single();
     if (error) return res.status(500).json({ ok: false, error: error.message });
     return res.status(200).json({ ok: true, price: data });
+  }
+
+  // ── GET action=pricing-config — public. Making charge (₹/g) + natural
+  // diamond sell discount (%), admin-editable via bullion_dropdowns (same
+  // "insert new row, read latest by updated_at" convention as rapaport_data).
+  // These were previously hardcoded (350/g, 30%) in the client — real values
+  // must come from here now. ────────────────────────────────────────────
+  if (req.method === "GET" && action === "pricing-config") {
+    const [mc, sd] = await Promise.all([
+      sb.from("bullion_dropdowns").select("value, updated_at").eq("tenant_id", TENANT_ID)
+        .eq("field", "solitaire_making_charge_per_gram").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
+      sb.from("bullion_dropdowns").select("value, updated_at").eq("tenant_id", TENANT_ID)
+        .eq("field", "solitaire_sell_disc_pct").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
+    ]);
+    return res.status(200).json({
+      ok: true,
+      makingChargePerGram: mc.data?.value ? Number(mc.data.value) : 350,
+      sellDiscPct: sd.data?.value ? Number(sd.data.value) : 30,
+    });
+  }
+
+  // ── POST action=update-pricing-config — staff-only. Sets makingChargePerGram
+  // and/or sellDiscPct. ──────────────────────────────────────────────────
+  if (req.method === "POST" && action === "update-pricing-config") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return authFail;
+    const body = parseBody(req);
+    const writes = [];
+    if (body.makingChargePerGram != null) {
+      writes.push(sb.from("bullion_dropdowns").insert({ tenant_id: TENANT_ID, field: "solitaire_making_charge_per_gram", value: String(Number(body.makingChargePerGram)) }));
+    }
+    if (body.sellDiscPct != null) {
+      writes.push(sb.from("bullion_dropdowns").insert({ tenant_id: TENANT_ID, field: "solitaire_sell_disc_pct", value: String(Number(body.sellDiscPct)) }));
+    }
+    if (!writes.length) return res.status(400).json({ ok: false, error: "nothing_to_update" });
+    const results = await Promise.all(writes);
+    const hardError = results.find((r) => r.error && r.error.code !== "23505");
+    if (hardError) return res.status(500).json({ ok: false, error: hardError.error.message });
+    return res.status(200).json({ ok: true });
+  }
+
+  // ── POST action=set-design-gold-weight — staff-only. Applies one gold
+  // weight estimate to EVERY variant of a design (all gold-colours/shapes
+  // share the same setting size — only the diamond/metal-colour differ),
+  // so the admin only has to enter it once per design instead of per variant. ─
+  if (req.method === "POST" && action === "set-design-gold-weight") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return authFail;
+    const body = parseBody(req);
+    const { designId, estGoldWeightG } = body;
+    if (!designId || estGoldWeightG == null) return res.status(400).json({ ok: false, error: "designId_estGoldWeightG_required" });
+    const { error } = await sb.from("solitaire_design_variants")
+      .update({ est_gold_weight_g: Number(estGoldWeightG), updated_at: new Date().toISOString() })
+      .eq("tenant_id", TENANT_ID).eq("design_id", designId);
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.status(200).json({ ok: true });
   }
 
   // ── POST action=save-selection — public. Saves the client's finished

@@ -225,15 +225,18 @@ function Configurator({ design, leadId, staffUser, onBack }) {
   const [rates, setRates] = useState(null);
   const [rapData, setRapData] = useState(null);
   const [labgrownPrices, setLabgrownPrices] = useState(null);
+  const [pricingConfig, setPricingConfig] = useState(null);
 
   const [saving, setSaving] = useState(false);
   const [savedId, setSavedId] = useState(null);
   const [showTryOn, setShowTryOn] = useState(false);
   const [tryonUrl, setTryonUrl] = useState(null);
+  const [activeView, setActiveView] = useState("front");
 
   useEffect(() => {
     apiGet("rates").then((r) => setRates(r.ok ? r.rates : null));
     apiGet("labgrown-prices").then((r) => setLabgrownPrices(r.ok ? r.prices : []));
+    apiGet("pricing-config").then((r) => setPricingConfig(r.ok ? r : { makingChargePerGram: 350, sellDiscPct: 30 }));
     // Rapaport table lives in bullion_dropdowns, same source the Calculator uses.
     sb.from("bullion_dropdowns").select("value,updated_at").eq("field", "rapaport_data")
       .order("updated_at", { ascending: false }).limit(1).maybeSingle()
@@ -243,11 +246,17 @@ function Configurator({ design, leadId, staffUser, onBack }) {
   const variant = design.variants.find((v) => v.goldColor === goldColor && v.diamondShape === shape) || null;
   const usdInr = rates?.usdInr;
 
-  const price = variant && rates
+  // Reset the active image view when the selected variant changes — adjusting
+  // state during render (not an effect) per React's recommended pattern for
+  // resetting derived state on a prop/computed-value change.
+  const [prevVariantId, setPrevVariantId] = useState(variant?.id);
+  if (variant?.id !== prevVariantId) { setPrevVariantId(variant?.id); setActiveView("front"); }
+
+  const price = variant && rates && pricingConfig
     ? computeSolitairePrice({
         rates, rapData, usdInr, labgrownPrices,
-        diamondSource, caratSize, shape, diamondColor, diamondClarity, sellDiscPct: 30,
-        purityKey, estGoldWeightG: variant.estGoldWeightG, makingChargePerGram: 350,
+        diamondSource, caratSize, shape, diamondColor, diamondClarity, sellDiscPct: pricingConfig.sellDiscPct,
+        purityKey, estGoldWeightG: variant.estGoldWeightG, makingChargePerGram: pricingConfig.makingChargePerGram,
       })
     : { priceable: false };
 
@@ -276,14 +285,16 @@ function Configurator({ design, leadId, staffUser, onBack }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 40 }}>
         <div>
           <div style={{ aspectRatio: "1 / 1", background: "#F5F5F4", border: `1px solid ${THEME.border}`, borderRadius: 4, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            {variant?.viewImages?.front
-              ? <img src={variant.viewImages.front} alt={design.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            {variant?.viewImages?.[activeView] || variant?.viewImages?.front
+              ? <img src={variant.viewImages[activeView] || variant.viewImages.front} alt={design.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               : <span style={{ color: THEME.muted, fontSize: 12 }}>This combination isn't available yet</span>}
           </div>
-          {variant?.viewImages?.worn && (
+          {variant?.viewImages && Object.keys(variant.viewImages).length > 1 && (
             <div style={{ marginTop: 12, display: "flex", gap: 10 }}>
-              <img src={variant.viewImages.worn} alt="worn" style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 4, border: `1px solid ${THEME.border}` }} />
-              {variant.viewImages.angle && <img src={variant.viewImages.angle} alt="angle" style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 4, border: `1px solid ${THEME.border}` }} />}
+              {["front", "angle", "worn"].filter((k) => variant.viewImages[k]).map((k) => (
+                <img key={k} src={variant.viewImages[k]} alt={k} onClick={() => setActiveView(k)}
+                  style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 4, cursor: "pointer", border: `2px solid ${activeView === k ? THEME.gold : THEME.border}` }} />
+              ))}
             </div>
           )}
           <button style={{ ...btnGhost, marginTop: 16 }} onClick={() => setShowTryOn(true)}>Try It On</button>
@@ -538,6 +549,8 @@ export function SolitaireAdminGenerator() {
   const [cascade, setCascade] = useState(null); // { done, total } while auto-generating remaining combos
   const [usdInr, setUsdInr] = useState(null);
   const [prices, setPrices] = useState([]);
+  const [pricingConfig, setPricingConfig] = useState(null);
+  const [gridExpanded, setGridExpanded] = useState(false);
 
   const loadDesigns = useCallback(() => {
     apiGet("admin-designs", { category }, true).then((r) => {
@@ -547,9 +560,12 @@ export function SolitaireAdminGenerator() {
   }, [category]);
 
   useEffect(() => { loadDesigns(); }, [loadDesigns]);
+  const [prevDesignId, setPrevDesignId] = useState(designId);
+  if (designId !== prevDesignId) { setPrevDesignId(designId); setGridExpanded(false); }
   useEffect(() => {
     apiGet("rates").then((r) => r.ok && setUsdInr(r.rates?.usdInr ?? null));
     apiGet("labgrown-prices").then((r) => r.ok && setPrices(r.prices));
+    apiGet("pricing-config").then((r) => r.ok && setPricingConfig(r));
   }, []);
 
   const currentDesign = designs.find((d) => d.id === designId) || null;
@@ -609,6 +625,15 @@ export function SolitaireAdminGenerator() {
     loadDesigns();
   };
 
+  // Gold weight is the same setting for every gold-colour/shape/carat combo
+  // of a design — entering it once here applies to ALL of that design's
+  // variants (past and future), not just the one being edited.
+  const setDesignGoldWeight = async (weight) => {
+    if (!currentDesign || weight === "" || weight == null) return;
+    await apiPost("set-design-gold-weight", { designId: currentDesign.id, estGoldWeightG: Number(weight) }, true);
+    loadDesigns();
+  };
+
   const approveAndCascade = async (variant) => {
     const wasFirstApproval = !variants.some((v) => v.id !== variant.id && v.status === "approved");
     await apiPost("update-variant", { variantId: variant.id, status: "approved" }, true);
@@ -618,8 +643,26 @@ export function SolitaireAdminGenerator() {
     }
   };
 
+  // Manual retry/complete — independent of the auto-cascade-on-first-approval
+  // above, for when generation partially failed or more shapes/colours were
+  // added later. Uses the best available variant (approved, else any with a
+  // gold weight set, else the first) as the reference to copy from.
+  const fillRemaining = async () => {
+    if (!currentDesign) return;
+    const reference = variants.find((v) => v.status === "approved" && v.estGoldWeightG)
+      || variants.find((v) => v.estGoldWeightG)
+      || variants[0];
+    if (!reference) { setMsg("Generate at least one variant for this design first."); return; }
+    await cascadeRemaining(currentDesign, reference);
+  };
+
   const savePrice = async (cs, price) => {
     await apiPost("update-labgrown-price", { caratSize: cs, pricePerCt: price, updatedBy: loadStaffUser()?.name }, true);
+  };
+
+  const savePricingConfig = async (patch) => {
+    await apiPost("update-pricing-config", patch, true);
+    setMsg("Pricing settings updated.");
   };
 
   return (
@@ -659,25 +702,46 @@ export function SolitaireAdminGenerator() {
         </label>
         {refImageFile && <button onClick={() => setRefImageFile(null)}>Clear</button>}
         <button disabled={busy || !designId || !!cascade} onClick={generate}>{busy ? "Generating…" : "Generate Variant"}</button>
+        <button disabled={!designId || !!cascade || !variants.length} onClick={fillRemaining}>Fill Remaining Combinations</button>
       </div>
+
+      {currentDesign && (
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ fontSize: 13 }}>
+            Gold weight for this whole design (g) — applies to every gold-colour/shape combo:{" "}
+            <input type="number" placeholder="e.g. 3.2"
+              defaultValue={variants.find((v) => v.estGoldWeightG)?.estGoldWeightG || ""}
+              onBlur={(e) => setDesignGoldWeight(e.target.value)} style={{ width: 100 }} />
+          </label>
+        </div>
+      )}
 
       {loadErr && <div style={{ marginBottom: 12, fontSize: 13, color: "#c0392b" }}>{loadErr}</div>}
       {msg && <div style={{ marginBottom: 12, fontSize: 13 }}>{msg}</div>}
       {cascade && <div style={{ marginBottom: 12, fontSize: 13, color: "#2980b9" }}>Auto-generating remaining combinations… {cascade.done}/{cascade.total}</div>}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12, marginBottom: 30 }}>
-        {variants.map((v) => (
-          <div key={v.id} style={{ border: "1px solid #ddd", borderRadius: 4, padding: 8 }}>
-            {v.viewImages?.front && <img src={v.viewImages.front} alt="" style={{ width: "100%", aspectRatio: "1/1", objectFit: "cover" }} />}
-            <div style={{ fontSize: 12, marginTop: 6 }}>{v.goldColor} / {v.diamondShape}{v.caratSize ? ` / ${v.caratSize}ct` : ""}</div>
-            <div style={{ fontSize: 11, color: v.status === "approved" ? "#27ae60" : v.status === "rejected" ? "#c0392b" : "#888" }}>{v.status}</div>
-            <input type="number" placeholder="est. gold weight (g)" defaultValue={v.estGoldWeightG || ""} onBlur={(e) => updateVariant(v.id, { estGoldWeightG: e.target.value })} style={{ width: "100%", marginTop: 6 }} />
-            {v.status !== "approved"
-              ? <button style={{ marginTop: 6, width: "100%" }} disabled={!!cascade} onClick={() => approveAndCascade(v)}>Approve</button>
-              : <button style={{ marginTop: 6, width: "100%" }} onClick={() => updateVariant(v.id, { status: "rejected" })}>Reject</button>}
-          </div>
-        ))}
-      </div>
+      {!!variants.length && (
+        <div style={{ marginBottom: 8 }}>
+          <button onClick={() => setGridExpanded((v) => !v)}>
+            {gridExpanded ? "Hide" : "Show"} all {variants.length} variant{variants.length !== 1 ? "s" : ""} {gridExpanded ? "▲" : "▼"}
+          </button>
+        </div>
+      )}
+      {gridExpanded && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12, marginBottom: 30 }}>
+          {variants.map((v) => (
+            <div key={v.id} style={{ border: "1px solid #ddd", borderRadius: 4, padding: 8 }}>
+              {v.viewImages?.front && <img src={v.viewImages.front} alt="" style={{ width: "100%", aspectRatio: "1/1", objectFit: "cover" }} />}
+              <div style={{ fontSize: 12, marginTop: 6 }}>{v.goldColor} / {v.diamondShape}{v.caratSize ? ` / ${v.caratSize}ct` : ""}</div>
+              <div style={{ fontSize: 11, color: v.status === "approved" ? "#27ae60" : v.status === "rejected" ? "#c0392b" : "#888" }}>{v.status}</div>
+              <input type="number" placeholder="est. gold weight (g)" defaultValue={v.estGoldWeightG || ""} onBlur={(e) => setDesignGoldWeight(e.target.value)} style={{ width: "100%", marginTop: 6 }} />
+              {v.status !== "approved"
+                ? <button style={{ marginTop: 6, width: "100%" }} disabled={!!cascade} onClick={() => approveAndCascade(v)}>Approve</button>
+                : <button style={{ marginTop: 6, width: "100%" }} onClick={() => updateVariant(v.id, { status: "rejected" })}>Reject</button>}
+            </div>
+          ))}
+        </div>
+      )}
 
       <h4>Lab-Grown Diamond Price Grid (₹/ct)</h4>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(90px, 1fr))", gap: 8, marginBottom: 20 }}>
@@ -692,8 +756,18 @@ export function SolitaireAdminGenerator() {
         })}
       </div>
 
-      <h4>USD/INR (live, for Rapaport natural-diamond pricing)</h4>
-      <div style={{ fontSize: 13, marginBottom: 20 }}>{usdInr != null ? `₹${usdInr} per $1 — pulled live from the Rates sheet` : "Not available right now — check the Rates sheet's USD row."}</div>
+      <h4>Pricing Settings</h4>
+      <div style={{ display: "flex", gap: 20, marginBottom: 20, flexWrap: "wrap" }}>
+        <label style={{ fontSize: 13 }}>
+          Making charge (₹/g):{" "}
+          <input type="number" defaultValue={pricingConfig?.makingChargePerGram ?? ""} onBlur={(e) => savePricingConfig({ makingChargePerGram: Number(e.target.value) })} style={{ width: 90 }} />
+        </label>
+        <label style={{ fontSize: 13 }}>
+          Natural diamond sell discount (%):{" "}
+          <input type="number" defaultValue={pricingConfig?.sellDiscPct ?? ""} onBlur={(e) => savePricingConfig({ sellDiscPct: Number(e.target.value) })} style={{ width: 90 }} />
+        </label>
+        <div style={{ fontSize: 13 }}>USD/INR (live): {usdInr != null ? `₹${usdInr} per $1 — from the Rates sheet` : "unavailable — check the Rates sheet's USD row"}</div>
+      </div>
 
       <CategoryCoversPanel />
     </div>
