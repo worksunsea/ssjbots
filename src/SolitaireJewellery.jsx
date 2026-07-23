@@ -571,11 +571,6 @@ export function SolitaireAdminGenerator() {
   const [prices, setPrices] = useState([]);
   const [pricingConfig, setPricingConfig] = useState(null);
   const [gridExpanded, setGridExpanded] = useState(false);
-  const [newDesignOpen, setNewDesignOpen] = useState(false);
-  const [newDesignName, setNewDesignName] = useState("");
-  const [newDesignPrompt, setNewDesignPrompt] = useState("");
-  const [newDesignSideDiamonds, setNewDesignSideDiamonds] = useState(false);
-  const [creatingDesign, setCreatingDesign] = useState(false);
   const [suggestingName, setSuggestingName] = useState(false);
   const [suggestedName, setSuggestedName] = useState("");
   const [nameKey, setNameKey] = useState(0);
@@ -586,24 +581,6 @@ export function SolitaireAdminGenerator() {
       else { setDesigns([]); setLoadErr(r.error || "Couldn't load designs."); }
     });
   }, [category]);
-
-  // Categories aren't capped at the original 25 seeded designs — admins can
-  // keep adding new named designs (e.g. 15 variations under a theme), each
-  // gets its own independent set of gold-colour x shape x carat combos to
-  // generate exactly like any seeded design.
-  const createDesign = async () => {
-    // Both name and concept prompt are fully optional — the backend auto-fills
-    // a placeholder name (e.g. "Ring Design 26") and a generic concept if
-    // left blank. Rename anytime afterward, or use "Suggest Name from Image"
-    // once a variant exists for a nicer AI-picked name.
-    setCreatingDesign(true);
-    const res = await apiPost("create-design", { category, name: newDesignName.trim() || undefined, conceptPrompt: newDesignPrompt.trim() || undefined, hasSideDiamonds: newDesignSideDiamonds }, true);
-    setCreatingDesign(false);
-    if (!res.ok) { setMsg(`⚠️ Failed to create design: ${res.error}${res.detail ? ` — ${res.detail}` : ""}`); return; }
-    setNewDesignOpen(false); setNewDesignName(""); setNewDesignPrompt(""); setNewDesignSideDiamonds(false);
-    setMsg(`✅ Created "${res.design.name}" — now generate variants for it below.`);
-    loadDesigns(res.design.id);
-  };
 
   useEffect(() => { loadDesigns(); }, [loadDesigns]);
   const [prevDesignId, setPrevDesignId] = useState(designId);
@@ -625,37 +602,10 @@ export function SolitaireAdminGenerator() {
     }, true);
   };
 
-  // "Create Variants" — generates N cheap single-view (front only) preview
-  // takes of the SAME design x gold-colour x shape x carat combo, all under
-  // the SAME design (never a new design/category — these are alternate
-  // renders to choose from, not new products). Admin approves/rejects each
-  // in the expanded grid below; approving one auto-triggers the existing
-  // cascade (all other gold-colour x shape combos + size chart) same as any
-  // other approval.
-  const [batchProgress, setBatchProgress] = useState(null); // { done, total }
-  const createVariantsBatch = async (count = 25) => {
-    if (!designId) return;
-    setMsg(""); setBatchProgress({ done: 0, total: count });
-    setGridExpanded(true); // open the grid up front so each one appears as it lands, not just at the end
-    let failures = 0;
-    for (let i = 0; i < count; i++) {
-      if (i > 0) await new Promise((r) => setTimeout(r, 1200));
-      const res = await generateOne({ designId, goldColor, diamondShape: shape, caratSize, promptOverride, viewKeys: ["front"] });
-      if (!res.ok) failures++;
-      setBatchProgress({ done: i + 1, total: count });
-      loadDesigns(designId); // refresh after EVERY image, not just once at the end — this is what was missing
-    }
-    setBatchProgress(null);
-    setMsg(failures
-      ? `Created ${count - failures}/${count} variants to review (${failures} failed — retry individually with "New Version" below if needed).`
-      : `Created ${count} variants — review below and approve your favourite.`);
-  };
-
   // "Create N New Designs to Review" — genuinely NEW sibling designs (own
   // name/concept, e.g. "Classic Solitaire Ring 2"), each with one cheap
   // preview image, inactive until approved. This is the "5 different
-  // designs, not variations of the same one" flow — separate from
-  // createVariantsBatch above, which only re-rolls the SAME design's combo.
+  // designs, not variations of the same one" flow.
   const [pendingDesigns, setPendingDesigns] = useState([]);
   const [candidateProgress, setCandidateProgress] = useState(null);
 
@@ -886,18 +836,6 @@ export function SolitaireAdminGenerator() {
           {!designs.length && <option value="">No designs in this category</option>}
           {designs.map((d) => <option key={d.id} value={d.id}>{d.name} ({d.variants.length} variants)</option>)}
         </select>
-        <button onClick={() => {
-          // Prefill from whatever design is currently selected — "+ New
-          // Design" while viewing Classic Solitaire Ring should start as a
-          // VARIATION of it (name + concept prompt carried over, editable),
-          // not an unrelated blank design that happens to share a category.
-          if (!newDesignOpen && currentDesign) {
-            setNewDesignName(`${currentDesign.name} II`);
-            setNewDesignPrompt(currentDesign.conceptPrompt || "");
-            setNewDesignSideDiamonds(!!currentDesign.hasSideDiamonds);
-          }
-          setNewDesignOpen((v) => !v);
-        }}>{newDesignOpen ? "Cancel" : "+ New Design (Variation of Selected)"}</button>
         <select value={goldColor} onChange={(e) => setGoldColor(e.target.value)}>
           <option value="yellow">Yellow Gold</option><option value="white">White Gold</option><option value="rose">Rose Gold</option>
         </select>
@@ -906,25 +844,6 @@ export function SolitaireAdminGenerator() {
         </select>
         <input placeholder="carat (optional)" value={caratSize} onChange={(e) => setCaratSize(e.target.value)} style={{ width: 100 }} />
       </div>
-
-      {newDesignOpen && (
-        <div style={{ border: "1px solid #ccc", borderRadius: 4, padding: 12, marginBottom: 16 }}>
-          <div style={{ fontSize: 13, marginBottom: 8 }}>
-            {currentDesign
-              ? <>Pre-filled as a variation of <strong>{currentDesign.name}</strong> — tweak the name/concept below for a distinct look, or leave as-is for a near-identical twin. This creates a fully independent design with its own gold-colour x shape x carat combos — it does NOT add anything inside {currentDesign.name} itself, and won't have any images until you click "Generate Variant" for it.</>
-              : <>Add a new named design to <strong>{CATEGORIES.find((c) => c.key === category)?.label}</strong> — it gets its own independent set of gold-colour x shape x carat combos. Won't have any images until you click "Generate Variant" for it.</>}
-          </div>
-          <input placeholder="Design name (optional — auto-named if left blank, e.g. Classic Solitaire Ring II)" value={newDesignName} onChange={(e) => setNewDesignName(e.target.value)}
-            style={{ width: "100%", boxSizing: "border-box", marginBottom: 8, padding: 6 }} />
-          <textarea placeholder="Design concept (optional — auto-filled if left blank) — style direction for the AI generator (e.g. a slim tapered band with a bezel-set center stone...)"
-            value={newDesignPrompt} onChange={(e) => setNewDesignPrompt(e.target.value)} rows={3}
-            style={{ width: "100%", boxSizing: "border-box", marginBottom: 8, padding: 6, fontFamily: "inherit", fontSize: 13 }} />
-          <label style={{ fontSize: 13, display: "block", marginBottom: 8 }}>
-            <input type="checkbox" checked={newDesignSideDiamonds} onChange={(e) => setNewDesignSideDiamonds(e.target.checked)} /> Has side diamonds
-          </label>
-          <button disabled={creatingDesign} onClick={createDesign}>{creatingDesign ? "Creating…" : "Create Design"}</button>
-        </div>
-      )}
 
       <div style={{ marginBottom: 12 }}>
         <textarea
@@ -946,9 +865,6 @@ export function SolitaireAdminGenerator() {
           </label>
           {refImageFile && <button onClick={() => setRefImageFile(null)}>Clear</button>}
           <button disabled={busy || !designId || !!cascade} onClick={generate}>{busy ? "Generating…" : "Generate Variant"}</button>
-          <button disabled={!designId || !!cascade || !!batchProgress} onClick={() => createVariantsBatch(5)}>
-            {batchProgress ? `Creating…  ${batchProgress.done}/${batchProgress.total}` : "Create 5 Alternate Renders of This Combo"}
-          </button>
           <button disabled={!designId || !!cascade || !variants.length} onClick={fillRemaining}>Fill Remaining Combinations</button>
         </div>
       </div>
