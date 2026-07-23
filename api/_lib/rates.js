@@ -67,6 +67,7 @@ function emptyParsed() {
     silverCoins: [],
     ginni916: [],
     giftingCoins: [],
+    usdInr: null,
     fetchedAt: new Date().toISOString(),
   };
 }
@@ -80,12 +81,24 @@ export function parseRates(rows) {
 
   // Section detector — transitions on specific header rows.
   let section = "spot"; // spot | gold_coins | ginni | silver_coins | silver_spot | gifting
+  // USD/INR: label "USD" in col C (row[""]), live value in col C of the NEXT
+  // row — same sheet cell the Calculator tab already reads (see App.jsx's
+  // parseLiveRatesForCalc). Kept as a separate pass-through flag since it
+  // doesn't fit the section-based parsing above.
+  let nextColCIsUsd = false;
 
   for (const row of rows) {
     const labelRaw = row.gold;
     const label = typeof labelRaw === "string" ? labelRaw.trim() : labelRaw;
     const est = row.estimated;
     const mmtc = row[""];
+
+    if (nextColCIsUsd && isNum(mmtc) && mmtc > 50 && mmtc < 200) {
+      out.usdInr = mmtc;
+      nextColCIsUsd = false;
+    } else {
+      nextColCIsUsd = /usd/i.test(String(mmtc || ""));
+    }
 
     // ── Section headers ──
     if (label === "995 Coins" && typeof mmtc === "string" && mmtc.includes("9999")) {

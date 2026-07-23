@@ -3,6 +3,11 @@
 // from within the main app. Kept in its own file rather than folded into
 // App.jsx (16k+ lines, flagged stable) to keep this feature's blast radius
 // contained — see SSJ_STABLE_FEATURES.md before touching App.jsx itself.
+//
+// Public-facing visual theme intentionally matches the corporate-gifting /
+// public-catalogue pages: Cormorant (display) + Montserrat (body), white
+// background, gold accent — see CATALOGUE_FONTS_CSS in App.jsx for the
+// original theme this mirrors.
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -18,42 +23,68 @@ const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
 const CATEGORIES = [
   { key: "ring", label: "Rings", icon: "\u{1F48D}" },
+  { key: "gents_ring", label: "Gents Rings", icon: "\u{1F48D}" },
   { key: "pendant", label: "Pendants", icon: "\u{1F4FF}" },
   { key: "earring", label: "Earrings", icon: "\u{1F440}" },
 ];
+const GOLD_COLORS = ["yellow", "white", "rose"];
 
 const loadLocal = (k, def) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : def; } catch { return def; } };
 const saveLocal = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* ignore */ } };
 const loadStaffUser = () => loadLocal("ssj_bullion_user", null);
 
-async function apiGet(action, params = {}) {
-  const qs = new URLSearchParams({ action, ...params }).toString();
-  const r = await fetch(`${API}?${qs}`);
-  return r.json();
+async function apiGet(action, params = {}, staffOnly = false) {
+  try {
+    const qs = new URLSearchParams({ action, ...params }).toString();
+    const headers = staffOnly ? { "x-crm-secret": CRM_SECRET } : undefined;
+    const r = await fetch(`${API}?${qs}`, headers ? { headers } : undefined);
+    return await r.json();
+  } catch (e) {
+    return { ok: false, error: "network_error", detail: String(e.message || e) };
+  }
 }
 async function apiPost(action, body, staffOnly = false) {
-  const headers = { "Content-Type": "application/json" };
-  if (staffOnly) headers["x-crm-secret"] = CRM_SECRET;
-  const r = await fetch(`${API}?action=${action}`, { method: "POST", headers, body: JSON.stringify(body) });
-  return r.json();
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (staffOnly) headers["x-crm-secret"] = CRM_SECRET;
+    const r = await fetch(`${API}?action=${action}`, { method: "POST", headers, body: JSON.stringify(body) });
+    return await r.json();
+  } catch (e) {
+    return { ok: false, error: "network_error", detail: String(e.message || e) };
+  }
+}
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
 }
 
-// ── Colours / type ──────────────────────────────────────────────────────
+// ── Theme — matches CATALOGUE_FONTS_CSS ("Luxury Serif") from App.jsx,
+// forced light/white per Saurav's request (no dark-mode variant here). ────
+const FONT_CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Cormorant:wght@400;500;600;700&family=Montserrat:wght@300;400;500;600;700&display=swap');
+.sol-page * { box-sizing: border-box; }
+.sol-card { transition: border-color 200ms ease, box-shadow 200ms ease; }
+.sol-card:hover { border-color: #CA8A04; box-shadow: 0 4px 24px rgba(0,0,0,0.08); }
+`;
+
 const THEME = {
-  bg: "#0e0d0b",
-  panel: "#17140f",
-  card: "#1c1812",
-  gold: "#c9a24b",
-  goldSoft: "#8a734a",
-  cream: "#f4ede0",
-  muted: "#a89a80",
-  border: "#332b1e",
+  bg: "#FFFFFF",
+  surface: "#FFFFFF",
+  text: "#1C1917",
+  muted: "#57534E",
+  border: "#E7E5E4",
+  gold: "#CA8A04",
+  goldSoft: "#FEF3C7",
 };
 
-const page = { minHeight: "100vh", background: THEME.bg, color: THEME.cream, fontFamily: "Georgia, 'Times New Roman', serif" };
-const heading = { fontFamily: "Georgia, serif", letterSpacing: "0.04em", fontWeight: 400 };
-const btnPrimary = { background: THEME.gold, color: "#1a1508", border: "none", borderRadius: 2, padding: "12px 28px", fontSize: 14, letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer" };
-const btnGhost = { background: "transparent", color: THEME.cream, border: `1px solid ${THEME.border}`, borderRadius: 2, padding: "10px 22px", fontSize: 13, letterSpacing: "0.06em", cursor: "pointer" };
+const page = { minHeight: "100vh", background: THEME.bg, color: THEME.text, fontFamily: "Montserrat, sans-serif" };
+const heading = { fontFamily: "Cormorant, serif", fontWeight: 600, letterSpacing: 0.3 };
+const btnPrimary = { background: THEME.gold, color: "#FFFFFF", border: "none", borderRadius: 2, padding: "12px 28px", fontSize: 13, letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", fontFamily: "Montserrat, sans-serif" };
+const btnGhost = { background: "transparent", color: THEME.text, border: `1px solid ${THEME.border}`, borderRadius: 2, padding: "10px 22px", fontSize: 13, letterSpacing: "0.06em", cursor: "pointer", fontFamily: "Montserrat, sans-serif" };
 
 // ── Lead capture popup ───────────────────────────────────────────────────
 function LeadPopup({ onDone }) {
@@ -77,30 +108,38 @@ function LeadPopup({ onDone }) {
   };
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.72)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16 }}>
-      <div style={{ background: THEME.panel, border: `1px solid ${THEME.border}`, borderRadius: 4, padding: 32, maxWidth: 400, width: "100%" }}>
-        <div style={{ ...heading, fontSize: 22, color: THEME.gold, marginBottom: 4 }}>Sun Sea Jewellers</div>
-        <div style={{ fontSize: 13, color: THEME.muted, marginBottom: 24 }}>Design your own solitaire piece. Tell us a little about you to begin.</div>
-        <input placeholder="Your name" value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} />
-        <input placeholder="Phone number" value={phone} onChange={(e) => setPhone(e.target.value.replace(/\D/g, "").slice(0, 10))} style={inputStyle} />
-        <input placeholder="Email (optional)" value={email} onChange={(e) => setEmail(e.target.value)} style={inputStyle} />
-        {err && <div style={{ color: "#d9534f", fontSize: 12, marginBottom: 10 }}>{err}</div>}
-        <button style={{ ...btnPrimary, width: "100%", marginTop: 8 }} disabled={busy} onClick={submit}>
-          {busy ? "Please wait…" : "Begin Designing"}
-        </button>
+    <div className="sol-page" style={page}>
+      <style>{FONT_CSS}</style>
+      <div style={{ position: "fixed", inset: 0, background: "rgba(28,25,23,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16 }}>
+        <div style={{ background: THEME.surface, border: `1px solid ${THEME.border}`, borderRadius: 4, padding: 32, maxWidth: 400, width: "100%" }}>
+          <div style={{ ...heading, fontSize: 24, color: THEME.text, marginBottom: 4 }}>Sun Sea Jewellers</div>
+          <div style={{ width: 40, height: 2, background: THEME.gold, margin: "10px 0 16px" }} />
+          <div style={{ fontSize: 13, color: THEME.muted, marginBottom: 24 }}>Design your own solitaire piece. Tell us a little about you to begin.</div>
+          <input placeholder="Your name" value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} />
+          <input placeholder="Phone number" value={phone} onChange={(e) => setPhone(e.target.value.replace(/\D/g, "").slice(0, 10))} style={inputStyle} />
+          <input placeholder="Email (optional)" value={email} onChange={(e) => setEmail(e.target.value)} style={inputStyle} />
+          {err && <div style={{ color: "#B91C1C", fontSize: 12, marginBottom: 10 }}>{err}</div>}
+          <button style={{ ...btnPrimary, width: "100%", marginTop: 8 }} disabled={busy} onClick={submit}>
+            {busy ? "Please wait…" : "Begin Designing"}
+          </button>
+        </div>
       </div>
     </div>
   );
 }
 
-const inputStyle = { width: "100%", boxSizing: "border-box", background: "#0b0a08", border: `1px solid ${THEME.border}`, color: THEME.cream, padding: "12px 14px", marginBottom: 12, borderRadius: 2, fontSize: 14, fontFamily: "inherit" };
+const inputStyle = { width: "100%", boxSizing: "border-box", background: "#FFFFFF", border: `1px solid ${THEME.border}`, color: THEME.text, padding: "12px 14px", marginBottom: 12, borderRadius: 2, fontSize: 14, fontFamily: "Montserrat, sans-serif" };
 
 // ── Design gallery ───────────────────────────────────────────────────────
 function DesignGallery({ category, onSelect, onBack }) {
   const [designs, setDesigns] = useState(null);
+  const [err, setErr] = useState("");
 
   useEffect(() => {
-    apiGet("designs", { category }).then((r) => setDesigns(r.ok ? r.designs : []));
+    apiGet("designs", { category }).then((r) => {
+      if (r.ok) { setDesigns(r.designs); setErr(""); }
+      else { setDesigns([]); setErr(r.error || "Couldn't load designs — please try again."); }
+    });
   }, [category]);
 
   if (designs === null) return <Loading label="Loading designs…" />;
@@ -110,12 +149,13 @@ function DesignGallery({ category, onSelect, onBack }) {
   return (
     <div style={{ padding: "40px 24px", maxWidth: 1100, margin: "0 auto" }}>
       <button style={{ ...btnGhost, marginBottom: 24 }} onClick={onBack}>&larr; Back</button>
-      <h2 style={{ ...heading, fontSize: 28, color: THEME.gold, marginBottom: 8 }}>
+      <h2 style={{ ...heading, fontSize: 28, color: THEME.text, marginBottom: 8 }}>
         {CATEGORIES.find((c) => c.key === category)?.label}
       </h2>
       <div style={{ color: THEME.muted, fontSize: 13, marginBottom: 32 }}>Choose a design to begin configuring.</div>
 
-      {!sellable.length && (
+      {err && <div style={{ color: "#B91C1C", fontSize: 13, marginBottom: 16 }}>{err}</div>}
+      {!err && !sellable.length && (
         <div style={{ color: THEME.muted, fontSize: 14 }}>No designs are ready to view yet in this category — please check back soon.</div>
       )}
 
@@ -123,8 +163,8 @@ function DesignGallery({ category, onSelect, onBack }) {
         {sellable.map((d) => {
           const cover = d.variants[0]?.viewImages?.front || d.variants[0]?.viewImages?.worn;
           return (
-            <div key={d.id} onClick={() => onSelect(d)} style={{ cursor: "pointer", background: THEME.card, border: `1px solid ${THEME.border}`, borderRadius: 4, overflow: "hidden" }}>
-              <div style={{ aspectRatio: "1 / 1", background: "#0b0a08", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div key={d.id} className="sol-card" onClick={() => onSelect(d)} style={{ cursor: "pointer", background: THEME.surface, border: `1px solid ${THEME.border}`, borderRadius: 4, overflow: "hidden" }}>
+              <div style={{ aspectRatio: "1 / 1", background: "#F5F5F4", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 {cover ? <img src={cover} alt={d.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <span style={{ color: THEME.muted, fontSize: 12 }}>Image pending</span>}
               </div>
               <div style={{ padding: "12px 14px" }}>
@@ -158,7 +198,6 @@ function Configurator({ design, leadId, staffUser, onBack }) {
 
   const [rates, setRates] = useState(null);
   const [rapData, setRapData] = useState(null);
-  const [usdInr, setUsdInr] = useState(null);
   const [labgrownPrices, setLabgrownPrices] = useState(null);
 
   const [saving, setSaving] = useState(false);
@@ -169,7 +208,6 @@ function Configurator({ design, leadId, staffUser, onBack }) {
   useEffect(() => {
     apiGet("rates").then((r) => setRates(r.ok ? r.rates : null));
     apiGet("labgrown-prices").then((r) => setLabgrownPrices(r.ok ? r.prices : []));
-    apiGet("config").then((r) => setUsdInr(r.ok ? r.usdInr : 87));
     // Rapaport table lives in bullion_dropdowns, same source the Calculator uses.
     sb.from("bullion_dropdowns").select("value,updated_at").eq("field", "rapaport_data")
       .order("updated_at", { ascending: false }).limit(1).maybeSingle()
@@ -177,6 +215,7 @@ function Configurator({ design, leadId, staffUser, onBack }) {
   }, []);
 
   const variant = design.variants.find((v) => v.goldColor === goldColor && v.diamondShape === shape) || null;
+  const usdInr = rates?.usdInr;
 
   const price = variant && rates
     ? computeSolitairePrice({
@@ -210,7 +249,7 @@ function Configurator({ design, leadId, staffUser, onBack }) {
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 40 }}>
         <div>
-          <div style={{ aspectRatio: "1 / 1", background: "#0b0a08", border: `1px solid ${THEME.border}`, borderRadius: 4, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ aspectRatio: "1 / 1", background: "#F5F5F4", border: `1px solid ${THEME.border}`, borderRadius: 4, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
             {variant?.viewImages?.front
               ? <img src={variant.viewImages.front} alt={design.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               : <span style={{ color: THEME.muted, fontSize: 12 }}>This combination isn't available yet</span>}
@@ -225,7 +264,7 @@ function Configurator({ design, leadId, staffUser, onBack }) {
         </div>
 
         <div>
-          <h2 style={{ ...heading, fontSize: 24, color: THEME.gold, marginBottom: 20 }}>{design.name}</h2>
+          <h2 style={{ ...heading, fontSize: 26, color: THEME.text, marginBottom: 20 }}>{design.name}</h2>
 
           <Field label="Gold Colour">
             <Choices options={goldColors} value={goldColor} onChange={(v) => { setGoldColor(v); const s = shapesFor(v); if (!s.includes(shape)) setShape(s[0]); }} render={(o) => o[0].toUpperCase() + o.slice(1)} />
@@ -253,7 +292,7 @@ function Configurator({ design, leadId, staffUser, onBack }) {
             </select>
           </Field>
 
-          <div style={{ marginTop: 24, padding: 20, background: THEME.card, border: `1px solid ${THEME.border}`, borderRadius: 4 }}>
+          <div style={{ marginTop: 24, padding: 20, background: "#FAFAF9", border: `1px solid ${THEME.border}`, borderRadius: 4 }}>
             {!variant && <div style={{ color: THEME.muted, fontSize: 13 }}>Choose a gold colour + shape combination that's available above.</div>}
             {variant && !price.priceable && <div style={{ color: THEME.muted, fontSize: 13 }}>Price unavailable for this exact combination — our team will confirm it for you.</div>}
             {variant && price.priceable && (
@@ -262,15 +301,15 @@ function Configurator({ design, leadId, staffUser, onBack }) {
                 <Row label="Diamond value" value={price.diamondValue} />
                 <Row label="Making charges" value={price.making} />
                 <div style={{ borderTop: `1px solid ${THEME.border}`, marginTop: 10, paddingTop: 10, display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ ...heading, fontSize: 16 }}>Total</span>
-                  <span style={{ ...heading, fontSize: 20, color: THEME.gold }}>₹{price.total.toLocaleString("en-IN")}</span>
+                  <span style={{ ...heading, fontSize: 17 }}>Total</span>
+                  <span style={{ ...heading, fontSize: 22, color: THEME.gold }}>₹{price.total.toLocaleString("en-IN")}</span>
                 </div>
               </>
             )}
           </div>
 
           {savedId
-            ? <div style={{ marginTop: 16, color: "#8fce8f", fontSize: 13 }}>Saved! Our team will follow up with you shortly.</div>
+            ? <div style={{ marginTop: 16, color: "#15803D", fontSize: 13 }}>Saved! Our team will follow up with you shortly.</div>
             : <button style={{ ...btnPrimary, width: "100%", marginTop: 16 }} disabled={!variant || !price.priceable || saving} onClick={save}>
                 {saving ? "Saving…" : "Save This Design"}
               </button>}
@@ -294,9 +333,9 @@ function Choices({ options, value, onChange, render }) {
     <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
       {options.map((o) => (
         <button key={o} onClick={() => onChange(o)} style={{
-          padding: "8px 14px", fontSize: 13, borderRadius: 2, cursor: "pointer",
+          padding: "8px 14px", fontSize: 13, borderRadius: 2, cursor: "pointer", fontFamily: "Montserrat, sans-serif",
           background: value === o ? THEME.gold : "transparent",
-          color: value === o ? "#1a1508" : THEME.cream,
+          color: value === o ? "#FFFFFF" : THEME.text,
           border: `1px solid ${value === o ? THEME.gold : THEME.border}`,
         }}>{render ? render(o) : o}</button>
       ))}
@@ -351,7 +390,8 @@ function TryOnModal({ jewelleryImageUrl, category, onClose, onSaved }) {
       const ctx = canvas.getContext("2d");
       ctx.drawImage(sourceEl, 0, 0, w, h);
 
-      let anchor = { x: w / 2, y: h * (category === "ring" ? 0.7 : 0.35) };
+      const isGentsRing = category === "ring" || category === "gents_ring";
+      let anchor = { x: w / 2, y: h * (isGentsRing ? 0.7 : 0.35) };
       if (modelsLoaded) {
         const faceapi = await import("face-api.js");
         const det = await faceapi.detectSingleFace(sourceEl, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks();
@@ -387,17 +427,17 @@ function TryOnModal({ jewelleryImageUrl, category, onClose, onSaved }) {
   };
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1100, padding: 16 }}>
-      <div style={{ background: THEME.panel, border: `1px solid ${THEME.border}`, borderRadius: 4, padding: 24, maxWidth: 480, width: "100%" }}>
-        <div style={{ ...heading, fontSize: 18, color: THEME.gold, marginBottom: 12 }}>Try It On</div>
+    <div style={{ position: "fixed", inset: 0, background: "rgba(28,25,23,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1100, padding: 16 }}>
+      <div style={{ background: THEME.surface, border: `1px solid ${THEME.border}`, borderRadius: 4, padding: 24, maxWidth: 480, width: "100%" }}>
+        <div style={{ ...heading, fontSize: 20, color: THEME.text, marginBottom: 12 }}>Try It On</div>
         <div style={{ fontSize: 12, color: THEME.muted, marginBottom: 12 }}>
-          {category === "ring" ? "Hold your hand up in frame." : category === "earring" ? "Face the camera, ears visible." : "Face the camera, neck/collar visible."}
+          {(category === "ring" || category === "gents_ring") ? "Hold your hand up in frame." : category === "earring" ? "Face the camera, ears visible." : "Face the camera, neck/collar visible."}
         </div>
         {ready
           ? <video ref={videoRef} autoPlay muted playsInline style={{ width: "100%", borderRadius: 4, background: "#000" }} />
-          : <div style={{ padding: 30, textAlign: "center", color: THEME.muted, fontSize: 13 }}>Camera not available — upload a photo instead.</div>}
+          : <div style={{ padding: 30, textAlign: "center", color: THEME.muted, fontSize: 13, border: `1px solid ${THEME.border}`, borderRadius: 4 }}>Camera not available — upload a photo instead.</div>}
         <canvas ref={canvasRef} style={{ display: "none" }} />
-        {err && <div style={{ color: "#d9534f", fontSize: 12, marginTop: 8 }}>{err}</div>}
+        {err && <div style={{ color: "#B91C1C", fontSize: 12, marginTop: 8 }}>{err}</div>}
         <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
           {ready && <button style={btnPrimary} disabled={busy} onClick={() => capture(videoRef.current, true)}>{busy ? "Processing…" : "Capture"}</button>}
           <button style={btnGhost} onClick={() => fileRef.current?.click()}>Upload Photo</button>
@@ -426,16 +466,18 @@ export function SolitaireJewelleryScreen() {
   if (!leadDone) return <LeadPopup onDone={() => setLeadDone(true)} />;
 
   return (
-    <div style={page}>
+    <div className="sol-page" style={page}>
+      <style>{FONT_CSS}</style>
       <div style={{ textAlign: "center", padding: "48px 20px 20px" }}>
-        <div style={{ ...heading, fontSize: 14, letterSpacing: "0.3em", color: THEME.goldSoft, textTransform: "uppercase" }}>Sun Sea Jewellers</div>
-        <div style={{ ...heading, fontSize: 36, color: THEME.gold, marginTop: 8 }}>Design Your Solitaire</div>
+        <div style={{ fontFamily: "Montserrat, sans-serif", fontSize: 13, letterSpacing: "0.3em", color: THEME.muted, textTransform: "uppercase" }}>Sun Sea Jewellers</div>
+        <div style={{ ...heading, fontSize: 40, color: THEME.text, marginTop: 8 }}>Design Your Solitaire</div>
+        <div style={{ width: 48, height: 2, background: THEME.gold, margin: "16px auto" }} />
       </div>
 
       {!category && (
         <div style={{ display: "flex", justifyContent: "center", gap: 24, flexWrap: "wrap", padding: "20px 24px 60px" }}>
           {CATEGORIES.map((c) => (
-            <div key={c.key} onClick={() => setCategory(c.key)} style={{ cursor: "pointer", width: 220, textAlign: "center", padding: "40px 20px", background: THEME.card, border: `1px solid ${THEME.border}`, borderRadius: 4 }}>
+            <div key={c.key} className="sol-card" onClick={() => setCategory(c.key)} style={{ cursor: "pointer", width: 220, textAlign: "center", padding: "40px 20px", background: THEME.surface, border: `1px solid ${THEME.border}`, borderRadius: 4 }}>
               <div style={{ fontSize: 40, marginBottom: 12 }}>{c.icon}</div>
               <div style={{ ...heading, fontSize: 18 }}>{c.label}</div>
             </div>
@@ -456,34 +498,88 @@ export function SolitaireJewelleryScreen() {
 
 // ── Admin: AI Design Generator ───────────────────────────────────────────
 // Staff-only screen (mount from App.jsx's admin/calculator tab area, gated
-// to superadmin/admin) for generating + approving design variants.
+// to superadmin/admin) for generating + approving design variants. Uses
+// action=admin-designs (not action=designs) so generated-but-not-yet-approved
+// variants are visible for review — action=designs is approved-only, which
+// is correct for the public page but would hide new work from this screen.
 export function SolitaireAdminGenerator() {
   const [category, setCategory] = useState("ring");
   const [designs, setDesigns] = useState([]);
   const [designId, setDesignId] = useState("");
+  const [loadErr, setLoadErr] = useState("");
   const [goldColor, setGoldColor] = useState("yellow");
   const [shape, setShape] = useState("Round");
   const [caratSize, setCaratSize] = useState("");
+  const [promptOverride, setPromptOverride] = useState("");
+  const [refImageFile, setRefImageFile] = useState(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
-  const [usdInr, setUsdInr] = useState("");
+  const [cascade, setCascade] = useState(null); // { done, total } while auto-generating remaining combos
+  const [usdInr, setUsdInr] = useState(null);
   const [prices, setPrices] = useState([]);
 
   const loadDesigns = useCallback(() => {
-    apiGet("designs", { category }).then((r) => { setDesigns(r.ok ? r.designs : []); setDesignId(r.designs?.[0]?.id || ""); });
+    apiGet("admin-designs", { category }, true).then((r) => {
+      if (r.ok) { setDesigns(r.designs); setLoadErr(""); setDesignId((cur) => (r.designs.some((d) => d.id === cur) ? cur : r.designs[0]?.id || "")); }
+      else { setDesigns([]); setLoadErr(r.error || "Couldn't load designs."); }
+    });
   }, [category]);
 
   useEffect(() => { loadDesigns(); }, [loadDesigns]);
-  useEffect(() => { apiGet("config").then((r) => r.ok && setUsdInr(r.usdInr)); apiGet("labgrown-prices").then((r) => r.ok && setPrices(r.prices)); }, []);
+  useEffect(() => {
+    apiGet("rates").then((r) => r.ok && setUsdInr(r.rates?.usdInr ?? null));
+    apiGet("labgrown-prices").then((r) => r.ok && setPrices(r.prices));
+  }, []);
 
-  const variants = designs.find((d) => d.id === designId)?.variants || [];
+  const currentDesign = designs.find((d) => d.id === designId) || null;
+  const variants = currentDesign?.variants || [];
+
+  const generateOne = async ({ designId: dId, goldColor: gc, diamondShape: sh, caratSize: cs, promptOverride: po, referenceImageBase64: ref }) => {
+    return apiPost("generate-variant", {
+      designId: dId, goldColor: gc, diamondShape: sh, caratSize: cs ? Number(cs) : null,
+      generatedBy: loadStaffUser()?.name, promptOverride: po || null, referenceImageBase64: ref || null,
+    }, true);
+  };
 
   const generate = async () => {
     setBusy(true); setMsg("");
-    const res = await apiPost("generate-variant", { designId, goldColor, diamondShape: shape, caratSize: caratSize ? Number(caratSize) : null, generatedBy: loadStaffUser()?.name }, true);
+    const refBase64 = refImageFile ? await fileToBase64(refImageFile) : null;
+    const res = await generateOne({ designId, goldColor, diamondShape: shape, caratSize, promptOverride, referenceImageBase64: refBase64 });
     setBusy(false);
     if (!res.ok) return setMsg(`Failed: ${res.error}${res.detail ? ` — ${res.detail}` : ""}`);
     setMsg("Generated — review below and approve.");
+    loadDesigns();
+  };
+
+  // Approving the first variant for a design auto-generates + auto-approves
+  // every remaining gold-colour x shape combo for that same design, using
+  // the just-approved variant's est_gold_weight_g as the starting estimate
+  // (admin can still edit each one individually afterward). Sequential
+  // (not parallel) to stay within OpenAI rate limits and keep progress visible.
+  const cascadeRemaining = async (design, referenceVariant) => {
+    const have = new Set(design.variants.map((v) => `${v.goldColor}|${v.diamondShape}`));
+    const missing = [];
+    for (const gc of GOLD_COLORS) {
+      for (const sh of DIAMOND_SHAPES) {
+        const key = `${gc}|${sh}`;
+        if (!have.has(key)) missing.push({ goldColor: gc, diamondShape: sh });
+      }
+    }
+    if (!missing.length) return;
+    setCascade({ done: 0, total: missing.length });
+    for (let i = 0; i < missing.length; i++) {
+      const combo = missing[i];
+      const res = await generateOne({
+        designId: design.id, goldColor: combo.goldColor, diamondShape: combo.diamondShape,
+        caratSize: referenceVariant.caratSize, promptOverride: referenceVariant.promptOverride,
+      });
+      if (res.ok && res.variant) {
+        await apiPost("update-variant", { variantId: res.variant.id, estGoldWeightG: referenceVariant.estGoldWeightG, status: "approved" }, true);
+      }
+      setCascade({ done: i + 1, total: missing.length });
+    }
+    setCascade(null);
+    setMsg(`Auto-generated and approved ${missing.length} remaining combination${missing.length !== 1 ? "s" : ""} for "${design.name}".`);
     loadDesigns();
   };
 
@@ -492,44 +588,72 @@ export function SolitaireAdminGenerator() {
     loadDesigns();
   };
 
+  const approveAndCascade = async (variant) => {
+    const wasFirstApproval = !variants.some((v) => v.id !== variant.id && v.status === "approved");
+    await apiPost("update-variant", { variantId: variant.id, status: "approved" }, true);
+    loadDesigns();
+    if (wasFirstApproval && currentDesign) {
+      await cascadeRemaining(currentDesign, { ...variant, estGoldWeightG: variant.estGoldWeightG });
+    }
+  };
+
   const savePrice = async (cs, price) => {
     await apiPost("update-labgrown-price", { caratSize: cs, pricePerCt: price, updatedBy: loadStaffUser()?.name }, true);
   };
 
-  const saveUsdInr = async () => {
-    await apiPost("update-config", { usdInr: Number(usdInr) }, true);
-    setMsg("USD/INR updated.");
-  };
-
   return (
-    <div style={{ padding: 20, maxWidth: 900 }}>
+    <div style={{ padding: 20, maxWidth: 960 }}>
       <h3>Solitaire Jewellery — AI Design Generator</h3>
 
-      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
         <select value={category} onChange={(e) => setCategory(e.target.value)}>
           {CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
         </select>
-        <select value={designId} onChange={(e) => setDesignId(e.target.value)} style={{ minWidth: 220 }}>
+        <select value={designId} onChange={(e) => setDesignId(e.target.value)} style={{ minWidth: 240 }} disabled={!designs.length}>
+          {!designs.length && <option value="">No designs in this category</option>}
           {designs.map((d) => <option key={d.id} value={d.id}>{d.name} ({d.variants.length} variants)</option>)}
         </select>
         <select value={goldColor} onChange={(e) => setGoldColor(e.target.value)}>
           <option value="yellow">Yellow Gold</option><option value="white">White Gold</option><option value="rose">Rose Gold</option>
         </select>
         <select value={shape} onChange={(e) => setShape(e.target.value)}>
-          {DIAMOND_SHAPES.map((s) => <option key={s}>{s}</option>)}
+          {DIAMOND_SHAPES.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
         <input placeholder="carat (optional)" value={caratSize} onChange={(e) => setCaratSize(e.target.value)} style={{ width: 100 }} />
-        <button disabled={busy || !designId} onClick={generate}>{busy ? "Generating…" : "Generate Variant"}</button>
       </div>
+
+      <div style={{ marginBottom: 12 }}>
+        <textarea
+          placeholder="Describe or refine the image prompt for this design (optional — overrides/extends the base design concept)"
+          value={promptOverride} onChange={(e) => setPromptOverride(e.target.value)}
+          rows={3} style={{ width: "100%", boxSizing: "border-box", fontFamily: "inherit", fontSize: 13, padding: 8 }}
+        />
+        {currentDesign?.conceptPrompt && <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>Base concept: {currentDesign.conceptPrompt}</div>}
+      </div>
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
+        <label style={{ fontSize: 13 }}>
+          Reference image (optional):{" "}
+          <input type="file" accept="image/*" onChange={(e) => setRefImageFile(e.target.files?.[0] || null)} />
+        </label>
+        {refImageFile && <button onClick={() => setRefImageFile(null)}>Clear</button>}
+        <button disabled={busy || !designId || !!cascade} onClick={generate}>{busy ? "Generating…" : "Generate Variant"}</button>
+      </div>
+
+      {loadErr && <div style={{ marginBottom: 12, fontSize: 13, color: "#c0392b" }}>{loadErr}</div>}
       {msg && <div style={{ marginBottom: 12, fontSize: 13 }}>{msg}</div>}
+      {cascade && <div style={{ marginBottom: 12, fontSize: 13, color: "#2980b9" }}>Auto-generating remaining combinations… {cascade.done}/{cascade.total}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12, marginBottom: 30 }}>
         {variants.map((v) => (
           <div key={v.id} style={{ border: "1px solid #ddd", borderRadius: 4, padding: 8 }}>
             {v.viewImages?.front && <img src={v.viewImages.front} alt="" style={{ width: "100%", aspectRatio: "1/1", objectFit: "cover" }} />}
             <div style={{ fontSize: 12, marginTop: 6 }}>{v.goldColor} / {v.diamondShape}{v.caratSize ? ` / ${v.caratSize}ct` : ""}</div>
+            <div style={{ fontSize: 11, color: v.status === "approved" ? "#27ae60" : v.status === "rejected" ? "#c0392b" : "#888" }}>{v.status}</div>
             <input type="number" placeholder="est. gold weight (g)" defaultValue={v.estGoldWeightG || ""} onBlur={(e) => updateVariant(v.id, { estGoldWeightG: e.target.value })} style={{ width: "100%", marginTop: 6 }} />
-            <button style={{ marginTop: 6, width: "100%" }} onClick={() => updateVariant(v.id, { status: "approved" })}>Approve</button>
+            {v.status !== "approved"
+              ? <button style={{ marginTop: 6, width: "100%" }} disabled={!!cascade} onClick={() => approveAndCascade(v)}>Approve</button>
+              : <button style={{ marginTop: 6, width: "100%" }} onClick={() => updateVariant(v.id, { status: "rejected" })}>Reject</button>}
           </div>
         ))}
       </div>
@@ -547,11 +671,8 @@ export function SolitaireAdminGenerator() {
         })}
       </div>
 
-      <h4>USD/INR (for Rapaport natural-diamond pricing)</h4>
-      <div style={{ display: "flex", gap: 8 }}>
-        <input type="number" value={usdInr} onChange={(e) => setUsdInr(e.target.value)} style={{ width: 100 }} />
-        <button onClick={saveUsdInr}>Save</button>
-      </div>
+      <h4>USD/INR (live, for Rapaport natural-diamond pricing)</h4>
+      <div style={{ fontSize: 13 }}>{usdInr != null ? `₹${usdInr} per $1 — pulled live from the Rates sheet` : "Not available right now — check the Rates sheet's USD row."}</div>
     </div>
   );
 }

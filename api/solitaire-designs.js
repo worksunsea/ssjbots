@@ -1,11 +1,16 @@
 // GET  /api/solitaire-designs?action=designs             — public. Lists active
-//      design concepts (+ their approved variants) for a category.
+//      design concepts (+ their APPROVED variants only) for a category.
+// GET  /api/solitaire-designs?action=admin-designs       — staff-only. Same,
+//      but variants of every status (for the AI Design Generator to review).
 // GET  /api/solitaire-designs?action=labgrown-prices      — public. Lab-grown
 //      price grid, used by the client-side pricing util.
+// GET  /api/solitaire-designs?action=rates                — public. Live gold
+//      rates + USD/INR (parsed from the same sheet the Calculator uses).
 // POST /api/solitaire-designs?action=lead                 — public. Lead capture
 //      + funnel enrollment, mirrors corporate-gifting's lead action.
 // POST /api/solitaire-designs?action=generate-variant      — staff-only (x-crm-secret).
 //      Calls the AI Design Generator for one design x gold-colour x shape combo.
+//      Accepts optional promptOverride + referenceImageBase64.
 // POST /api/solitaire-designs?action=update-variant        — staff-only. Edit
 //      est_gold_weight_g / approve / reject a generated variant.
 // POST /api/solitaire-designs?action=update-labgrown-price — staff-only. Edit
@@ -18,8 +23,6 @@ import { normalizePhone, TENANT_ID, checkCrmSecret } from "./_lib/config.js";
 import { enrollLeadInDrip } from "./_lib/drip.js";
 import { generateSolitaireDesignViews } from "./_lib/solitaireImageGen.js";
 import { getRates } from "./_lib/rates.js";
-
-const DEFAULT_USD_INR = 87;
 
 export const config = { maxDuration: 60 };
 
@@ -78,6 +81,55 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, designs: result });
   }
 
+  // ── GET action=admin-designs — staff-only. Same as action=designs but
+  // includes variants of every status (generated/approved/rejected), so the
+  // AI Design Generator can show freshly generated, not-yet-approved
+  // variants for review. (action=designs stays approved-only — that's the
+  // public client-facing feed.) ─────────────────────────────────────────
+  if (req.method === "GET" && action === "admin-designs") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return authFail;
+    const category = req.query?.category;
+    let query = sb.from("solitaire_designs").select("*").eq("tenant_id", TENANT_ID).eq("active", true)
+      .order("category", { ascending: true }).order("design_number", { ascending: true });
+    if (category) query = query.eq("category", category);
+    const { data: designs, error } = await query;
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+
+    const ids = (designs || []).map((d) => d.id);
+    let variants = [];
+    if (ids.length) {
+      const { data: vRows, error: vErr } = await sb.from("solitaire_design_variants")
+        .select("*").eq("tenant_id", TENANT_ID).in("design_id", ids).order("created_at", { ascending: false });
+      if (vErr) return res.status(500).json({ ok: false, error: vErr.message });
+      variants = vRows || [];
+    }
+
+    const byDesign = {};
+    for (const v of variants) (byDesign[v.design_id] ||= []).push(v);
+
+    const result = (designs || []).map((d) => ({
+      id: d.id,
+      category: d.category,
+      designNumber: d.design_number,
+      name: d.name,
+      conceptPrompt: d.concept_prompt,
+      hasSideDiamonds: d.has_side_diamonds,
+      variants: (byDesign[d.id] || []).map((v) => ({
+        id: v.id,
+        goldColor: v.gold_color,
+        diamondShape: v.diamond_shape,
+        caratSize: v.carat_size,
+        viewImages: v.view_images,
+        estGoldWeightG: v.est_gold_weight_g,
+        status: v.status,
+        referenceImageUrl: v.reference_image_url,
+        promptOverride: v.prompt_override,
+      })),
+    }));
+    return res.status(200).json({ ok: true, designs: result });
+  }
+
   // ── GET action=labgrown-prices — public price grid ───────────────────
   if (req.method === "GET" && action === "labgrown-prices") {
     const { data, error } = await sb.from("solitaire_labgrown_prices")
@@ -91,29 +143,6 @@ export default async function handler(req, res) {
   if (req.method === "GET" && action === "rates") {
     const rates = await getRates();
     return res.status(200).json({ ok: true, rates });
-  }
-
-  // ── GET action=config — public. Admin-set USD/INR rate used for Rapaport
-  // conversion (Rapaport tables are $/ct, everything else is ₹). ───────
-  if (req.method === "GET" && action === "config") {
-    const { data } = await sb.from("bullion_dropdowns").select("value, updated_at")
-      .eq("tenant_id", TENANT_ID).eq("field", "solitaire_usd_inr")
-      .order("updated_at", { ascending: false }).limit(1).maybeSingle();
-    const usdInr = data?.value ? Number(data.value) : DEFAULT_USD_INR;
-    return res.status(200).json({ ok: true, usdInr });
-  }
-
-  // ── POST action=update-config — staff-only. Sets the USD/INR rate. ───
-  if (req.method === "POST" && action === "update-config") {
-    const authFail = checkCrmSecret(req, res);
-    if (authFail) return authFail;
-    const body = parseBody(req);
-    if (body.usdInr == null || !(Number(body.usdInr) > 0)) return res.status(400).json({ ok: false, error: "usdInr_required" });
-    const { error } = await sb.from("bullion_dropdowns").insert({
-      tenant_id: TENANT_ID, field: "solitaire_usd_inr", value: String(Number(body.usdInr)),
-    });
-    if (error && error.code !== "23505") return res.status(500).json({ ok: false, error: error.message });
-    return res.status(200).json({ ok: true, usdInr: Number(body.usdInr) });
   }
 
   // ── POST action=lead — public lead capture + funnel enrollment ───────
@@ -173,7 +202,7 @@ export default async function handler(req, res) {
     const authFail = checkCrmSecret(req, res);
     if (authFail) return authFail;
     const body = parseBody(req);
-    const { designId, goldColor, diamondShape, caratSize, generatedBy } = body;
+    const { designId, goldColor, diamondShape, caratSize, generatedBy, promptOverride, referenceImageBase64 } = body;
     if (!designId || !goldColor || !diamondShape) {
       return res.status(400).json({ ok: false, error: "designId_goldColor_diamondShape_required" });
     }
@@ -181,19 +210,28 @@ export default async function handler(req, res) {
     const { data: design } = await sb.from("solitaire_designs").select("*").eq("id", designId).maybeSingle();
     if (!design) return res.status(404).json({ ok: false, error: "design_not_found" });
 
+    const variantIdPlaceholder = `${Date.now()}`;
+    let referenceImageUrl = null;
+    if (referenceImageBase64) {
+      const refPath = `uploads/solitaire-designs/${designId}/${variantIdPlaceholder}/reference.png`;
+      const { error: refErr } = await sb.storage.from("media").upload(refPath, Buffer.from(referenceImageBase64, "base64"), { contentType: "image/png", upsert: true });
+      if (!refErr) referenceImageUrl = sb.storage.from("media").getPublicUrl(refPath).data.publicUrl;
+    }
+
     let views;
     try {
       views = await generateSolitaireDesignViews({
         conceptPrompt: design.concept_prompt,
+        promptOverride: promptOverride || null,
         category: design.category,
         goldColor, diamondShape, caratSize,
         hasSideDiamonds: design.has_side_diamonds,
+        referenceImageBase64,
       });
     } catch (e) {
       return res.status(500).json({ ok: false, error: "generation_failed", detail: String(e.message || e) });
     }
 
-    const variantIdPlaceholder = `${Date.now()}`;
     const viewImages = {};
     for (const v of views) {
       const path = `uploads/solitaire-designs/${designId}/${variantIdPlaceholder}/${v.key}.png`;
@@ -207,6 +245,7 @@ export default async function handler(req, res) {
     const { data: variant, error } = await sb.from("solitaire_design_variants").insert({
       tenant_id: TENANT_ID, design_id: designId, gold_color: goldColor, diamond_shape: diamondShape,
       carat_size: caratSize ?? null, view_images: viewImages, generated_by: generatedBy || null,
+      reference_image_url: referenceImageUrl, prompt_override: promptOverride || null,
       generation_prompt: views[0]?.prompt || null, status: "generated",
     }).select("*").single();
     if (error) return res.status(500).json({ ok: false, error: error.message });
