@@ -21,11 +21,12 @@ const API = "/api/solitaire-designs";
 const SUPABASE_URL = "https://uppyxzellmuissdlxsmy.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVwcHl4emVsbG11aXNzZGx4c215Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYyODczNTMsImV4cCI6MjA5MTg2MzM1M30._eFep-C0IYuT-73AQU9oqE2k1bqneWZjsydUZGwt24E";
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
+const categoryCoverUrl = (key) => `${SUPABASE_URL}/storage/v1/object/public/media/uploads/solitaire-designs/category-covers/${key}.png`;
 const CATEGORIES = [
-  { key: "ring", label: "Rings", icon: "\u{1F48D}" },
-  { key: "gents_ring", label: "Gents Rings", icon: "\u{1F48D}" },
-  { key: "pendant", label: "Pendants", icon: "\u{1F4FF}" },
-  { key: "earring", label: "Earrings", icon: "\u{1F440}" },
+  { key: "ring", label: "Rings", icon: "\u{1F48D}", cover: categoryCoverUrl("ring") },
+  { key: "gents_ring", label: "Gents Rings", icon: "\u{1F48D}", cover: categoryCoverUrl("gents_ring") },
+  { key: "pendant", label: "Pendants", icon: "\u{1F4FF}", cover: categoryCoverUrl("pendant") },
+  { key: "earring", label: "Earrings", icon: "\u{1F440}", cover: categoryCoverUrl("earring") },
 ];
 const GOLD_COLORS = ["yellow", "white", "rose"];
 
@@ -181,6 +182,31 @@ function DesignGallery({ category, onSelect, onBack }) {
 
 function Loading({ label }) {
   return <div style={{ padding: 60, textAlign: "center", color: THEME.muted, fontSize: 14 }}>{label}</div>;
+}
+
+// Category picker tile — attractive editorial cover photo (see
+// action=generate-category-cover) with a gradient + label overlay. Falls
+// back to a plain emoji tile if the cover hasn't been generated yet (404).
+function CategoryTile({ category: c, onClick }) {
+  const [imgOk, setImgOk] = useState(true);
+  return (
+    <div className="sol-card" onClick={onClick} style={{ cursor: "pointer", width: 240, height: 280, position: "relative", overflow: "hidden", background: THEME.surface, border: `1px solid ${THEME.border}`, borderRadius: 4 }}>
+      {imgOk ? (
+        <>
+          <img src={c.cover} alt={c.label} onError={() => setImgOk(false)} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
+          <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, rgba(28,25,23,0) 45%, rgba(28,25,23,0.78) 100%)" }} />
+          <div style={{ position: "absolute", left: 0, right: 0, bottom: 20, textAlign: "center" }}>
+            <div style={{ ...heading, fontSize: 20, color: "#FFFFFF" }}>{c.label}</div>
+          </div>
+        </>
+      ) : (
+        <div style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>{c.icon}</div>
+          <div style={{ ...heading, fontSize: 18 }}>{c.label}</div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── Configurator ─────────────────────────────────────────────────────────
@@ -476,12 +502,7 @@ export function SolitaireJewelleryScreen() {
 
       {!category && (
         <div style={{ display: "flex", justifyContent: "center", gap: 24, flexWrap: "wrap", padding: "20px 24px 60px" }}>
-          {CATEGORIES.map((c) => (
-            <div key={c.key} className="sol-card" onClick={() => setCategory(c.key)} style={{ cursor: "pointer", width: 220, textAlign: "center", padding: "40px 20px", background: THEME.surface, border: `1px solid ${THEME.border}`, borderRadius: 4 }}>
-              <div style={{ fontSize: 40, marginBottom: 12 }}>{c.icon}</div>
-              <div style={{ ...heading, fontSize: 18 }}>{c.label}</div>
-            </div>
-          ))}
+          {CATEGORIES.map((c) => <CategoryTile key={c.key} category={c} onClick={() => setCategory(c.key)} />)}
         </div>
       )}
 
@@ -672,7 +693,42 @@ export function SolitaireAdminGenerator() {
       </div>
 
       <h4>USD/INR (live, for Rapaport natural-diamond pricing)</h4>
-      <div style={{ fontSize: 13 }}>{usdInr != null ? `₹${usdInr} per $1 — pulled live from the Rates sheet` : "Not available right now — check the Rates sheet's USD row."}</div>
+      <div style={{ fontSize: 13, marginBottom: 20 }}>{usdInr != null ? `₹${usdInr} per $1 — pulled live from the Rates sheet` : "Not available right now — check the Rates sheet's USD row."}</div>
+
+      <CategoryCoversPanel />
+    </div>
+  );
+}
+
+// One-off generator for the public landing page's category-picker hero
+// images (see action=generate-category-cover). Deterministic path, upsert —
+// re-running just replaces the image.
+function CategoryCoversPanel() {
+  const [busyKey, setBusyKey] = useState(null);
+  const [results, setResults] = useState({});
+
+  const generate = async (categoryKey) => {
+    setBusyKey(categoryKey);
+    const res = await apiPost("generate-category-cover", { category: categoryKey }, true);
+    setBusyKey(null);
+    setResults((r) => ({ ...r, [categoryKey]: res.ok ? "done" : `failed: ${res.error}` }));
+  };
+
+  return (
+    <div>
+      <h4>Category Picker Cover Images</h4>
+      <div style={{ fontSize: 12, color: "#888", marginBottom: 10 }}>Attractive hero photos shown on the public landing page's category tiles (Rings / Gents Rings / Pendants / Earrings). Generate once, or regenerate anytime to replace.</div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        {CATEGORIES.map((c) => (
+          <div key={c.key} style={{ textAlign: "center" }}>
+            <img src={categoryCoverUrl(c.key)} alt={c.label} style={{ width: 90, height: 90, objectFit: "cover", borderRadius: 4, border: "1px solid #ddd", display: "block", marginBottom: 4 }} onError={(e) => { e.target.style.visibility = "hidden"; }} />
+            <button disabled={busyKey === c.key} onClick={() => generate(c.key)} style={{ fontSize: 11 }}>
+              {busyKey === c.key ? "Generating…" : `${c.label}`}
+            </button>
+            {results[c.key] && <div style={{ fontSize: 10, color: results[c.key] === "done" ? "#27ae60" : "#c0392b" }}>{results[c.key]}</div>}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

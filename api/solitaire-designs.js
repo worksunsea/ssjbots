@@ -11,6 +11,8 @@
 // POST /api/solitaire-designs?action=generate-variant      — staff-only (x-crm-secret).
 //      Calls the AI Design Generator for one design x gold-colour x shape combo.
 //      Accepts optional promptOverride + referenceImageBase64.
+// POST /api/solitaire-designs?action=generate-category-cover — staff-only. Generates
+//      the public landing page's category-picker hero image (deterministic path).
 // POST /api/solitaire-designs?action=update-variant        — staff-only. Edit
 //      est_gold_weight_g / approve / reject a generated variant.
 // POST /api/solitaire-designs?action=update-labgrown-price — staff-only. Edit
@@ -21,7 +23,7 @@
 import { supa } from "./_lib/supabase.js";
 import { normalizePhone, TENANT_ID, checkCrmSecret } from "./_lib/config.js";
 import { enrollLeadInDrip } from "./_lib/drip.js";
-import { generateSolitaireDesignViews } from "./_lib/solitaireImageGen.js";
+import { generateSolitaireDesignViews, generateCategoryCoverImage } from "./_lib/solitaireImageGen.js";
 import { getRates } from "./_lib/rates.js";
 
 export const config = { maxDuration: 60 };
@@ -251,6 +253,31 @@ export default async function handler(req, res) {
     if (error) return res.status(500).json({ ok: false, error: error.message });
 
     return res.status(200).json({ ok: true, variant });
+  }
+
+  // ── POST action=generate-category-cover — staff-only. Generates one
+  // attractive editorial hero image for a category, used on the public
+  // landing page's category-picker tiles. Deterministic storage path
+  // (upsert) — calling it again just replaces the image. ────────────────
+  if (req.method === "POST" && action === "generate-category-cover") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return authFail;
+    const body = parseBody(req);
+    const category = body.category;
+    if (!["ring", "gents_ring", "pendant", "earring"].includes(category)) {
+      return res.status(400).json({ ok: false, error: "invalid_category" });
+    }
+    let image;
+    try {
+      image = await generateCategoryCoverImage(category);
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: "generation_failed", detail: String(e.message || e) });
+    }
+    const path = `uploads/solitaire-designs/category-covers/${category}.png`;
+    const { error: upErr } = await sb.storage.from("media").upload(path, Buffer.from(image.base64, "base64"), { contentType: "image/png", upsert: true });
+    if (upErr) return res.status(500).json({ ok: false, error: upErr.message });
+    const { data: pub } = sb.storage.from("media").getPublicUrl(path);
+    return res.status(200).json({ ok: true, category, imageUrl: pub.publicUrl });
   }
 
   // ── POST action=update-variant — staff-only. Edit gold weight estimate

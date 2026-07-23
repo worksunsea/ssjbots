@@ -79,3 +79,22 @@ export async function generateSolitaireDesignViews({ conceptPrompt, promptOverri
 
   return results;
 }
+
+// One attractive editorial hero shot per category, used for the public
+// landing page's category-picker tiles (not a design variant).
+const CATEGORY_COVER_PROMPTS = {
+  ring: "Elegant luxury jewellery photograph of a single solitaire diamond engagement ring on a woman's hand, soft natural light, warm cream and gold tones, shallow depth of field, editorial fine-jewellery catalogue style, minimal negative space on one side for text overlay, no text or watermark in the image.",
+  gents_ring: "Elegant luxury jewellery photograph of a bold solitaire diamond men's ring on a man's hand resting on dark textured fabric, warm gold tones, dramatic soft studio lighting, masculine editorial fine-jewellery catalogue style, no text or watermark in the image.",
+  pendant: "Elegant luxury jewellery photograph of a delicate solitaire diamond pendant necklace resting on a woman's collarbone, soft warm light, cream and gold tones, shallow depth of field, editorial fine-jewellery catalogue style, no text or watermark in the image.",
+  earring: "Elegant luxury jewellery photograph of a pair of solitaire diamond stud earrings on a woman's ear, soft side profile, warm natural light, cream and gold tones, shallow depth of field, editorial fine-jewellery catalogue style, no text or watermark in the image.",
+};
+
+// Returns { base64 } for one category cover image.
+export async function generateCategoryCoverImage(category) {
+  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY missing");
+  const prompt = CATEGORY_COVER_PROMPTS[category];
+  if (!prompt) throw new Error(`unknown category "${category}"`);
+  const b64 = await generateOne(prompt, null);
+  if (!b64) throw new Error("no image returned");
+  return { base64: b64 };
+}
