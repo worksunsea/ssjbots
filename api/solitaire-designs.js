@@ -27,13 +27,15 @@
 //      a design and/or edit concept prompt / side-diamond flag + weight (ct).
 // POST /api/solitaire-designs?action=generate-size-chart   — staff-only. One
 //      wide image per design showing .30ct-5ct size progression side by side.
+// POST /api/solitaire-designs?action=suggest-design-name    — staff-only. Vision
+//      model looks at the design's actual generated image and suggests a name.
 // POST /api/solitaire-designs?action=save-selection        — public. Saves a
 //      client's finished configuration (like "Save Estimate").
 
 import { supa } from "./_lib/supabase.js";
 import { normalizePhone, TENANT_ID, checkCrmSecret } from "./_lib/config.js";
 import { enrollLeadInDrip } from "./_lib/drip.js";
-import { generateSolitaireDesignViews, generateCategoryCoverImage, generateSizeChartImage } from "./_lib/solitaireImageGen.js";
+import { generateSolitaireDesignViews, generateCategoryCoverImage, generateSizeChartImage, suggestDesignName } from "./_lib/solitaireImageGen.js";
 import { getRates } from "./_lib/rates.js";
 
 // 120s — sequential per-view generation with 429 retry/backoff (see
@@ -252,7 +254,7 @@ export default async function handler(req, res) {
     const authFail = checkCrmSecret(req, res);
     if (authFail) return authFail;
     const body = parseBody(req);
-    const { designId, goldColor, diamondShape, caratSize, generatedBy, promptOverride, referenceImageBase64 } = body;
+    const { designId, goldColor, diamondShape, caratSize, generatedBy, promptOverride, referenceImageBase64, includeWorn, quality } = body;
     if (!designId || !goldColor || !diamondShape) {
       return res.status(400).json({ ok: false, error: "designId_goldColor_diamondShape_required" });
     }
@@ -277,6 +279,8 @@ export default async function handler(req, res) {
         goldColor, diamondShape, caratSize,
         hasSideDiamonds: design.has_side_diamonds,
         referenceImageBase64,
+        includeWorn: includeWorn !== false, // default true — cascade calls explicitly pass false
+        quality: quality || "low",
       });
     } catch (e) {
       return res.status(500).json({ ok: false, error: "generation_failed", detail: String(e.message || e) });
@@ -365,6 +369,36 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, designId, imageUrl });
   }
 
+  // ── POST action=suggest-design-name — staff-only. Looks at the design's
+  // actual generated front-view image (approved variant preferred, else any
+  // generated one) and suggests a name — admin reviews/edits via
+  // action=update-design, this does NOT save anything itself. ──────────
+  if (req.method === "POST" && action === "suggest-design-name") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return authFail;
+    const body = parseBody(req);
+    const designId = body.designId;
+    if (!designId) return res.status(400).json({ ok: false, error: "designId_required" });
+
+    const { data: design } = await sb.from("solitaire_designs").select("*").eq("id", designId).maybeSingle();
+    if (!design) return res.status(404).json({ ok: false, error: "design_not_found" });
+
+    const { data: variants } = await sb.from("solitaire_design_variants")
+      .select("view_images, status").eq("tenant_id", TENANT_ID).eq("design_id", designId)
+      .order("status", { ascending: true }); // "approved" sorts before "generated"/"rejected" alphabetically
+    const withImage = (variants || []).find((v) => v.status === "approved" && v.view_images?.front)
+      || (variants || []).find((v) => v.view_images?.front);
+    if (!withImage) return res.status(400).json({ ok: false, error: "no_image_yet", detail: "Generate at least one variant for this design first." });
+
+    let name;
+    try {
+      name = await suggestDesignName({ imageUrl: withImage.view_images.front, category: design.category, conceptPrompt: design.concept_prompt });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: "suggestion_failed", detail: String(e.message || e) });
+    }
+    return res.status(200).json({ ok: true, name });
+  }
+
   // ── POST action=update-variant — staff-only. Edit gold weight estimate
   // and/or approve/reject a generated variant. Approving one variant
   // auto-rejects any OTHER (unapproved) variant for the same design x
@@ -425,24 +459,30 @@ export default async function handler(req, res) {
   // These were previously hardcoded (350/g, 30%) in the client — real values
   // must come from here now. ────────────────────────────────────────────
   if (req.method === "GET" && action === "pricing-config") {
-    const [mc, sd, sdc] = await Promise.all([
+    const [mc, sd, sdc, iq] = await Promise.all([
       sb.from("bullion_dropdowns").select("value, updated_at").eq("tenant_id", TENANT_ID)
         .eq("field", "solitaire_making_charge_per_gram").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
       sb.from("bullion_dropdowns").select("value, updated_at").eq("tenant_id", TENANT_ID)
         .eq("field", "solitaire_sell_disc_pct").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
       sb.from("bullion_dropdowns").select("value, updated_at").eq("tenant_id", TENANT_ID)
         .eq("field", "solitaire_side_diamond_price_per_ct").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
+      sb.from("bullion_dropdowns").select("value, updated_at").eq("tenant_id", TENANT_ID)
+        .eq("field", "solitaire_image_quality").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
     ]);
     return res.status(200).json({
       ok: true,
       makingChargePerGram: mc.data?.value ? Number(mc.data.value) : 350,
       sellDiscPct: sd.data?.value ? Number(sd.data.value) : 30,
       sideDiamondPricePerCt: sdc.data?.value ? Number(sdc.data.value) : 0,
+      // OpenAI image cost lever — "low"/"medium"/"high" (no separate "mini"
+      // image model exists). Defaults to "low" while cost/quality is being
+      // evaluated; switch back to "medium" here once decided.
+      imageQuality: iq.data?.value || "low",
     });
   }
 
   // ── POST action=update-pricing-config — staff-only. Sets makingChargePerGram,
-  // sellDiscPct, and/or sideDiamondPricePerCt. ─────────────────────────
+  // sellDiscPct, sideDiamondPricePerCt, and/or imageQuality. ────────────
   if (req.method === "POST" && action === "update-pricing-config") {
     const authFail = checkCrmSecret(req, res);
     if (authFail) return authFail;
@@ -456,6 +496,9 @@ export default async function handler(req, res) {
     }
     if (body.sideDiamondPricePerCt != null) {
       writes.push(sb.from("bullion_dropdowns").insert({ tenant_id: TENANT_ID, field: "solitaire_side_diamond_price_per_ct", value: String(Number(body.sideDiamondPricePerCt)) }));
+    }
+    if (body.imageQuality != null && ["low", "medium", "high"].includes(body.imageQuality)) {
+      writes.push(sb.from("bullion_dropdowns").insert({ tenant_id: TENANT_ID, field: "solitaire_image_quality", value: body.imageQuality }));
     }
     if (!writes.length) return res.status(400).json({ ok: false, error: "nothing_to_update" });
     const results = await Promise.all(writes);

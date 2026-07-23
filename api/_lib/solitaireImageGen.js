@@ -8,7 +8,7 @@
 // admin-supplied reference image when one is provided, same as imageGen.js's
 // box-photo pattern.
 
-import { OPENAI_API_KEY } from "./config.js";
+import { OPENAI_API_KEY, OPENAI_MODEL } from "./config.js";
 
 const VIEWS = [
   { key: "front", label: "Front view", prompt: "a straight-on front product photo, studio lighting, plain neutral background, the jewellery piece centered and in sharp focus" },
@@ -40,12 +40,12 @@ function buildPrompt({ conceptPrompt, promptOverride, category, goldColor, diamo
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function callOpenAIOnce(prompt, referenceImageBase64, size) {
+async function callOpenAIOnce(prompt, referenceImageBase64, size, quality) {
   if (!referenceImageBase64) {
     const res = await fetch("https://api.openai.com/v1/images/generations", {
       method: "POST",
       headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "gpt-image-1", prompt, size, quality: "medium" }),
+      body: JSON.stringify({ model: "gpt-image-1", prompt, size, quality }),
     });
     return res;
   }
@@ -53,7 +53,7 @@ async function callOpenAIOnce(prompt, referenceImageBase64, size) {
   form.append("model", "gpt-image-1");
   form.append("prompt", prompt);
   form.append("size", size);
-  form.append("quality", "medium");
+  form.append("quality", quality);
   form.append("image[]", new Blob([Buffer.from(referenceImageBase64, "base64")], { type: "image/png" }), "reference.png");
   return fetch("https://api.openai.com/v1/images/edits", {
     method: "POST",
@@ -66,11 +66,11 @@ async function callOpenAIOnce(prompt, referenceImageBase64, size) {
 // these back to back and routinely hits per-minute image-generation limits;
 // without a retry, a rate limit on combo #1 fails EVERY subsequent combo the
 // same way since nothing ever waits for the window to clear.
-async function generateOne(prompt, referenceImageBase64, size = "1024x1024") {
+async function generateOne(prompt, referenceImageBase64, size = "1024x1024", quality = "medium") {
   const endpoint = referenceImageBase64 ? "images/edits" : "images/generations";
   let lastErr;
   for (let attempt = 0; attempt < 4; attempt++) {
-    const res = await callOpenAIOnce(prompt, referenceImageBase64, size);
+    const res = await callOpenAIOnce(prompt, referenceImageBase64, size, quality);
     if (res.ok) {
       const data = await res.json();
       return data?.data?.[0]?.b64_json || null;
@@ -83,22 +83,59 @@ async function generateOne(prompt, referenceImageBase64, size = "1024x1024") {
   throw lastErr;
 }
 
-// Returns [{ key, label, base64, prompt }] — one image per VIEWS entry.
-// Sequential, not Promise.all — firing all 3 views concurrently per variant
-// (x however many variants a cascade queues) is exactly what was tripping
+// Returns [{ key, label, base64, prompt }] — one image per view generated.
+// Sequential, not Promise.all — firing views concurrently per variant (x
+// however many variants a cascade queues) is exactly what was tripping
 // OpenAI's per-minute image rate limit; one at a time trades a little
 // latency for actually completing instead of failing every combo.
-export async function generateSolitaireDesignViews({ conceptPrompt, promptOverride, category, goldColor, diamondShape, caratSize, hasSideDiamonds, referenceImageBase64 }) {
+//
+// includeWorn: the "worn by a model" shot is the priciest to skip on scale —
+// pass true only for the one variant an admin deliberately reviews by hand
+// (manual "Generate Variant" / "Generate Another Version"); cascade-filled
+// combos default to front+angle only (2 images instead of 3).
+// quality: "low" | "medium" | "high" — OpenAI's real cost lever (no separate
+// "mini" image model exists). Admin-configurable, see pricing-config's
+// imageQuality; defaults to "low" here only as a safety net.
+export async function generateSolitaireDesignViews({ conceptPrompt, promptOverride, category, goldColor, diamondShape, caratSize, hasSideDiamonds, referenceImageBase64, includeWorn = true, quality = "low" }) {
   if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY missing");
 
+  const views = includeWorn ? VIEWS : VIEWS.filter((v) => v.key !== "worn");
   const results = [];
-  for (const view of VIEWS) {
+  for (const view of views) {
     const prompt = buildPrompt({ conceptPrompt, promptOverride, category, goldColor, diamondShape, caratSize, hasSideDiamonds, view, hasReference: !!referenceImageBase64 });
-    const b64 = await generateOne(prompt, referenceImageBase64);
+    const b64 = await generateOne(prompt, referenceImageBase64, "1024x1024", quality);
     if (!b64) throw new Error(`no image returned for view "${view.key}"`);
     results.push({ key: view.key, label: view.label, base64: b64, prompt });
   }
   return results;
+}
+
+// Suggests a nice product name by looking at the ACTUAL generated front-view
+// image (not just the text prompt) — cheap vision call on a small text
+// model, admin reviews/edits the suggestion before it's saved (see
+// action=suggest-design-name / action=update-design).
+export async function suggestDesignName({ imageUrl, category, conceptPrompt }) {
+  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY missing");
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: `Look at this solitaire ${category.replace("_", " ")} jewellery photo and suggest ONE short, elegant product name for it (3-5 words, jewellery-catalogue style, e.g. "Classic Solitaire Ring" or "Royal Halo Pendant" — no quotes, no punctuation, no explanation, just the name). Design direction it was generated from: ${conceptPrompt}` },
+          { type: "image_url", image_url: { url: imageUrl } },
+        ],
+      }],
+      max_tokens: 20,
+    }),
+  });
+  if (!res.ok) throw new Error(`OpenAI chat/completions ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const data = await res.json();
+  const name = data?.choices?.[0]?.message?.content?.trim().replace(/^["']|["']$/g, "");
+  if (!name) throw new Error("no name suggested");
+  return name;
 }
 
 // One attractive editorial hero shot per category, used for the public

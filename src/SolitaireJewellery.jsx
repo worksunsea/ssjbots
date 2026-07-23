@@ -576,6 +576,9 @@ export function SolitaireAdminGenerator() {
   const [newDesignPrompt, setNewDesignPrompt] = useState("");
   const [newDesignSideDiamonds, setNewDesignSideDiamonds] = useState(false);
   const [creatingDesign, setCreatingDesign] = useState(false);
+  const [suggestingName, setSuggestingName] = useState(false);
+  const [suggestedName, setSuggestedName] = useState("");
+  const [nameKey, setNameKey] = useState(0);
 
   const loadDesigns = useCallback((selectId) => {
     apiGet("admin-designs", { category }, true).then((r) => {
@@ -608,7 +611,7 @@ export function SolitaireAdminGenerator() {
 
   useEffect(() => { loadDesigns(); }, [loadDesigns]);
   const [prevDesignId, setPrevDesignId] = useState(designId);
-  if (designId !== prevDesignId) { setPrevDesignId(designId); setGridExpanded(false); }
+  if (designId !== prevDesignId) { setPrevDesignId(designId); setGridExpanded(false); setSuggestedName(""); }
   useEffect(() => {
     apiGet("rates").then((r) => r.ok && setUsdInr(r.rates?.usdInr ?? null));
     apiGet("labgrown-prices").then((r) => r.ok && setPrices(r.prices));
@@ -618,17 +621,20 @@ export function SolitaireAdminGenerator() {
   const currentDesign = designs.find((d) => d.id === designId) || null;
   const variants = currentDesign?.variants || [];
 
-  const generateOne = async ({ designId: dId, goldColor: gc, diamondShape: sh, caratSize: cs, promptOverride: po, referenceImageBase64: ref }) => {
+  const generateOne = async ({ designId: dId, goldColor: gc, diamondShape: sh, caratSize: cs, promptOverride: po, referenceImageBase64: ref, includeWorn = true }) => {
     return apiPost("generate-variant", {
       designId: dId, goldColor: gc, diamondShape: sh, caratSize: cs ? Number(cs) : null,
       generatedBy: loadStaffUser()?.name, promptOverride: po || null, referenceImageBase64: ref || null,
+      includeWorn, quality: pricingConfig?.imageQuality || "low",
     }, true);
   };
 
   const generate = async () => {
     setBusy(true); setMsg("");
     const refBase64 = refImageFile ? await fileToBase64(refImageFile) : null;
-    const res = await generateOne({ designId, goldColor, diamondShape: shape, caratSize, promptOverride, referenceImageBase64: refBase64 });
+    // Manual single-variant generation includes the "worn on hand" shot —
+    // this is the one variant an admin deliberately reviews by hand.
+    const res = await generateOne({ designId, goldColor, diamondShape: shape, caratSize, promptOverride, referenceImageBase64: refBase64, includeWorn: true });
     setBusy(false);
     if (!res.ok) return setMsg(`Failed: ${res.error}${res.detail ? ` — ${res.detail}` : ""}`);
     setMsg("Generated — review below and approve.");
@@ -660,9 +666,13 @@ export function SolitaireAdminGenerator() {
       // generations, which alone is enough to trip OpenAI's per-minute
       // image rate limit even with server-side retries.
       if (i > 0) await new Promise((r) => setTimeout(r, 1500));
+      // Cascade-filled combos skip the "worn" shot (front+angle only) —
+      // it's the priciest of the 3 views to generate 29 times over for
+      // combos that mostly exist for the client gallery, not hero review.
       const res = await generateOne({
         designId: design.id, goldColor: combo.goldColor, diamondShape: combo.diamondShape,
         caratSize: referenceVariant.caratSize, promptOverride: referenceVariant.promptOverride,
+        includeWorn: false,
       });
       if (res.ok && res.variant) {
         await apiPost("update-variant", { variantId: res.variant.id, estGoldWeightG: referenceVariant.estGoldWeightG, status: "approved" }, true);
@@ -737,8 +747,9 @@ export function SolitaireAdminGenerator() {
   };
 
   const savePricingConfig = async (patch) => {
-    await apiPost("update-pricing-config", patch, true);
-    setMsg("Pricing settings updated.");
+    const res = await apiPost("update-pricing-config", patch, true);
+    if (res.ok) setPricingConfig((c) => ({ ...c, ...patch }));
+    setMsg(res.ok ? "Pricing settings updated." : `Failed to update pricing settings: ${res.error}`);
   };
 
   // Design names are AI-suggested (or admin-typed) at creation but always
@@ -746,7 +757,22 @@ export function SolitaireAdminGenerator() {
   const updateDesignField = async (patch) => {
     if (!currentDesign) return;
     await apiPost("update-design", { designId: currentDesign.id, ...patch }, true);
+    setSuggestedName(""); // whatever was suggested is now moot — reflect the real saved name next load
     loadDesigns(currentDesign.id);
+  };
+
+  // Looks at the design's actual generated image (not just the text prompt)
+  // and proposes a name — dropped into the (still-editable) name field, NOT
+  // auto-saved, so the admin reviews/edits before it's committed.
+  const suggestName = async () => {
+    if (!currentDesign) return;
+    setSuggestingName(true);
+    const res = await apiPost("suggest-design-name", { designId: currentDesign.id }, true);
+    setSuggestingName(false);
+    if (!res.ok) { setMsg(`⚠️ Couldn't suggest a name: ${res.error}${res.detail ? ` — ${res.detail}` : ""}`); return; }
+    setSuggestedName(res.name);
+    setNameKey((k) => k + 1);
+    setMsg(`Suggested "${res.name}" — edit if needed, it saves when you click away from the field.`);
   };
 
   // Re-roll — generates a fresh alternate "take" of the SAME combo (design x
@@ -834,8 +860,11 @@ export function SolitaireAdminGenerator() {
         <div style={{ marginBottom: 12, display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
           <label style={{ fontSize: 13 }}>
             Product name:{" "}
-            <input key={currentDesign.id} type="text" defaultValue={currentDesign.name} onBlur={(e) => e.target.value.trim() && e.target.value.trim() !== currentDesign.name && updateDesignField({ name: e.target.value.trim() })} style={{ width: 220 }} />
+            <input key={`${currentDesign.id}-${nameKey}`} type="text" defaultValue={suggestedName || currentDesign.name} onBlur={(e) => e.target.value.trim() && e.target.value.trim() !== currentDesign.name && updateDesignField({ name: e.target.value.trim() })} style={{ width: 220 }} />
           </label>
+          <button disabled={suggestingName || !primaryVariant} onClick={suggestName} style={{ fontSize: 12 }}>
+            {suggestingName ? "Looking at image…" : "✨ Suggest Name from Image"}
+          </button>
           <label style={{ fontSize: 13 }}>
             <input type="checkbox" checked={!!currentDesign.hasSideDiamonds} onChange={(e) => updateDesignField({ hasSideDiamonds: e.target.checked })} /> Has side diamonds
           </label>
@@ -942,6 +971,14 @@ export function SolitaireAdminGenerator() {
         <label style={{ fontSize: 13 }}>
           Side diamond price (₹/ct):{" "}
           <input type="number" defaultValue={pricingConfig?.sideDiamondPricePerCt ?? ""} onBlur={(e) => savePricingConfig({ sideDiamondPricePerCt: Number(e.target.value) })} style={{ width: 90 }} />
+        </label>
+        <label style={{ fontSize: 13 }}>
+          AI image quality (cost lever — low ≈ ¼ the cost of medium):{" "}
+          <select value={pricingConfig?.imageQuality || "low"} onChange={(e) => savePricingConfig({ imageQuality: e.target.value })}>
+            <option value="low">Low (cheapest — try this first)</option>
+            <option value="medium">Medium (current default before)</option>
+            <option value="high">High (most expensive)</option>
+          </select>
         </label>
         <div style={{ fontSize: 13 }}>USD/INR (live): {usdInr != null ? `₹${usdInr} per $1 — from the Rates sheet` : "unavailable — check the Rates sheet's USD row"}</div>
       </div>
