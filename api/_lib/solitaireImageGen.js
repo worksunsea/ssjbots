@@ -38,45 +38,66 @@ function buildPrompt({ conceptPrompt, promptOverride, category, goldColor, diamo
   return parts.filter(Boolean).join(" ");
 }
 
-async function generateOne(prompt, referenceImageBase64, size = "1024x1024") {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function callOpenAIOnce(prompt, referenceImageBase64, size) {
   if (!referenceImageBase64) {
     const res = await fetch("https://api.openai.com/v1/images/generations", {
       method: "POST",
       headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({ model: "gpt-image-1", prompt, size, quality: "medium" }),
     });
-    if (!res.ok) throw new Error(`OpenAI images/generations ${res.status}: ${(await res.text()).slice(0, 300)}`);
-    const data = await res.json();
-    return data?.data?.[0]?.b64_json || null;
+    return res;
   }
-
   const form = new FormData();
   form.append("model", "gpt-image-1");
   form.append("prompt", prompt);
   form.append("size", size);
   form.append("quality", "medium");
   form.append("image[]", new Blob([Buffer.from(referenceImageBase64, "base64")], { type: "image/png" }), "reference.png");
-  const res = await fetch("https://api.openai.com/v1/images/edits", {
+  return fetch("https://api.openai.com/v1/images/edits", {
     method: "POST",
     headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
     body: form,
   });
-  if (!res.ok) throw new Error(`OpenAI images/edits ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const data = await res.json();
-  return data?.data?.[0]?.b64_json || null;
+}
+
+// Retries on 429 (rate limit) with backoff — a full cascade fires dozens of
+// these back to back and routinely hits per-minute image-generation limits;
+// without a retry, a rate limit on combo #1 fails EVERY subsequent combo the
+// same way since nothing ever waits for the window to clear.
+async function generateOne(prompt, referenceImageBase64, size = "1024x1024") {
+  const endpoint = referenceImageBase64 ? "images/edits" : "images/generations";
+  let lastErr;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const res = await callOpenAIOnce(prompt, referenceImageBase64, size);
+    if (res.ok) {
+      const data = await res.json();
+      return data?.data?.[0]?.b64_json || null;
+    }
+    const body = (await res.text()).slice(0, 300);
+    lastErr = new Error(`OpenAI ${endpoint} ${res.status}: ${body}`);
+    if (res.status !== 429 || attempt === 3) throw lastErr;
+    await sleep(3000 * 2 ** attempt); // 3s, 6s, 12s
+  }
+  throw lastErr;
 }
 
 // Returns [{ key, label, base64, prompt }] — one image per VIEWS entry.
+// Sequential, not Promise.all — firing all 3 views concurrently per variant
+// (x however many variants a cascade queues) is exactly what was tripping
+// OpenAI's per-minute image rate limit; one at a time trades a little
+// latency for actually completing instead of failing every combo.
 export async function generateSolitaireDesignViews({ conceptPrompt, promptOverride, category, goldColor, diamondShape, caratSize, hasSideDiamonds, referenceImageBase64 }) {
   if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY missing");
 
-  const results = await Promise.all(VIEWS.map(async (view) => {
+  const results = [];
+  for (const view of VIEWS) {
     const prompt = buildPrompt({ conceptPrompt, promptOverride, category, goldColor, diamondShape, caratSize, hasSideDiamonds, view, hasReference: !!referenceImageBase64 });
     const b64 = await generateOne(prompt, referenceImageBase64);
     if (!b64) throw new Error(`no image returned for view "${view.key}"`);
-    return { key: view.key, label: view.label, base64: b64, prompt };
-  }));
-
+    results.push({ key: view.key, label: view.label, base64: b64, prompt });
+  }
   return results;
 }
 

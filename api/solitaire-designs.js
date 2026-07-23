@@ -36,7 +36,10 @@ import { enrollLeadInDrip } from "./_lib/drip.js";
 import { generateSolitaireDesignViews, generateCategoryCoverImage, generateSizeChartImage } from "./_lib/solitaireImageGen.js";
 import { getRates } from "./_lib/rates.js";
 
-export const config = { maxDuration: 60 };
+// 120s — sequential per-view generation with 429 retry/backoff (see
+// solitaireImageGen.js) can take a while under real rate-limit pressure;
+// 60s was cutting some generate-variant calls off mid-retry.
+export const config = { maxDuration: 120 };
 
 function parseBody(req) {
   let body = req.body;

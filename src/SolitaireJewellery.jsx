@@ -589,13 +589,20 @@ export function SolitaireAdminGenerator() {
   // gets its own independent set of gold-colour x shape x carat combos to
   // generate exactly like any seeded design.
   const createDesign = async () => {
-    if (!newDesignName.trim() || !newDesignPrompt.trim()) { setMsg("Name and concept prompt are required."); return; }
+    const name = newDesignName.trim();
+    if (!name) { setMsg("⚠️ Please enter a design name first."); return; }
+    // Concept prompt is optional here — a reasonable default gets generated
+    // from the name if left blank, rather than silently blocking creation
+    // (this was the actual "Create Design button not working" cause: it
+    // WAS working, it was just refusing to submit with an empty prompt and
+    // showing a message easy to miss).
+    const conceptPrompt = newDesignPrompt.trim() || `an elegant solitaire ${CATEGORIES.find((c) => c.key === category)?.label.toLowerCase().replace(/s$/, "") || "piece"} design named "${name}", classic and refined styling`;
     setCreatingDesign(true);
-    const res = await apiPost("create-design", { category, name: newDesignName.trim(), conceptPrompt: newDesignPrompt.trim(), hasSideDiamonds: newDesignSideDiamonds }, true);
+    const res = await apiPost("create-design", { category, name, conceptPrompt, hasSideDiamonds: newDesignSideDiamonds }, true);
     setCreatingDesign(false);
-    if (!res.ok) { setMsg(`Failed to create design: ${res.error}`); return; }
+    if (!res.ok) { setMsg(`⚠️ Failed to create design: ${res.error}${res.detail ? ` — ${res.detail}` : ""}`); return; }
     setNewDesignOpen(false); setNewDesignName(""); setNewDesignPrompt(""); setNewDesignSideDiamonds(false);
-    setMsg(`Created "${res.design.name}" — now generate variants for it below.`);
+    setMsg(`✅ Created "${res.design.name}" — now generate variants for it below.`);
     loadDesigns(res.design.id);
   };
 
@@ -645,8 +652,14 @@ export function SolitaireAdminGenerator() {
     if (!missing.length) return;
     setCascade({ done: 0, total: missing.length });
     const failed = [];
+    let firstFailureDetail = "";
     for (let i = 0; i < missing.length; i++) {
       const combo = missing[i];
+      // Small pacing gap between combos on top of the server's own 429
+      // retry/backoff — a design's full cascade can be 20-30 back-to-back
+      // generations, which alone is enough to trip OpenAI's per-minute
+      // image rate limit even with server-side retries.
+      if (i > 0) await new Promise((r) => setTimeout(r, 1500));
       const res = await generateOne({
         designId: design.id, goldColor: combo.goldColor, diamondShape: combo.diamondShape,
         caratSize: referenceVariant.caratSize, promptOverride: referenceVariant.promptOverride,
@@ -655,6 +668,7 @@ export function SolitaireAdminGenerator() {
         await apiPost("update-variant", { variantId: res.variant.id, estGoldWeightG: referenceVariant.estGoldWeightG, status: "approved" }, true);
       } else {
         failed.push(`${combo.goldColor}/${combo.diamondShape}`);
+        if (!firstFailureDetail) firstFailureDetail = res.detail || res.error || "unknown error";
       }
       setCascade({ done: i + 1, total: missing.length });
     }
@@ -662,7 +676,7 @@ export function SolitaireAdminGenerator() {
     const succeeded = missing.length - failed.length;
     setMsg(
       failed.length
-        ? `Generated ${succeeded}/${missing.length} remaining combinations for "${design.name}". Failed: ${failed.join(", ")} — click "Fill Remaining Combinations" again to retry just these.`
+        ? `Generated ${succeeded}/${missing.length} remaining combinations for "${design.name}". Failed: ${failed.join(", ")}. First error: ${firstFailureDetail} — click "Fill Remaining Combinations" again to retry just these.`
         : `Auto-generated and approved ${missing.length} remaining combination${missing.length !== 1 ? "s" : ""} for "${design.name}".`
     );
     loadDesigns();
@@ -858,7 +872,7 @@ export function SolitaireAdminGenerator() {
       )}
 
       {loadErr && <div style={{ marginBottom: 12, fontSize: 13, color: "#c0392b" }}>{loadErr}</div>}
-      {msg && <div style={{ marginBottom: 12, fontSize: 13 }}>{msg}</div>}
+      {msg && <div style={{ marginBottom: 12, fontSize: 13, fontWeight: msg.startsWith("⚠️") ? 600 : 400, color: msg.startsWith("⚠️") ? "#c0392b" : msg.startsWith("✅") ? "#27ae60" : "inherit" }}>{msg}</div>}
       {cascade && <div style={{ marginBottom: 12, fontSize: 13, color: "#2980b9" }}>Auto-generating remaining combinations… {cascade.done}/{cascade.total}</div>}
 
       {/* Always-visible basic summary — no more "nothing shown until expanded"
@@ -879,29 +893,26 @@ export function SolitaireAdminGenerator() {
           <div style={{ fontSize: 13, color: "#888", marginBottom: 8 }}>No variants generated yet for this design — use "Generate Variant" above.</div>
         )
       )}
+      {/* One flat wrapping grid (minimal vertical space) rather than a
+          separate full-width block per combo — alternates for the same
+          combo just sit next to each other in iteration order, labelled
+          "v2"/"v3" on the card instead of a separate group header. */}
       {gridExpanded && (
-        <div style={{ marginBottom: 30 }}>
-          {Object.entries(comboGroups).map(([key, group]) => (
-            <div key={key} style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 12, color: "#888", marginBottom: 6 }}>
-                {group[0].goldColor} / {group[0].diamondShape}{group[0].caratSize ? ` / ${group[0].caratSize}ct` : ""}
-                {group.length > 1 ? ` — ${group.length} versions` : ""}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 10, marginBottom: 24 }}>
+          {Object.values(comboGroups).flatMap((group) => group.map((v, i) => (
+            <div key={v.id} style={{ border: "1px solid #ddd", borderRadius: 4, padding: 6 }}>
+              {v.viewImages?.front && <img src={v.viewImages.front} alt="" style={{ width: "100%", aspectRatio: "1/1", objectFit: "cover" }} />}
+              <div style={{ fontSize: 10, color: "#888", marginTop: 4 }}>
+                {v.goldColor} / {v.diamondShape}{v.caratSize ? ` / ${v.caratSize}ct` : ""}{group.length > 1 ? ` · v${i + 1}` : ""}
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
-                {group.map((v) => (
-                  <div key={v.id} style={{ border: "1px solid #ddd", borderRadius: 4, padding: 8 }}>
-                    {v.viewImages?.front && <img src={v.viewImages.front} alt="" style={{ width: "100%", aspectRatio: "1/1", objectFit: "cover" }} />}
-                    <div style={{ fontSize: 11, color: v.status === "approved" ? "#27ae60" : v.status === "rejected" ? "#c0392b" : "#888" }}>{v.status}</div>
-                    <input type="number" placeholder="est. gold weight (g)" defaultValue={v.estGoldWeightG || ""} onBlur={(e) => setDesignGoldWeight(e.target.value)} style={{ width: "100%", marginTop: 6 }} />
-                    {v.status !== "approved"
-                      ? <button style={{ marginTop: 6, width: "100%" }} disabled={!!cascade} onClick={() => approveAndCascade(v)}>Approve</button>
-                      : <button style={{ marginTop: 6, width: "100%" }} onClick={() => updateVariant(v.id, { status: "rejected" })}>Reject</button>}
-                    <button style={{ marginTop: 4, width: "100%" }} disabled={busy} onClick={() => regenerateVariant(v)}>Generate Another Version</button>
-                  </div>
-                ))}
-              </div>
+              <div style={{ fontSize: 10, color: v.status === "approved" ? "#27ae60" : v.status === "rejected" ? "#c0392b" : "#888" }}>{v.status}</div>
+              <input type="number" placeholder="gold weight (g)" defaultValue={v.estGoldWeightG || ""} onBlur={(e) => setDesignGoldWeight(e.target.value)} style={{ width: "100%", marginTop: 4, fontSize: 11, padding: 3 }} />
+              {v.status !== "approved"
+                ? <button style={{ marginTop: 4, width: "100%", fontSize: 11 }} disabled={!!cascade} onClick={() => approveAndCascade(v)}>Approve</button>
+                : <button style={{ marginTop: 4, width: "100%", fontSize: 11 }} onClick={() => updateVariant(v.id, { status: "rejected" })}>Reject</button>}
+              <button style={{ marginTop: 2, width: "100%", fontSize: 11 }} disabled={busy} onClick={() => regenerateVariant(v)}>New Version</button>
             </div>
-          ))}
+          )))}
         </div>
       )}
 
