@@ -23,11 +23,17 @@ const CATEGORY_WEAR_AREA = {
   earring: "worn as a matching pair on a model's ear",
 };
 
+// Real-world round-brilliant diameter estimate (mm) for a given carat weight —
+// diameter scales roughly with the cube root of weight. Same fix as the size
+// chart: without a concrete mm anchor, the model tends to render "a big
+// diamond" as exaggerated fantasy-scale rather than the actual physical size.
+const mmForCarat = (ct) => (6.5 * Math.cbrt(ct)).toFixed(1);
+
 function buildPrompt({ conceptPrompt, promptOverride, category, goldColor, diamondShape, caratSize, hasSideDiamonds, view, hasReference }) {
   const parts = [
     `Fine jewellery product photography of a solitaire ${category.replace("_", " ")}: ${promptOverride ? promptOverride : conceptPrompt}.`,
     promptOverride && conceptPrompt ? `Base design direction: ${conceptPrompt}.` : "",
-    `Center stone: a ${diamondShape}-cut diamond${caratSize ? `, approximately ${caratSize} carat` : ""}, brilliant and clear, realistic proportions for the setting.`,
+    `Center stone: a ${diamondShape}-cut diamond${caratSize ? `, ${caratSize} carat (approximately ${mmForCarat(caratSize)}mm across — keep the stone THIS real-world size relative to the band/setting, not exaggerated)` : ""}, brilliant and clear, realistic proportions for the setting.`,
     `Metal: polished ${goldColor} gold.`,
     hasSideDiamonds ? "Includes smaller pave or accent side diamonds as described in the design." : "No side diamonds — the center stone is the sole diamond.",
     hasReference ? "Use the attached reference image as the style/composition guide — match its framing and lighting approach, but render OUR jewellery design as described above, not the reference piece itself." : "",
