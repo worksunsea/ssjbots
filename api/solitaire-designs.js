@@ -283,7 +283,7 @@ export default async function handler(req, res) {
     const authFail = checkCrmSecret(req, res);
     if (authFail) return authFail;
     const body = parseBody(req);
-    const { designId, goldColor, diamondShape, caratSize, generatedBy, promptOverride, referenceImageBase64, includeWorn, viewKeys, quality } = body;
+    const { designId, goldColor, diamondShape, caratSize, generatedBy, promptOverride, referenceImageBase64, matchReferenceDesign, includeWorn, viewKeys, quality } = body;
     if (!designId || !goldColor || !diamondShape) {
       return res.status(400).json({ ok: false, error: "designId_goldColor_diamondShape_required" });
     }
@@ -308,6 +308,7 @@ export default async function handler(req, res) {
         goldColor, diamondShape, caratSize,
         hasSideDiamonds: design.has_side_diamonds,
         referenceImageBase64,
+        matchReferenceDesign: !!matchReferenceDesign,
         includeWorn: includeWorn !== false, // default true — cascade calls explicitly pass false
         viewKeys: Array.isArray(viewKeys) ? viewKeys : undefined,
         quality: quality || "low",

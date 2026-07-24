@@ -29,14 +29,18 @@ const CATEGORY_WEAR_AREA = {
 // diamond" as exaggerated fantasy-scale rather than the actual physical size.
 const mmForCarat = (ct) => (6.5 * Math.cbrt(ct)).toFixed(1);
 
-function buildPrompt({ conceptPrompt, promptOverride, category, goldColor, diamondShape, caratSize, hasSideDiamonds, view, hasReference }) {
+function buildPrompt({ conceptPrompt, promptOverride, category, goldColor, diamondShape, caratSize, hasSideDiamonds, view, hasReference, matchReferenceDesign }) {
   const parts = [
     `Fine jewellery product photography of a solitaire ${category.replace("_", " ")}: ${promptOverride ? promptOverride : conceptPrompt}.`,
     promptOverride && conceptPrompt ? `Base design direction: ${conceptPrompt}.` : "",
     `Center stone: a ${diamondShape}-cut diamond${caratSize ? `, ${caratSize} carat (approximately ${mmForCarat(caratSize)}mm across — keep the stone THIS real-world size relative to the band/setting, not exaggerated)` : ""}, brilliant and clear, realistic proportions for the setting.`,
     `Metal: polished ${goldColor} gold.`,
     hasSideDiamonds ? "Includes smaller pave or accent side diamonds as described in the design." : "No side diamonds — the center stone is the sole diamond.",
-    hasReference ? "Use the attached reference image as the style/composition guide — match its framing and lighting approach, but render OUR jewellery design as described above, not the reference piece itself." : "",
+    hasReference
+      ? (matchReferenceDesign
+        ? "The attached reference image IS this exact jewellery design (same setting, band shape/width, prong style, and overall silhouette) — reproduce it as faithfully as possible, changing ONLY the gold colour and center diamond shape/size to match the instructions above. Do not redesign the setting or invent a different style."
+        : "Use the attached reference image as the style/composition guide — match its framing and lighting approach, but render OUR jewellery design as described above, not the reference piece itself.")
+      : "",
     view.key === "worn" ? `Shot ${CATEGORY_WEAR_AREA[category] || "worn by a model"}.` : "Shown as a standalone product shot, not worn.",
     view.prompt,
     "Photorealistic, high-end jewellery catalogue quality, square 1:1 composition. No text or watermark in the image.",
@@ -106,13 +110,13 @@ async function generateOne(prompt, referenceImageBase64, size = "1024x1024", qua
 // quality: "low" | "medium" | "high" — OpenAI's real cost lever (no separate
 // "mini" image model exists). Admin-configurable, see pricing-config's
 // imageQuality; defaults to "low" here only as a safety net.
-export async function generateSolitaireDesignViews({ conceptPrompt, promptOverride, category, goldColor, diamondShape, caratSize, hasSideDiamonds, referenceImageBase64, includeWorn = true, viewKeys, quality = "low" }) {
+export async function generateSolitaireDesignViews({ conceptPrompt, promptOverride, category, goldColor, diamondShape, caratSize, hasSideDiamonds, referenceImageBase64, matchReferenceDesign = false, includeWorn = true, viewKeys, quality = "low" }) {
   if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY missing");
 
   const views = viewKeys ? VIEWS.filter((v) => viewKeys.includes(v.key)) : (includeWorn ? VIEWS : VIEWS.filter((v) => v.key !== "worn"));
   const results = [];
   for (const view of views) {
-    const prompt = buildPrompt({ conceptPrompt, promptOverride, category, goldColor, diamondShape, caratSize, hasSideDiamonds, view, hasReference: !!referenceImageBase64 });
+    const prompt = buildPrompt({ conceptPrompt, promptOverride, category, goldColor, diamondShape, caratSize, hasSideDiamonds, view, hasReference: !!referenceImageBase64, matchReferenceDesign });
     const b64 = await generateOne(prompt, referenceImageBase64, "1024x1024", quality);
     if (!b64) throw new Error(`no image returned for view "${view.key}"`);
     results.push({ key: view.key, label: view.label, base64: b64, prompt });

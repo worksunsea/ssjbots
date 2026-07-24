@@ -66,6 +66,21 @@ function fileToBase64(file) {
     reader.readAsDataURL(file);
   });
 }
+// Fetches an already-generated design image (Supabase Storage public URL)
+// and returns it as base64 so it can be sent back to OpenAI as a reference —
+// used to anchor cascaded combos to the approved design's actual look
+// instead of letting the model re-imagine it fresh from text each time.
+async function urlToBase64(url) {
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  const blob = await res.blob();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
 
 // ── Theme — matches CATALOGUE_FONTS_CSS ("Luxury Serif") from App.jsx,
 // forced light/white per Saurav's request (no dark-mode variant here). ────
@@ -606,11 +621,11 @@ export function SolitaireAdminGenerator() {
     : null;
   const variants = currentDesign?.variants || [];
 
-  const generateOne = async ({ designId: dId, goldColor: gc, diamondShape: sh, caratSize: cs, promptOverride: po, referenceImageBase64: ref, includeWorn = true, viewKeys }) => {
+  const generateOne = async ({ designId: dId, goldColor: gc, diamondShape: sh, caratSize: cs, promptOverride: po, referenceImageBase64: ref, matchReferenceDesign = false, includeWorn = true, viewKeys }) => {
     return apiPost("generate-variant", {
       designId: dId, goldColor: gc, diamondShape: sh, caratSize: cs ? Number(cs) : null,
       generatedBy: loadStaffUser()?.name, promptOverride: po || null, referenceImageBase64: ref || null,
-      includeWorn, viewKeys, quality: pricingConfig?.imageQuality || "low",
+      matchReferenceDesign, includeWorn, viewKeys, quality: pricingConfig?.imageQuality || "low",
     }, true);
   };
 
@@ -806,6 +821,12 @@ export function SolitaireAdminGenerator() {
     }
     if (!missing.length) return;
     onProgress({ done: 0, total: missing.length });
+    // Anchor every cascaded combo to the actual approved image — without
+    // this, each combo was pure text-to-image from the shared concept
+    // prompt, so gold colour/shape were right but the setting/silhouette
+    // itself drifted from the main design instead of matching it.
+    const refImageUrl = referenceVariant.viewImages?.front || referenceVariant.viewImages?.angle;
+    const refBase64 = refImageUrl ? await urlToBase64(refImageUrl) : null;
     const failed = [];
     let firstFailureDetail = "";
     for (let i = 0; i < missing.length; i++) {
@@ -821,6 +842,7 @@ export function SolitaireAdminGenerator() {
       const res = await generateOne({
         designId: design.id, goldColor: combo.goldColor, diamondShape: combo.diamondShape,
         caratSize: referenceVariant.caratSize, promptOverride: referenceVariant.promptOverride,
+        referenceImageBase64: refBase64, matchReferenceDesign: !!refBase64,
         includeWorn: false,
       });
       if (res.ok && res.variant) {
