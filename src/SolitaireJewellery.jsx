@@ -868,6 +868,15 @@ export function SolitaireAdminGenerator() {
     loadDesigns();
   };
 
+  // Wipes ONE combo outright (e.g. a drifted pre-fix generation) rather than
+  // just rejecting it — rejected variants still count as "have" for the
+  // cascade/fillRemaining "have" check, so they'd never auto-regenerate.
+  const deleteVariant = async (variantId) => {
+    if (!window.confirm("Delete this combo? This can't be undone.")) return;
+    await apiPost("delete-variant", { variantId }, true);
+    loadDesigns();
+  };
+
   // Gold weight is the same setting for every gold-colour/shape/carat combo
   // of a design — entering it once here applies to ALL of that design's
   // variants (past and future), not just the one being edited.
@@ -1180,6 +1189,7 @@ export function SolitaireAdminGenerator() {
                 ? <button style={{ marginTop: 4, width: "100%", fontSize: 11 }} disabled={!!cascade} onClick={() => approveAndCascade(v)}>Approve</button>
                 : <button style={{ marginTop: 4, width: "100%", fontSize: 11 }} onClick={() => updateVariant(v.id, { status: "rejected" })}>Reject</button>}
               <button style={{ marginTop: 2, width: "100%", fontSize: 11 }} disabled={busy} onClick={() => regenerateVariant(v)}>New Version</button>
+              <button style={{ marginTop: 2, width: "100%", fontSize: 11, color: "#c0392b" }} onClick={() => deleteVariant(v.id)}>Delete</button>
             </div>
           )))}
         </div>

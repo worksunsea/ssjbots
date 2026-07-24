@@ -612,6 +612,21 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, variant: data });
   }
 
+  // ── POST action=delete-variant — staff-only. Deletes ONE combo (a single
+  // gold-colour x shape x carat variant/take), e.g. one generated before the
+  // reference-image anchoring fix that no longer matches the approved
+  // design. Storage objects are left orphaned (same as delete-design). ────
+  if (req.method === "POST" && action === "delete-variant") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return authFail;
+    const body = parseBody(req);
+    const { variantId } = body;
+    if (!variantId) return res.status(400).json({ ok: false, error: "variantId_required" });
+    const { error } = await sb.from("solitaire_design_variants").delete().eq("id", variantId);
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.status(200).json({ ok: true });
+  }
+
   // ── POST action=update-labgrown-price — staff-only ────────────────────
   if (req.method === "POST" && action === "update-labgrown-price") {
     const authFail = checkCrmSecret(req, res);
