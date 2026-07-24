@@ -1184,6 +1184,7 @@ export function SolitaireAdminGenerator() {
                 {v.goldColor} / {v.diamondShape}{v.caratSize ? ` / ${v.caratSize}ct` : ""}{group.length > 1 ? ` · v${i + 1}` : ""}
               </div>
               <div style={{ fontSize: 10, color: v.status === "approved" ? "#27ae60" : v.status === "rejected" ? "#c0392b" : "#888" }}>{v.status}</div>
+              {v.createdAt && <div style={{ fontSize: 9, color: "#aaa" }} title={new Date(v.createdAt).toLocaleString()}>{new Date(v.createdAt).toLocaleDateString()} {new Date(v.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</div>}
               <input type="number" placeholder="gold weight (g)" defaultValue={v.estGoldWeightG || ""} onBlur={(e) => setDesignGoldWeight(e.target.value)} style={{ width: "100%", marginTop: 4, fontSize: 11, padding: 3 }} />
               {v.status !== "approved"
                 ? <button style={{ marginTop: 4, width: "100%", fontSize: 11 }} disabled={!!cascade} onClick={() => approveAndCascade(v)}>Approve</button>

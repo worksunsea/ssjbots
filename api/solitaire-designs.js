@@ -171,6 +171,7 @@ export default async function handler(req, res) {
         status: v.status,
         referenceImageUrl: v.reference_image_url,
         promptOverride: v.prompt_override,
+        createdAt: v.created_at,
       })),
     }));
     return res.status(200).json({ ok: true, designs: result });
