@@ -6214,6 +6214,16 @@ const activeRows = tab === "calendar" ? calRows : rows;
                 </button>
               </div>
             )}
+            {diag.duplicateContacts?.length > 0 && (
+              <div style={{ marginBottom: 8, fontWeight: 600 }}>
+                ⚠️ {diag.duplicateContacts.length} phone number(s) have TWO separate contact records — each enrolls independently, so this looks like repeat messages but is actually a duplicate contact, not a duplicate message. Can't auto-merge safely; open each in Conversations and use "Merge Duplicate" (manager+):
+                <ul style={{ margin: "4px 0 0", paddingLeft: 18, fontWeight: 400 }}>
+                  {diag.duplicateContacts.map((d, i) => (
+                    <li key={i}>{d.phone} — {d.leads.map((l) => l.name || "(no name)").join(" + ")}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <div style={{ fontWeight: 600, marginBottom: 4 }}>Top pending counts per person+funnel:</div>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead><tr style={{ textAlign: "left", color: "#991b1b" }}><th>Name</th><th>Phone</th><th>Pending</th></tr></thead>

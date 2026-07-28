@@ -323,7 +323,24 @@ export default async function handler(req, res) {
         duplicateRowGroups = [...stepMap.values()].filter((g) => g.ids.length > 1);
       }
 
-      return res.status(200).json({ ok: true, funnels: funnelSummary, duplicateActiveFunnels, duplicateSteps, top_pending_counts: perLeadCounts, duplicateScheduledRows: duplicateRowGroups });
+      // Duplicate CONTACT records (same phone, two separate bullion_leads
+      // rows) — each row enrolls independently, so per-lead_id row-dedup
+      // never catches this. Only checked for phones that actually have
+      // pending calendar messages, to keep this cheap.
+      let duplicateContacts = [];
+      const phonesWithPending = [...new Set((perLeadCounts || []).map((r) => r.phone).filter(Boolean))];
+      if (phonesWithPending.length) {
+        const { data: dupeLeads } = await sb.from("bullion_leads")
+          .select("id,name,phone").eq("tenant_id", tid).in("phone", phonesWithPending);
+        const byPhone = new Map();
+        for (const l of dupeLeads || []) {
+          if (!byPhone.has(l.phone)) byPhone.set(l.phone, []);
+          byPhone.get(l.phone).push({ id: l.id, name: l.name });
+        }
+        duplicateContacts = [...byPhone.entries()].filter(([, rows]) => rows.length > 1).map(([phone, rows]) => ({ phone, leads: rows }));
+      }
+
+      return res.status(200).json({ ok: true, funnels: funnelSummary, duplicateActiveFunnels, duplicateSteps, top_pending_counts: perLeadCounts, duplicateScheduledRows: duplicateRowGroups, duplicateContacts });
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
