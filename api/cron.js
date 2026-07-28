@@ -263,6 +263,92 @@ export default async function handler(req, res) {
     }
   }
 
+  // Diagnostic (read-only, no inserts): breaks down exactly why each
+  // bday/anniversary contact is or isn't in the approval queue — DND,
+  // unparseable date, outside the -5..40 day window, already enrolled,
+  // or dropped by the 500-row cap the live cron uses.
+  if (req.query?.action === "calendar_enroll_audit") {
+    try {
+      const sb = supa();
+      const tid = TENANT_ID;
+      const nowMs = Date.now();
+      const yearNow = new Date(nowMs + 5.5 * 3600000).getUTCFullYear();
+
+      function parseEventDate(raw, year) {
+        if (!raw) return null;
+        const p = String(raw).split("-").map(Number);
+        let m, d;
+        if (p.length === 3) {
+          if (p[0] > 31) { m = p[1]; d = p[2]; }
+          else if (p[0] >= 1 && p[0] <= 12) { m = p[0]; d = p[1]; }
+          else { m = p[1]; d = p[0]; }
+        } else if (p.length === 2) {
+          if (p[0] >= 1 && p[0] <= 12) { m = p[0]; d = p[1]; }
+          else { m = p[1]; d = p[0]; }
+        }
+        if (!m || !d || isNaN(m) || isNaN(d)) return null;
+        const dt = new Date(Date.UTC(year, m - 1, d));
+        return isNaN(dt) ? null : dt.getTime();
+      }
+
+      const report = {};
+
+      for (const [field, kind] of [["bday", "birthday"], ["anniversary", "anniversary"]]) {
+        const r = {
+          field, kind, has_active_funnel: false,
+          total_with_field_set: 0, dnd_excluded: 0, over_cap_dropped: 0,
+          missing_phone: 0, unparseable_date: 0, outside_window: 0,
+          in_window_minus5_to_40: 0, already_enrolled: 0, would_enroll_now: 0,
+        };
+
+        const { data: funnel } = await sb.from("funnels")
+          .select("id").eq("tenant_id", tid).eq("kind", kind).eq("active", true).maybeSingle();
+        r.has_active_funnel = !!funnel;
+
+        const { count: totalAll } = await sb.from("bullion_leads")
+          .select("id", { count: "exact", head: true }).eq("tenant_id", tid).not(field, "is", null);
+        r.total_with_field_set = totalAll || 0;
+
+        const { count: dndCount } = await sb.from("bullion_leads")
+          .select("id", { count: "exact", head: true })
+          .eq("tenant_id", tid).not(field, "is", null).eq("dnd", true);
+        r.dnd_excluded = dndCount || 0;
+
+        // Same non-DND + field-set + limit(500) fetch the live cron uses —
+        // lets us see whether the cap is actually cutting anyone off.
+        const { data: leads } = await sb.from("bullion_leads")
+          .select("id,name,phone,bday,anniversary")
+          .eq("tenant_id", tid).eq("dnd", false).not(field, "is", null).limit(500);
+
+        r.over_cap_dropped = Math.max(0, (r.total_with_field_set - r.dnd_excluded) - (leads?.length || 0));
+
+        if (!funnel) { report[kind] = r; continue; }
+
+        const elevenMonthsAgo = new Date(nowMs - 335 * 86400000).toISOString();
+        const { data: alreadyEnrolled } = await sb.from("bullion_scheduled_messages")
+          .select("lead_id").eq("funnel_id", funnel.id).in("status", ["pending", "sent"]).gte("created_at", elevenMonthsAgo);
+        const enrolledSet = new Set((alreadyEnrolled || []).map((x) => x.lead_id));
+
+        for (const lead of leads || []) {
+          if (!lead.phone) r.missing_phone++;
+          let eventMs = parseEventDate(lead[field], yearNow);
+          if (eventMs && eventMs < nowMs - 6 * 86400000) eventMs = parseEventDate(lead[field], yearNow + 1);
+          if (!eventMs) { r.unparseable_date++; continue; }
+          const daysUntil = (eventMs - nowMs) / 86400000;
+          if (daysUntil > 40 || daysUntil < -5) { r.outside_window++; continue; }
+          r.in_window_minus5_to_40++;
+          if (enrolledSet.has(lead.id)) { r.already_enrolled++; continue; }
+          r.would_enroll_now++;
+        }
+        report[kind] = r;
+      }
+
+      return res.status(200).json({ ok: true, report });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   try {
   const sb = supa();
   const nowIso = new Date().toISOString();
