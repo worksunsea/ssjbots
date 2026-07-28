@@ -75,10 +75,16 @@ export default async function handler(req, res) {
   const header = req.headers["x-vercel-cron"] || req.headers["x-cron-secret"] || "";
   const queryToken = (req.query && req.query.secret) || "";
   const hasVercelSignature = Boolean(req.headers["x-vercel-cron"]);
-  // Accept: Vercel cron signature, CRON_SECRET header/query, or CRM dashboard secret
+  // Vercel's actual cron auth mechanism (per Vercel docs) is
+  // `Authorization: Bearer <CRON_SECRET>` — x-vercel-cron is not a trusted
+  // auth signal. This was missing entirely, so every real Vercel cron tick
+  // 401'd and none of this file's logic ever ran automatically.
+  const authHeader = req.headers["authorization"] || "";
+  const hasBearerAuth = Boolean(CRON_SECRET) && authHeader === `Bearer ${CRON_SECRET}`;
+  // Accept: Authorization Bearer (real Vercel cron), legacy header/query, or CRM dashboard secret
   const cronCrmSecret = (CRM_SECRET || "").trim();
   const hasCrmAuth = cronCrmSecret && (req.headers["x-crm-secret"] || "").trim() === cronCrmSecret;
-  if (CRON_SECRET && !hasVercelSignature && header !== CRON_SECRET && queryToken !== CRON_SECRET && !hasCrmAuth) {
+  if (CRON_SECRET && !hasBearerAuth && !hasVercelSignature && header !== CRON_SECRET && queryToken !== CRON_SECRET && !hasCrmAuth) {
     return res.status(401).json({ ok: false, error: "unauthorized" });
   }
 

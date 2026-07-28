@@ -19,6 +19,8 @@ function checkAuth(req) {
   if (!CRON_SECRET) return true; // dev mode
   const header = req.headers["x-cron-secret"] || "";
   const query = req.query?.secret || "";
+  const authHeader = req.headers["authorization"] || "";
+  if (authHeader === `Bearer ${CRON_SECRET}`) return true;
   return header === CRON_SECRET || query === CRON_SECRET || Boolean(req.headers["x-vercel-cron"]);
 }
 

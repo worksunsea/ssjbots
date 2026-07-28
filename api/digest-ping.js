@@ -15,6 +15,11 @@ function checkAuth(req) {
   if (!DIGEST_CRON_SECRET) return true; // dev mode
   const header = req.headers["x-cron-secret"] || req.headers["x-vercel-cron"] || "";
   const query = req.query?.secret || "";
+  // Real Vercel cron auth is `Authorization: Bearer <SECRET>` (x-vercel-cron
+  // is not a trusted signal, per Vercel docs) — this was missing entirely,
+  // so every scheduled tick 401'd and never ran.
+  const authHeader = req.headers["authorization"] || "";
+  if (authHeader === `Bearer ${DIGEST_CRON_SECRET}`) return true;
   return header === DIGEST_CRON_SECRET || query === DIGEST_CRON_SECRET || Boolean(req.headers["x-vercel-cron"]);
 }
 
