@@ -6442,44 +6442,54 @@ const SPOUSE_BDAY_SCRIPTS = {
   elder: ({ name, spouseFirst, city, years }) => [`Namaste ${name} ji, Sun Sea Jewellers ki taraf se pranam.`, years != null ? `${spouseFirst} ke ${years}wein janamdin par hardik badhai!` : `${spouseFirst} ke shubh janamdin par hardik badhai!`, `Ek gift aur making charges pe 70% tak ki offer — jab suvidha ho showroom${city} zaroor padhariye.`],
 };
 
-// Pointers for the telecaller — what to ask/note this call, shown only
-// when the info is actually missing so the list stays short and relevant.
-function callChecklist(ev) {
-  const items = [];
+// Spoken-to-customer lines for the points still missing on this contact —
+// folded directly into the script (not a separate list) so the telecaller
+// reads it out loud as part of the natural flow. Each shown only when the
+// info is actually missing, so the script doesn't ask what's already known.
+function callAskLines(ev) {
+  const lines = [];
   if (ev.msgType !== "spouse_bday" && !ev.contact.hasSpouseDob) {
-    items.push("Spouse ka naam aur birthday note karein (agar shaadi-shuda hain) — taaki unhe bhi wish kar sakein.");
+    lines.push(`Waise, agar aap shaadi-shuda hain, toh apne spouse ka naam aur unki birthday bata dijiye — hum unhe bhi time pe wish kar denge.`);
   }
   if (!ev.contact.hasWeddingFamily) {
-    items.push("Family mein koi upcoming shaadi ya anniversary hai kya (bête/beti, etc.)? Note kar lein.");
+    lines.push(`Aur ghar mein koi upcoming shaadi ya anniversary hai kya — bête, beti, ya kisi aur ki? Bata dijiye, hum note kar lete hain, taaki uss mauke ke liye bhi kuch special dikha sakein.`);
   }
   if (!ev.contact.hasAddress) {
-    items.push("Tyohaar/festival gifting ke liye current address confirm/update karein.");
+    lines.push(`Tyohaar aane wale hain, toh apna current address ek baar confirm kar dijiye — taaki gift seedha aapke ghar tak pahunch sake.`);
   }
-  items.push("Agli visit kab plan kar rahe hain, aur kuch specific dekhna/lena hai kya — note karein.");
-  return items;
+  lines.push(`Aur ye bataiye, agli baar showroom kab aane ka plan hai, aur kuch specific piece hai jo aap dekhna ya lena chahte hain? Main abhi note kar leti hoon, taaki jab aap aayein toh wo hamare paas ready rahe.`);
+  return lines;
 }
 
 // Telecaller call script for a birthday/anniversary/spouse-birthday
-// courtesy call — wish them, invite to the showroom, and use the call
-// to fill contact gaps. Picked by computed age / years-married bracket
-// (not AI, not random) — same contact+event always shows the same script.
+// courtesy call — wish them, invite to the showroom, ask what's missing
+// on their profile, and close warmly. Picked by computed age /
+// years-married bracket (not AI, not random) — same contact+event always
+// shows the same script. Longer/fuller by design so it reads like a real
+// call, not a one-line greeting.
 function upcomingCallScript(ev) {
   const name = (ev.contact.name || "").trim().split(/\s+/)[0] || "Sir/Ma'am";
   const city = ev.contact.city ? ` (${ev.contact.city} wale)` : "";
   const years = ev.years;
+  const eventWord = ev.msgType === "anniv" ? "anniversary" : "birthday";
 
-  let lines;
+  let opening;
   if (ev.msgType === "anniv") {
     const bracket = bracketFor(years == null ? 10 : years, ANNIV_BRACKETS);
-    lines = ANNIV_SCRIPTS[bracket]({ name, city, years });
+    opening = ANNIV_SCRIPTS[bracket]({ name, city, years });
   } else if (ev.msgType === "spouse_bday") {
     const bracket = bracketFor(years == null ? 30 : years, BDAY_BRACKETS);
-    lines = SPOUSE_BDAY_SCRIPTS[bracket]({ name, spouseFirst: name, city, years });
+    opening = SPOUSE_BDAY_SCRIPTS[bracket]({ name, spouseFirst: name, city, years });
   } else {
     const bracket = bracketFor(years == null ? 30 : years, BDAY_BRACKETS);
-    lines = BDAY_SCRIPTS[bracket]({ name, city, years });
+    opening = BDAY_SCRIPTS[bracket]({ name, city, years });
   }
 
+  const trustLine = `Aap jaise apne customers ke bharose se hi Sun Sea Jewellers, Karol Bagh, itne saalon se trusted naam bana hua hai — aapka support hamare liye bahut maayne rakhta hai.`;
+
+  const closing = `Bahut bahut shukriya aapka time dene ke liye, aur ek baar phir Happy ${eventWord}! Hum Sun Sea Jewellers mein aapka intezaar karenge.`;
+
+  const lines = [...opening, trustLine, ...callAskLines(ev), closing];
   return lines.join("\n\n");
 }
 
@@ -6762,14 +6772,8 @@ function UpcomingEventsScreen() {
                   </button>
                 </div>
                 <div style={{ fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap", color: "#333" }}>{upcomingCallScript(ev)}</div>
-                <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px dashed #fde68a" }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: "#92400e", marginBottom: 4 }}>📋 ASK & NOTE ON THIS CALL</div>
-                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#78350f", lineHeight: 1.6 }}>
-                    {callChecklist(ev).map((item, ci) => <li key={ci}>{item}</li>)}
-                  </ul>
-                  <div style={{ marginTop: 4, fontSize: 11, color: "#92400e" }}>
-                    Fill everything in via the <strong>📇 Contact</strong> button — use a custom field for next-visit plan / wishlist if not already added.
-                  </div>
+                <div style={{ marginTop: 8, fontSize: 11, color: "#92400e" }}>
+                  Fill everything you learn in via the <strong>📇 Contact</strong> button — use a custom field for next-visit plan / wishlist if not already added.
                 </div>
               </div>
             )}
