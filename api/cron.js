@@ -335,16 +335,11 @@ export default async function handler(req, res) {
       if (kindErr) return res.status(500).json({ ok: false, error: kindErr.message });
 
       const { data: pending } = await sb.from("bullion_scheduled_messages")
-        .select("id,lead_id,lead:bullion_leads(wedding_date)")
+        .select("id,lead_id,lead:bullion_leads(name,phone,wedding_date)")
         .eq("tenant_id", tid).eq("status", "pending").eq("funnel_id", "after_marriage");
 
-      const wrongIds = (pending || [])
-        .filter((r) => {
-          const wd = r.lead?.wedding_date;
-          if (!wd) return true; // never married — wrongly enrolled
-          return wd < oneYearAgo || wd > todayIso; // outside "married in the last year, up to today" window
-        })
-        .map((r) => r.id);
+      const isWrong = (wd) => !wd || wd < oneYearAgo || wd > todayIso; // outside "married in the last year, up to today"
+      const wrongIds = (pending || []).filter((r) => isWrong(r.lead?.wedding_date)).map((r) => r.id);
 
       let canceled = 0;
       if (wrongIds.length) {
@@ -354,7 +349,17 @@ export default async function handler(req, res) {
         canceled = upd?.length || 0;
       }
 
-      return res.status(200).json({ ok: true, kind_fixed: !kindErr, total_pending_checked: pending?.length || 0, canceled });
+      // Already-sent wrong messages can't be recalled — surface them so the
+      // owner knows who may need a manual apology/follow-up call.
+      const { data: sent } = await sb.from("bullion_scheduled_messages")
+        .select("lead_id,lead:bullion_leads(name,phone,wedding_date)")
+        .eq("tenant_id", tid).eq("status", "sent").eq("funnel_id", "after_marriage")
+        .gte("created_at", new Date(nowMs - 60 * 86400000).toISOString());
+      const alreadySentWrong = [...new Map(
+        (sent || []).filter((r) => isWrong(r.lead?.wedding_date)).map((r) => [r.lead_id, { name: r.lead?.name, phone: r.lead?.phone }])
+      ).values()];
+
+      return res.status(200).json({ ok: true, kind_fixed: !kindErr, total_pending_checked: pending?.length || 0, canceled, already_sent_wrong: alreadySentWrong });
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
     }

@@ -5836,8 +5836,13 @@ function ApprovalsScreen({ funnels, canApprove = true }) {
     try {
       const r = await fetch("/api/cron?action=fix_after_marriage_funnel", { headers: { "x-crm-secret": CRM_SECRET } });
       const d = await r.json();
-      if (d.ok) { alert(`✅ Fixed. Canceled ${d.canceled} of ${d.total_pending_checked} pending after-marriage messages (wrongly enrolled).`); await load(); await runDiag(); }
-      else alert(`❌ ${d.error || "Failed"}`);
+      if (d.ok) {
+        const sentWarning = d.already_sent_wrong?.length
+          ? `\n\n⚠️ ${d.already_sent_wrong.length} wrong after-marriage message(s) already SENT (can't be recalled) to: ${d.already_sent_wrong.map((s) => `${s.name || s.phone}`).join(", ")}`
+          : "";
+        alert(`✅ Fixed. Canceled ${d.canceled} of ${d.total_pending_checked} pending after-marriage messages (wrongly enrolled).${sentWarning}`);
+        await load(); await runDiag();
+      } else alert(`❌ ${d.error || "Failed"}`);
     } catch (e) { alert(`❌ ${e.message}`); }
     setFixingAfterMarriage(false);
   };
