@@ -484,7 +484,31 @@ export default async function handler(req, res) {
   try {
   const sb = supa();
   const nowIso = new Date().toISOString();
-  const stats = { considered: 0, sent: 0, canceled: 0, failed: 0, transitioned: 0, calendarEnrolled: 0, previewsGenerated: 0 };
+  const stats = { considered: 0, sent: 0, canceled: 0, failed: 0, transitioned: 0, calendarEnrolled: 0, previewsGenerated: 0, afterMarriageCleaned: 0 };
+
+  // ── 0. Self-heal: cancel any leftover wrong after-marriage enrollments ──
+  // Backlog from when this funnel shared kind="anniversary" with Anniversary
+  // Month Wishes and won the per-tenant lookup for everyone. The funnel's
+  // kind is now fixed (see fix_after_marriage_funnel), so no NEW wrong rows
+  // can appear — this just clears out what's left, automatically, every
+  // tick, with no manual action or secret needed from anyone.
+  {
+    const nowMs0 = Date.now();
+    const oneYearAgo0 = new Date(nowMs0 - 370 * 86400000).toISOString().slice(0, 10);
+    const todayIso0 = new Date(nowMs0 + 5.5 * 3600000).toISOString().slice(0, 10);
+    const { data: amPending } = await sb.from("bullion_scheduled_messages")
+      .select("id,lead:bullion_leads(wedding_date)")
+      .eq("tenant_id", TENANT_ID).eq("status", "pending").eq("funnel_id", "after_marriage");
+    const amWrongIds = (amPending || [])
+      .filter((r) => { const wd = r.lead?.wedding_date; return !wd || wd < oneYearAgo0 || wd > todayIso0; })
+      .map((r) => r.id);
+    if (amWrongIds.length) {
+      const { data: amUpd } = await sb.from("bullion_scheduled_messages")
+        .update({ status: "canceled", canceled_reason: "wrongly_enrolled_not_recently_married" })
+        .in("id", amWrongIds).select("id");
+      stats.afterMarriageCleaned = amUpd?.length || 0;
+    }
+  }
 
   // ── 1. Flush due drip messages ──────────────────────────────────
   const { data: due } = await sb
