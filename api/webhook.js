@@ -277,6 +277,23 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, skipped: "duplicate" });
     }
 
+    // ── Job/career enquiry — deterministic keyword match, no AI needed ────────
+    // Sends the /careers form link (resume + Instagram + photo capture) so HR
+    // can review applications, instead of the AI trying to FAQ-answer a job ask.
+    const JOB_KEYWORDS = ["job", "vacancy", "hiring", "recruit", "naukri", "naukari", "resume", " cv ", "employment", "career", "staff chahiye", "job chahiye", "job available"];
+    const msgLowerForJob = ` ${msg.toLowerCase()} `;
+    if (JOB_KEYWORDS.some((k) => msgLowerForJob.includes(k))) {
+      const careersLink = `https://ssjbot.gemtre.in/careers?phone=${phone}`;
+      const jobReply = `Thanks for your interest in working with Sun Sea Jewellers! 🙏\n\nPlease fill this quick form so our HR team can review your application — you can attach your resume, Instagram profile, and a current photo here:\n👉 ${careersLink}\n\nWe'll get in touch if there's a matching opening.`;
+      await sendWhatsApp({ phone: jid || phone, msg: jobReply, client: waClient || WA_SESSION_CLIENT_ID });
+      await qx(sb.from("bullion_messages").insert({
+        tenant_id: TENANT_ID, lead_id: leadRow.id, phone,
+        direction: "out", body: jobReply, stage: leadRow.stage || "greeting", status: "sent", wa_client: waClient || null,
+      }));
+      await qx(sb.from("bullion_leads").update({ source: leadRow.source || "job_enquiry" }).eq("id", leadRow.id));
+      return res.status(200).json({ ok: true, handled: "job_enquiry_link" });
+    }
+
     // ── Build prompt + call Claude ────────────────────────────────────────────
     const [{ data: history }, rates, faqs] = await Promise.all([
       sb.from("bullion_messages")

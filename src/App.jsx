@@ -9605,6 +9605,121 @@ function GenericProfileForm() {
 }
 
 // ──────────────────────────────────────────────────────────
+// JOB ENQUIRY FORM — /careers (public, no login)
+// Reached via a WA bot auto-reply when someone asks about a job/vacancy.
+// ──────────────────────────────────────────────────────────
+function JobEnquiryForm() {
+  const S = { fontFamily: "system-ui, sans-serif", maxWidth: 480, margin: "0 auto", padding: "24px 16px", color: "#1a1a1a" };
+  const label = { fontSize: 12, color: "#666", display: "block", marginBottom: 4, marginTop: 12 };
+  const input = { width: "100%", fontSize: 14, padding: "8px 10px", border: "1px solid #ddd", borderRadius: 8, boxSizing: "border-box", outline: "none" };
+  const btn = { width: "100%", padding: "12px", fontSize: 15, fontWeight: 600, border: "none", borderRadius: 10, background: "#1a1a1a", color: "#fff", cursor: "pointer", marginTop: 20 };
+
+  const prefillPhone = typeof window !== "undefined" ? (new URLSearchParams(window.location.search).get("phone") || "") : "";
+  const [form, setForm] = useState({ name: "", phone: prefillPhone, position: "", instagram: "" });
+  const [resumeUrl, setResumeUrl] = useState("");
+  const [resumeName, setResumeName] = useState("");
+  const [photoUrl, setPhotoUrl] = useState("");
+  const [uploadingResume, setUploadingResume] = useState(false);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [done, setDone] = useState(false);
+  const [err, setErr] = useState("");
+
+  const setF = (k, v) => setForm((s) => ({ ...s, [k]: v }));
+
+  const uploadResume = async (file) => {
+    if (!file) return;
+    setErr(""); setUploadingResume(true);
+    try {
+      const allowed = ["application/pdf", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
+      const { publicUrl } = await secureNonImageUpload(file, sb, "job-applications", allowed, 15);
+      setResumeUrl(publicUrl);
+      setResumeName(file.name);
+    } catch (e) { setErr(e.message); }
+    setUploadingResume(false);
+  };
+
+  const uploadPhoto = async (file) => {
+    if (!file) return;
+    setErr(""); setUploadingPhoto(true);
+    try {
+      const { publicUrl } = await secureImageUpload(file, sb, "job-applications", { maxDim: 1200 });
+      setPhotoUrl(publicUrl);
+    } catch (e) { setErr(e.message); }
+    setUploadingPhoto(false);
+  };
+
+  const save = async () => {
+    setErr("");
+    const phone = normPhoneJS(form.phone);
+    if (!form.name.trim()) return setErr("Please enter your name.");
+    if (!phone) return setErr("Enter a valid 10-digit mobile number.");
+    if (!resumeUrl) return setErr("Please attach your resume.");
+    setSaving(true);
+    try {
+      const r = await fetch("/api/job-enquiry", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...form, phone, resume_url: resumeUrl, photo_url: photoUrl }),
+      });
+      const d = await r.json();
+      if (d.ok) setDone(true);
+      else setErr(d.error || "Failed to submit. Try again.");
+    } catch { setErr("Network error. Try again."); }
+    setSaving(false);
+  };
+
+  if (done) return (
+    <div style={S}>
+      <div style={{ textAlign: "center", paddingTop: 32 }}>
+        <div style={{ fontSize: 48 }}>🙏</div>
+        <h2 style={{ fontSize: 20, margin: "16px 0 8px" }}>Thank you, {form.name.split(" ")[0]}!</h2>
+        <p style={{ color: "#555", fontSize: 14 }}>Your application has been received. Our HR team will reach out to you on WhatsApp/call if there's a matching opening.</p>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={S}>
+      <div style={{ textAlign: "center", marginBottom: 20 }}>
+        <div style={{ fontSize: 32 }}>💎</div>
+        <h2 style={{ fontSize: 18, margin: "8px 0 4px" }}>Careers at Sun Sea Jewellers</h2>
+        <p style={{ fontSize: 13, color: "#666", margin: 0 }}>Tell us about yourself — we'll get in touch if there's a fit.</p>
+      </div>
+
+      <div style={{ background: "#f9fafb", borderRadius: 12, padding: 16 }}>
+        <span style={label}>Full Name *</span>
+        <input style={input} value={form.name} onChange={(e) => setF("name", e.target.value)} placeholder="Your full name" />
+        <span style={label}>Mobile Number *</span>
+        <input style={input} value={form.phone} onChange={(e) => setF("phone", e.target.value)} placeholder="9810XXXXXX" type="tel" />
+        <span style={label}>Position interested in</span>
+        <input style={input} value={form.position} onChange={(e) => setF("position", e.target.value)} placeholder="e.g. Sales, Design, Telecalling" />
+        <span style={label}>Instagram Profile Link</span>
+        <input style={input} value={form.instagram} onChange={(e) => setF("instagram", e.target.value)} placeholder="https://instagram.com/yourhandle" />
+      </div>
+
+      <div style={{ background: "#fff9f0", border: "1px solid #fed7aa", borderRadius: 12, padding: 16, marginTop: 14 }}>
+        <span style={label}>Resume (PDF/DOC) *</span>
+        <input type="file" accept=".pdf,.doc,.docx" onChange={(e) => uploadResume(e.target.files?.[0])} disabled={uploadingResume} style={{ fontSize: 13 }} />
+        {uploadingResume && <p style={{ fontSize: 12, color: "#888", margin: "4px 0 0" }}>Uploading…</p>}
+        {resumeUrl && !uploadingResume && <p style={{ fontSize: 12, color: "#16a34a", margin: "4px 0 0" }}>✅ {resumeName} attached</p>}
+
+        <span style={label}>Current Photo — take a picture or upload *</span>
+        <input type="file" accept="image/*" capture="user" onChange={(e) => uploadPhoto(e.target.files?.[0])} disabled={uploadingPhoto} style={{ fontSize: 13 }} />
+        {uploadingPhoto && <p style={{ fontSize: 12, color: "#888", margin: "4px 0 0" }}>Uploading…</p>}
+        {photoUrl && !uploadingPhoto && (
+          <img src={photoUrl} alt="preview" style={{ marginTop: 8, width: 88, height: 88, objectFit: "cover", borderRadius: 10, border: "1px solid #ddd" }} />
+        )}
+      </div>
+
+      {err && <p style={{ color: "#dc2626", fontSize: 13, marginTop: 8 }}>{err}</p>}
+      <button style={btn} onClick={save} disabled={saving || uploadingResume || uploadingPhoto}>{saving ? "Submitting…" : "Submit Application"}</button>
+      <p style={{ fontSize: 11, color: "#aaa", textAlign: "center", marginTop: 12 }}>Sun Sea Jewellers · Karol Bagh, New Delhi</p>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
 // BROADCASTS SCREEN — festival / occasion bulk messages
 // Write one message → pick audience → schedule → cron sends all.
 // No per-message approval: the review happens once before you hit Schedule.
@@ -10719,6 +10834,8 @@ export default function App() {
   if (profileToken) return <ContactUpdateForm token={profileToken} />;
   const isProfilePage = typeof window !== "undefined" && window.location.pathname === "/profile";
   if (isProfilePage) return <GenericProfileForm />;
+  const isCareersPage = typeof window !== "undefined" && window.location.pathname === "/careers";
+  if (isCareersPage) return <JobEnquiryForm />;
   const catalogueMatch = typeof window !== "undefined" && window.location.pathname.match(/^\/c\/([0-9a-f-]{36})$/);
   if (catalogueMatch) return <PublicCatalogueScreen token={catalogueMatch[1]} />;
   const isCorpGiftingPage = typeof window !== "undefined" && window.location.pathname === "/corporategiftingcoins";
