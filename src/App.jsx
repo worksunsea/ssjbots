@@ -5816,6 +5816,17 @@ function ApprovalsScreen({ funnels, canApprove = true }) {
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [bulkApproving, setBulkApproving] = useState(false);
   const [clearingStale, setClearingStale] = useState(false);
+  const [diag, setDiag] = useState(null);
+  const [diagLoading, setDiagLoading] = useState(false);
+
+  const runDiag = async () => {
+    setDiagLoading(true);
+    try {
+      const r = await fetch("/api/cron?action=approvals_audit", { headers: { "x-crm-secret": CRM_SECRET } });
+      setDiag(await r.json());
+    } catch (e) { setDiag({ ok: false, error: e.message }); }
+    setDiagLoading(false);
+  };
 
   const clearStale = async () => {
     if (!window.confirm(`Cancel all pending birthday/anniversary messages whose date has already passed? This won't send them — they'll be removed from the approval queue.`)) return;
@@ -6113,6 +6124,55 @@ const activeRows = tab === "calendar" ? calRows : rows;
               ? `✅ Done — sent: ${cronResult.stats?.sent || 0}, enrolled: ${cronResult.stats?.calendarEnrolled || 0}, previewed: ${cronResult.stats?.previewsGenerated || 0}`
               : `❌ ${cronResult.error}`}
           </span>
+        )}
+      </div>
+
+      {/* Diagnose — explains uneven message counts / missing anniversary rows */}
+      <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 10, padding: "12px 16px", marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 13, color: "#991b1b", flex: 1 }}>
+            🔍 <strong>Diagnose</strong> — checks for duplicate active funnels (causes 1-vs-8 message spreads) and missing/inactive anniversary funnel.
+          </span>
+          <button onClick={runDiag} disabled={diagLoading}
+            style={{ fontSize: 13, padding: "7px 18px", borderRadius: 8, border: "none", background: diagLoading ? "#fca5a5" : "#dc2626", color: "#fff", cursor: diagLoading ? "not-allowed" : "pointer", fontWeight: 600, whiteSpace: "nowrap" }}>
+            {diagLoading ? "⏳ Checking…" : "🔍 Run Diagnostic"}
+          </button>
+        </div>
+        {diag && !diag.ok && <div style={{ marginTop: 8, fontSize: 12, color: "#dc2626" }}>❌ {diag.error}</div>}
+        {diag?.ok && (
+          <div style={{ marginTop: 10, fontSize: 12, color: "#7f1d1d" }}>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>Calendar funnels:</div>
+            <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 10 }}>
+              <thead><tr style={{ textAlign: "left", color: "#991b1b" }}><th>Name</th><th>Kind</th><th>Active</th><th>Steps</th></tr></thead>
+              <tbody>
+                {diag.funnels.map((f) => (
+                  <tr key={f.id} style={{ borderTop: "1px solid #fecaca" }}>
+                    <td>{f.name}</td><td>{f.kind}</td>
+                    <td>{f.active ? "✅" : "❌ inactive"}</td>
+                    <td>{f.active_step_count}</td>
+                  </tr>
+                ))}
+                {diag.funnels.length === 0 && <tr><td colSpan={4}>No birthday/anniversary funnels found at all.</td></tr>}
+              </tbody>
+            </table>
+            {!diag.funnels.some((f) => f.kind === "anniversary" && f.active) && (
+              <div style={{ marginBottom: 8, fontWeight: 600 }}>⚠️ No active anniversary funnel — anniversary messages can never be enrolled or show up here until one is activated.</div>
+            )}
+            {diag.duplicateActiveFunnels.length > 0 && (
+              <div style={{ marginBottom: 8, fontWeight: 600 }}>
+                ⚠️ Duplicate active funnels: {diag.duplicateActiveFunnels.map((d) => `${d.kind} ×${d.active_funnel_count}`).join(", ")} — a contact gets enrolled into every active funnel of that kind, multiplying their message count.
+              </div>
+            )}
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>Top pending counts per person+funnel:</div>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead><tr style={{ textAlign: "left", color: "#991b1b" }}><th>Name</th><th>Phone</th><th>Pending</th></tr></thead>
+              <tbody>
+                {diag.top_pending_counts.slice(0, 10).map((r, i) => (
+                  <tr key={i} style={{ borderTop: "1px solid #fecaca" }}><td>{r.name}</td><td>{r.phone}</td><td>{r.pending_count}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 

@@ -263,6 +263,54 @@ export default async function handler(req, res) {
     }
   }
 
+  // Diagnostic (read-only): explains message-count inconsistencies in
+  // Approvals — duplicate active funnels of the same kind (a lead enrolled
+  // into two "birthday" funnels gets double the steps), how many active
+  // steps each calendar funnel has, and how many pending calendar rows
+  // exist per (lead, funnel) so 1-vs-8-message spreads are visible.
+  if (req.query?.action === "approvals_audit") {
+    try {
+      const sb = supa();
+      const tid = TENANT_ID;
+
+      const { data: funnels } = await sb.from("funnels")
+        .select("id,name,kind,active").eq("tenant_id", tid).in("kind", ["birthday", "anniversary"]);
+
+      const funnelSummary = [];
+      for (const f of funnels || []) {
+        const { count: stepCount } = await sb.from("bullion_funnel_steps")
+          .select("id", { count: "exact", head: true }).eq("funnel_id", f.id).eq("active", true);
+        funnelSummary.push({ id: f.id, name: f.name, kind: f.kind, active: f.active, active_step_count: stepCount || 0 });
+      }
+
+      const activeByKind = {};
+      for (const f of funnelSummary) {
+        if (!f.active) continue;
+        activeByKind[f.kind] = (activeByKind[f.kind] || 0) + 1;
+      }
+      const duplicateActiveFunnels = Object.entries(activeByKind).filter(([, n]) => n > 1).map(([kind, n]) => ({ kind, active_funnel_count: n }));
+
+      const funnelIds = (funnels || []).map((f) => f.id);
+      let perLeadCounts = [];
+      if (funnelIds.length) {
+        const { data: pending } = await sb.from("bullion_scheduled_messages")
+          .select("lead_id,funnel_id,lead:bullion_leads(name,phone)")
+          .eq("tenant_id", tid).eq("status", "pending").in("funnel_id", funnelIds);
+        const map = new Map();
+        for (const r of pending || []) {
+          const key = `${r.lead_id}:${r.funnel_id}`;
+          if (!map.has(key)) map.set(key, { lead_id: r.lead_id, funnel_id: r.funnel_id, name: r.lead?.name, phone: r.lead?.phone, pending_count: 0 });
+          map.get(key).pending_count++;
+        }
+        perLeadCounts = [...map.values()].sort((a, b) => b.pending_count - a.pending_count).slice(0, 30);
+      }
+
+      return res.status(200).json({ ok: true, funnels: funnelSummary, duplicateActiveFunnels, top_pending_counts: perLeadCounts });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // Bulk cleanup: cancel pending calendar (birthday/anniversary) messages
   // whose send_at has already passed — these piled up while unapproved and
   // would fire a stale-dated wish (or all at once) the moment someone hits
