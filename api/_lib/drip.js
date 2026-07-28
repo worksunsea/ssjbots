@@ -114,9 +114,20 @@ export async function enrollLeadInDrip({ lead, funnel, eventDateMs, staggerMs = 
         // delay_minutes is days-offset × 1440, can be negative (before event)
         if (!eventDateMs) { sendAt = nowMs + Math.abs(delay); break; }
         const calSendAt = snapToISTMorning(eventDateMs + delay, staggerMs);
-        // If this step's date is already past, SKIP it — don't push to today
-        if (calSendAt < nowMs) continue;
-        sendAt = calSendAt;
+        if (calSendAt < nowMs) {
+          // Genuinely past days (e.g. a pre-event reminder whose window
+          // already closed) stay skipped. But if the target day is still
+          // TODAY (IST) — enrollment just happened after the 10:30am send
+          // time — fire soon instead of silently dropping today's wish.
+          const istDay = (ms) => new Date(ms + 5.5 * 3600000).toISOString().slice(0, 10);
+          if (istDay(calSendAt) === istDay(nowMs)) {
+            sendAt = nowMs + 5 * 60_000;
+          } else {
+            continue;
+          }
+        } else {
+          sendAt = calSendAt;
+        }
         break;
       }
       case "after_prev_step":
