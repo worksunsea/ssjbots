@@ -6284,70 +6284,144 @@ function MessageHistoryScreen({ funnels }) {
 }
 
 // ──────────────────────────────────────────────────────────
-// UPCOMING EVENTS SCREEN — birthdays & anniversaries
+// UPCOMING EVENTS SCREEN — birthdays, anniversaries & spouse birthdays
 // ──────────────────────────────────────────────────────────
-// 5 hand-written Hinglish templates, rotated deterministically per
-// contact+event (same contact always sees the same one — no AI call,
-// no cost, no regeneration flicker). Each covers: warm wish, showroom
-// invite + offer, ask for missing family dates, ask next-visit plan.
-const CALL_SCRIPT_TEMPLATES = [
-  ({ name, event, city }) => [
-    `Hi ${name} ji, Sun Sea Jewellers, Karol Bagh se baat kar rahi hoon.`,
-    `Aapko aur poori family ko bahut bahut Happy ${event}!`,
-    `Aapke liye ek chhota sa gift aur making charges pe 70% tak ki special offer rakhi hai humne — please showroom aa kar collect kar lijiye${city}.`,
-    `Waise ek baat puchni thi — ghar mein aur kisi ki birthday ya anniversary date honi baaki hai kya? Wo bhi note kar lete hain, taaki unhe bhi time pe wish kar sakein.`,
-    `Aur agle visit ka koi plan hai? Kuch specific dekhna chahenge aap?`,
-    `Bahut bahut shukriya, aur ek baar phir Happy ${event}! Aapka Sun Sea Jewellers mein intezaar rahega.`,
-  ],
-  ({ name, event, city }) => [
-    `Namaste ${name} ji, main Sun Sea Jewellers se bol rahi hoon.`,
-    `Aapka ${event} hai na — dil se Happy ${event}!`,
-    `Iss khushi ke mauke par humari taraf se ek surprise gift hai aapke liye, aur making charges pe 70% tak off bhi — showroom visit kijiye${city}, achha lagega aapse milkar.`,
-    `Ek chhoti si request — family mein kisi aur ki bhi birthday ya anniversary date hum note kar sakte hain kya? Taaki unko bhi time pe wish kar sakein.`,
-    `Aur bataiye, agli baar kab aana plan hai, kuch specific dekhna hai kya aapko?`,
-    `Thank you so much, once again Happy ${event}!`,
-  ],
-  ({ name, event, city }) => [
-    `Hi ${name}, Sun Sea Jewellers Karol Bagh se calling kar rahi hoon.`,
-    `Happy ${event}! Bahut bahut badhai aapko.`,
-    `Aapke liye special gift + 70% off making charges ready hai${city}, showroom aa jaiye jab time mile.`,
-    `Ek minute — family ki koi aur important date, birthday ya anniversary, hai kya jo hum record kar len?`,
-    `Aur next visit ka plan kya hai, kuch specific piece dekhna hai kya?`,
-    `Thanks, Happy ${event} once again!`,
-  ],
-  ({ name, event, city }) => [
-    `Hi ${name} ji, kaise hain aap? Sun Sea Jewellers se baat kar rahi hoon.`,
-    `Sabse pehle — Happy ${event}! Bahut khushi hui yaad karke.`,
-    `Aap hamare valued customer hain, isliye khaas gift aur making charges pe 70% tak ki offer rakhi hai humne — showroom${city} aakar zaroor lijiye.`,
-    `Waise, ghar mein aur kisi ki birthday ya anniversary hai jo hum note kar len, taaki unhe bhi wish kar sakein?`,
-    `Aur agli visit kab soch rahe hain, kuch particular piece dekhna hai kya?`,
-    `Bahut shukriya, phir se Happy ${event}!`,
-  ],
-  ({ name, event, city }) => [
-    `Hi ${name} ji, Sun Sea Jewellers ki taraf se — Happy ${event}!`,
-    `Aaj ka din khaas hai, aur hum chahte hain aap bhi khaas mehsoos karein — ek gift aur making charges pe 70% tak ki offer aapke naam hai, showroom${city} aake collect kar lijiye.`,
-    `Ek baat — family mein aur kisi ki birthday ya anniversary date hai jo hum yaad rakh sakein?`,
-    `Aur bataiye, next visit kab plan kar rahe hain, kuch khaas dekhna hai?`,
-    `Dhanyavaad, aur Happy ${event} once again!`,
-  ],
-];
-
-// Deterministic pick so the same contact+event always shows the same
-// script (no flicker on re-render, no randomness to manage).
-function hashStr(s) {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-  return h;
+// Parses the same "MM-DD" / "DD-MM" / "YYYY-MM-DD" formats the enrollment
+// cron accepts (api/cron.js parseEventDate). Returns 0-indexed month, day,
+// and year (null if the stored value never had one — common on older/bulk-
+// imported rows) so callers can compute exact age only when it's known.
+function parseCalendarDateParts(raw) {
+  if (!raw) return null;
+  const p = String(raw).split("-");
+  let m, d, y = null;
+  if (p.length === 3) {
+    const a = parseInt(p[0], 10), b = parseInt(p[1], 10), c = parseInt(p[2], 10);
+    if (a > 31) { y = a; m = b; d = c; } // YYYY-MM-DD
+    else if (a >= 1 && a <= 12) { m = a; d = b; y = c > 31 ? c : null; } // MM-DD-YYYY (rare)
+    else { m = b; d = a; y = c > 31 ? c : null; } // DD-MM-YYYY
+  } else if (p.length === 2) {
+    const a = parseInt(p[0], 10), b = parseInt(p[1], 10);
+    if (a >= 1 && a <= 12) { m = a; d = b; } else { m = b; d = a; }
+  } else return null;
+  if (isNaN(m) || isNaN(d) || m < 1 || m > 12 || d < 1 || d > 31) return null;
+  return { m: m - 1, d, y };
 }
 
-// Telecaller call script for a birthday/anniversary courtesy call — wish
-// them, invite to the showroom, and use the call to fill contact gaps.
+// Age/years-married bracket templates — picked by the actual computed
+// number, not randomly, so tone matches life stage. Falls back to a
+// neutral "years unknown" template when the stored date has no year
+// (common on bulk-imported contacts) — and nudges the telecaller to
+// capture the full DOB while on the call.
+function bracketFor(n, breaks) {
+  for (const [max, key] of breaks) if (n <= max) return key;
+  return breaks[breaks.length - 1][1];
+}
+
+const BDAY_BRACKETS = [[24, "young"], [35, "adult"], [50, "mid"], [65, "senior"], [999, "elder"]];
+const ANNIV_BRACKETS = [[1, "newlywed"], [10, "growing"], [20, "established"], [35, "milestone"], [999, "golden"]];
+
+const BDAY_SCRIPTS = {
+  young: ({ name, city }) => [
+    `Hi ${name}, Sun Sea Jewellers Karol Bagh se calling! Happy Birthday, bahut saara pyaar aur badhai aapko! 🎉`,
+    `Aapke liye ek chhota gift aur making charges pe 70% tak ki offer rakhi hai — showroom${city} aa jaiye, chill karte hain, offer bhi collect kar lijiye.`,
+  ],
+  adult: ({ name, city, years }) => [
+    `Hi ${name} ji, Sun Sea Jewellers se baat kar rahi hoon.`,
+    years != null ? `Aap ${years} ke ho gaye — Happy Birthday, bahut bahut badhai!` : `Happy Birthday, bahut bahut badhai aapko!`,
+    `Aapke liye ek chhota gift aur making charges pe 70% tak ki special offer hai — showroom${city} aa kar collect kar lijiye.`,
+  ],
+  mid: ({ name, city, years }) => [
+    `Namaste ${name} ji, Sun Sea Jewellers, Karol Bagh se bol rahi hoon.`,
+    years != null ? `${years}wein birthday ki dher saari shubhkamnayein!` : `Aapke birthday ki dher saari shubhkamnayein!`,
+    `Iss khushi ke mauke par ek gift aur making charges pe 70% tak off — showroom${city} zaroor padhariye.`,
+  ],
+  senior: ({ name, city, years }) => [
+    `Namaste ${name} ji, Sun Sea Jewellers se baat kar rahi hoon.`,
+    years != null ? `Aapke ${years}wein janamdin ki hardik shubhkamnayein!` : `Aapke janamdin ki hardik shubhkamnayein!`,
+    `Aap hamare bahut samman-yogya purane customer hain — ek gift aur making charges pe 70% tak ki offer aapke liye rakhi hai, showroom${city} padhariye.`,
+  ],
+  elder: ({ name, city, years }) => [
+    `Namaste ${name} ji, Sun Sea Jewellers ki taraf se pranam.`,
+    years != null ? `Aapke ${years}wein janamdin par hardik badhai aur shubhkamnayein!` : `Aapke shubh janamdin par hardik badhai!`,
+    `Humari puri team ki taraf se ek gift aur making charges pe 70% tak ki offer aapke liye — jab suvidha ho showroom${city} zaroor padhariye.`,
+  ],
+};
+
+const ANNIV_SCRIPTS = {
+  newlywed: ({ name, city, years }) => [
+    `Hi ${name} ji, Sun Sea Jewellers se baat kar rahi hoon.`,
+    years != null ? `Aapki shaadi ki ${years === 0 ? "pehli" : years + " saal ki"} anniversary — dher saari mubarakbaad!` : `Aapki anniversary ki dher saari mubarakbaad!`,
+    `Iss naye safar ki khushi mein ek gift aur making charges pe 70% tak off rakha hai humne — showroom${city} zaroor aaiye.`,
+  ],
+  growing: ({ name, city, years }) => [
+    `Namaste ${name} ji, Sun Sea Jewellers, Karol Bagh se bol rahi hoon.`,
+    years != null ? `Aapki shaadi ko ${years} saal ho gaye — Happy Anniversary, bahut bahut badhai!` : `Happy Anniversary, bahut bahut badhai aapko!`,
+    `Iss khaas mauke par ek gift aur making charges pe 70% tak off — showroom${city} aa kar collect kar lijiye.`,
+  ],
+  established: ({ name, city, years }) => [
+    `Hi ${name} ji, Sun Sea Jewellers se calling kar rahi hoon.`,
+    years != null ? `${years} saal ka khoobsurat safar — Happy Anniversary, dil se badhai!` : `Happy Anniversary, dil se badhai!`,
+    `Aapke liye special gift aur making charges pe 70% tak ki offer hai — showroom${city} zaroor padhariye.`,
+  ],
+  milestone: ({ name, city, years }) => [
+    `Namaste ${name} ji, Sun Sea Jewellers ki taraf se.`,
+    years != null ? `${years} saal ki shaadi — ye ek bahut bada milestone hai, dil se Happy Anniversary!` : `Happy Anniversary — bahut khaas mauka hai ye!`,
+    `Humari taraf se ek special gift aur making charges pe 70% tak off rakha hai, showroom${city} zaroor padhariye.`,
+  ],
+  golden: ({ name, city, years }) => [
+    `Namaste ${name} ji, Sun Sea Jewellers ki taraf se pranam.`,
+    years != null ? `${years} saal ki shaadi — golden milestone hai ye, hardik badhai!` : `Aapki anniversary par hardik badhai!`,
+    `Humari puri team ki taraf se ek khaas gift aur making charges pe 70% tak ki offer — showroom${city} zaroor padhariye.`,
+  ],
+};
+
+const SPOUSE_BDAY_SCRIPTS = {
+  young: ({ name, spouseFirst, city }) => [`Hi ${name} ji, Sun Sea Jewellers se baat kar rahi hoon — ${spouseFirst} ka birthday hai aaj/is hafte, Happy Birthday unko! 🎉`, `Ek chhota gift aur making charges pe 70% tak off rakha hai — dono showroom${city} aa jaiye.`],
+  adult: ({ name, spouseFirst, city, years }) => [`Hi ${name} ji, Sun Sea Jewellers se baat kar rahi hoon.`, years != null ? `${spouseFirst} ${years} ke ho rahe hain — unhe Happy Birthday!` : `${spouseFirst} ka birthday hai — unhe Happy Birthday!`, `Gift aur making charges pe 70% tak ki offer rakhi hai, showroom${city} aa kar collect kar lijiye.`],
+  mid: ({ name, spouseFirst, city, years }) => [`Namaste ${name} ji, Sun Sea Jewellers se bol rahi hoon.`, years != null ? `${spouseFirst} ke ${years}wein birthday ki shubhkamnayein!` : `${spouseFirst} ke birthday ki shubhkamnayein!`, `Gift aur making charges pe 70% tak off — showroom${city} zaroor padhariye.`],
+  senior: ({ name, spouseFirst, city, years }) => [`Namaste ${name} ji, Sun Sea Jewellers se baat kar rahi hoon.`, years != null ? `${spouseFirst} ke ${years}wein janamdin ki hardik shubhkamnayein!` : `${spouseFirst} ke janamdin ki hardik shubhkamnayein!`, `Gift aur making charges pe 70% tak ki offer aapke liye rakhi hai, showroom${city} padhariye.`],
+  elder: ({ name, spouseFirst, city, years }) => [`Namaste ${name} ji, Sun Sea Jewellers ki taraf se pranam.`, years != null ? `${spouseFirst} ke ${years}wein janamdin par hardik badhai!` : `${spouseFirst} ke shubh janamdin par hardik badhai!`, `Ek gift aur making charges pe 70% tak ki offer — jab suvidha ho showroom${city} zaroor padhariye.`],
+};
+
+// Pointers for the telecaller — what to ask/note this call, shown only
+// when the info is actually missing so the list stays short and relevant.
+function callChecklist(ev) {
+  const items = [];
+  if (ev.msgType !== "spouse_bday" && !ev.contact.hasSpouseDob) {
+    items.push("Spouse ka naam aur birthday note karein (agar shaadi-shuda hain) — taaki unhe bhi wish kar sakein.");
+  }
+  if (!ev.contact.hasWeddingFamily) {
+    items.push("Family mein koi upcoming shaadi ya anniversary hai kya (bête/beti, etc.)? Note kar lein.");
+  }
+  if (!ev.contact.hasAddress) {
+    items.push("Tyohaar/festival gifting ke liye current address confirm/update karein.");
+  }
+  items.push("Agli visit kab plan kar rahe hain, aur kuch specific dekhna/lena hai kya — note karein.");
+  return items;
+}
+
+// Telecaller call script for a birthday/anniversary/spouse-birthday
+// courtesy call — wish them, invite to the showroom, and use the call
+// to fill contact gaps. Picked by computed age / years-married bracket
+// (not AI, not random) — same contact+event always shows the same script.
 function upcomingCallScript(ev) {
   const name = (ev.contact.name || "").trim().split(/\s+/)[0] || "Sir/Ma'am";
-  const event = ev.msgType === "bday" ? "birthday" : "anniversary";
   const city = ev.contact.city ? ` (${ev.contact.city} wale)` : "";
-  const idx = hashStr(`${ev.contact.id}-${ev.msgType}`) % CALL_SCRIPT_TEMPLATES.length;
-  return CALL_SCRIPT_TEMPLATES[idx]({ name, event, city }).join("\n\n");
+  const years = ev.years;
+
+  let lines;
+  if (ev.msgType === "anniv") {
+    const bracket = bracketFor(years == null ? 10 : years, ANNIV_BRACKETS);
+    lines = ANNIV_SCRIPTS[bracket]({ name, city, years });
+  } else if (ev.msgType === "spouse_bday") {
+    const bracket = bracketFor(years == null ? 30 : years, BDAY_BRACKETS);
+    lines = SPOUSE_BDAY_SCRIPTS[bracket]({ name, spouseFirst: name, city, years });
+  } else {
+    const bracket = bracketFor(years == null ? 30 : years, BDAY_BRACKETS);
+    lines = BDAY_SCRIPTS[bracket]({ name, city, years });
+  }
+
+  return lines.join("\n\n");
 }
 
 function UpcomingEventsScreen() {
@@ -6374,9 +6448,9 @@ function UpcomingEventsScreen() {
     try {
       const [{ data, error }, { data: scheduled }] = await Promise.all([
         sb.from("bullion_leads")
-          .select("id,name,phone,city,bday,anniversary")
+          .select("id,name,phone,city,bday,anniversary,spouse_name,spouse_dob,wedding_date,wedding_family_member,address_house,address_locality,address_pincode")
           .eq("tenant_id", getTenantId())
-          .or("bday.not.is.null,anniversary.not.is.null"),
+          .or("bday.not.is.null,anniversary.not.is.null,spouse_dob.not.is.null"),
         sb.from("bullion_scheduled_messages")
           .select("lead_id,send_at,status,funnel_id")
           .eq("tenant_id", getTenantId())
@@ -6397,26 +6471,20 @@ function UpcomingEventsScreen() {
       const pastCutoff = -7 * 86400000;  // 7 days ago
       const futureCutoff = days * 86400000;
       const rows = [];
+      const hasAddress = (c) => !!(c.address_house || c.address_locality || c.address_pincode);
 
       for (const c of (data || [])) {
         for (const [field, icon, msgType, label] of [
           ["bday","🎂","bday","Birthday"],
           ["anniversary","💍","anniv","Anniversary"],
+          ["spouse_dob","🎂💑","spouse_bday","Spouse's Birthday"],
         ]) {
           const raw = c[field];
           if (!raw) continue;
-          const p = raw.split("-");
-          let m, d;
-          if (p.length === 3) {
-            const a = parseInt(p[1],10), b2 = parseInt(p[2],10);
-            if (a >= 1 && a <= 12) { m = a - 1; d = b2; }
-            else { m = b2 - 1; d = a; }
-          } else if (p.length === 2) {
-            const a = parseInt(p[0],10), b2 = parseInt(p[1],10);
-            if (a >= 1 && a <= 12) { m = a - 1; d = b2; }
-            else { m = b2 - 1; d = a; }
-          } else continue;
-          if (isNaN(m) || isNaN(d) || m < 0 || m > 11 || d < 1 || d > 31) continue;
+          if (field === "spouse_dob" && !c.spouse_name) continue; // no name to greet — skip until captured
+          const parts = parseCalendarDateParts(raw);
+          if (!parts) continue;
+          const { m, d, y } = parts;
 
           // Check this year occurrence
           const thisYear = new Date(today.getFullYear(), m, d);
@@ -6446,7 +6514,22 @@ function UpcomingEventsScreen() {
           const pending = msgs.filter((m) => m.status === "pending");
           const sent = msgs.filter((m) => m.status === "sent");
           const nextSend = pending.length ? new Date(pending.sort((a,b) => new Date(a.send_at)-new Date(b.send_at))[0].send_at) : null;
-          rows.push({ contact: { id: c.id, name: c.name, phone: c.phone, city: c.city }, icon, msgType, label, date: occurrence, daysUntil, pendingCount: pending.length, sentCount: sent.length, nextSend });
+          // years: age turning (bday/spouse_bday) or years married (anniversary) — only if source date has a year
+          const years = y == null ? null : (occurrence.getFullYear() - y);
+          rows.push({
+            contact: {
+              id: c.id,
+              name: msgType === "spouse_bday" ? c.spouse_name : c.name,
+              phone: c.phone, city: c.city,
+              hasSpouseDob: !!c.spouse_dob, hasWeddingFamily: !!c.wedding_date,
+              hasAddress: hasAddress(c),
+            },
+            icon, msgType, label, date: occurrence, daysUntil, years,
+            pendingCount: msgType === "spouse_bday" ? 0 : pending.length,
+            sentCount: msgType === "spouse_bday" ? 0 : sent.length,
+            nextSend: msgType === "spouse_bday" ? null : nextSend,
+            noFunnel: msgType === "spouse_bday", // no auto drip funnel for spouse — manual wish only
+          });
         }
       }
       // Past events first (most recent first), then future (soonest first)
@@ -6529,9 +6612,11 @@ function UpcomingEventsScreen() {
                 <div style={{ fontWeight: 600, fontSize: 14 }}>{ev.contact.name || ev.contact.phone}</div>
                 <div style={{ fontSize: 12, color: "#666" }}>{ev.contact.phone}{ev.contact.city ? ` · ${ev.contact.city}` : ""}</div>
                 <div style={{ marginTop: 3, display: "flex", gap: 5, flexWrap: "wrap" }}>
-                  {ev.sentCount > 0 && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#dcfce7", color: "#166534" }}>✅ {ev.sentCount} sent</span>}
-                  {ev.pendingCount > 0 && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#dbeafe", color: "#1d4ed8" }}>📅 {ev.pendingCount} queued{ev.nextSend ? ` · next ${ev.nextSend.toLocaleDateString("en-IN", { day:"numeric", month:"short" })} ${ev.nextSend.toLocaleTimeString("en-IN", { hour:"2-digit", minute:"2-digit" })}` : ""}</span>}
-                  {ev.sentCount === 0 && ev.pendingCount === 0 && (
+                  {ev.years != null && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#f3e8ff", color: "#6b21a8" }}>{ev.msgType === "anniv" ? `${ev.years} yrs married` : `turning ${ev.years}`}</span>}
+                  {ev.noFunnel && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#e0e7ff", color: "#3730a3" }}>manual wish only</span>}
+                  {!ev.noFunnel && ev.sentCount > 0 && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#dcfce7", color: "#166534" }}>✅ {ev.sentCount} sent</span>}
+                  {!ev.noFunnel && ev.pendingCount > 0 && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#dbeafe", color: "#1d4ed8" }}>📅 {ev.pendingCount} queued{ev.nextSend ? ` · next ${ev.nextSend.toLocaleDateString("en-IN", { day:"numeric", month:"short" })} ${ev.nextSend.toLocaleTimeString("en-IN", { hour:"2-digit", minute:"2-digit" })}` : ""}</span>}
+                  {!ev.noFunnel && ev.sentCount === 0 && ev.pendingCount === 0 && (
                     <>
                       <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#fef9c3", color: "#713f12" }}>⚠️ not enrolled</span>
                       <button
@@ -6557,7 +6642,7 @@ function UpcomingEventsScreen() {
                   style={{ fontSize: 12, padding: "5px 12px", borderRadius: 7, border: "1px solid #6366f1", background: "#eef2ff", color: "#3730a3", cursor: "pointer", whiteSpace: "nowrap" }}>
                   📇 Contact
                 </button>
-                <button onClick={() => setSendTarget({ contact: ev.contact, msgType: ev.msgType })}
+                <button onClick={() => setSendTarget({ contact: ev.contact, msgType: ev.msgType === "spouse_bday" ? "bday" : ev.msgType })}
                   style={{ fontSize: 12, padding: "5px 12px", borderRadius: 7, border: "1px solid #22c55e", background: "#f0fdf4", color: "#166534", cursor: "pointer", whiteSpace: "nowrap" }}>
                   💬 Wish
                 </button>
@@ -6573,8 +6658,14 @@ function UpcomingEventsScreen() {
                   </button>
                 </div>
                 <div style={{ fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap", color: "#333" }}>{upcomingCallScript(ev)}</div>
-                <div style={{ marginTop: 8, fontSize: 11, color: "#92400e" }}>
-                  While on the call, note down any missing family birthdays/anniversaries and their next-visit / buying plans using the <strong>📇 Contact</strong> button.
+                <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px dashed #fde68a" }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: "#92400e", marginBottom: 4 }}>📋 ASK & NOTE ON THIS CALL</div>
+                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#78350f", lineHeight: 1.6 }}>
+                    {callChecklist(ev).map((item, ci) => <li key={ci}>{item}</li>)}
+                  </ul>
+                  <div style={{ marginTop: 4, fontSize: 11, color: "#92400e" }}>
+                    Fill everything in via the <strong>📇 Contact</strong> button — use a custom field for next-visit plan / wishlist if not already added.
+                  </div>
                 </div>
               </div>
             )}
