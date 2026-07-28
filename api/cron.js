@@ -36,8 +36,8 @@ async function generatePreview(sb, row) {
     } else if (row.step.link_url) { resolvedLink = { url: row.step.link_url, label: row.step.link_label || row.step.link_type }; }
   }
   const faqs = await getFaqs(row.tenant_id);
-  const isBirthdayFunnel = ["birthday","anniversary"].includes(funnel.kind);
-  const eventLabel = funnel.kind === "anniversary" ? "anniversary" : "birthday";
+  const isBirthdayFunnel = ["birthday","anniversary","after_marriage"].includes(funnel.kind);
+  const eventLabel = funnel.kind === "birthday" ? "birthday" : "anniversary";
   const stepName = (row.step?.name || "").toLowerCase();
   const isBirthdayWishStep = isBirthdayFunnel && stepName.includes("wish");
   const { count: remainingAfterPreview } = await sb.from("bullion_scheduled_messages")
@@ -274,7 +274,7 @@ export default async function handler(req, res) {
       const tid = TENANT_ID;
 
       const { data: funnels } = await sb.from("funnels")
-        .select("id,name,kind,active").eq("tenant_id", tid).in("kind", ["birthday", "anniversary"]);
+        .select("id,name,kind,active").eq("tenant_id", tid).in("kind", ["birthday", "anniversary", "after_marriage"]);
 
       const funnelSummary = [];
       for (const f of funnels || []) {
@@ -311,6 +311,55 @@ export default async function handler(req, res) {
     }
   }
 
+  // One-off fix: the "After Marriage — Lifetime Relationship" funnel was
+  // set to kind="anniversary", so it collided with "Anniversary Month
+  // Wishes" (also kind="anniversary") in the per-tenant funnel lookup used
+  // by the generic date-based enrollment loop — only one funnel can win
+  // that lookup, so contacts were getting enrolled into whichever funnel
+  // happened to win, flooding people who never got married this year with
+  // the 6-step after-marriage sequence. Fix: reclassify the funnel to its
+  // own kind="after_marriage" (already excluded from the generic loop,
+  // and unaffected — it only ever enrolls via the dedicated wedding_date
+  // check further down), then cancel any pending after_marriage messages
+  // for leads who were NOT actually married in roughly the last year.
+  if (req.query?.action === "fix_after_marriage_funnel") {
+    try {
+      const sb = supa();
+      const tid = TENANT_ID;
+      const nowMs = Date.now();
+      const oneYearAgo = new Date(nowMs - 370 * 86400000).toISOString().slice(0, 10);
+      const todayIso = new Date(nowMs + 5.5 * 3600000).toISOString().slice(0, 10);
+
+      const { error: kindErr } = await sb.from("funnels")
+        .update({ kind: "after_marriage" }).eq("id", "after_marriage").eq("tenant_id", tid);
+      if (kindErr) return res.status(500).json({ ok: false, error: kindErr.message });
+
+      const { data: pending } = await sb.from("bullion_scheduled_messages")
+        .select("id,lead_id,lead:bullion_leads(wedding_date)")
+        .eq("tenant_id", tid).eq("status", "pending").eq("funnel_id", "after_marriage");
+
+      const wrongIds = (pending || [])
+        .filter((r) => {
+          const wd = r.lead?.wedding_date;
+          if (!wd) return true; // never married — wrongly enrolled
+          return wd < oneYearAgo || wd > todayIso; // outside "married in the last year, up to today" window
+        })
+        .map((r) => r.id);
+
+      let canceled = 0;
+      if (wrongIds.length) {
+        const { data: upd } = await sb.from("bullion_scheduled_messages")
+          .update({ status: "canceled", canceled_reason: "wrongly_enrolled_not_recently_married" })
+          .in("id", wrongIds).select("id");
+        canceled = upd?.length || 0;
+      }
+
+      return res.status(200).json({ ok: true, kind_fixed: !kindErr, total_pending_checked: pending?.length || 0, canceled });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // Bulk cleanup: cancel pending calendar (birthday/anniversary) messages
   // whose send_at has already passed — these piled up while unapproved and
   // would fire a stale-dated wish (or all at once) the moment someone hits
@@ -322,7 +371,7 @@ export default async function handler(req, res) {
       const nowIso = new Date().toISOString();
 
       const { data: calendarFunnels } = await sb.from("funnels")
-        .select("id").eq("tenant_id", tid).in("kind", ["birthday", "anniversary"]);
+        .select("id").eq("tenant_id", tid).in("kind", ["birthday", "anniversary", "after_marriage"]);
       const funnelIds = (calendarFunnels || []).map((f) => f.id);
       if (!funnelIds.length) return res.status(200).json({ ok: true, canceled: 0 });
 
@@ -548,8 +597,8 @@ export default async function handler(req, res) {
     if (row.step?.use_ai_message) {
       try {
         const faqs = await getFaqs(row.tenant_id);
-        const isBirthdayFunnel = ["birthday", "anniversary"].includes(funnel.kind);
-        const eventLabel = funnel.kind === "anniversary" ? "anniversary" : "birthday";
+        const isBirthdayFunnel = ["birthday", "anniversary", "after_marriage"].includes(funnel.kind);
+        const eventLabel = funnel.kind === "birthday" ? "birthday" : "anniversary";
         const stepName = (row.step?.name || "").toLowerCase();
         const isBirthdayWishStep = isBirthdayFunnel && stepName.includes("wish");
         const aiSystem = [

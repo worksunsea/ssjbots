@@ -3560,7 +3560,7 @@ function FunnelStepsEditor({ funnel, onClose }) {
 
   const addStep = () => {
     const next = steps.length + 1;
-    const isCalendar = funnel.kind === "birthday" || funnel.kind === "anniversary";
+    const isCalendar = ["birthday","anniversary","after_marriage"].includes(funnel.kind);
     setSteps((s) => [...s, {
       _new: true,
       tenant_id: getTenantId(),
@@ -3906,9 +3906,9 @@ function FunnelForm({ funnel, personas, funnels = [], onClose, onSaved }) {
           </Select>
         </Field>
       </div>
-      <Field label={(form.kind === "birthday" || form.kind === "anniversary") ? "Offer text (used by AI in birthday/anniversary messages)" : "Goal"}>
-        <Input value={form.goal || ""} onChange={(e) => set("goal", e.target.value)} placeholder={(form.kind === "birthday" || form.kind === "anniversary") ? "e.g. Free gift on store visit + 70% off making charges this month" : "Book a showroom visit within 48 hours"} />
-        {(form.kind === "birthday" || form.kind === "anniversary") && (
+      <Field label={["birthday","anniversary","after_marriage"].includes(form.kind) ? "Offer text (used by AI in birthday/anniversary messages)" : "Goal"}>
+        <Input value={form.goal || ""} onChange={(e) => set("goal", e.target.value)} placeholder={["birthday","anniversary","after_marriage"].includes(form.kind) ? "e.g. Free gift on store visit + 70% off making charges this month" : "Book a showroom visit within 48 hours"} />
+        {["birthday","anniversary","after_marriage"].includes(form.kind) && (
           <div style={{ fontSize: 11, color: "#6b7280", marginTop: 3 }}>This is what the AI includes as the offer in pre/post event messages. It also appears in approval message previews.</div>
         )}
       </Field>
@@ -3944,6 +3944,7 @@ function FunnelForm({ funnel, personas, funnels = [], onClose, onSaved }) {
             <option value="after_sales">✅ After-sales (post-purchase)</option>
             <option value="birthday">🎂 Birthday wishes</option>
             <option value="anniversary">💍 Anniversary wishes</option>
+            <option value="after_marriage">💐 After-marriage (first-year upsell, married this year only)</option>
             <option value="lifecycle">Lifecycle / post-event</option>
             <option value="followup">Follow-up</option>
             <option value="broadcast">📢 Broadcast (festival / occasion)</option>
@@ -5828,6 +5829,19 @@ function ApprovalsScreen({ funnels, canApprove = true }) {
     setDiagLoading(false);
   };
 
+  const [fixingAfterMarriage, setFixingAfterMarriage] = useState(false);
+  const fixAfterMarriage = async () => {
+    if (!window.confirm(`Reclassify the After-Marriage funnel to its own kind (stops it colliding with Anniversary Month Wishes) and cancel its pending messages for anyone not actually married in the last year. Continue?`)) return;
+    setFixingAfterMarriage(true);
+    try {
+      const r = await fetch("/api/cron?action=fix_after_marriage_funnel", { headers: { "x-crm-secret": CRM_SECRET } });
+      const d = await r.json();
+      if (d.ok) { alert(`✅ Fixed. Canceled ${d.canceled} of ${d.total_pending_checked} pending after-marriage messages (wrongly enrolled).`); await load(); await runDiag(); }
+      else alert(`❌ ${d.error || "Failed"}`);
+    } catch (e) { alert(`❌ ${e.message}`); }
+    setFixingAfterMarriage(false);
+  };
+
   const clearStale = async () => {
     if (!window.confirm(`Cancel all pending birthday/anniversary messages whose date has already passed? This won't send them — they'll be removed from the approval queue.`)) return;
     setClearingStale(true);
@@ -5878,14 +5892,14 @@ function ApprovalsScreen({ funnels, canApprove = true }) {
       .eq("tenant_id", getTenantId())
       .eq("status", "pending")
       .lte("send_at", calUntil)
-      .in("funnel_id", funnels.filter((f) => f.kind === "birthday" || f.kind === "anniversary").map((f) => f.id))
+      .in("funnel_id", funnels.filter((f) => ["birthday","anniversary","after_marriage"].includes(f.kind)).map((f) => f.id))
       .order("send_at", { ascending: true })
       .limit(300);
     setCalRows(calData || []);
 
     // Regular drip messages: use the days filter
     const until = new Date(Date.now() + days * 86400000).toISOString();
-    const calIds = funnels.filter((f) => f.kind === "birthday" || f.kind === "anniversary").map((f) => f.id);
+    const calIds = funnels.filter((f) => ["birthday","anniversary","after_marriage"].includes(f.kind)).map((f) => f.id);
     let dripQuery = sb.from("bullion_scheduled_messages")
       .select("id,lead_id,funnel_id,body,edited_body,media_url,media_type,send_at,approved,approved_at,status,step:bullion_funnel_steps(id,name,step_order,use_ai_message),lead:bullion_leads(id,name,phone),funnel:funnels(id,name,kind)")
       .eq("tenant_id", getTenantId())
@@ -6159,8 +6173,14 @@ const activeRows = tab === "calendar" ? calRows : rows;
               <div style={{ marginBottom: 8, fontWeight: 600 }}>⚠️ No active anniversary funnel — anniversary messages can never be enrolled or show up here until one is activated.</div>
             )}
             {diag.duplicateActiveFunnels.length > 0 && (
-              <div style={{ marginBottom: 8, fontWeight: 600 }}>
-                ⚠️ Duplicate active funnels: {diag.duplicateActiveFunnels.map((d) => `${d.kind} ×${d.active_funnel_count}`).join(", ")} — a contact gets enrolled into every active funnel of that kind, multiplying their message count.
+              <div style={{ marginBottom: 8, fontWeight: 600, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <span>⚠️ Duplicate active funnels: {diag.duplicateActiveFunnels.map((d) => `${d.kind} ×${d.active_funnel_count}`).join(", ")} — a contact gets enrolled into every active funnel of that kind, multiplying their message count.</span>
+                {diag.duplicateActiveFunnels.some((d) => d.kind === "anniversary") && diag.funnels.some((f) => f.id === "after_marriage") && (
+                  <button onClick={fixAfterMarriage} disabled={fixingAfterMarriage}
+                    style={{ fontSize: 12, padding: "5px 12px", borderRadius: 6, border: "none", background: fixingAfterMarriage ? "#fca5a5" : "#dc2626", color: "#fff", cursor: fixingAfterMarriage ? "not-allowed" : "pointer", fontWeight: 600, whiteSpace: "nowrap" }}>
+                    {fixingAfterMarriage ? "⏳ Fixing…" : "🔧 Fix After-Marriage Funnel"}
+                  </button>
+                )}
               </div>
             )}
             <div style={{ fontWeight: 600, marginBottom: 4 }}>Top pending counts per person+funnel:</div>
