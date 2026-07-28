@@ -263,6 +263,36 @@ export default async function handler(req, res) {
     }
   }
 
+  // Bulk cleanup: cancel pending calendar (birthday/anniversary) messages
+  // whose send_at has already passed — these piled up while unapproved and
+  // would fire a stale-dated wish (or all at once) the moment someone hits
+  // "approve all". Never touches future-dated pending rows.
+  if (req.query?.action === "reject_stale_calendar") {
+    try {
+      const sb = supa();
+      const tid = TENANT_ID;
+      const nowIso = new Date().toISOString();
+
+      const { data: calendarFunnels } = await sb.from("funnels")
+        .select("id").eq("tenant_id", tid).in("kind", ["birthday", "anniversary"]);
+      const funnelIds = (calendarFunnels || []).map((f) => f.id);
+      if (!funnelIds.length) return res.status(200).json({ ok: true, canceled: 0 });
+
+      const { data: stale, error } = await sb.from("bullion_scheduled_messages")
+        .update({ status: "canceled", canceled_reason: "stale_before_approval" })
+        .eq("tenant_id", tid)
+        .eq("status", "pending")
+        .in("funnel_id", funnelIds)
+        .lt("send_at", nowIso)
+        .select("id");
+      if (error) return res.status(500).json({ ok: false, error: error.message });
+
+      return res.status(200).json({ ok: true, canceled: stale?.length || 0 });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // Diagnostic (read-only, no inserts): breaks down exactly why each
   // bday/anniversary contact is or isn't in the approval queue — DND,
   // unparseable date, outside the -5..40 day window, already enrolled,

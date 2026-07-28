@@ -5815,6 +5815,19 @@ function ApprovalsScreen({ funnels, canApprove = true }) {
   const [genningIds, setGenningIds] = useState(new Set());
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [bulkApproving, setBulkApproving] = useState(false);
+  const [clearingStale, setClearingStale] = useState(false);
+
+  const clearStale = async () => {
+    if (!window.confirm(`Cancel all pending birthday/anniversary messages whose date has already passed? This won't send them — they'll be removed from the approval queue.`)) return;
+    setClearingStale(true);
+    try {
+      const r = await fetch("/api/cron?action=reject_stale_calendar", { headers: { "x-crm-secret": CRM_SECRET } });
+      const d = await r.json();
+      if (d.ok) { alert(`✅ Canceled ${d.canceled} stale message${d.canceled === 1 ? "" : "s"}.`); await load(); }
+      else alert(`❌ ${d.error || "Failed"}`);
+    } catch (e) { alert(`❌ ${e.message}`); }
+    setClearingStale(false);
+  };
 
   const regenOne = async (id) => {
     setGenningIds((s) => new Set([...s, id]));
@@ -5979,6 +5992,7 @@ function ApprovalsScreen({ funnels, canApprove = true }) {
   };
 
 const activeRows = tab === "calendar" ? calRows : rows;
+  const staleCount = activeRows.filter((r) => !r.approved && new Date(r.send_at) < new Date()).length;
 
   const grouped = useMemo(() => {
     const map = new Map();
@@ -6131,6 +6145,12 @@ const activeRows = tab === "calendar" ? calRows : rows;
         {canApprove && pendingCount > 0 && (
           <button onClick={approveAllPending} disabled={bulkApproving} style={{ fontSize: 12, padding: "5px 12px", borderRadius: 6, border: "1px solid #16a34a", background: bulkApproving ? "#dcfce7" : "#16a34a", color: bulkApproving ? "#166534" : "#fff", cursor: bulkApproving ? "not-allowed" : "pointer", fontWeight: 600 }}>
             {bulkApproving ? "⏳ Approving…" : `✅ Approve All ${pendingCount} Pending`}
+          </button>
+        )}
+        {canApprove && tab === "calendar" && staleCount > 0 && (
+          <button onClick={clearStale} disabled={clearingStale} title="Cancel pending messages whose date already passed — won't send them"
+            style={{ fontSize: 12, padding: "5px 12px", borderRadius: 6, border: "1px solid #dc2626", background: clearingStale ? "#fee2e2" : "#fff", color: "#dc2626", cursor: clearingStale ? "not-allowed" : "pointer", fontWeight: 600 }}>
+            {clearingStale ? "⏳ Clearing…" : `🧹 Clear ${staleCount} Stale (date passed)`}
           </button>
         )}
         {canApprove && selectedIds.size > 0 && (
