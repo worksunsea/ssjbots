@@ -277,10 +277,21 @@ export default async function handler(req, res) {
         .select("id,name,kind,active").eq("tenant_id", tid).in("kind", ["birthday", "anniversary", "after_marriage"]);
 
       const funnelSummary = [];
+      const duplicateSteps = [];
       for (const f of funnels || []) {
-        const { count: stepCount } = await sb.from("bullion_funnel_steps")
-          .select("id", { count: "exact", head: true }).eq("funnel_id", f.id).eq("active", true);
-        funnelSummary.push({ id: f.id, name: f.name, kind: f.kind, active: f.active, active_step_count: stepCount || 0 });
+        const { data: steps } = await sb.from("bullion_funnel_steps")
+          .select("id,name,step_order").eq("funnel_id", f.id).eq("active", true);
+        funnelSummary.push({ id: f.id, name: f.name, kind: f.kind, active: f.active, active_step_count: steps?.length || 0 });
+        // Two active steps with the same step_order means every enrollment
+        // schedules both — a config duplicate, not an enrollment bug.
+        const byOrder = new Map();
+        for (const s of steps || []) {
+          if (!byOrder.has(s.step_order)) byOrder.set(s.step_order, []);
+          byOrder.get(s.step_order).push(s.name);
+        }
+        for (const [order, names] of byOrder) {
+          if (names.length > 1) duplicateSteps.push({ funnel: f.name, step_order: order, count: names.length, names });
+        }
       }
 
       const activeByKind = {};
@@ -292,20 +303,68 @@ export default async function handler(req, res) {
 
       const funnelIds = (funnels || []).map((f) => f.id);
       let perLeadCounts = [];
+      let duplicateRowGroups = []; // same lead+funnel+step scheduled more than once — literal duplicate inserts
       if (funnelIds.length) {
         const { data: pending } = await sb.from("bullion_scheduled_messages")
-          .select("lead_id,funnel_id,lead:bullion_leads(name,phone)")
+          .select("id,lead_id,funnel_id,step_id,send_at,lead:bullion_leads(name,phone),funnel:funnels(name),step:bullion_funnel_steps(name)")
           .eq("tenant_id", tid).eq("status", "pending").in("funnel_id", funnelIds);
         const map = new Map();
+        const stepMap = new Map();
         for (const r of pending || []) {
           const key = `${r.lead_id}:${r.funnel_id}`;
           if (!map.has(key)) map.set(key, { lead_id: r.lead_id, funnel_id: r.funnel_id, name: r.lead?.name, phone: r.lead?.phone, pending_count: 0 });
           map.get(key).pending_count++;
+
+          const stepKey = `${r.lead_id}:${r.funnel_id}:${r.step_id}`;
+          if (!stepMap.has(stepKey)) stepMap.set(stepKey, { name: r.lead?.name, phone: r.lead?.phone, funnel: r.funnel?.name, step: r.step?.name, ids: [] });
+          stepMap.get(stepKey).ids.push(r.id);
         }
         perLeadCounts = [...map.values()].sort((a, b) => b.pending_count - a.pending_count).slice(0, 30);
+        duplicateRowGroups = [...stepMap.values()].filter((g) => g.ids.length > 1);
       }
 
-      return res.status(200).json({ ok: true, funnels: funnelSummary, duplicateActiveFunnels, top_pending_counts: perLeadCounts });
+      return res.status(200).json({ ok: true, funnels: funnelSummary, duplicateActiveFunnels, duplicateSteps, top_pending_counts: perLeadCounts, duplicateScheduledRows: duplicateRowGroups });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
+  // Cleanup: cancel literal duplicate pending rows — same lead + funnel +
+  // step scheduled more than once (an enrollment race or a re-run inserted
+  // the same step twice). Keeps the earliest send_at per group, cancels
+  // the rest. Does NOT touch distinct steps of the same funnel (that's
+  // normal — a 4-step birthday funnel is supposed to have 4 rows).
+  if (req.query?.action === "fix_duplicate_scheduled_rows") {
+    try {
+      const sb = supa();
+      const tid = TENANT_ID;
+      const { data: pending } = await sb.from("bullion_scheduled_messages")
+        .select("id,lead_id,funnel_id,step_id,send_at")
+        .eq("tenant_id", tid).eq("status", "pending");
+
+      const groups = new Map();
+      for (const r of pending || []) {
+        const key = `${r.lead_id}:${r.funnel_id}:${r.step_id}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(r);
+      }
+
+      const toCancelIds = [];
+      for (const rows of groups.values()) {
+        if (rows.length < 2) continue;
+        rows.sort((a, b) => new Date(a.send_at) - new Date(b.send_at));
+        toCancelIds.push(...rows.slice(1).map((r) => r.id)); // keep earliest, cancel rest
+      }
+
+      let canceled = 0;
+      if (toCancelIds.length) {
+        const { data: upd } = await sb.from("bullion_scheduled_messages")
+          .update({ status: "canceled", canceled_reason: "duplicate_row" })
+          .in("id", toCancelIds).select("id");
+        canceled = upd?.length || 0;
+      }
+
+      return res.status(200).json({ ok: true, duplicate_groups_found: [...groups.values()].filter((g) => g.length > 1).length, canceled });
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
@@ -484,9 +543,37 @@ export default async function handler(req, res) {
   try {
   const sb = supa();
   const nowIso = new Date().toISOString();
-  const stats = { considered: 0, sent: 0, canceled: 0, failed: 0, transitioned: 0, calendarEnrolled: 0, previewsGenerated: 0, afterMarriageCleaned: 0 };
+  const stats = { considered: 0, sent: 0, canceled: 0, failed: 0, transitioned: 0, calendarEnrolled: 0, previewsGenerated: 0, afterMarriageCleaned: 0, duplicatesCleaned: 0 };
 
-  // ── 0. Self-heal: cancel any leftover wrong after-marriage enrollments ──
+  // ── 0a. Self-heal: cancel literal duplicate pending rows (same lead +
+  // funnel + step scheduled more than once — an enrollment race or a
+  // re-run inserted the same step twice). Keeps the earliest, cancels the
+  // rest. Runs every tick, no-op once clean.
+  {
+    const { data: dupPending } = await sb.from("bullion_scheduled_messages")
+      .select("id,lead_id,funnel_id,step_id,send_at")
+      .eq("tenant_id", TENANT_ID).eq("status", "pending");
+    const dupGroups = new Map();
+    for (const r of dupPending || []) {
+      const key = `${r.lead_id}:${r.funnel_id}:${r.step_id}`;
+      if (!dupGroups.has(key)) dupGroups.set(key, []);
+      dupGroups.get(key).push(r);
+    }
+    const dupCancelIds = [];
+    for (const rows of dupGroups.values()) {
+      if (rows.length < 2) continue;
+      rows.sort((a, b) => new Date(a.send_at) - new Date(b.send_at));
+      dupCancelIds.push(...rows.slice(1).map((r) => r.id));
+    }
+    if (dupCancelIds.length) {
+      const { data: dupUpd } = await sb.from("bullion_scheduled_messages")
+        .update({ status: "canceled", canceled_reason: "duplicate_row" })
+        .in("id", dupCancelIds).select("id");
+      stats.duplicatesCleaned = dupUpd?.length || 0;
+    }
+  }
+
+  // ── 0b. Self-heal: cancel any leftover wrong after-marriage enrollments ──
   // Backlog from when this funnel shared kind="anniversary" with Anniversary
   // Month Wishes and won the per-tenant lookup for everyone. The funnel's
   // kind is now fixed (see fix_after_marriage_funnel), so no NEW wrong rows

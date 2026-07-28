@@ -5847,6 +5847,18 @@ function ApprovalsScreen({ funnels, canApprove = true }) {
     setFixingAfterMarriage(false);
   };
 
+  const [fixingDupes, setFixingDupes] = useState(false);
+  const fixDuplicateRows = async () => {
+    setFixingDupes(true);
+    try {
+      const r = await fetch("/api/cron?action=fix_duplicate_scheduled_rows", { headers: { "x-crm-secret": CRM_SECRET } });
+      const d = await r.json();
+      if (d.ok) { alert(`✅ Canceled ${d.canceled} duplicate row(s) across ${d.duplicate_groups_found} group(s). Kept the earliest of each.`); await load(); await runDiag(); }
+      else alert(`❌ ${d.error || "Failed"}`);
+    } catch (e) { alert(`❌ ${e.message}`); }
+    setFixingDupes(false);
+  };
+
   const clearStale = async () => {
     if (!window.confirm(`Cancel all pending birthday/anniversary messages whose date has already passed? This won't send them — they'll be removed from the approval queue.`)) return;
     setClearingStale(true);
@@ -6186,6 +6198,20 @@ const activeRows = tab === "calendar" ? calRows : rows;
                     {fixingAfterMarriage ? "⏳ Fixing…" : "🔧 Fix After-Marriage Funnel"}
                   </button>
                 )}
+              </div>
+            )}
+            {diag.duplicateSteps?.length > 0 && (
+              <div style={{ marginBottom: 8, fontWeight: 600 }}>
+                ⚠️ Duplicate steps in funnel config: {diag.duplicateSteps.map((d, i) => <span key={i}>{d.funnel} step_order {d.step_order} ×{d.count} ({d.names.join(" / ")})</span>).reduce((a, b) => [a, ", ", b])} — every enrollment schedules both. Fix by deactivating/deleting the duplicate step in the funnel editor.
+              </div>
+            )}
+            {diag.duplicateScheduledRows?.length > 0 && (
+              <div style={{ marginBottom: 8, fontWeight: 600, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <span>⚠️ {diag.duplicateScheduledRows.length} duplicate scheduled row group(s) — same person got the same step queued more than once (enrollment ran twice). E.g. {diag.duplicateScheduledRows.slice(0, 3).map((g) => `${g.name || g.phone} · ${g.funnel} · ${g.step} ×${g.ids.length}`).join("; ")}{diag.duplicateScheduledRows.length > 3 ? "…" : ""}</span>
+                <button onClick={fixDuplicateRows} disabled={fixingDupes}
+                  style={{ fontSize: 12, padding: "5px 12px", borderRadius: 6, border: "none", background: fixingDupes ? "#fca5a5" : "#dc2626", color: "#fff", cursor: fixingDupes ? "not-allowed" : "pointer", fontWeight: 600, whiteSpace: "nowrap" }}>
+                  {fixingDupes ? "⏳ Fixing…" : "🔧 Fix Duplicate Rows"}
+                </button>
               </div>
             )}
             <div style={{ fontWeight: 600, marginBottom: 4 }}>Top pending counts per person+funnel:</div>
