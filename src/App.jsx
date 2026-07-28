@@ -5384,6 +5384,11 @@ function ContactEditModal({ contact, allTags = [], customFields = [], onClose, o
   const [partnerInfo, setPartnerInfo] = useState(null);
   const [partnerSearch, setPartnerSearch] = useState("");
   const [partnerResults, setPartnerResults] = useState([]);
+  // Family members (spouse, kids, parents, etc.) — same family_members
+  // table the public /profile self-service form writes to, now editable
+  // by telecallers directly from this modal too.
+  const [family, setFamily] = useState([]);
+  const [deletedFamilyIds, setDeletedFamilyIds] = useState([]);
 
   // Resolve current partner info for display
   useEffect(() => {
@@ -5391,6 +5396,21 @@ function ContactEditModal({ contact, allTags = [], customFields = [], onClose, o
     sb.from("bullion_leads").select("id,name,phone").eq("id", form.partner_lead_id).maybeSingle()
       .then(({ data }) => setPartnerInfo(data || null));
   }, [form.partner_lead_id]);
+
+  // Load existing family members for this contact
+  useEffect(() => {
+    if (!contact.id) return;
+    sb.from("family_members").select("id,relationship,name,dob,mobile").eq("lead_id", contact.id).order("created_at", { ascending: true })
+      .then(({ data }) => setFamily(data || []));
+  }, [contact.id]);
+
+  const setFamilyMember = (i, k, v) => setFamily((p) => p.map((m, idx) => idx === i ? { ...m, [k]: v } : m));
+  const addFamilyMember = () => setFamily((p) => [...p, { relationship: "spouse", name: "", dob: "", mobile: "" }]);
+  const removeFamilyMember = (i) => {
+    const m = family[i];
+    if (m.id) setDeletedFamilyIds((p) => [...p, m.id]);
+    setFamily((p) => p.filter((_, idx) => idx !== i));
+  };
 
   // Search for partner candidates
   useEffect(() => {
@@ -5480,6 +5500,25 @@ function ContactEditModal({ contact, allTags = [], customFields = [], onClose, o
       await sb.from("bullion_leads").update({ partner_lead_id: null })
         .eq("id", contact.partner_lead_id).eq("partner_lead_id", savedId);
     }
+    // Family members — same table the public /profile form writes to.
+    if (savedId) {
+      for (const m of family) {
+        if (!m.relationship) continue;
+        const row = {
+          lead_id: savedId,
+          tenant_id: payload.tenant_id,
+          relationship: String(m.relationship).slice(0, 50),
+          name: m.name ? String(m.name).slice(0, 100) : null,
+          dob: m.dob ? String(m.dob).slice(0, 20) : null,
+          mobile: m.mobile ? String(m.mobile).slice(0, 20) : null,
+        };
+        if (m.id) await sb.from("family_members").update(row).eq("id", m.id).eq("lead_id", savedId);
+        else await sb.from("family_members").insert(row);
+      }
+      if (deletedFamilyIds.length) {
+        await sb.from("family_members").delete().in("id", deletedFamilyIds).eq("lead_id", savedId);
+      }
+    }
     setSaving(false);
     onSaved();
   };
@@ -5562,6 +5601,26 @@ function ContactEditModal({ contact, allTags = [], customFields = [], onClose, o
             )}
           </div>
         )}
+      </Field>
+
+      <Field label="👨‍👩‍👧 Family Members — spouse, kids, parents (their birthdays show up in Upcoming Events too)" style={{ marginTop: 10 }}>
+          {family.length === 0 && <p style={{ fontSize: 12, color: "#aaa", margin: "4px 0" }}>No family members yet.</p>}
+          {family.map((m, i) => (
+            <div key={m.id || i} style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6, flexWrap: "wrap" }}>
+              <select value={m.relationship} onChange={(e) => setFamilyMember(i, "relationship", e.target.value)}
+                style={{ fontSize: 12, border: "1px solid #ddd", borderRadius: 6, padding: "5px 6px" }}>
+                {["spouse","son","daughter","mother","father","brother","sister","other"].map((r) => <option key={r} value={r}>{r}</option>)}
+              </select>
+              <input style={{ fontSize: 12, border: "1px solid #ddd", borderRadius: 6, padding: "5px 8px", width: 110 }}
+                value={m.name || ""} onChange={(e) => setFamilyMember(i, "name", e.target.value)} placeholder="Name" />
+              <input style={{ fontSize: 12, border: "1px solid #ddd", borderRadius: 6, padding: "5px 8px", width: 120 }}
+                value={m.dob || ""} onChange={(e) => setFamilyMember(i, "dob", e.target.value)} placeholder="Birthday DD-MM or YYYY-MM-DD" />
+              <input style={{ fontSize: 12, border: "1px solid #ddd", borderRadius: 6, padding: "5px 8px", width: 100 }}
+                value={m.mobile || ""} onChange={(e) => setFamilyMember(i, "mobile", e.target.value)} placeholder="Mobile (optional)" />
+              <button onClick={() => removeFamilyMember(i)} style={{ fontSize: 12, color: C.red, border: "none", background: "none", cursor: "pointer" }}>Remove</button>
+            </div>
+          ))}
+          <button onClick={addFamilyMember} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 8, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>+ Add family member</button>
       </Field>
 
       <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, margin: "10px 0", cursor: "pointer" }}>
