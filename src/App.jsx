@@ -6286,7 +6286,24 @@ function MessageHistoryScreen({ funnels }) {
 // ──────────────────────────────────────────────────────────
 // UPCOMING EVENTS SCREEN — birthdays & anniversaries
 // ──────────────────────────────────────────────────────────
+// Telecaller call script for a birthday/anniversary courtesy call — wish
+// them, invite to the showroom, and use the call to fill contact gaps.
+function upcomingCallScript(ev) {
+  const firstName = (ev.contact.name || "").trim().split(/\s+/)[0] || "";
+  const eventWord = ev.msgType === "bday" ? "birthday" : "wedding anniversary";
+  const greeting = ev.daysUntil === 0 ? `Happy ${eventWord}` : ev.daysUntil > 0 ? `an early Happy ${eventWord}` : `a belated Happy ${eventWord}`;
+  return [
+    `Hi ${firstName || "there"}, this is calling from Sun Sea Jewellers, Karol Bagh.`,
+    `Wishing you ${greeting} on behalf of all of us here!`,
+    `We have a small gift and up to 70% off on making charges waiting for you this month — do drop by the showroom to collect it, we'd love to see you.`,
+    `While I have you on the line — can I update a couple of things in your profile? Do you have any family members' birthdays or anniversaries we should remember and wish too?`,
+    `Also, is there anything specific you're planning to buy on your next visit, and roughly when are you thinking of coming in? I'll note it down so we're ready for you.`,
+    `Thank you so much, and once again — Happy ${eventWord}! Looking forward to seeing you at Sun Sea Jewellers.`,
+  ].join("\n\n");
+}
+
 function UpcomingEventsScreen() {
+  const { customFields } = React.useContext(ContactFieldsContext);
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [days, setDays] = useState(7);
@@ -6294,6 +6311,10 @@ function UpcomingEventsScreen() {
   const [sendTarget, setSendTarget] = useState(null); // { contact, msgType }
   const [enrolling, setEnrolling] = useState(new Set()); // "leadId-funnelType" keys
   const [enrolled, setEnrolled] = useState(new Set()); // successfully enrolled this session
+  const [scriptFor, setScriptFor] = useState(null); // event index whose call script is expanded
+  const [copiedScript, setCopiedScript] = useState(false);
+  const [editContact, setEditContact] = useState(null); // full lead object for ContactEditModal
+  const [editContactTags, setEditContactTags] = useState([]);
 
   useEffect(() => {
     load();
@@ -6414,6 +6435,22 @@ function UpcomingEventsScreen() {
     setEnrolling((s) => { const n = new Set(s); n.delete(key); return n; });
   };
 
+  const openContactEdit = async (leadId) => {
+    const [{ data: lead }, { data: tags }] = await Promise.all([
+      sb.from("bullion_leads").select("*").eq("id", leadId).maybeSingle(),
+      sb.from("bullion_tags").select("name,category,color").eq("tenant_id", getTenantId()).order("sort_order"),
+    ]);
+    if (lead) { setEditContact(lead); setEditContactTags(tags || []); }
+  };
+
+  const copyScript = async (text) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedScript(true);
+      setTimeout(() => setCopiedScript(false), 1500);
+    } catch {}
+  };
+
   const urgencyColor = (d) => d < 0 ? "#9333ea" : d === 0 ? "#dc2626" : d <= 7 ? "#ea580c" : d <= 14 ? "#d97706" : "#555";
   const urgencyBg = (d) => d < 0 ? "#faf5ff" : d === 0 ? "#fef2f2" : d <= 7 ? "#fff7ed" : d <= 14 ? "#fffbeb" : "#fff";
   const daysLabel = (d) => d < 0 ? `${Math.abs(d)}d ago` : d === 0 ? "Today! 🎉" : d === 1 ? "Tomorrow" : `${d} days`;
@@ -6437,35 +6474,62 @@ function UpcomingEventsScreen() {
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {events.map((ev, i) => (
-          <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: urgencyBg(ev.daysUntil), border: `1px solid ${urgencyColor(ev.daysUntil)}`, borderRadius: 10 }}>
-            <div style={{ fontSize: 22, width: 32, textAlign: "center" }}>{ev.icon}</div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontWeight: 600, fontSize: 14 }}>{ev.contact.name || ev.contact.phone}</div>
-              <div style={{ fontSize: 12, color: "#666" }}>{ev.contact.phone}{ev.contact.city ? ` · ${ev.contact.city}` : ""}</div>
-              <div style={{ marginTop: 3, display: "flex", gap: 5, flexWrap: "wrap" }}>
-                {ev.sentCount > 0 && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#dcfce7", color: "#166534" }}>✅ {ev.sentCount} sent</span>}
-                {ev.pendingCount > 0 && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#dbeafe", color: "#1d4ed8" }}>📅 {ev.pendingCount} queued{ev.nextSend ? ` · next ${ev.nextSend.toLocaleDateString("en-IN", { day:"numeric", month:"short" })} ${ev.nextSend.toLocaleTimeString("en-IN", { hour:"2-digit", minute:"2-digit" })}` : ""}</span>}
-                {ev.sentCount === 0 && ev.pendingCount === 0 && (
-                  <>
-                    <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#fef9c3", color: "#713f12" }}>⚠️ not enrolled</span>
-                    <button
-                      disabled={enrolling.has(`${ev.contact.id}-${ev.msgType === "bday" ? "birthday" : "anniversary"}`)}
-                      onClick={() => enrollInFunnel(ev.contact.id, ev.msgType === "bday" ? "birthday" : "anniversary")}
-                      style={{ fontSize: 10, padding: "1px 8px", borderRadius: 8, border: "1px solid #6366f1", background: "#eef2ff", color: "#3730a3", cursor: "pointer" }}>
-                      {enrolling.has(`${ev.contact.id}-${ev.msgType === "bday" ? "birthday" : "anniversary"}`) ? "Enrolling…" : "🎯 Enroll"}
-                    </button>
-                  </>
-                )}
+          <div key={i} style={{ background: urgencyBg(ev.daysUntil), border: `1px solid ${urgencyColor(ev.daysUntil)}`, borderRadius: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px" }}>
+              <div style={{ fontSize: 22, width: 32, textAlign: "center" }}>{ev.icon}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>{ev.contact.name || ev.contact.phone}</div>
+                <div style={{ fontSize: 12, color: "#666" }}>{ev.contact.phone}{ev.contact.city ? ` · ${ev.contact.city}` : ""}</div>
+                <div style={{ marginTop: 3, display: "flex", gap: 5, flexWrap: "wrap" }}>
+                  {ev.sentCount > 0 && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#dcfce7", color: "#166534" }}>✅ {ev.sentCount} sent</span>}
+                  {ev.pendingCount > 0 && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#dbeafe", color: "#1d4ed8" }}>📅 {ev.pendingCount} queued{ev.nextSend ? ` · next ${ev.nextSend.toLocaleDateString("en-IN", { day:"numeric", month:"short" })} ${ev.nextSend.toLocaleTimeString("en-IN", { hour:"2-digit", minute:"2-digit" })}` : ""}</span>}
+                  {ev.sentCount === 0 && ev.pendingCount === 0 && (
+                    <>
+                      <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#fef9c3", color: "#713f12" }}>⚠️ not enrolled</span>
+                      <button
+                        disabled={enrolling.has(`${ev.contact.id}-${ev.msgType === "bday" ? "birthday" : "anniversary"}`)}
+                        onClick={() => enrollInFunnel(ev.contact.id, ev.msgType === "bday" ? "birthday" : "anniversary")}
+                        style={{ fontSize: 10, padding: "1px 8px", borderRadius: 8, border: "1px solid #6366f1", background: "#eef2ff", color: "#3730a3", cursor: "pointer" }}>
+                        {enrolling.has(`${ev.contact.id}-${ev.msgType === "bday" ? "birthday" : "anniversary"}`) ? "Enrolling…" : "🎯 Enroll"}
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+              <div style={{ textAlign: "right", minWidth: 90 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: urgencyColor(ev.daysUntil) }}>{daysLabel(ev.daysUntil)}</div>
+                <div style={{ fontSize: 11, color: "#888" }}>{ev.label} · {ev.date.toLocaleDateString("en-IN", { day: "numeric", month: "short" })}</div>
+              </div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                <button onClick={() => setScriptFor(scriptFor === i ? null : i)}
+                  style={{ fontSize: 12, padding: "5px 12px", borderRadius: 7, border: "1px solid #f59e0b", background: "#fffbeb", color: "#92400e", cursor: "pointer", whiteSpace: "nowrap" }}>
+                  📞 {scriptFor === i ? "Hide script" : "Call script"}
+                </button>
+                <button onClick={() => openContactEdit(ev.contact.id)}
+                  style={{ fontSize: 12, padding: "5px 12px", borderRadius: 7, border: "1px solid #6366f1", background: "#eef2ff", color: "#3730a3", cursor: "pointer", whiteSpace: "nowrap" }}>
+                  📇 Contact
+                </button>
+                <button onClick={() => setSendTarget({ contact: ev.contact, msgType: ev.msgType })}
+                  style={{ fontSize: 12, padding: "5px 12px", borderRadius: 7, border: "1px solid #22c55e", background: "#f0fdf4", color: "#166534", cursor: "pointer", whiteSpace: "nowrap" }}>
+                  💬 Wish
+                </button>
               </div>
             </div>
-            <div style={{ textAlign: "right", minWidth: 90 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: urgencyColor(ev.daysUntil) }}>{daysLabel(ev.daysUntil)}</div>
-              <div style={{ fontSize: 11, color: "#888" }}>{ev.label} · {ev.date.toLocaleDateString("en-IN", { day: "numeric", month: "short" })}</div>
-            </div>
-            <button onClick={() => setSendTarget({ contact: ev.contact, msgType: ev.msgType })}
-              style={{ fontSize: 12, padding: "5px 12px", borderRadius: 7, border: "1px solid #22c55e", background: "#f0fdf4", color: "#166534", cursor: "pointer", whiteSpace: "nowrap" }}>
-              💬 Wish
-            </button>
+            {scriptFor === i && (
+              <div style={{ margin: "0 14px 12px", padding: "10px 12px", background: "#fff", border: "1px dashed #f59e0b", borderRadius: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: "#92400e" }}>CALL SCRIPT — wish + invite to showroom + fill gaps</span>
+                  <button onClick={() => copyScript(upcomingCallScript(ev))}
+                    style={{ fontSize: 11, padding: "2px 8px", borderRadius: 6, border: "1px solid #ddd", background: "#fafafa", cursor: "pointer" }}>
+                    {copiedScript ? "✅ Copied" : "📋 Copy"}
+                  </button>
+                </div>
+                <div style={{ fontSize: 13, lineHeight: 1.6, whiteSpace: "pre-wrap", color: "#333" }}>{upcomingCallScript(ev)}</div>
+                <div style={{ marginTop: 8, fontSize: 11, color: "#92400e" }}>
+                  While on the call, note down any missing family birthdays/anniversaries and their next-visit / buying plans using the <strong>📇 Contact</strong> button.
+                </div>
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -6475,6 +6539,16 @@ function UpcomingEventsScreen() {
           contact={sendTarget.contact}
           initialMsgType={sendTarget.msgType}
           onClose={() => setSendTarget(null)}
+        />
+      )}
+
+      {editContact && (
+        <ContactEditModal
+          contact={editContact}
+          allTags={editContactTags}
+          customFields={customFields}
+          onClose={() => setEditContact(null)}
+          onSaved={() => { setEditContact(null); load(); }}
         />
       )}
     </div>
