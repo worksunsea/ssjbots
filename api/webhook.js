@@ -88,10 +88,18 @@ export default async function handler(req, res) {
   if (!phone || !msg) return res.status(200).json({ ok: false, reason: "no_phone_or_msg" });
 
   // ── Owner WhatsApp commands: task assignment, on-demand report, resource search ──
-  // Only the 3 trusted SA numbers (OWNER_PHONES) reach this branch; everyone
-  // else falls through to the normal lead/FAQ bot below.
+  // Only the 3 trusted SA numbers (OWNER_PHONES) reach this branch, AND only
+  // when the message arrived on the 8860866000 (BOT_NUMBERS) session — every
+  // other Baileys number is send-only and must never bot-reply to admins,
+  // even when the admin messages it directly. Same session_phone check as
+  // Gate 1 below (2026-07-28: was missing here, so all Baileys numbers were
+  // replying to admin numbers).
   const normPhone = normalizePhone(phone);
-  if (OWNER_PHONES.some((p) => normalizePhone(p) === normPhone)) {
+  const ownerSessionPhone = body.session_phone
+    ? normalizePhone(String(body.session_phone).replace(/[:@].*/, ""))
+    : null;
+  const isOwnerCommandSession = !waClient || (ownerSessionPhone && BOT_NUMBERS.includes(ownerSessionPhone));
+  if (isOwnerCommandSession && OWNER_PHONES.some((p) => normalizePhone(p) === normPhone)) {
     try {
       const sb = supa();
       const { replyText, mediaUrl, mediaType, filename, caption, items } = await handleOwnerMessage(sb, msg);
