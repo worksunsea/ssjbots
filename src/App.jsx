@@ -6286,20 +6286,68 @@ function MessageHistoryScreen({ funnels }) {
 // ──────────────────────────────────────────────────────────
 // UPCOMING EVENTS SCREEN — birthdays & anniversaries
 // ──────────────────────────────────────────────────────────
+// 5 hand-written Hinglish templates, rotated deterministically per
+// contact+event (same contact always sees the same one — no AI call,
+// no cost, no regeneration flicker). Each covers: warm wish, showroom
+// invite + offer, ask for missing family dates, ask next-visit plan.
+const CALL_SCRIPT_TEMPLATES = [
+  ({ name, event, city }) => [
+    `Hi ${name} ji, Sun Sea Jewellers, Karol Bagh se baat kar rahi hoon.`,
+    `Aapko aur poori family ko bahut bahut Happy ${event}!`,
+    `Aapke liye ek chhota sa gift aur making charges pe 70% tak ki special offer rakhi hai humne — please showroom aa kar collect kar lijiye${city}.`,
+    `Waise ek baat puchni thi — ghar mein aur kisi ki birthday ya anniversary date honi baaki hai kya? Wo bhi note kar lete hain, taaki unhe bhi time pe wish kar sakein.`,
+    `Aur agle visit ka koi plan hai? Kuch specific dekhna chahenge aap?`,
+    `Bahut bahut shukriya, aur ek baar phir Happy ${event}! Aapka Sun Sea Jewellers mein intezaar rahega.`,
+  ],
+  ({ name, event, city }) => [
+    `Namaste ${name} ji, main Sun Sea Jewellers se bol rahi hoon.`,
+    `Aapka ${event} hai na — dil se Happy ${event}!`,
+    `Iss khushi ke mauke par humari taraf se ek surprise gift hai aapke liye, aur making charges pe 70% tak off bhi — showroom visit kijiye${city}, achha lagega aapse milkar.`,
+    `Ek chhoti si request — family mein kisi aur ki bhi birthday ya anniversary date hum note kar sakte hain kya? Taaki unko bhi time pe wish kar sakein.`,
+    `Aur bataiye, agli baar kab aana plan hai, kuch specific dekhna hai kya aapko?`,
+    `Thank you so much, once again Happy ${event}!`,
+  ],
+  ({ name, event, city }) => [
+    `Hi ${name}, Sun Sea Jewellers Karol Bagh se calling kar rahi hoon.`,
+    `Happy ${event}! Bahut bahut badhai aapko.`,
+    `Aapke liye special gift + 70% off making charges ready hai${city}, showroom aa jaiye jab time mile.`,
+    `Ek minute — family ki koi aur important date, birthday ya anniversary, hai kya jo hum record kar len?`,
+    `Aur next visit ka plan kya hai, kuch specific piece dekhna hai kya?`,
+    `Thanks, Happy ${event} once again!`,
+  ],
+  ({ name, event, city }) => [
+    `Hi ${name} ji, kaise hain aap? Sun Sea Jewellers se baat kar rahi hoon.`,
+    `Sabse pehle — Happy ${event}! Bahut khushi hui yaad karke.`,
+    `Aap hamare valued customer hain, isliye khaas gift aur making charges pe 70% tak ki offer rakhi hai humne — showroom${city} aakar zaroor lijiye.`,
+    `Waise, ghar mein aur kisi ki birthday ya anniversary hai jo hum note kar len, taaki unhe bhi wish kar sakein?`,
+    `Aur agli visit kab soch rahe hain, kuch particular piece dekhna hai kya?`,
+    `Bahut shukriya, phir se Happy ${event}!`,
+  ],
+  ({ name, event, city }) => [
+    `Hi ${name} ji, Sun Sea Jewellers ki taraf se — Happy ${event}!`,
+    `Aaj ka din khaas hai, aur hum chahte hain aap bhi khaas mehsoos karein — ek gift aur making charges pe 70% tak ki offer aapke naam hai, showroom${city} aake collect kar lijiye.`,
+    `Ek baat — family mein aur kisi ki birthday ya anniversary date hai jo hum yaad rakh sakein?`,
+    `Aur bataiye, next visit kab plan kar rahe hain, kuch khaas dekhna hai?`,
+    `Dhanyavaad, aur Happy ${event} once again!`,
+  ],
+];
+
+// Deterministic pick so the same contact+event always shows the same
+// script (no flicker on re-render, no randomness to manage).
+function hashStr(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h;
+}
+
 // Telecaller call script for a birthday/anniversary courtesy call — wish
 // them, invite to the showroom, and use the call to fill contact gaps.
 function upcomingCallScript(ev) {
-  const firstName = (ev.contact.name || "").trim().split(/\s+/)[0] || "";
-  const eventWord = ev.msgType === "bday" ? "birthday" : "wedding anniversary";
-  const greeting = ev.daysUntil === 0 ? `Happy ${eventWord}` : ev.daysUntil > 0 ? `an early Happy ${eventWord}` : `a belated Happy ${eventWord}`;
-  return [
-    `Hi ${firstName || "there"}, this is calling from Sun Sea Jewellers, Karol Bagh.`,
-    `Wishing you ${greeting} on behalf of all of us here!`,
-    `We have a small gift and up to 70% off on making charges waiting for you this month — do drop by the showroom to collect it, we'd love to see you.`,
-    `While I have you on the line — can I update a couple of things in your profile? Do you have any family members' birthdays or anniversaries we should remember and wish too?`,
-    `Also, is there anything specific you're planning to buy on your next visit, and roughly when are you thinking of coming in? I'll note it down so we're ready for you.`,
-    `Thank you so much, and once again — Happy ${eventWord}! Looking forward to seeing you at Sun Sea Jewellers.`,
-  ].join("\n\n");
+  const name = (ev.contact.name || "").trim().split(/\s+/)[0] || "Sir/Ma'am";
+  const event = ev.msgType === "bday" ? "birthday" : "anniversary";
+  const city = ev.contact.city ? ` (${ev.contact.city} wale)` : "";
+  const idx = hashStr(`${ev.contact.id}-${ev.msgType}`) % CALL_SCRIPT_TEMPLATES.length;
+  return CALL_SCRIPT_TEMPLATES[idx]({ name, event, city }).join("\n\n");
 }
 
 function UpcomingEventsScreen() {
