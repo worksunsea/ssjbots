@@ -6446,7 +6446,7 @@ function UpcomingEventsScreen() {
     setLoading(true);
     setErr(null);
     try {
-      const [{ data, error }, { data: scheduled }] = await Promise.all([
+      const [{ data, error }, { data: scheduled }, { data: familyRows }] = await Promise.all([
         sb.from("bullion_leads")
           .select("id,name,phone,city,bday,anniversary,spouse_name,spouse_dob,wedding_date,wedding_family_member,address_house,address_locality,address_pincode")
           .eq("tenant_id", getTenantId())
@@ -6457,8 +6457,26 @@ function UpcomingEventsScreen() {
           .in("funnel_id", ["birthday","anniversary"])
           .in("status", ["pending","sent"])
           .gte("created_at", new Date(Date.now() - 335 * 86400000).toISOString()),
+        // Family members added via the self-service /profile form (spouse,
+        // kids, parents, etc. — richer than the legacy spouse_dob column,
+        // and the only place child birthdays can be captured today).
+        sb.from("family_members")
+          .select("id,lead_id,relationship,name,dob,mobile")
+          .eq("tenant_id", getTenantId())
+          .not("dob", "is", null),
       ]);
       if (error) { setErr(error.message); setLoading(false); return; }
+
+      // Family members can belong to a lead that has no own bday/anniversary
+      // set (so wasn't in `data` above) — fetch those leads separately.
+      const knownLeadIds = new Set((data || []).map((c) => c.id));
+      const extraLeadIds = [...new Set((familyRows || []).map((f) => f.lead_id).filter((id) => !knownLeadIds.has(id)))];
+      let extraLeads = [];
+      if (extraLeadIds.length) {
+        const { data: el } = await sb.from("bullion_leads").select("id,name,phone,city").in("id", extraLeadIds);
+        extraLeads = el || [];
+      }
+      const leadById = new Map([...(data || []), ...extraLeads].map((c) => [c.id, c]));
 
       // Build map: lead_id → array of scheduled messages
       const schedMap = {};
@@ -6473,6 +6491,27 @@ function UpcomingEventsScreen() {
       const rows = [];
       const hasAddress = (c) => !!(c.address_house || c.address_locality || c.address_pincode);
 
+      // Shared recurring-date resolver: given month/day (0-indexed month),
+      // find this year's or next year's occurrence within [pastCutoff, futureCutoff].
+      // Returns null if the occurrence falls outside the window.
+      const resolveOccurrence = (m, d) => {
+        const thisYear = new Date(today.getFullYear(), m, d);
+        const diffThis = thisYear - today;
+        if (diffThis >= pastCutoff && diffThis <= futureCutoff) return thisYear;
+        if (diffThis > futureCutoff) return null;
+        if (diffThis >= pastCutoff) return thisYear;
+        const nextYear = new Date(today.getFullYear() + 1, m, d);
+        const diffNext = nextYear - today;
+        return diffNext <= futureCutoff ? nextYear : null;
+      };
+
+      // Family members (relationship=spouse) with a dob already captured
+      // here supersede the legacy lead.spouse_dob column, to avoid showing
+      // the same person's birthday twice.
+      const familySpouseLeadIds = new Set(
+        (familyRows || []).filter((f) => f.relationship === "spouse" && f.dob).map((f) => f.lead_id)
+      );
+
       for (const c of (data || [])) {
         for (const [field, icon, msgType, label] of [
           ["bday","🎂","bday","Birthday"],
@@ -6481,33 +6520,11 @@ function UpcomingEventsScreen() {
         ]) {
           const raw = c[field];
           if (!raw) continue;
-          if (field === "spouse_dob" && !c.spouse_name) continue; // no name to greet — skip until captured
+          if (field === "spouse_dob" && (!c.spouse_name || familySpouseLeadIds.has(c.id))) continue;
           const parts = parseCalendarDateParts(raw);
           if (!parts) continue;
-          const { m, d, y } = parts;
-
-          // Check this year occurrence
-          const thisYear = new Date(today.getFullYear(), m, d);
-          const diffThis = thisYear - today;
-
-          let occurrence;
-          if (diffThis >= pastCutoff && diffThis <= futureCutoff) {
-            occurrence = thisYear;
-          } else if (diffThis > futureCutoff) {
-            // Not in range this year — skip
-            continue;
-          } else {
-            // Already passed this year — check if within past 7 days
-            if (diffThis >= pastCutoff) {
-              occurrence = thisYear;
-            } else {
-              // Next year occurrence
-              const nextYear = new Date(today.getFullYear() + 1, m, d);
-              const diffNext = nextYear - today;
-              if (diffNext <= futureCutoff) occurrence = nextYear;
-              else continue;
-            }
-          }
+          const occurrence = resolveOccurrence(parts.m, parts.d);
+          if (!occurrence) continue;
 
           const daysUntil = Math.round((occurrence - today) / 86400000);
           const msgs = schedMap[c.id] || [];
@@ -6515,22 +6532,50 @@ function UpcomingEventsScreen() {
           const sent = msgs.filter((m) => m.status === "sent");
           const nextSend = pending.length ? new Date(pending.sort((a,b) => new Date(a.send_at)-new Date(b.send_at))[0].send_at) : null;
           // years: age turning (bday/spouse_bday) or years married (anniversary) — only if source date has a year
-          const years = y == null ? null : (occurrence.getFullYear() - y);
+          const years = parts.y == null ? null : (occurrence.getFullYear() - parts.y);
           rows.push({
             contact: {
               id: c.id,
               name: msgType === "spouse_bday" ? c.spouse_name : c.name,
               phone: c.phone, city: c.city,
-              hasSpouseDob: !!c.spouse_dob, hasWeddingFamily: !!c.wedding_date,
+              hasSpouseDob: !!c.spouse_dob || familySpouseLeadIds.has(c.id), hasWeddingFamily: !!c.wedding_date,
               hasAddress: hasAddress(c),
             },
             icon, msgType, label, date: occurrence, daysUntil, years,
             pendingCount: msgType === "spouse_bday" ? 0 : pending.length,
             sentCount: msgType === "spouse_bday" ? 0 : sent.length,
             nextSend: msgType === "spouse_bday" ? null : nextSend,
-            noFunnel: msgType === "spouse_bday", // no auto drip funnel for spouse — manual wish only
+            noFunnel: msgType === "spouse_bday", // no auto drip funnel — manual wish only
           });
         }
+      }
+
+      // Family members (spouse, kids, parents, etc.) captured via the
+      // self-service /profile form — this is the only place a child's
+      // birthday can be tracked today. Wish goes to their own mobile if
+      // captured, else falls back to the primary contact's phone.
+      const RELATION_ICON = { spouse: "🎂💑", son: "🎂👦", daughter: "🎂👧", mother: "🎂👵", father: "🎂👴", brother: "🎂🧑", sister: "🎂👩" };
+      for (const f of (familyRows || [])) {
+        if (!f.name) continue;
+        const lead = leadById.get(f.lead_id);
+        if (!lead) continue;
+        const parts = parseCalendarDateParts(f.dob);
+        if (!parts) continue;
+        const occurrence = resolveOccurrence(parts.m, parts.d);
+        if (!occurrence) continue;
+        const daysUntil = Math.round((occurrence - today) / 86400000);
+        const years = parts.y == null ? null : (occurrence.getFullYear() - parts.y);
+        rows.push({
+          contact: {
+            id: lead.id, name: f.name, phone: f.mobile || lead.phone, city: lead.city,
+            hasSpouseDob: true, hasWeddingFamily: true, hasAddress: hasAddress(lead),
+          },
+          icon: RELATION_ICON[f.relationship] || "🎂👪",
+          msgType: "spouse_bday", // reuses the generic family-birthday script bracket
+          label: `${f.relationship ? f.relationship[0].toUpperCase() + f.relationship.slice(1) : "Family"}'s Birthday`,
+          date: occurrence, daysUntil, years,
+          pendingCount: 0, sentCount: 0, nextSend: null, noFunnel: true,
+        });
       }
       // Past events first (most recent first), then future (soonest first)
       rows.sort((a,b) => {
