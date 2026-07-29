@@ -5,6 +5,10 @@ export const SUPABASE_URL = process.env.SUPABASE_URL || "https://uppyxzellmuissd
 export const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 // Switched from Anthropic to OpenAI (2026-07-09) — see api/_lib/ai.js.
 export const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+// fal.ai — used by the Solitaire Jewellery AI Design Generator for image
+// generation (flux-pro/v1.1 text-to-image, flux-pro/kontext for
+// reference-based edits) instead of OpenAI gpt-image-1.
+export const FAL_KEY = process.env.FAL_KEY || "";
 export const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL || "https://script.google.com/macros/s/AKfycbxGazdRhKxkjOLkqxN4kPoInDuBnlWy5Azmzq-FX9mt5OIfZLbhqfFEO0AufrOWE6n49Q/exec";
 export const TENANT_ID = process.env.TENANT_ID || "a1b2c3d4-0000-0000-0000-000000000001";
 export const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";

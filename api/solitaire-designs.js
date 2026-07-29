@@ -676,9 +676,10 @@ export default async function handler(req, res) {
       makingChargePerGram: mc.data?.value ? Number(mc.data.value) : 350,
       sellDiscPct: sd.data?.value ? Number(sd.data.value) : 30,
       sideDiamondPricePerCt: sdc.data?.value ? Number(sdc.data.value) : 0,
-      // OpenAI image cost lever — "low"/"medium"/"high" (no separate "mini"
-      // image model exists). Defaults to "low" while cost/quality is being
-      // evaluated; switch back to "medium" here once decided.
+      // fal.ai (flux-pro) image cost lever — "low"/"medium"/"high" scales the
+      // generated pixel count (see falImageSize in solitaireImageGen.js).
+      // Defaults to "low" while cost/quality is being evaluated; switch back
+      // to "medium" here once decided.
       imageQuality: iq.data?.value || "low",
     });
   }

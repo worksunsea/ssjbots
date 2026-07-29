@@ -1,14 +1,18 @@
-// OpenAI gpt-image-1 wrapper for the solitaire jewellery designer's admin-only
+// fal.ai (Flux Pro) wrapper for the solitaire jewellery designer's admin-only
 // AI Design Generator. Given a design concept (from solitaire_designs) plus
 // admin-picked filters (gold colour, diamond shape, optional carat size), it
 // generates one image set: front view, 3/4 angle view, and a "worn by a
-// model" shot. Mirrors the structure of generateBrandedDesigns() in
-// imageGen.js (same provider) — uses text-to-image generation by default
-// (no fixed physical reference photo), but switches to images/edits with the
-// admin-supplied reference image when one is provided, same as imageGen.js's
-// box-photo pattern.
+// model" shot. Text-to-image uses flux-pro/v1.1; when an admin-supplied
+// reference image is provided, uses flux-pro/kontext (image-to-image edit,
+// takes the reference as a data URI) instead — same role OpenAI's
+// images/edits endpoint played before the switch off OpenAI for image gen.
+// Name/concept suggestion (text + vision, not image generation) still use
+// OpenAI — see suggestDesignName / suggestDesignVariationConcept below.
 
-import { OPENAI_API_KEY, OPENAI_MODEL } from "./config.js";
+import { OPENAI_API_KEY, OPENAI_MODEL, FAL_KEY } from "./config.js";
+
+const FAL_TEXT_TO_IMAGE_MODEL = "fal-ai/flux-pro/v1.1";
+const FAL_IMAGE_EDIT_MODEL = "fal-ai/flux-pro/kontext";
 
 const VIEWS = [
   { key: "front", label: "Front view", prompt: "a straight-on front product photo, studio lighting, plain neutral background, the jewellery piece centered and in sharp focus" },
@@ -50,43 +54,49 @@ function buildPrompt({ conceptPrompt, promptOverride, category, goldColor, diamo
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function callOpenAIOnce(prompt, referenceImageBase64, size, quality) {
-  if (!referenceImageBase64) {
-    const res = await fetch("https://api.openai.com/v1/images/generations", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "gpt-image-1", prompt, size, quality }),
-    });
-    return res;
-  }
-  const form = new FormData();
-  form.append("model", "gpt-image-1");
-  form.append("prompt", prompt);
-  form.append("size", size);
-  form.append("quality", quality);
-  form.append("image[]", new Blob([Buffer.from(referenceImageBase64, "base64")], { type: "image/png" }), "reference.png");
-  return fetch("https://api.openai.com/v1/images/edits", {
+// "WxH" string (as used throughout this file) -> fal's {width,height} image_size object.
+// quality scales the actual pixel count (fal has no separate quality tier —
+// this is the real cost lever, same role OpenAI's quality param played):
+// low ~0.56MP, medium = requested size (~1MP for 1024x1024), high ~1.5x that.
+function falImageSize(sizeStr, quality) {
+  const [w, h] = sizeStr.split("x").map(Number);
+  const scale = quality === "low" ? 0.75 : quality === "high" ? 1.25 : 1;
+  return { width: Math.round(w * scale), height: Math.round(h * scale) };
+}
+
+async function callFalOnce(prompt, referenceImageBase64, imageSize) {
+  const model = referenceImageBase64 ? FAL_IMAGE_EDIT_MODEL : FAL_TEXT_TO_IMAGE_MODEL;
+  const body = referenceImageBase64
+    ? { prompt, image_url: `data:image/png;base64,${referenceImageBase64}`, output_format: "png" }
+    : { prompt, image_size: imageSize, output_format: "png" };
+  return fetch(`https://fal.run/${model}`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
-    body: form,
+    headers: { Authorization: `Key ${FAL_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
 }
 
 // Retries on 429 (rate limit) with backoff — a full cascade fires dozens of
-// these back to back and routinely hits per-minute image-generation limits;
-// without a retry, a rate limit on combo #1 fails EVERY subsequent combo the
-// same way since nothing ever waits for the window to clear.
+// these back to back and can hit per-minute image-generation limits; without
+// a retry, a rate limit on combo #1 fails EVERY subsequent combo the same
+// way since nothing ever waits for the window to clear.
 async function generateOne(prompt, referenceImageBase64, size = "1024x1024", quality = "medium") {
-  const endpoint = referenceImageBase64 ? "images/edits" : "images/generations";
+  if (!FAL_KEY) throw new Error("FAL_KEY missing");
+  const model = referenceImageBase64 ? FAL_IMAGE_EDIT_MODEL : FAL_TEXT_TO_IMAGE_MODEL;
+  const imageSize = falImageSize(size, quality);
   let lastErr;
   for (let attempt = 0; attempt < 4; attempt++) {
-    const res = await callOpenAIOnce(prompt, referenceImageBase64, size, quality);
+    const res = await callFalOnce(prompt, referenceImageBase64, imageSize);
     if (res.ok) {
       const data = await res.json();
-      return data?.data?.[0]?.b64_json || null;
+      const url = data?.images?.[0]?.url;
+      if (!url) return null;
+      const imgRes = await fetch(url);
+      if (!imgRes.ok) throw new Error(`fal image download ${imgRes.status}`);
+      return Buffer.from(await imgRes.arrayBuffer()).toString("base64");
     }
     const body = (await res.text()).slice(0, 300);
-    lastErr = new Error(`OpenAI ${endpoint} ${res.status}: ${body}`);
+    lastErr = new Error(`fal ${model} ${res.status}: ${body}`);
     if (res.status !== 429 || attempt === 3) throw lastErr;
     await sleep(3000 * 2 ** attempt); // 3s, 6s, 12s
   }
@@ -111,7 +121,7 @@ async function generateOne(prompt, referenceImageBase64, size = "1024x1024", qua
 // "mini" image model exists). Admin-configurable, see pricing-config's
 // imageQuality; defaults to "low" here only as a safety net.
 export async function generateSolitaireDesignViews({ conceptPrompt, promptOverride, category, goldColor, diamondShape, caratSize, hasSideDiamonds, referenceImageBase64, matchReferenceDesign = false, includeWorn = true, viewKeys, quality = "low" }) {
-  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY missing");
+  if (!FAL_KEY) throw new Error("FAL_KEY missing");
 
   const views = viewKeys ? VIEWS.filter((v) => viewKeys.includes(v.key)) : (includeWorn ? VIEWS : VIEWS.filter((v) => v.key !== "worn"));
   const results = [];
@@ -199,7 +209,7 @@ const CATEGORY_COVER_PROMPTS = {
 
 // Returns { base64 } for one category cover image.
 export async function generateCategoryCoverImage(category) {
-  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY missing");
+  if (!FAL_KEY) throw new Error("FAL_KEY missing");
   const prompt = CATEGORY_COVER_PROMPTS[category];
   if (!prompt) throw new Error(`unknown category "${category}"`);
   const b64 = await generateOne(prompt, null);
@@ -227,7 +237,7 @@ const rowLabel = (row) => row.map((c) => `${c}ct (~${CARAT_MM[c]}mm diameter)`).
 // Laid out as a 2-row x 6-column grid (not one long row) — a single row of
 // 12 distinct pieces was where the model was merging/dropping sizes.
 export async function generateSizeChartImage({ conceptPrompt, category, hasSideDiamonds }) {
-  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY missing");
+  if (!FAL_KEY) throw new Error("FAL_KEY missing");
   const topRow = SIZE_CHART_CARATS.slice(0, 6);
   const bottomRow = SIZE_CHART_CARATS.slice(6);
   const prompt = [
