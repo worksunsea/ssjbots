@@ -8,6 +8,7 @@
 import { supa } from "./_lib/supabase.js";
 import { normalizePhone, TENANT_ID } from "./_lib/config.js";
 import { sendPushNotification } from "./_lib/pushNotify.js";
+import { attributeReferral } from "./_lib/referralAttribution.js";
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -66,6 +67,8 @@ export default async function handler(req, res) {
     body: `${name}${body.weddingDate ? ` — wedding ${body.weddingDate}` : ""}${body.budget ? ` — budget ${body.budget}` : ""}`,
     url: "/",
   }).catch(() => {});
+
+  await attributeReferral({ refCode: body.ref_code, leadId, orderReference: "bridal jewellery enquiry" }).catch(() => {});
 
   return res.status(200).json({ ok: true, leadId });
 }

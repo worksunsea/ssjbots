@@ -10,6 +10,7 @@
 //      the bot — bot_active stays false, no AI opening message is sent.
 
 import { supa } from "./_lib/supabase.js";
+import { attributeReferral } from "./_lib/referralAttribution.js";
 import { normalizePhone, TENANT_ID, checkCrmSecret } from "./_lib/config.js";
 import { getRates } from "./_lib/rates.js";
 import { enrollLeadInDrip } from "./_lib/drip.js";
@@ -148,6 +149,8 @@ export default async function handler(req, res) {
     if (funnel?.active) {
       await enrollLeadInDrip({ lead: { id: leadId, name, phone, city, funnel_id: "corporate_gifting" }, funnel });
     }
+
+    await attributeReferral({ refCode: body.ref_code, leadId, orderReference: "corporate gifting enquiry" }).catch(() => {});
 
     return res.status(200).json({ ok: true, leadId });
   }

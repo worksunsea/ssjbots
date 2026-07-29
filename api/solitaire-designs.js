@@ -45,6 +45,7 @@
 import { supa } from "./_lib/supabase.js";
 import { normalizePhone, TENANT_ID, checkCrmSecret } from "./_lib/config.js";
 import { enrollLeadInDrip } from "./_lib/drip.js";
+import { attributeReferral } from "./_lib/referralAttribution.js";
 import { generateSolitaireDesignViews, generateCategoryCoverImage, generateSizeChartImage, suggestDesignName, suggestDesignVariationConcept } from "./_lib/solitaireImageGen.js";
 import { getRates } from "./_lib/rates.js";
 
@@ -223,6 +224,7 @@ export default async function handler(req, res) {
     if (funnel?.active) {
       await enrollLeadInDrip({ lead: { id: leadId, name, phone, funnel_id: "solitaire_jewellery" }, funnel });
     }
+    await attributeReferral({ refCode: body.ref_code, leadId, orderReference: "solitaire jewellery enquiry" }).catch(() => {});
     return res.status(200).json({ ok: true, leadId });
   }
 
