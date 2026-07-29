@@ -1,13 +1,20 @@
-// fal.ai (Flux Pro) wrapper for the solitaire jewellery designer's admin-only
-// AI Design Generator. Given a design concept (from solitaire_designs) plus
-// admin-picked filters (gold colour, diamond shape, optional carat size), it
-// generates one image set: front view, 3/4 angle view, and a "worn by a
-// model" shot. Text-to-image uses flux-pro/v1.1; when an admin-supplied
-// reference image is provided, uses flux-pro/kontext (image-to-image edit,
-// takes the reference as a data URI) instead — same role OpenAI's
-// images/edits endpoint played before the switch off OpenAI for image gen.
-// Name/concept suggestion (text + vision, not image generation) still use
-// OpenAI — see suggestDesignName / suggestDesignVariationConcept below.
+// Image-gen wrapper for the solitaire jewellery designer's admin-only AI
+// Design Generator, supporting two interchangeable providers — pick per
+// generation via `provider: "openai" | "fal"` (defaults to "fal"; see the
+// "AI image provider" dropdown next to the quality selector in the admin
+// screen). Given a design concept (from solitaire_designs) plus admin-picked
+// filters (gold colour, diamond shape, optional carat size), generates one
+// image set: front view, 3/4 angle view, and a "worn by a model" shot.
+//
+// fal.ai: flux-pro/v1.1 for text-to-image, flux-pro/kontext (image-to-image,
+// reference as a data URI) for reference-based edits.
+// OpenAI: gpt-image-1 images/generations, or images/edits when a reference
+// image is supplied. Being retired by OpenAI on 2026-10-23 — kept available
+// here for cost comparison only, not the default.
+//
+// Name/concept suggestion (text + vision, not image generation) always use
+// OpenAI regardless of this setting — see suggestDesignName /
+// suggestDesignVariationConcept below.
 
 import { OPENAI_API_KEY, OPENAI_MODEL, FAL_KEY } from "./config.js";
 
@@ -76,11 +83,49 @@ async function callFalOnce(prompt, referenceImageBase64, imageSize) {
   });
 }
 
+async function callOpenAIOnce(prompt, referenceImageBase64, size, quality) {
+  if (!referenceImageBase64) {
+    return fetch("https://api.openai.com/v1/images/generations", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "gpt-image-1", prompt, size, quality }),
+    });
+  }
+  const form = new FormData();
+  form.append("model", "gpt-image-1");
+  form.append("prompt", prompt);
+  form.append("size", size);
+  form.append("quality", quality);
+  form.append("image[]", new Blob([Buffer.from(referenceImageBase64, "base64")], { type: "image/png" }), "reference.png");
+  return fetch("https://api.openai.com/v1/images/edits", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
+    body: form,
+  });
+}
+
 // Retries on 429 (rate limit) with backoff — a full cascade fires dozens of
 // these back to back and can hit per-minute image-generation limits; without
 // a retry, a rate limit on combo #1 fails EVERY subsequent combo the same
 // way since nothing ever waits for the window to clear.
-async function generateOne(prompt, referenceImageBase64, size = "1024x1024", quality = "medium") {
+async function generateOne(prompt, referenceImageBase64, size = "1024x1024", quality = "medium", provider = "fal") {
+  if (provider === "openai") {
+    if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY missing");
+    let lastErr;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const res = await callOpenAIOnce(prompt, referenceImageBase64, size, quality);
+      if (res.ok) {
+        const data = await res.json();
+        return data?.data?.[0]?.b64_json || null;
+      }
+      const body = (await res.text()).slice(0, 300);
+      lastErr = new Error(`OpenAI ${referenceImageBase64 ? "images/edits" : "images/generations"} ${res.status}: ${body}`);
+      if (res.status !== 429 || attempt === 3) throw lastErr;
+      await sleep(3000 * 2 ** attempt); // 3s, 6s, 12s
+    }
+    throw lastErr;
+  }
+
   if (!FAL_KEY) throw new Error("FAL_KEY missing");
   const model = referenceImageBase64 ? FAL_IMAGE_EDIT_MODEL : FAL_TEXT_TO_IMAGE_MODEL;
   const imageSize = falImageSize(size, quality);
@@ -117,17 +162,19 @@ async function generateOne(prompt, referenceImageBase64, size = "1024x1024", qua
 // (see action=generate-variant's "Create Variants" bulk-preview flow) where
 // only a front shot is needed to pick a favourite before committing to the
 // full multi-view/multi-combo cost.
-// quality: "low" | "medium" | "high" — OpenAI's real cost lever (no separate
-// "mini" image model exists). Admin-configurable, see pricing-config's
-// imageQuality; defaults to "low" here only as a safety net.
-export async function generateSolitaireDesignViews({ conceptPrompt, promptOverride, category, goldColor, diamondShape, caratSize, hasSideDiamonds, referenceImageBase64, matchReferenceDesign = false, includeWorn = true, viewKeys, quality = "low" }) {
-  if (!FAL_KEY) throw new Error("FAL_KEY missing");
+// quality: "low" | "medium" | "high" — the real cost lever (fal scales pixel
+// count, OpenAI has a native quality param). Admin-configurable, see
+// pricing-config's imageQuality; defaults to "low" here only as a safety net.
+// provider: "fal" | "openai" — admin-configurable, see pricing-config's
+// imageProvider; defaults to "fal".
+export async function generateSolitaireDesignViews({ conceptPrompt, promptOverride, category, goldColor, diamondShape, caratSize, hasSideDiamonds, referenceImageBase64, matchReferenceDesign = false, includeWorn = true, viewKeys, quality = "low", provider = "fal" }) {
+  if (provider === "openai" ? !OPENAI_API_KEY : !FAL_KEY) throw new Error(`${provider === "openai" ? "OPENAI_API_KEY" : "FAL_KEY"} missing`);
 
   const views = viewKeys ? VIEWS.filter((v) => viewKeys.includes(v.key)) : (includeWorn ? VIEWS : VIEWS.filter((v) => v.key !== "worn"));
   const results = [];
   for (const view of views) {
     const prompt = buildPrompt({ conceptPrompt, promptOverride, category, goldColor, diamondShape, caratSize, hasSideDiamonds, view, hasReference: !!referenceImageBase64, matchReferenceDesign });
-    const b64 = await generateOne(prompt, referenceImageBase64, "1024x1024", quality);
+    const b64 = await generateOne(prompt, referenceImageBase64, "1024x1024", quality, provider);
     if (!b64) throw new Error(`no image returned for view "${view.key}"`);
     results.push({ key: view.key, label: view.label, base64: b64, prompt });
   }
@@ -208,11 +255,11 @@ const CATEGORY_COVER_PROMPTS = {
 };
 
 // Returns { base64 } for one category cover image.
-export async function generateCategoryCoverImage(category) {
-  if (!FAL_KEY) throw new Error("FAL_KEY missing");
+export async function generateCategoryCoverImage(category, provider = "fal") {
+  if (provider === "openai" ? !OPENAI_API_KEY : !FAL_KEY) throw new Error(`${provider === "openai" ? "OPENAI_API_KEY" : "FAL_KEY"} missing`);
   const prompt = CATEGORY_COVER_PROMPTS[category];
   if (!prompt) throw new Error(`unknown category "${category}"`);
-  const b64 = await generateOne(prompt, null);
+  const b64 = await generateOne(prompt, null, "1024x1024", "medium", provider);
   if (!b64) throw new Error("no image returned");
   return { base64: b64 };
 }
@@ -236,8 +283,8 @@ const rowLabel = (row) => row.map((c) => `${c}ct (~${CARAT_MM[c]}mm diameter)`).
 // side, each labelled, so the size progression is visible in a single photo.
 // Laid out as a 2-row x 6-column grid (not one long row) — a single row of
 // 12 distinct pieces was where the model was merging/dropping sizes.
-export async function generateSizeChartImage({ conceptPrompt, category, hasSideDiamonds }) {
-  if (!FAL_KEY) throw new Error("FAL_KEY missing");
+export async function generateSizeChartImage({ conceptPrompt, category, hasSideDiamonds, quality = "low", provider = "fal" }) {
+  if (provider === "openai" ? !OPENAI_API_KEY : !FAL_KEY) throw new Error(`${provider === "openai" ? "OPENAI_API_KEY" : "FAL_KEY"} missing`);
   const topRow = SIZE_CHART_CARATS.slice(0, 6);
   const bottomRow = SIZE_CHART_CARATS.slice(6);
   const prompt = [
@@ -252,7 +299,7 @@ export async function generateSizeChartImage({ conceptPrompt, category, hasSideD
     `A small elegant carat-weight label (e.g. "0.30ct", "1.00ct", "5.00ct") is printed directly beneath each of the 12 pieces, in a clean serif font, matching that cell's exact carat size.`,
     `Even studio lighting across the whole grid, sharp focus, photorealistic, high-end jewellery catalogue quality. No watermark, no other text besides the 12 carat labels.`,
   ].filter(Boolean).join(" ");
-  const b64 = await generateOne(prompt, null, "1536x1024");
+  const b64 = await generateOne(prompt, null, "1536x1024", quality, provider);
   if (!b64) throw new Error("no image returned");
   return { base64: b64 };
 }

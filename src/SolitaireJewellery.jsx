@@ -626,6 +626,7 @@ export function SolitaireAdminGenerator() {
       designId: dId, goldColor: gc, diamondShape: sh, caratSize: cs ? Number(cs) : null,
       generatedBy: loadStaffUser()?.name, promptOverride: po || null, referenceImageBase64: ref || null,
       matchReferenceDesign, includeWorn, viewKeys, quality: pricingConfig?.imageQuality || "low",
+      imageProvider: pricingConfig?.imageProvider || "fal",
     }, true);
   };
 
@@ -729,7 +730,7 @@ export function SolitaireAdminGenerator() {
     let failures = 0;
     for (let i = 0; i < count; i++) {
       if (i > 0) await new Promise((r) => setTimeout(r, 1500));
-      const res = await apiPost("generate-design-candidates", { baseDesignId: currentDesign.id, quality: pricingConfig?.imageQuality || "low" }, true);
+      const res = await apiPost("generate-design-candidates", { baseDesignId: currentDesign.id, quality: pricingConfig?.imageQuality || "low", imageProvider: pricingConfig?.imageProvider || "fal" }, true);
       if (!res.ok) failures++;
       setCandidateProgress({ done: i + 1, total: count });
       loadPendingDesigns();
@@ -754,7 +755,7 @@ export function SolitaireAdminGenerator() {
       const listRes = await apiGet("admin-designs", { category: cat.key }, true);
       const base = listRes.ok ? listRes.designs.find((d) => !d.parentDesignId) : null;
       if (base) {
-        const res = await apiPost("generate-design-candidates", { baseDesignId: base.id, standalone: true, quality: pricingConfig?.imageQuality || "low" }, true);
+        const res = await apiPost("generate-design-candidates", { baseDesignId: base.id, standalone: true, quality: pricingConfig?.imageQuality || "low", imageProvider: pricingConfig?.imageProvider || "fal" }, true);
         if (res.ok) created++;
       }
       setCandidateProgress({ done: i + 1, total: CATEGORIES.length });
@@ -907,7 +908,7 @@ export function SolitaireAdminGenerator() {
   const [chartBusy, setChartBusy] = useState(null); // designId currently generating
   const generateSizeChart = async (designId) => {
     setChartBusy(designId);
-    const res = await apiPost("generate-size-chart", { designId }, true);
+    const res = await apiPost("generate-size-chart", { designId, quality: pricingConfig?.imageQuality || "low", imageProvider: pricingConfig?.imageProvider || "fal" }, true);
     setChartBusy(null);
     if (!res.ok) setMsg(`Size chart failed: ${res.error}${res.detail ? ` — ${res.detail}` : ""}`);
     loadDesigns();
@@ -1222,6 +1223,13 @@ export function SolitaireAdminGenerator() {
         <label style={{ fontSize: 13 }}>
           Side diamond price (₹/ct):{" "}
           <input type="number" defaultValue={pricingConfig?.sideDiamondPricePerCt ?? ""} onBlur={(e) => savePricingConfig({ sideDiamondPricePerCt: Number(e.target.value) })} style={{ width: 90 }} />
+        </label>
+        <label style={{ fontSize: 13 }}>
+          AI image provider:{" "}
+          <select value={pricingConfig?.imageProvider || "fal"} onChange={(e) => savePricingConfig({ imageProvider: e.target.value })}>
+            <option value="fal">fal.ai (flux-pro — current default)</option>
+            <option value="openai">OpenAI (gpt-image-1 — retiring 23 Oct 2026)</option>
+          </select>
         </label>
         <label style={{ fontSize: 13 }}>
           AI image quality (cost lever — low ≈ ¼ the cost of medium):{" "}

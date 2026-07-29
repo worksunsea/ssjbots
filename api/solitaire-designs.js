@@ -284,7 +284,7 @@ export default async function handler(req, res) {
     const authFail = checkCrmSecret(req, res);
     if (authFail) return authFail;
     const body = parseBody(req);
-    const { designId, goldColor, diamondShape, caratSize, generatedBy, promptOverride, referenceImageBase64, matchReferenceDesign, includeWorn, viewKeys, quality } = body;
+    const { designId, goldColor, diamondShape, caratSize, generatedBy, promptOverride, referenceImageBase64, matchReferenceDesign, includeWorn, viewKeys, quality, imageProvider } = body;
     if (!designId || !goldColor || !diamondShape) {
       return res.status(400).json({ ok: false, error: "designId_goldColor_diamondShape_required" });
     }
@@ -313,6 +313,7 @@ export default async function handler(req, res) {
         includeWorn: includeWorn !== false, // default true — cascade calls explicitly pass false
         viewKeys: Array.isArray(viewKeys) ? viewKeys : undefined,
         quality: quality || "low",
+        provider: imageProvider === "openai" ? "openai" : "fal",
       });
     } catch (e) {
       return res.status(500).json({ ok: false, error: "generation_failed", detail: String(e.message || e) });
@@ -353,7 +354,7 @@ export default async function handler(req, res) {
     }
     let image;
     try {
-      image = await generateCategoryCoverImage(category);
+      image = await generateCategoryCoverImage(category, body.imageProvider === "openai" ? "openai" : "fal");
     } catch (e) {
       return res.status(500).json({ ok: false, error: "generation_failed", detail: String(e.message || e) });
     }
@@ -383,7 +384,7 @@ export default async function handler(req, res) {
 
     let image;
     try {
-      image = await generateSizeChartImage({ conceptPrompt: design.concept_prompt, category: design.category, hasSideDiamonds: design.has_side_diamonds });
+      image = await generateSizeChartImage({ conceptPrompt: design.concept_prompt, category: design.category, hasSideDiamonds: design.has_side_diamonds, quality: body.quality || "low", provider: body.imageProvider === "openai" ? "openai" : "fal" });
     } catch (e) {
       return res.status(500).json({ ok: false, error: "generation_failed", detail: String(e.message || e) });
     }
@@ -493,6 +494,7 @@ export default async function handler(req, res) {
       views = await generateSolitaireDesignViews({
         conceptPrompt: concept, category: base.category, goldColor: "yellow", diamondShape: "Round",
         hasSideDiamonds: base.has_side_diamonds, viewKeys: ["front"], quality: body.quality || "low",
+        provider: body.imageProvider === "openai" ? "openai" : "fal",
       });
     } catch (e) {
       // Design row exists but with no preview image — surface it as a
@@ -661,7 +663,7 @@ export default async function handler(req, res) {
   // These were previously hardcoded (350/g, 30%) in the client — real values
   // must come from here now. ────────────────────────────────────────────
   if (req.method === "GET" && action === "pricing-config") {
-    const [mc, sd, sdc, iq] = await Promise.all([
+    const [mc, sd, sdc, iq, ip] = await Promise.all([
       sb.from("bullion_dropdowns").select("value, updated_at").eq("tenant_id", TENANT_ID)
         .eq("field", "solitaire_making_charge_per_gram").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
       sb.from("bullion_dropdowns").select("value, updated_at").eq("tenant_id", TENANT_ID)
@@ -670,22 +672,26 @@ export default async function handler(req, res) {
         .eq("field", "solitaire_side_diamond_price_per_ct").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
       sb.from("bullion_dropdowns").select("value, updated_at").eq("tenant_id", TENANT_ID)
         .eq("field", "solitaire_image_quality").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
+      sb.from("bullion_dropdowns").select("value, updated_at").eq("tenant_id", TENANT_ID)
+        .eq("field", "solitaire_image_provider").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
     ]);
     return res.status(200).json({
       ok: true,
       makingChargePerGram: mc.data?.value ? Number(mc.data.value) : 350,
       sellDiscPct: sd.data?.value ? Number(sd.data.value) : 30,
       sideDiamondPricePerCt: sdc.data?.value ? Number(sdc.data.value) : 0,
-      // fal.ai (flux-pro) image cost lever — "low"/"medium"/"high" scales the
-      // generated pixel count (see falImageSize in solitaireImageGen.js).
-      // Defaults to "low" while cost/quality is being evaluated; switch back
-      // to "medium" here once decided.
+      // fal.ai (flux-pro) or OpenAI (gpt-image-1, retiring 2026-10-23) image
+      // cost lever — "low"/"medium"/"high" scales the generated pixel count
+      // for fal, or maps to OpenAI's native quality param (see
+      // falImageSize/generateOne in solitaireImageGen.js).
       imageQuality: iq.data?.value || "low",
+      // "fal" | "openai" — which provider generates the images.
+      imageProvider: ip.data?.value === "openai" ? "openai" : "fal",
     });
   }
 
   // ── POST action=update-pricing-config — staff-only. Sets makingChargePerGram,
-  // sellDiscPct, sideDiamondPricePerCt, and/or imageQuality. ────────────
+  // sellDiscPct, sideDiamondPricePerCt, imageQuality, and/or imageProvider. ─
   if (req.method === "POST" && action === "update-pricing-config") {
     const authFail = checkCrmSecret(req, res);
     if (authFail) return authFail;
@@ -702,6 +708,9 @@ export default async function handler(req, res) {
     }
     if (body.imageQuality != null && ["low", "medium", "high"].includes(body.imageQuality)) {
       writes.push(sb.from("bullion_dropdowns").insert({ tenant_id: TENANT_ID, field: "solitaire_image_quality", value: body.imageQuality }));
+    }
+    if (body.imageProvider != null && ["fal", "openai"].includes(body.imageProvider)) {
+      writes.push(sb.from("bullion_dropdowns").insert({ tenant_id: TENANT_ID, field: "solitaire_image_provider", value: body.imageProvider }));
     }
     if (!writes.length) return res.status(400).json({ ok: false, error: "nothing_to_update" });
     const results = await Promise.all(writes);
