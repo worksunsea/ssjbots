@@ -12,6 +12,7 @@ import { sendWhatsApp, sendWhatsAppWbiz, sendWhatsAppMediaWbiz } from "./_lib/wa
 import { transitionLeadToFunnel, enrollLeadInDrip } from "./_lib/drip.js";
 import { askAI } from "./_lib/ai.js";
 import { getFaqs, faqsForPrompt } from "./_lib/faqs.js";
+import { getRates } from "./_lib/rates.js";
 import { OWNER_ALERT_PHONE, OPENAI_MODEL, CRM_SECRET, TENANT_ID } from "./_lib/config.js";
 
 export const config = { maxDuration: 300 };
@@ -617,6 +618,37 @@ export default async function handler(req, res) {
         .update({ status: "canceled", canceled_reason: "wrongly_enrolled_not_recently_married" })
         .in("id", amWrongIds).select("id");
       stats.afterMarriageCleaned = amUpd?.length || 0;
+    }
+  }
+
+  // ── 0c. Price alerts: fire a one-time WA message when a client's target
+  // buy/sell rate is crossed (bullion_price_alerts, set from ssj.in RatesPage).
+  {
+    const { data: activeAlerts } = await sb.from("bullion_price_alerts")
+      .select("id, lead_id, metal, direction, target_rate, lead:bullion_leads(phone,name)")
+      .eq("tenant_id", TENANT_ID).eq("status", "active");
+    if (activeAlerts?.length) {
+      const rates = await getRates();
+      const currentByMetal = { gold: rates?.spot?.gold24kt, silver: rates?.spot?.silverPerGram };
+      let alertsTriggered = 0;
+      for (const alert of activeAlerts) {
+        const current = currentByMetal[alert.metal];
+        if (current == null) continue;
+        const crossed = alert.direction === "buy_below" ? current <= alert.target_rate : current >= alert.target_rate;
+        if (!crossed) continue;
+        const phone = alert.lead?.phone;
+        if (phone) {
+          const label = alert.metal === "gold" ? "24KT gold" : "silver";
+          const verb = alert.direction === "buy_below" ? "dropped to" : "risen to";
+          const msg = `💰 Price alert: ${label} has ${verb} ₹${current}/g — your target was ₹${alert.target_rate}/g.\n- Sun Sea Jewellers`;
+          await sendWhatsApp({ phone, msg }).catch(() => {});
+        }
+        await sb.from("bullion_price_alerts")
+          .update({ status: "triggered", triggered_at: nowIso })
+          .eq("id", alert.id);
+        alertsTriggered++;
+      }
+      stats.priceAlertsTriggered = alertsTriggered;
     }
   }
 
