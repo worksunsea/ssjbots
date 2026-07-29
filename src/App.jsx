@@ -14227,6 +14227,8 @@ function CorpGiftDesignApprovalsScreen() {
 
 const CORP_GIFT_TABS = [
   { k: "all", l: "All Products" },
+  { k: "mmtc_gold", l: "MMTC Gold" },
+  { k: "mmtc_silver", l: "MMTC Silver" },
   { k: "gold_bars", l: "Gold Bars" },
   { k: "gold_coins", l: "Gold Coins" },
   { k: "silver_bars", l: "Silver Bars" },

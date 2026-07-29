@@ -91,6 +91,19 @@ export default async function handler(req, res) {
       weightGrams: p.weight_grams,
       price: computePrice(p, rates),
     }));
+
+    // MMTC Gold / MMTC Silver always list lowest-to-highest price, not the
+    // admin-set sort_order used elsewhere — re-sort within just those two
+    // categories, in place, so the rest of the category ordering is untouched.
+    const MMTC_PRICE_SORT_CATEGORIES = new Set(["mmtc_gold", "mmtc_silver"]);
+    for (const cat of MMTC_PRICE_SORT_CATEGORIES) {
+      const indices = [];
+      const group = [];
+      products.forEach((p, i) => { if (p.category === cat) { indices.push(i); group.push(p); } });
+      group.sort((a, b) => (a.price ?? Infinity) - (b.price ?? Infinity));
+      indices.forEach((idx, j) => { products[idx] = group[j]; });
+    }
+
     return res.status(200).json({ ok: true, products });
   }
 
