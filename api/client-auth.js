@@ -36,14 +36,19 @@ export default async function handler(req, res) {
   if (typeof body === "string") { try { body = JSON.parse(body); } catch { body = {}; } }
   body = body || {};
 
+  // purpose defaults to client_login; associate portal login passes
+  // purpose="associate_login" explicitly (same OTP mechanism, separate
+  // otp_codes row so a client code can't be replayed as an associate one).
+  const purpose = body.purpose === "associate_login" ? "associate_login" : "client_login";
+
   if (action === "request-otp") {
-    const result = await requestOtp({ phone: body.phone, purpose: "client_login", name: body.name });
+    const result = await requestOtp({ phone: body.phone, purpose, name: body.name });
     if (!result.ok) return res.status(400).json(result);
     return res.status(200).json(result);
   }
 
   if (action === "verify-otp") {
-    const result = await verifyOtp({ phone: body.phone, code: body.code, purpose: "client_login" });
+    const result = await verifyOtp({ phone: body.phone, code: body.code, purpose });
     if (!result.ok) return res.status(400).json(result);
     return res.status(200).json(result);
   }
