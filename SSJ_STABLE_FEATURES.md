@@ -640,3 +640,16 @@ Scan supplier business cards → auto-fill contact details via AI vision → tag
 - **Before this is usable**: generate + approve at least one variant per design via the `solitairedesigns` admin tab (the cascade will fill in the rest of that design's combos automatically), and fill in the lab-grown price grid (currently seeded at ₹0/ct for every carat size).
 
 ---
+
+## 27. CLIENT + ASSOCIATE PLATFORM FOR SSJ.IN (2026-07-30, migrations 0094–0095)
+
+**Status: all 6 phases built and deployed. Full detail + pending review items live in `ssj-website` repo's own `SSJ_WEBSITE_FEATURES.md` — this entry is a pointer, not a duplicate.**
+
+- Public client site (`ssj-website`, ssj.in) gained: WhatsApp-OTP client login (`/account`), live rates + daily-rate subscribe + price alerts (`/rates`), a "Sun Sea Brand Associate" referral/affiliate program (`/become-associate`, `/associate`), a floating AI chatbot (FAQ-grounded on the existing `bullion_faqs` table + OpenAI), and a Kitty Scheme interest placeholder (`/kitty-scheme`).
+- New tables in THIS repo's Supabase project (shared with ssj-website): `bullion_associates`, `bullion_referral_visits`, `bullion_commissions`, `bullion_price_alerts`, `bullion_otp_codes` (migration `0094`); `associate_recruitment` funnel + steps, seeded **inactive** pending copy review (migration `0095`).
+- New API files: `client-auth.js`, `rates.js`, `price-alerts.js`, `associates.js`, `chatbot.js`, `kitty-interest.js`, `_lib/clientAuth.js`, `_lib/referralAttribution.js`. All CORS-open (`Access-Control-Allow-Origin: *`) since ssj-website calls them cross-origin, same pattern as `bridal-lead.js`.
+- New CRM tab: **Client Platform** (`src/ClientPlatformAdminScreen.jsx`) — Clients / New Signups / Associates (approve applicants) / Kitty Interest / Rate Subscribers & Alerts.
+- `api/cron.js` gained step 0c: checks active `bullion_price_alerts` every tick against live rates, fires a one-time WA message on cross.
+- **Before fully live**: review the associate-recruitment WA nurture copy (migration `0095`, currently `active: false`) and flip it on; decide on the daily-rate Google Sheet integration (currently CRM-tag-only); everything else is functional as shipped. Full "needs your review" list is in ssj-website's `SSJ_WEBSITE_FEATURES.md`.
+
+---
