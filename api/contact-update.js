@@ -208,9 +208,9 @@ export default async function handler(req, res) {
       mobile:       m.mobile ? String(m.mobile).slice(0, 20)  : null,
     };
     if (m.id) {
-      await sb.from("family_members").update(row).eq("id", m.id).eq("lead_id", lead.id);
+      await sb.from("bullion_family_members").update(row).eq("id", m.id).eq("lead_id", lead.id);
     } else {
-      await sb.from("family_members").insert(row);
+      await sb.from("bullion_family_members").insert(row);
     }
   }
   if (Array.isArray(body.deletedFamilyIds) && body.deletedFamilyIds.length > 0) {

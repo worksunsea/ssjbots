@@ -5984,6 +5984,24 @@ function ApprovalsScreen({ funnels, canApprove = true }) {
     setSav(id, false);
   }
 
+  async function unapprove(id) {
+    setSav(id, true);
+    const { data, error } = await sb.from("bullion_scheduled_messages").update({ approved: false }).eq("id", id).select();
+    if (error) {
+      alert("❌ Undo failed: " + error.message);
+      setSav(id, false);
+      return;
+    }
+    if (!data || data.length === 0) {
+      alert("❌ Undo didn't save — no matching row (permissions or the message may have been removed). Try Refresh.");
+      setSav(id, false);
+      return;
+    }
+    setRows((r) => r.map((m) => m.id === id ? { ...m, approved: false } : m));
+    setCalRows((r) => r.map((m) => m.id === id ? { ...m, approved: false } : m));
+    setSav(id, false);
+  }
+
   async function approveAll(ids) {
     let failed = 0;
     let firstReason = "";
@@ -6119,9 +6137,10 @@ const activeRows = tab === "calendar" ? calRows : rows;
           </div>
         )}
         {r.approved && (
-          <div style={{ display: "flex", gap: 6, marginTop: 7, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 6, marginTop: 7, alignItems: "center", flexWrap: "wrap" }}>
             <span style={{ fontSize: 12, color: "#16a34a" }}>✅ Will send {fmtSendAt(r.send_at)}</span>
-            <button onClick={async () => { await sb.from("bullion_scheduled_messages").update({ approved: false }).eq("id", r.id); setRows((x) => x.map((m) => m.id === r.id ? { ...m, approved: false } : m)); }} style={{ fontSize: 11, padding: "2px 7px", borderRadius: 5, border: "1px solid #ddd", background: "#fff", cursor: "pointer", color: "#666" }}>Undo</button>
+            {canApprove && <button onClick={() => reject(r.id)} disabled={isSav || isGenning} style={{ fontSize: 11, padding: "2px 9px", borderRadius: 5, border: "1px solid #f87171", background: "#fff", color: "#dc2626", cursor: "pointer" }}>❌ Cancel</button>}
+            <button onClick={() => unapprove(r.id)} disabled={isSav} style={{ fontSize: 11, padding: "2px 7px", borderRadius: 5, border: "1px solid #ddd", background: "#fff", cursor: "pointer", color: "#666" }}>{isSav ? "…" : "Undo (unapprove)"}</button>
           </div>
         )}
       </div>
