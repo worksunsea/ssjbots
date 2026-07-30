@@ -90,7 +90,7 @@ export default async function handler(req, res) {
       .maybeSingle();
     if (!lead) return res.status(200).json({ ok: true, lead: null, family: [], isNew: true });
     const { data: family } = await sb
-      .from("family_members")
+      .from("bullion_family_members")
       .select("id, relationship, name, dob, mobile")
       .eq("lead_id", lead.id)
       .order("created_at", { ascending: true });
@@ -109,7 +109,7 @@ export default async function handler(req, res) {
       .maybeSingle();
     if (error || !lead) return res.status(404).json({ ok: false, error: "not_found" });
     const { data: family } = await sb
-      .from("family_members")
+      .from("bullion_family_members")
       .select("id, relationship, name, dob, mobile")
       .eq("lead_id", lead.id)
       .order("created_at", { ascending: true });
@@ -126,6 +126,7 @@ export default async function handler(req, res) {
   body = body || {};
 
   let lead;
+  let leadJustCreated = false;
 
   // ── POST: new lead registration by phone (no token) ───────────
   if (!token && body.phone) {
@@ -140,6 +141,7 @@ export default async function handler(req, res) {
     if (existing) {
       lead = existing;
     } else {
+      leadJustCreated = true;
       const ins = {
         tenant_id: TENANT_ID,
         phone,
@@ -178,51 +180,69 @@ export default async function handler(req, res) {
 
   if (!lead) return res.status(400).json({ ok: false, error: "token_or_phone_required" });
 
-  // ── Update lead fields ─────────────────────────────────────────
-  const update = {};
-  if (body.name)             update.name             = String(body.name).slice(0, 100);
-  if (body.email)            update.email            = String(body.email).slice(0, 200);
-  if (body.city)             update.city             = String(body.city).slice(0, 100);
-  if (body.address_house)    update.address_house    = String(body.address_house).slice(0, 300);
-  if (body.address_locality) update.address_locality = String(body.address_locality).slice(0, 200);
-  if (body.address_state)    update.address_state    = String(body.address_state).slice(0, 100);
-  if (body.address_pincode)  update.address_pincode  = String(body.address_pincode).slice(0, 10);
-  if (body.address_country)  update.address_country  = String(body.address_country).slice(0, 100);
-  if (body.bday)             update.bday             = String(body.bday).slice(0, 20);
-  if (body.anniversary)      update.anniversary      = String(body.anniversary).slice(0, 20);
-  if (Object.keys(update).length) {
-    await sb.from("bullion_leads").update(update).eq("id", lead.id);
-    if (update.name) lead.name = update.name;
+  const FIELD_LIMITS = {
+    name: 100, email: 200, city: 100, address_house: 300, address_locality: 200,
+    address_state: 100, address_pincode: 10, address_country: 100, bday: 20, anniversary: 20,
+  };
+  const proposedFields = {};
+  for (const key of Object.keys(FIELD_LIMITS)) {
+    if (body[key]) proposedFields[key] = String(body[key]).slice(0, FIELD_LIMITS[key]);
   }
+  const submittedFamily = Array.isArray(body.family) ? body.family : [];
+  const familyAdditions = submittedFamily.filter((m) => m.relationship && !m.id).map((m) => ({
+    relationship: String(m.relationship).slice(0, 50),
+    name: m.name ? String(m.name).slice(0, 100) : null,
+    dob: m.dob ? String(m.dob).slice(0, 20) : null,
+    mobile: m.mobile ? String(m.mobile).slice(0, 20) : null,
+  }));
+  const familyEdits = submittedFamily.filter((m) => m.relationship && m.id).map((m) => ({
+    id: m.id,
+    relationship: String(m.relationship).slice(0, 50),
+    name: m.name ? String(m.name).slice(0, 100) : null,
+    dob: m.dob ? String(m.dob).slice(0, 20) : null,
+    mobile: m.mobile ? String(m.mobile).slice(0, 20) : null,
+  }));
+  const deletedFamilyIds = Array.isArray(body.deletedFamilyIds) ? body.deletedFamilyIds : [];
 
-  // ── Upsert family members ──────────────────────────────────────
-  const members = Array.isArray(body.family) ? body.family : [];
-  for (const m of members) {
-    if (!m.relationship) continue;
-    const row = {
-      lead_id: lead.id,
-      tenant_id: lead.tenant_id,
-      relationship: String(m.relationship).slice(0, 50),
-      name:         m.name   ? String(m.name).slice(0, 100)   : null,
-      dob:          m.dob    ? String(m.dob).slice(0, 20)     : null,
-      mobile:       m.mobile ? String(m.mobile).slice(0, 20)  : null,
-    };
-    if (m.id) {
-      await sb.from("bullion_family_members").update(row).eq("id", m.id).eq("lead_id", lead.id);
-    } else {
-      await sb.from("bullion_family_members").insert(row);
+  let staged = false;
+
+  if (leadJustCreated) {
+    // Brand-new lead in this same request — nothing pre-existing to protect,
+    // apply directly (matches the original behaviour for first-time signups).
+    if (Object.keys(proposedFields).length) {
+      await sb.from("bullion_leads").update(proposedFields).eq("id", lead.id);
+      if (proposedFields.name) lead.name = proposedFields.name;
     }
-  }
-  if (Array.isArray(body.deletedFamilyIds) && body.deletedFamilyIds.length > 0) {
-    await sb.from("family_members").delete()
-      .in("id", body.deletedFamilyIds).eq("lead_id", lead.id);
+    for (const add of familyAdditions) {
+      await sb.from("bullion_family_members").insert({ ...add, lead_id: lead.id, tenant_id: lead.tenant_id });
+    }
+  } else if (Object.keys(proposedFields).length || familyAdditions.length || familyEdits.length || deletedFamilyIds.length) {
+    // Existing lead editing their own saved data — stage for staff review
+    // instead of writing directly, so old data is never silently
+    // overwritten or deleted (see migration 0096_lead_edit_requests.sql).
+    const { data: currentLead } = await sb.from("bullion_leads")
+      .select("name, email, city, address_house, address_locality, address_state, address_pincode, address_country, bday, anniversary")
+      .eq("id", lead.id).maybeSingle();
+
+    await sb.from("bullion_lead_edit_requests").insert({
+      tenant_id: lead.tenant_id,
+      lead_id: lead.id,
+      status: "pending",
+      proposed_fields: proposedFields,
+      current_snapshot: currentLead || {},
+      family_additions: familyAdditions,
+      family_edits: familyEdits,
+      deleted_family_ids: deletedFamilyIds,
+    });
+    staged = true;
   }
 
-  // ── Referrals — send WA to each referred friend ────────────────
+  // ── Referrals — send WA to each referred friend (not "their own data",
+  // applied immediately regardless of staging) ────────────────────
   const referrals = Array.isArray(body.referrals) ? body.referrals : [];
   const referralResults = referrals.length > 0
     ? await sendReferralMessages(sb, lead, referrals)
     : [];
 
-  return res.status(200).json({ ok: true, referrals: referralResults });
+  return res.status(200).json({ ok: true, referrals: referralResults, staged });
 }

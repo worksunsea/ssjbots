@@ -58,7 +58,7 @@ async function generatePreview(sb, row) {
       "Mention offer ONLY in pre/post event messages. For the actual wish: just wish warmly, no selling.",
     ] : []),
     ...(isBirthdayWishStep ? [`BIRTHDAY/ANNIVERSARY WISH INSTRUCTION: Just wish them warmly and genuinely on their special day. Naturally mention that a special surprise free gift awaits them when they visit Sun Sea Jewellers this week. Keep it warm and exciting — no hard sell.`] : []),
-    ...(isBirthdayFunnel && isLastStep ? [`POST-EVENT GIFT CTA (7 days after): Tell them to fill their profile form and download the Sun Sea Jewellers app to claim their FREE birthday gift of 50mg gold worth ₹1,500. Profile form: https://ssjbot.gemtre.in/profile  App Android: https://ssjbot.gemtre.in/app  App iOS: https://ssjbot.gemtre.in/ios  Make it sound warm and exciting.`] : []),
+    ...(isBirthdayFunnel && isLastStep ? [`POST-EVENT GIFT CTA (7 days after): Tell them to fill their profile form and download the Sun Sea Jewellers app to claim their FREE birthday gift of 50mg gold worth ₹1,500. Profile form: https://ssjbot.gemtre.in/profile  App Android: https://ssjbot.gemtre.in/app  App iOS: https://ssjbot.gemtre.in/ios  Also briefly ask them to check the profile form and update anything that's changed — name, gift delivery address, email for offers, spouse's name and birthday, and their anniversary date — so we always have their correct details on file. Make it sound warm and exciting.`] : []),
     ...(resolvedLink ? [`Include naturally — ${resolvedLink.label}: ${resolvedLink.url}`] : []),
     `Context: ${funnel.goal || "Stay in touch."}`,
     faqs?.length ? `Store info:\n${faqsForPrompt(faqs)}` : "",
@@ -788,7 +788,7 @@ export default async function handler(req, res) {
             "Mention the offer ONLY in pre-event and post-event messages. For the actual wish: just wish warmly, no selling.",
           ] : []),
           ...(isBirthdayWishStep ? [`BIRTHDAY/ANNIVERSARY WISH INSTRUCTION: Just wish them warmly and genuinely on their special day. Naturally mention that a special surprise free gift awaits them when they visit Sun Sea Jewellers this week. Keep it warm and exciting — no hard sell.`] : []),
-          ...(isBirthdayFunnel && isLastStep ? [`POST-EVENT GIFT CTA (7 days after): Tell them to fill their profile form and download the Sun Sea Jewellers app to claim their FREE gift of 50mg gold worth ₹1,500. Profile form: https://ssjbot.gemtre.in/profile  App Android: https://ssjbot.gemtre.in/app  App iOS: https://ssjbot.gemtre.in/ios  Make it sound warm and exciting.`] : []),
+          ...(isBirthdayFunnel && isLastStep ? [`POST-EVENT GIFT CTA (7 days after): Tell them to fill their profile form and download the Sun Sea Jewellers app to claim their FREE gift of 50mg gold worth ₹1,500. Profile form: https://ssjbot.gemtre.in/profile  App Android: https://ssjbot.gemtre.in/app  App iOS: https://ssjbot.gemtre.in/ios  Also briefly ask them to check the profile form and update anything that's changed — name, gift delivery address, email for offers, spouse's name and birthday, and their anniversary date — so we always have their correct details on file. Make it sound warm and exciting.`] : []),
           ...(resolvedLink ? [
             `Include this link naturally — ${resolvedLink.label}: ${resolvedLink.url}`,
             "Do not alter the URL. Place it at the end before the signature.",

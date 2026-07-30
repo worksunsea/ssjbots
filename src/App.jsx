@@ -5798,6 +5798,146 @@ function RatesScreen() {
 }
 
 // ──────────────────────────────────────────────────────────
+// PROFILE EDIT REQUESTS — customer-submitted edits (via /profile and
+// /update?t= forms) awaiting staff review before touching bullion_leads /
+// bullion_family_members. See migration 0096_lead_edit_requests.sql and
+// api/contact-update.js. Approving applies field changes directly (only
+// one current value can exist) but appends family-member edits as NEW
+// rows rather than overwriting — old family data is never silently lost.
+// Deletions the customer requested are never automatic; staff delete the
+// specific record explicitly, one click at a time.
+// ──────────────────────────────────────────────────────────
+const FIELD_LABELS = {
+  name: "Name", email: "Email", city: "City", address_house: "Address (house/street)",
+  address_locality: "Address (locality)", address_state: "State", address_pincode: "Pincode",
+  address_country: "Country", bday: "Birthday", anniversary: "Anniversary",
+};
+
+function ProfileEditRequestsPanel({ canApprove }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(new Set());
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data } = await sb.from("bullion_lead_edit_requests")
+      .select("id,lead_id,proposed_fields,current_snapshot,family_additions,family_edits,deleted_family_ids,created_at,lead:bullion_leads(id,name,phone)")
+      .eq("tenant_id", getTenantId()).eq("status", "pending")
+      .order("created_at", { ascending: true }).limit(100);
+    setRows(data || []);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const setBusyId = (id, on) => setBusy((s) => { const n = new Set(s); on ? n.add(id) : n.delete(id); return n; });
+
+  const approve = async (r) => {
+    setBusyId(r.id, true);
+    try {
+      if (r.proposed_fields && Object.keys(r.proposed_fields).length) {
+        await sb.from("bullion_leads").update(r.proposed_fields).eq("id", r.lead_id);
+      }
+      for (const add of r.family_additions || []) {
+        await sb.from("bullion_family_members").insert({ ...add, lead_id: r.lead_id, tenant_id: getTenantId() });
+      }
+      // Edits are APPENDED as new rows, never overwrite the existing record —
+      // old family data (e.g. a previous spouse/child entry) is preserved.
+      for (const edit of r.family_edits || []) {
+        const { id: _oldId, ...rest } = edit;
+        await sb.from("bullion_family_members").insert({ ...rest, lead_id: r.lead_id, tenant_id: getTenantId() });
+      }
+      await sb.from("bullion_lead_edit_requests").update({
+        status: "approved", reviewed_by: loadUser()?.name || "staff", reviewed_at: new Date().toISOString(),
+      }).eq("id", r.id);
+      setRows((x) => x.filter((row) => row.id !== r.id));
+    } catch (e) {
+      alert("Failed to approve: " + e.message);
+    }
+    setBusyId(r.id, false);
+  };
+
+  const reject = async (r) => {
+    setBusyId(r.id, true);
+    await sb.from("bullion_lead_edit_requests").update({
+      status: "rejected", reviewed_by: loadUser()?.name || "staff", reviewed_at: new Date().toISOString(),
+    }).eq("id", r.id);
+    setRows((x) => x.filter((row) => row.id !== r.id));
+    setBusyId(r.id, false);
+  };
+
+  const deleteFamilyRecord = async (r, familyId) => {
+    if (!window.confirm("Delete this family record? This cannot be undone.")) return;
+    await sb.from("bullion_family_members").delete().eq("id", familyId).eq("lead_id", r.lead_id);
+    await sb.from("bullion_lead_edit_requests").update({
+      deleted_family_ids: (r.deleted_family_ids || []).filter((id) => id !== familyId),
+    }).eq("id", r.id);
+    setRows((x) => x.map((row) => row.id === r.id ? { ...row, deleted_family_ids: (row.deleted_family_ids || []).filter((id) => id !== familyId) } : row));
+  };
+
+  if (loading) return null;
+  if (!rows.length) return null;
+
+  return (
+    <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, padding: 16, marginBottom: 20 }}>
+      <div style={{ fontSize: 14, fontWeight: 700, color: "#92400e", marginBottom: 10 }}>📝 Profile Edit Requests ({rows.length})</div>
+      {rows.map((r) => {
+        const isBusy = busy.has(r.id);
+        const fieldDiffs = Object.entries(r.proposed_fields || {}).filter(([k, v]) => v !== (r.current_snapshot || {})[k]);
+        return (
+          <div key={r.id} style={{ background: "#fff", border: "1px solid #fde68a", borderRadius: 8, padding: 12, marginBottom: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{r.lead?.name || "Unknown"} · {r.lead?.phone}</div>
+
+            {fieldDiffs.length > 0 && (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 8 }}>
+                <tbody>
+                  {fieldDiffs.map(([k, v]) => (
+                    <tr key={k}>
+                      <td style={{ padding: "3px 6px", color: "#666", whiteSpace: "nowrap" }}>{FIELD_LABELS[k] || k}</td>
+                      <td style={{ padding: "3px 6px", color: "#999", textDecoration: "line-through" }}>{r.current_snapshot?.[k] || "—"}</td>
+                      <td style={{ padding: "3px 6px", color: "#166534", fontWeight: 600 }}>→ {v}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            {(r.family_additions || []).length > 0 && (
+              <div style={{ fontSize: 12, marginBottom: 6 }}>
+                <span style={{ color: "#666" }}>New family member(s): </span>
+                {r.family_additions.map((m, i) => <span key={i} style={{ marginRight: 8 }}>{m.relationship} — {m.name || "unnamed"}{m.dob ? ` (${m.dob})` : ""}</span>)}
+              </div>
+            )}
+
+            {(r.family_edits || []).length > 0 && (
+              <div style={{ fontSize: 12, marginBottom: 6, color: "#92400e" }}>
+                Family edit(s) — will be added as new records, existing ones kept: {r.family_edits.map((m, i) => <span key={i} style={{ marginRight: 8 }}>{m.relationship} — {m.name || "unnamed"}{m.dob ? ` (${m.dob})` : ""}</span>)}
+              </div>
+            )}
+
+            {(r.deleted_family_ids || []).length > 0 && (
+              <div style={{ fontSize: 12, marginBottom: 6 }}>
+                <span style={{ color: "#dc2626" }}>Customer requested removing {r.deleted_family_ids.length} family record(s) — </span>
+                {r.deleted_family_ids.map((fid) => (
+                  <button key={fid} onClick={() => deleteFamilyRecord(r, fid)} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 5, border: "1px solid #f87171", background: "#fff", color: "#dc2626", cursor: "pointer", marginRight: 4 }}>Delete this record</button>
+                ))}
+              </div>
+            )}
+
+            {canApprove && (
+              <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                <button onClick={() => approve(r)} disabled={isBusy} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 6, border: "none", background: "#16a34a", color: "#fff", cursor: "pointer", fontWeight: 600 }}>{isBusy ? "…" : "✅ Approve"}</button>
+                <button onClick={() => reject(r)} disabled={isBusy} style={{ fontSize: 12, padding: "4px 12px", borderRadius: 6, border: "1px solid #f87171", background: "#fff", color: "#dc2626", cursor: "pointer" }}>❌ Reject</button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
 // APPROVALS SCREEN — review & approve scheduled drip messages
 // ──────────────────────────────────────────────────────────
 function ApprovalsScreen({ funnels, canApprove = true }) {
@@ -6158,6 +6298,7 @@ const activeRows = tab === "calendar" ? calRows : rows;
           onSaved={() => onContactSaved(editContact.id, editContact.name)}
         />
       )}
+      <ProfileEditRequestsPanel canApprove={canApprove} />
       {/* Generate Previews — top banner */}
       <div style={{ background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: 10, padding: "12px 16px", marginBottom: 16, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <span style={{ fontSize: 13, color: "#3730a3", flex: 1 }}>
@@ -9485,6 +9626,7 @@ function ContactUpdateForm({ token }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [done, setDone] = useState(false);
+  const [staged, setStaged] = useState(false);
   const [err, setErr] = useState("");
   const [deletedIds, setDeletedIds] = useState([]);
 
@@ -9520,7 +9662,7 @@ function ContactUpdateForm({ token }) {
     });
     const d = await r.json();
     setSaving(false);
-    if (d.ok) setDone(true);
+    if (d.ok) { setDone(true); setStaged(!!d.staged); }
     else setErr("Failed to save. Please try again.");
   };
 
@@ -9537,7 +9679,11 @@ function ContactUpdateForm({ token }) {
       <div style={{ textAlign: "center", paddingTop: 40 }}>
         <div style={{ fontSize: 48 }}>🙏</div>
         <h2 style={{ fontSize: 20, margin: "16px 0 8px" }}>Thank you, {lead?.name?.split(" ")[0] || ""}!</h2>
-        <p style={{ color: "#555", fontSize: 14 }}>Your details have been updated. We look forward to seeing you at Sun Sea Jewellers!</p>
+        <p style={{ color: "#555", fontSize: 14 }}>
+          {staged
+            ? "Your changes have been submitted for review — our team will confirm them shortly. Nothing you had saved with us before has been changed yet."
+            : "Your details have been updated. We look forward to seeing you at Sun Sea Jewellers!"}
+        </p>
       </div>
       <ReferralSection leadId={lead?.id} leadName={lead?.name} token={token} />
       <AppDownloadLinks />
@@ -9657,6 +9803,7 @@ function GenericProfileForm() {
   const [deletedIds, setDeletedIds] = useState([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [staged, setStaged] = useState(false);
   const [err, setErr] = useState("");
 
   const normalised = rawPhone.replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, "");
@@ -9694,7 +9841,7 @@ function GenericProfileForm() {
         body: JSON.stringify({ phone: normalised, ...form, family, deletedFamilyIds: deletedIds, referrals: validRefs, ...(referralId ? { referralId } : {}) }),
       });
       const d = await r.json();
-      if (d.ok) { setStep("done"); }
+      if (d.ok) { setStep("done"); setStaged(!!d.staged); }
       else { setErr("Failed to save. Try again."); }
     } catch { setErr("Network error. Try again."); }
     setSaving(false);
@@ -9721,7 +9868,11 @@ function GenericProfileForm() {
       <div style={{ textAlign: "center", paddingTop: 32 }}>
         <div style={{ fontSize: 48 }}>🙏</div>
         <h2 style={{ fontSize: 20, margin: "16px 0 8px" }}>Thank you, {form.name?.split(" ")[0] || ""}!</h2>
-        <p style={{ color: "#555", fontSize: 14 }}>{lead ? "Your details have been updated." : "You've been registered!"} We look forward to seeing you at Sun Sea Jewellers!</p>
+        <p style={{ color: "#555", fontSize: 14 }}>
+          {staged
+            ? "Your changes have been submitted for review — our team will confirm them shortly. Nothing you had saved with us before has been changed yet."
+            : `${lead ? "Your details have been updated." : "You've been registered!"} We look forward to seeing you at Sun Sea Jewellers!`}
+        </p>
       </div>
       <ReferralSection phone={normalised} />
       <AppDownloadLinks />
