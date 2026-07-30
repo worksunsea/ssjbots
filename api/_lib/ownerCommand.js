@@ -170,7 +170,7 @@ async function classifyOwnerMessage(messageText, staffNames, corrections, lastCo
     "   - \"upcoming_events\" = customer birthdays/anniversaries coming up, e.g. \"any birthdays coming up\", \"whose anniversary is this week\" -> if he gives a number of days put it in \"query\" (e.g. \"14\"), else omit (defaults to 7).",
     "   - \"full\" = general \"give me the report\"/\"how are things\" with no specific topic.",
     "",
-    `3. Asking to look something up / retrieve company information or a document (bank details, passwords, licenses, templates — NOT a customer): {"intent":"search_resources","query":"<the key search terms only — person/company name, bank name, document type — space separated, drop filler words like 'I need', 'please', 'card', 'details'. e.g. 'Sanjeev Garg Aadhaar' not 'I need the aadhar card of Sanjeev Garg'>"}`,
+    `3. Asking to look something up / retrieve company information or a document (bank details, passwords, licenses, templates — NOT a customer): {"intent":"search_resources","query":"<the key search terms only — person/company name, bank name, document type — space separated. Drop pure filler like 'I need', 'please', 'chahiye', 'do'. KEEP document-type words (PAN, Aadhaar, GST, license, etc.) even when there's no name attached — e.g. 'PAN card' alone -> query 'PAN', NEVER an empty query. e.g. 'Sanjeev Garg Aadhaar' not 'I need the aadhar card of Sanjeev Garg'>"}`,
     "",
     `4. Commenting on the PREVIOUS reply the bot just sent (e.g. "wrong answer", "galat jawab tha", "that's not right", "no that's wrong", or conversely "yes correct", "sahi hai", "thanks that's right"): {"intent":"feedback","rating":"wrong"|"correct"}`,
     "",
