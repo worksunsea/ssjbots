@@ -12151,14 +12151,56 @@ function buildEstimatePdfDoc({ title, clientName, sections, orientation = "portr
       y += 18;
     }
 
-    doc.setFont("times", "normal");
-    doc.setFontSize(11);
-    sec.rows.forEach(([label, value]) => {
-      ensureRoom();
-      doc.text(String(label), marginX, y);
-      doc.text(String(value), colR, y, { align: "right" });
-      y += 20;
-    });
+    // Table mode (columns + tableRows) — mirrors the multi-column HTML print
+    // layout (e.g. quotation's stone table) instead of squishing everything
+    // into a single label/value column, which previously made "Download PDF"
+    // look nothing like what "Print" showed.
+    if (sec.columns) {
+      doc.setFont("times", "bold");
+      doc.setFontSize(9);
+      let hx = marginX;
+      sec.columns.forEach((c) => {
+        doc.text(c.label, c.align === "right" ? hx + c.width : hx, y, c.align === "right" ? { align: "right" } : undefined);
+        hx += c.width;
+      });
+      y += 6;
+      doc.setDrawColor(80);
+      doc.setLineWidth(0.75);
+      doc.line(marginX, y, colR, y);
+      y += 14;
+
+      doc.setFont("times", "normal");
+      doc.setFontSize(9);
+      sec.tableRows.forEach((row) => {
+        ensureRoom(row.notes ? 30 : 16);
+        let cx = marginX;
+        sec.columns.forEach((c, i) => {
+          const val = String(row.cells[i] ?? "");
+          if (c.align === "right") doc.text(val, cx + c.width, y, { align: "right" });
+          else doc.text(val, cx, y, { maxWidth: c.width - 4 });
+          cx += c.width;
+        });
+        y += 14;
+        if (row.notes) {
+          doc.setFontSize(8);
+          doc.setTextColor(120);
+          doc.text(`Note: ${row.notes}`, marginX + 10, y, { maxWidth: colR - marginX - 10 });
+          doc.setFontSize(9);
+          doc.setTextColor(0);
+          y += 12;
+        }
+      });
+      y += 6;
+    } else {
+      doc.setFont("times", "normal");
+      doc.setFontSize(11);
+      sec.rows.forEach(([label, value]) => {
+        ensureRoom();
+        doc.text(String(label), marginX, y);
+        doc.text(String(value), colR, y, { align: "right" });
+        y += 20;
+      });
+    }
 
     ensureRoom(30);
     doc.setDrawColor(60);
@@ -12187,9 +12229,10 @@ function estimatePdfFilename(title, clientName) {
 }
 
 // Downloads a single-estimate PDF straight to disk (no print dialog).
-// rows: [[label, value], ...]
-function downloadEstimatePdf({ title, clientName, rows, total, orientation, format }) {
-  const doc = buildEstimatePdfDoc({ title, clientName, sections: [{ rows, total }], orientation, format });
+// Either pass `sections` directly (table mode, e.g. quotation's columns +
+// tableRows), or the simpler `rows`/`total` (label/value list, jewellery/solitaire).
+function downloadEstimatePdf({ title, clientName, rows, total, sections, orientation, format }) {
+  const doc = buildEstimatePdfDoc({ title, clientName, sections: sections || [{ rows, total }], orientation, format });
   doc.save(estimatePdfFilename(title, clientName));
 }
 
@@ -15487,7 +15530,8 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     const win = window.open("", "_blank", "width=600,height=800");
     win.document.write(html);
     win.document.close();
-    win.onload = () => { win.print(); win.close(); };
+    win.onload = () => { win.print(); };
+    win.onafterprint = () => win.close();
   };
 
   const handleSolPrint = () => {
@@ -15542,7 +15586,8 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     const win = window.open("", "_blank", "width=600,height=800");
     win.document.write(html);
     win.document.close();
-    win.onload = () => { win.print(); win.close(); };
+    win.onload = () => { win.print(); };
+    win.onafterprint = () => win.close();
   };
 
   const handleQuotPrint = () => {
@@ -15604,7 +15649,8 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     const win = window.open("", "_blank", "width=600,height=800");
     win.document.write(html);
     win.document.close();
-    win.onload = () => { win.print(); win.close(); };
+    win.onload = () => { win.print(); };
+    win.onafterprint = () => win.close();
   };
 
   const loadEstimateForEdit = (est) => {
@@ -16086,31 +16132,55 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
         >{quotShowExtra ? "▲ Hide Notes" : "▼ Notes"}</button>
       </div>
       {(() => {
-        const quotPdfRows = rows.map((r, i) => {
+        // Column layout matches handleQuotPrint's HTML table 1:1 so Download
+        // PDF / Send Estimate no longer look different from what Print shows.
+        const quotColumns = [
+          { label: "#", width: 20 },
+          { label: "Shape", width: 55 },
+          { label: "Weight", width: 55 },
+          { label: "Colour/Clarity", width: 85 },
+          { label: "Cut", width: 55 },
+          { label: "Cert", width: 45 },
+          { label: "Rap INR/ct", width: 90, align: "right" },
+          { label: "Disc%", width: 55, align: "right" },
+          { label: "Price", width: 90, align: "right" },
+        ];
+        const quotTableRows = rows.map((r, i) => {
           const sc = solCalc(r);
           const rapTxt = sc.rapInrPerCt != null ? "₹" + Math.round(sc.rapInrPerCt).toLocaleString("en-IN") : "—";
           const discTxt = sc.sellDisc != null && !isNaN(sc.sellDisc) ? `${sc.sellDisc.toFixed(1)}%` : "—";
-          const label = `${i+1}. ${r.shape}  ${r.weight}ct  ${r.color}/${r.clarity}  ${r.cut}  ${r.cert}  ·  Rap ${rapTxt}  ·  Disc ${discTxt}${r.notes ? `\n   📝 ${r.notes}` : ""}`;
-          return [label, sc.sellTotal != null ? fmt(sc.sellTotal) : "—"];
+          return {
+            cells: [i + 1, r.shape, `${r.weight} ct`, `${r.color}/${r.clarity}`, r.cut, r.cert, rapTxt, discTxt, sc.sellTotal != null ? fmt(sc.sellTotal) : "—"],
+            notes: r.notes || "",
+          };
         });
         const quotTotal = fmt(rows.reduce((s, r) => s + (solCalc(r).sellTotal || 0), 0));
         const clientName = saveContact?.name || saveContact?.phone || "";
-        const quotCaption = `*QUOTATION — Sun Sea Jewellers*\n${clientName ? `For: ${clientName}\n` : ""}\n${quotPdfRows.map(([l, v]) => `${l} — ${v}`).join("\n")}\n\n_Sun Sea Jewellers, Mumbai_`;
+        const quotCaptionLines = rows.map((r, i) => {
+          const sc = solCalc(r);
+          const rapTxt = sc.rapInrPerCt != null ? "₹" + Math.round(sc.rapInrPerCt).toLocaleString("en-IN") : "—";
+          const discTxt = sc.sellDisc != null && !isNaN(sc.sellDisc) ? `${sc.sellDisc.toFixed(1)}%` : "—";
+          return `${i + 1}. ${r.shape} ${r.weight}ct ${r.color}/${r.clarity} ${r.cut} ${r.cert} · Rap ${rapTxt} · Disc ${discTxt} — ${sc.sellTotal != null ? fmt(sc.sellTotal) : "—"}`;
+        });
+        const quotCaption = `*QUOTATION — Sun Sea Jewellers*\n${clientName ? `For: ${clientName}\n` : ""}\n${quotCaptionLines.join("\n")}\n\nTotal: ${quotTotal}\n\n_Sun Sea Jewellers, Mumbai_`;
         return (
           <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
             <Btn small color={C.green} onClick={() => setRows(p => [...p, newSolRow()])}>+ Add Stone</Btn>
             <Btn small color={C.blue} onClick={() => { setJustSaved(false); setSaveModal(true); }}>💾 Save</Btn>
             <Btn small ghost color={C.blue} onClick={handleQuotPrint}>🖨️ Print</Btn>
-            <Btn small ghost color={C.blue} onClick={() => downloadEstimatePdf({ title: "QUOTATION", clientName: saveContact?.name, rows: quotPdfRows, total: quotTotal, orientation: "landscape", format: "a4" })}>📄 Download PDF</Btn>
-            {saveContact && (
+            <Btn small ghost color={C.blue} onClick={() => downloadEstimatePdf({ title: "QUOTATION", clientName: saveContact?.name, sections: [{ columns: quotColumns, tableRows: quotTableRows, total: quotTotal }], orientation: "landscape", format: "a4" })}>📄 Download PDF</Btn>
+            {saveContact ? (
               <Btn small ghost={!justSaved} color={C.green} disabled={!justSaved || sendingEst} style={justSaved ? { background: C.green, color: "#fff" } : undefined} onClick={async () => {
+                if (!saveContact.phone) { showToast("❌ Selected client has no phone number"); return; }
                 setSendingEst(true);
                 try {
-                  const r = await sendEstimatePdfOnWA({ phone: saveContact.phone, clientName: saveContact.name, title: "QUOTATION", sections: [{ rows: quotPdfRows, total: quotTotal }], caption: quotCaption, orientation: "landscape", format: "a4" });
-                  showToast(r.ok ? "✅ Quotation PDF sent on WhatsApp" : "❌ " + (r.error || "Send failed"));
+                  const r = await sendEstimatePdfOnWA({ phone: saveContact.phone, clientName: saveContact.name, title: "QUOTATION", sections: [{ columns: quotColumns, tableRows: quotTableRows, total: quotTotal }], caption: quotCaption, orientation: "landscape", format: "a4" });
+                  showToast(r.ok ? "✅ Quotation PDF sent on WhatsApp" : "❌ " + (r.error || r.message || "Send failed"));
                 } catch (e) { showToast("❌ " + e.message); }
                 setSendingEst(false);
               }} title={justSaved ? "Send this saved quotation as a PDF on WhatsApp" : "Save the estimate first"}>{sendingEst ? "Sending…" : "📤 Send Estimate"}</Btn>
+            ) : (
+              <span style={{ fontSize: 12, color: "#999", alignSelf: "center" }}>Select a client above to enable Send Estimate</span>
             )}
           </div>
         );
