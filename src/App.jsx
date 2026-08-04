@@ -11857,6 +11857,25 @@ function parseLiveRatesForCalc(rows) {
   return out;
 }
 
+// Fetch + parse live rates, retrying transient failures (network blip, Apps
+// Script cold-start) instead of leaving the calculator blank forever on one
+// failed attempt. Returns parsed rates, or null if all attempts failed.
+async function loadLiveRatesWithRetry(attempts = 3, delayMs = 1500) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(`${APPS_SCRIPT_URL}?action=rates`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const d = await res.json();
+      const rows = d.rates || d.rows || [];
+      if (rows.length) return parseLiveRatesForCalc(rows);
+      throw new Error("empty rates response");
+    } catch {
+      if (i < attempts - 1) await new Promise(r => setTimeout(r, delayMs * (i + 1)));
+    }
+  }
+  return null;
+}
+
 function newSolRow() {
   return { id: Date.now() + Math.random(), cert: "IGI", color: "H", shape: "Round", clarity: "VS1", cut: "Excellent", weight: "", buyDisc: "", sellDisc: "", vendorCode: "", purchasePrice: "", notes: "", manualPrice: "" };
 }
@@ -13561,9 +13580,7 @@ function CatalogueScreen() {
   // Live gold/silver rates for the replicated jewellery pricing form.
   const [catLiveRates, setCatLiveRates] = useState({ g24: null, g22: null, g18: null, g14: null, g9: null, silver: null, usd: null });
   useEffect(() => {
-    fetch(`${APPS_SCRIPT_URL}?action=rates`).then((r) => r.json()).then((d) => {
-      setCatLiveRates(parseLiveRatesForCalc(d.rates || d.rows || []));
-    }).catch(() => {});
+    loadLiveRatesWithRetry().then(parsed => { if (parsed) setCatLiveRates(parsed); });
   }, []);
   const catGoldRatePg = (purityIdx, override) => override ? parseFloat(override) : purityRatePg(purityIdx, catLiveRates);
 
@@ -14960,6 +14977,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     reader.readAsDataURL(file);
   });
   const [liveRates, setLiveRates] = useState({ g24: null, g22: null, g18: null, g14: null, g9: null, silver: null, usd: null });
+  const [ratesError, setRatesError] = useState(false);
   const [usdInr, setUsdInr] = useState("");
   const [spread, setSpread] = useState(() => { try { return Number(localStorage.getItem("rap_spread") || 8); } catch { return 8; } });
   const [makingMode, setMakingMode] = useState(() => { try { return localStorage.getItem("making_mode") || "per_g"; } catch { return "per_g"; } });
@@ -15107,13 +15125,15 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
         } catch { /* use seed */ }
       }
     });
-    // Load live rates
-    fetch(`${APPS_SCRIPT_URL}?action=rates`).then(r => r.json()).then(d => {
-      const rows2 = d.rates || d.rows || [];
-      const parsed = parseLiveRatesForCalc(rows2);
-      setLiveRates(parsed);
-      if (parsed.usd) setUsdInr(String(parsed.usd));
-    }).catch(() => {});
+    // Load live rates — retry on transient failure instead of silently staying blank forever
+    loadLiveRatesWithRetry().then(parsed => {
+      if (parsed) {
+        setLiveRates(parsed);
+        if (parsed.usd) setUsdInr(String(parsed.usd));
+      } else {
+        setRatesError(true);
+      }
+    });
     // Load recent estimates
     sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items,lead_id,metadata,bullion_leads(name,phone)").order("created_at", { ascending: false }).limit(8).then(({ data }) => setRecentEstimates(data || []));
     // Load pending follow-ups (estimates with linked contact, last 30 days)
@@ -16221,6 +16241,20 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
         <div className="no-print" style={{ background: "#fff3e0", border: "1px solid #ffb74d", borderRadius: 8, padding: "8px 14px", marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 13 }}>
           <span>✏️ <strong>Editing estimate</strong> from {new Date(editingEstOrig.created_at).toLocaleDateString("en-IN")} · {editingEstOrig.bullion_leads?.name || "No client"} · was ₹{Math.round(editingEstOrig.total_amount || 0).toLocaleString("en-IN")}</span>
           <button onClick={() => { setEditingEstId(null); setEditingEstOrig(null); showToast("Edit cancelled"); }} style={{ background: "none", border: "1px solid #ffb74d", borderRadius: 4, padding: "2px 10px", cursor: "pointer", fontSize: 12 }}>✕ Cancel edit</button>
+        </div>
+      )}
+
+      {/* Live rates load failure — was previously a silent catch, calculator just stayed blank forever */}
+      {ratesError && (
+        <div className="no-print" style={{ background: "#ffebee", border: "1px solid #e57373", borderRadius: 8, padding: "8px 14px", marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 13 }}>
+          <span>⚠️ <strong>Live gold/silver rates failed to load</strong> — check network or Apps Script sheet. Rate fields will stay blank until retried.</span>
+          <button onClick={() => {
+            setRatesError(false);
+            loadLiveRatesWithRetry().then(parsed => {
+              if (parsed) { setLiveRates(parsed); if (parsed.usd) setUsdInr(String(parsed.usd)); }
+              else setRatesError(true);
+            });
+          }} style={{ background: "none", border: "1px solid #e57373", borderRadius: 4, padding: "2px 10px", cursor: "pointer", fontSize: 12 }}>↻ Retry</button>
         </div>
       )}
 
