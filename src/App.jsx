@@ -10650,7 +10650,7 @@ function SecurityPanel() {
     <div style={{ marginBottom: 16, padding: 14, background: "#fdf4ff", border: "1px solid #e9d5ff", borderRadius: 10 }}>
       <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>🔐 Office 2FA — new device gate</div>
       <div style={{ fontSize: 12, color: "#555", marginBottom: 10 }}>
-        One shared authenticator code, kept on a single office phone. When anyone logs in from a device that hasn't been verified before, they'll be asked for that code. Verified devices stay trusted for {settings?.deviceTrustDays ?? 30} days.
+        One shared authenticator code, kept on a single office phone. Each staff member is asked for it once every {settings?.reauthDays ?? 15} days (by name, across ssjbots, ssj-hr, and ssj-suite — verifying in any one app covers the others), and again sooner on a brand-new device.
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: setup ? 12 : 0 }}>

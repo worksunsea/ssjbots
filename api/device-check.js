@@ -14,9 +14,9 @@
 // SSJ_STABLE_FEATURES.md §19 for the full design writeup and why RLS denies anon
 // access to tenant_security_settings / trusted_devices entirely.
 
-import { TOTP, Secret } from "otpauth";
 import { supa } from "./_lib/supabase.js";
 import { checkCrmSecret } from "./_lib/config.js";
+import { getSecuritySettings, recentlyVerifiedByName, validateOfficeCode, logVerification } from "./_lib/officeTotp.js";
 
 export default async function handler(req, res) {
   if (checkCrmSecret(req, res)) return;
@@ -28,28 +28,30 @@ export default async function handler(req, res) {
   }
 
   const sb = supa();
-
-  const { data: settings } = await sb
-    .from("tenant_security_settings")
-    .select("totp_secret,totp_enabled,device_trust_days")
-    .eq("tenant_id", tenantId)
-    .maybeSingle();
+  const settings = await getSecuritySettings(sb, tenantId);
 
   if (!settings?.totp_enabled) {
     return res.status(200).json({ ok: true, needsTotp: false, trusted: true });
   }
 
-  const trustDays = settings.device_trust_days || 30;
+  const reauthDays = settings.reauth_days || 15;
 
+  // Fast path: this exact device already trusted (legacy device-trust window).
   const { data: trusted } = await sb
     .from("trusted_devices")
     .select("id,trusted_until")
     .eq("tenant_id", tenantId)
     .eq("device_token", deviceToken)
     .maybeSingle();
-
   if (trusted && new Date(trusted.trusted_until) > new Date()) {
     await sb.from("trusted_devices").update({ last_seen_at: new Date().toISOString() }).eq("id", trusted.id);
+    return res.status(200).json({ ok: true, needsTotp: false, trusted: true });
+  }
+
+  // Per-user gate: this staff member (by name, matches across ssjbots/ssj-hr/
+  // ssj-suite since they don't share a staff_id space) verified recently on
+  // ANY device/app — skip re-asking regardless of which device they're on now.
+  if (await recentlyVerifiedByName(sb, tenantId, staffName, reauthDays)) {
     return res.status(200).json({ ok: true, needsTotp: false, trusted: true });
   }
 
@@ -60,17 +62,11 @@ export default async function handler(req, res) {
   if (!settings.totp_secret) {
     return res.status(200).json({ ok: false, error: "totp_not_configured" });
   }
-
-  let valid = false;
-  try {
-    const totp = new TOTP({ secret: Secret.fromBase32(settings.totp_secret), algorithm: "SHA1", digits: 6, period: 30 });
-    valid = totp.validate({ token: String(code).padStart(6, "0"), window: 1 }) !== null;
-  } catch {
-    valid = false;
+  if (!validateOfficeCode(settings.totp_secret, code)) {
+    return res.status(200).json({ ok: false, error: "wrong_code" });
   }
-  if (!valid) return res.status(200).json({ ok: false, error: "wrong_code" });
 
-  const trustedUntil = new Date(Date.now() + trustDays * 86400000).toISOString();
+  const trustedUntil = new Date(Date.now() + reauthDays * 86400000).toISOString();
   const label = (req.headers["user-agent"] || "").slice(0, 200);
 
   await sb.from("trusted_devices").upsert(
@@ -86,12 +82,9 @@ export default async function handler(req, res) {
     { onConflict: "tenant_id,device_token" }
   );
 
-  await sb.from("device_verifications").insert({
-    tenant_id: tenantId,
-    staff_id: staffId || null,
-    staff_name: staffName || null,
-    device_token: deviceToken,
-    ip: (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || null,
+  await logVerification(sb, {
+    tenantId, staffId, staffName, deviceToken,
+    ip: (req.headers["x-forwarded-for"] || "").split(",")[0].trim(),
     device: label,
   });
 
