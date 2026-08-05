@@ -250,16 +250,23 @@ async function ingestOne(sb, { number, dir }) {
     const group = byColor[color];
     if (!group?.length) continue;
 
-    const viewImages = {};
+    const urls = [];
     for (let i = 0; i < group.length; i++) {
       const buf = await compressToBuffer(group[i]);
       const uploadPath = `uploads/solitaire-designs/${design.id}/${color}/photo-${i + 1}.jpg`;
       const { error: upErr } = await sb.storage.from("media").upload(uploadPath, buf, { contentType: "image/jpeg", upsert: true });
       if (upErr) continue;
       const { data: pub } = sb.storage.from("media").getPublicUrl(uploadPath);
-      viewImages[`photo${i + 1}`] = pub.publicUrl;
+      urls.push(pub.publicUrl);
     }
-    if (!Object.keys(viewImages).length) continue;
+    if (!urls.length) continue;
+
+    // The storefront (SolitaireJewelleryScreen.jsx) only recognizes
+    // front/angle/worn keys — map the uploaded set onto those, same as
+    // _fix-ring-view-image-keys.mjs used to repair the first import pass.
+    const viewImages = { front: urls[0] };
+    if (urls.length === 2) viewImages.worn = urls[1];
+    if (urls.length >= 3) { viewImages.angle = urls[Math.floor(urls.length / 2)]; viewImages.worn = urls[urls.length - 1]; }
 
     const { error: variantErr } = await sb.from("solitaire_design_variants").insert({
       tenant_id: TENANT_ID,
