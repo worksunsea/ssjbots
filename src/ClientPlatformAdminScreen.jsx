@@ -13,6 +13,7 @@ const SUB_TABS = [
   { k: "clients", l: "Clients" },
   { k: "signups", l: "New Signups" },
   { k: "associates", l: "Associates" },
+  { k: "commissions", l: "Commissions" },
   { k: "kitty", l: "Kitty Interest" },
   { k: "rates", l: "Rate Subscribers & Alerts" },
 ];
@@ -34,6 +35,7 @@ export default function ClientPlatformAdminScreen({ sb, tenantId, crmSecret }) {
       {tab === "clients" && <ClientsTab sb={sb} tenantId={tenantId} />}
       {tab === "signups" && <SignupsTab sb={sb} tenantId={tenantId} />}
       {tab === "associates" && <AssociatesTab crmSecret={crmSecret} />}
+      {tab === "commissions" && <CommissionsTab sb={sb} tenantId={tenantId} crmSecret={crmSecret} />}
       {tab === "kitty" && <KittyTab sb={sb} tenantId={tenantId} />}
       {tab === "rates" && <RatesSubscribersTab sb={sb} tenantId={tenantId} />}
     </div>
@@ -160,6 +162,80 @@ function RatesSubscribersTab({ sb, tenantId }) {
         </table>
       )}
     </div>
+  );
+}
+
+const NEXT_STATUS = { pending: "approved", approved: "paid" };
+const STATUS_COLOR = { pending: "#b45309", approved: "#2563eb", paid: "#16a34a" };
+
+function CommissionsTab({ crmSecret }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [updating, setUpdating] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/associates?action=commissions", { headers: { "x-crm-secret": crmSecret } });
+      const d = await res.json();
+      setRows(d.ok ? d.commissions : []);
+    } catch { setRows([]); }
+    setLoading(false);
+  }, [crmSecret]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const setStatus = async (commissionId, status) => {
+    setUpdating(commissionId);
+    try {
+      const res = await fetch("/api/associates?action=set-commission-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-crm-secret": crmSecret },
+        body: JSON.stringify({ commissionId, status }),
+      });
+      const d = await res.json();
+      if (!d.ok) window.alert(d.error || "Could not update.");
+      else load();
+    } catch { window.alert("Network error."); }
+    setUpdating(null);
+  };
+
+  if (loading) return <div style={{ color: "#888", fontSize: 13 }}>Loading…</div>;
+  if (!rows.length) return <div style={{ color: "#888", fontSize: 13 }}>No commissions yet.</div>;
+
+  return (
+    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+      <thead>
+        <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
+          <th style={{ padding: "6px 8px" }}>Associate</th>
+          <th style={{ padding: "6px 8px" }}>Referred client</th>
+          <th style={{ padding: "6px 8px" }}>Order ref</th>
+          <th style={{ padding: "6px 8px" }}>Amount</th>
+          <th style={{ padding: "6px 8px" }}>Status</th>
+          <th style={{ padding: "6px 8px" }}>Created</th>
+          <th style={{ padding: "6px 8px" }}></th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((c) => (
+          <tr key={c.id} style={{ borderBottom: "1px solid #f0f0f0" }}>
+            <td style={{ padding: "6px 8px" }}>{c.associate?.display_name || c.associate?.phone || "—"}</td>
+            <td style={{ padding: "6px 8px" }}>{c.lead?.name || c.lead?.phone || "—"}</td>
+            <td style={{ padding: "6px 8px" }}>{c.order_reference || "—"}</td>
+            <td style={{ padding: "6px 8px" }}>{c.amount != null ? `₹${c.amount}` : "—"}</td>
+            <td style={{ padding: "6px 8px", color: STATUS_COLOR[c.status] || "#111", fontWeight: 600 }}>{c.status}</td>
+            <td style={{ padding: "6px 8px" }}>{new Date(c.created_at).toLocaleDateString()}</td>
+            <td style={{ padding: "6px 8px" }}>
+              {NEXT_STATUS[c.status] && (
+                <button onClick={() => setStatus(c.id, NEXT_STATUS[c.status])} disabled={updating === c.id} style={{ padding: "4px 12px", borderRadius: 5, border: "1px solid #111", background: "#111", color: "#fff", fontSize: 11.5, cursor: "pointer" }}>
+                  {updating === c.id ? "Updating…" : `Mark ${NEXT_STATUS[c.status]}`}
+                </button>
+              )}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 

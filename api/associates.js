@@ -5,6 +5,8 @@
 // Staff (x-crm-secret):
 //   GET  action=applicants  — applicants not yet approved
 //   POST action=approve     { leadId, displayName, headline? } — creates bullion_associates row
+//   GET  action=commissions          — full commission ledger, newest first
+//   POST action=set-commission-status { commissionId, status } — pending|approved|paid
 // Associate (Authorization: Bearer <client-auth token>, purpose=associate_login):
 //   GET  action=dashboard   — their referral code, visit count, commissions
 
@@ -147,6 +149,31 @@ export default async function handler(req, res) {
       visitCount: visitCount || 0,
       commissions: commissions || [],
     });
+  }
+
+  if (action === "commissions") {
+    if (req.method !== "GET") return res.status(405).json({ ok: false, error: "method_not_allowed" });
+    if (checkCrmSecret(req, res)) return;
+    const { data: commissions, error } = await sb.from("bullion_commissions")
+      .select("id, order_reference, amount, status, created_at, associate:bullion_associates(display_name, phone), lead:bullion_leads!referred_lead_id(name, phone)")
+      .eq("tenant_id", TENANT_ID).order("created_at", { ascending: false }).limit(300);
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.status(200).json({ ok: true, commissions: commissions || [] });
+  }
+
+  if (action === "set-commission-status") {
+    if (req.method !== "POST") return res.status(405).json({ ok: false, error: "method_not_allowed" });
+    if (checkCrmSecret(req, res)) return;
+    let body = req.body;
+    if (typeof body === "string") { try { body = JSON.parse(body); } catch { body = {}; } }
+    body = body || {};
+    const { commissionId, status } = body;
+    if (!commissionId || !["pending", "approved", "paid"].includes(status)) {
+      return res.status(400).json({ ok: false, error: "invalid_commissionId_or_status" });
+    }
+    const { error } = await sb.from("bullion_commissions").update({ status }).eq("id", commissionId).eq("tenant_id", TENANT_ID);
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.status(200).json({ ok: true });
   }
 
   return res.status(400).json({ ok: false, error: "unknown_action" });
