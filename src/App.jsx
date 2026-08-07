@@ -11245,7 +11245,10 @@ export default function App() {
       const goto = new URLSearchParams(window.location.search).get("screen");
       if (goto) return goto;
     } catch {}
-    return isTelecallerUser ? "queue" : "vendors";
+    // Saurav's own login only — jump straight to Vendors → new-vendor card
+    // scan form on every app open. Everyone else keeps the normal default.
+    if (user?.username === "saurav") return "vendors";
+    return isTelecallerUser ? "queue" : "demands";
   });
   const [, forceNavRefresh] = useState(0); // re-render after localStorage-only pinned-tabs changes
   const [moreTabsOpen, setMoreTabsOpen] = useState(false);
@@ -11590,7 +11593,7 @@ export default function App() {
         setActiveScreen("calculator");
       }} />}
       {activeScreen === "catalogue" && <CatalogueScreen />}
-      {activeScreen === "vendors" && <VendorsScreen />}
+      {activeScreen === "vendors" && <VendorsScreen autoOpenScan={user?.username === "saurav"} />}
       {activeScreen === "corpgift" && <CorpGiftPricingScreen />}
       {activeScreen === "corpgiftdesigns" && <CorpGiftDesignApprovalsScreen />}
       {activeScreen === "solitairedesigns" && <SolitaireAdminGenerator />}
@@ -12749,7 +12752,7 @@ function mergeCardFields(form, fields) {
   return next;
 }
 
-function VendorsScreen() {
+function VendorsScreen({ autoOpenScan }) {
   const tid = getTenantId();
   const [vendors, setVendors] = useState([]);
   const [itemTypes, setItemTypes] = useState([]);
@@ -12802,6 +12805,13 @@ function VendorsScreen() {
   }, [tid]);
 
   useEffect(() => { load(); }, [load]);
+  // Saurav's every-app-open shortcut — pop straight into the new-vendor
+  // form so the "Front of card" scan button is one tap away. Only on the
+  // initial mount of this screen, not on every re-render.
+  useEffect(() => {
+    if (autoOpenScan) { setEditingVendor({}); setVendorForm(EMPTY_VENDOR_FORM); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Skip auto-refresh while a form is open — avoids clobbering in-progress edits.
   useEffect(() => {
     const t = setInterval(() => { if (!editingVendor) load(); }, 15000);
