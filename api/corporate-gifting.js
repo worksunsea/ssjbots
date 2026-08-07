@@ -74,12 +74,17 @@ export default async function handler(req, res) {
   const sb = supa();
   const action = req.query?.action;
 
-  // ── GET action=products — public catalogue data ──────────────────────
+  // ── GET action=products — public catalogue data. Optional ?quick=N
+  // returns just the first N rows for a fast initial paint; the client
+  // follows up with an unbounded call to fill in the rest in the background. ─
   if (req.method === "GET" && action === "products") {
-    const { data: rows, error } = await sb.from("corporate_gifting_products")
+    const quick = Number(req.query?.quick) || null;
+    let query = sb.from("corporate_gifting_products")
       .select("id, category, name, description, image_url, sort_order, price_mode, gifting_sheet_name, weight_grams, manual_price, markup_amount, making_charge, tax_percent, price_diff")
       .eq("tenant_id", TENANT_ID).eq("active", true)
       .order("category", { ascending: true }).order("sort_order", { ascending: true });
+    if (quick) query = query.limit(quick);
+    const { data: rows, error } = await query;
     if (error) return res.status(500).json({ ok: false, error: error.message });
 
     const rates = await getRates();

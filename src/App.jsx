@@ -14523,10 +14523,17 @@ function CorporateGiftingScreen() {
       setLeadDone(false);
       return;
     }
+    // Quick first paint: grab a small batch so visible cards render fast,
+    // then fetch the full catalogue in the background and swap it in —
+    // avoids the whole grid staying blank while every product loads at once.
+    fetch(`/api/corporate-gifting?action=products&quick=${CORP_GIFT_PAGE_SIZE}`)
+      .then((r) => r.json())
+      .then((d) => { if (d.ok) setProducts((prev) => prev || d.products); })
+      .catch(() => {});
     fetch("/api/corporate-gifting?action=products")
       .then((r) => r.json())
-      .then((d) => { if (d.ok) setProducts(d.products); else setLoadErr(d.error || "load_failed"); })
-      .catch(() => setLoadErr("network_error"));
+      .then((d) => { if (d.ok) setProducts(d.products); else setLoadErr((prev) => prev || d.error || "load_failed"); })
+      .catch(() => setLoadErr((prev) => prev || "network_error"));
   }, [leadDone, leadId]);
 
   useEffect(() => { try { localStorage.setItem(CORP_GIFT_CART_KEY, JSON.stringify(cart)); } catch {} }, [cart]);

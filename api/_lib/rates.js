@@ -46,7 +46,10 @@ export async function getRates() {
   const now = Date.now();
   if (cache.parsed && now - cache.ts < TTL_MS) return cache.parsed;
   try {
-    const res = await fetch(`${APPS_SCRIPT_URL}?action=rates`, { redirect: "follow" });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch(`${APPS_SCRIPT_URL}?action=rates`, { redirect: "follow", signal: controller.signal });
+    clearTimeout(timeout);
     const data = await res.json();
     const rows = data?.rates || data?.rows || [];
     if (rows.length) {
