@@ -12760,6 +12760,7 @@ function VendorsScreen({ autoOpenScan }) {
   const [filterCategory, setFilterCategory] = useState("");
   const [filterPaymentTerms, setFilterPaymentTerms] = useState("");
   const [filterKind, setFilterKind] = useState("");
+  const [filterRecent, setFilterRecent] = useState(false); // added in the last 7 days
   const [search, setSearch] = useState("");
   const [mode, setMode] = useState("directory"); // directory | find
   const [editingVendor, setEditingVendor] = useState(null); // null | {} (new) | row
@@ -12796,7 +12797,7 @@ function VendorsScreen({ autoOpenScan }) {
     const [{ data: v }, { data: it }] = await Promise.all([
       sb.from("bullion_vendors")
         .select("*, dealings:bullion_vendor_dealings(item_type_id), items:bullion_vendor_items(id,item_name,item_type_id,making_charge,making_charge_unit,price_note,active)")
-        .eq("tenant_id", tid).order("company_name"),
+        .eq("tenant_id", tid).order("created_at", { ascending: false }),
       sb.from("catalogue_item_types").select("*").eq("tenant_id", tid).eq("active", true).order("sort_order"),
     ]);
     setVendors(v || []);
@@ -12902,6 +12903,10 @@ function VendorsScreen({ autoOpenScan }) {
     }
     if (filterPaymentTerms) rows = rows.filter((v) => v.payment_terms === filterPaymentTerms);
     if (filterKind) rows = rows.filter((v) => (v.vendor_kind || "jewellery") === filterKind);
+    if (filterRecent) {
+      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      rows = rows.filter((v) => v.created_at && new Date(v.created_at).getTime() >= cutoff);
+    }
     if (search) {
       const s = search.toLowerCase();
       rows = rows.filter((v) =>
@@ -12913,7 +12918,7 @@ function VendorsScreen({ autoOpenScan }) {
     }
     return rows;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vendors, itemTypes, filterCategory, filterPaymentTerms, filterKind, search]);
+  }, [vendors, itemTypes, filterCategory, filterPaymentTerms, filterKind, filterRecent, search]);
 
   // Flags a possible duplicate while filling the form — matches by phone
   // (any contact number already saved under another vendor) or by an
@@ -13253,6 +13258,18 @@ function VendorsScreen({ autoOpenScan }) {
               {VENDOR_KINDS.map((k) => <option key={k.k} value={k.k}>{k.l}</option>)}
             </select>
             <input style={{ ...inp, width: 240 }} placeholder="Search company, contact, GSTIN, notes…" value={search} onChange={(e) => setSearch(e.target.value)} />
+            <button
+              type="button"
+              onClick={() => setFilterRecent((f) => !f)}
+              style={{
+                fontSize: 13, padding: "6px 14px", borderRadius: 8, cursor: "pointer",
+                border: `1px solid ${filterRecent ? C.blue : "#ddd"}`,
+                background: filterRecent ? C.blue : "transparent",
+                color: filterRecent ? "#fff" : "#333",
+              }}
+            >
+              🆕 Added last 7 days
+            </button>
           </div>
 
           {loading ? <div style={{ color: "#888", fontSize: 13 }}>Loading…</div> : filtered.length === 0 ? (
