@@ -11245,7 +11245,7 @@ export default function App() {
       const goto = new URLSearchParams(window.location.search).get("screen");
       if (goto) return goto;
     } catch {}
-    return isTelecallerUser ? "queue" : "demands";
+    return isTelecallerUser ? "queue" : "vendors";
   });
   const [, forceNavRefresh] = useState(0); // re-render after localStorage-only pinned-tabs changes
   const [moreTabsOpen, setMoreTabsOpen] = useState(false);
