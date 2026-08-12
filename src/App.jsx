@@ -7,6 +7,7 @@ import { getDeviceToken, shouldForceLogout, SESSION_POLL_MS } from "./utils/sess
 import { sendPushNotification } from "./utils/pushNotify";
 import { SolitaireJewelleryScreen, SolitaireAdminGenerator } from "./SolitaireJewellery";
 import ClientPlatformAdminScreen from "./ClientPlatformAdminScreen";
+import BlogAdminScreen from "./BlogAdmin";
 
 // ── SUPABASE (shared Sun Sea project — same as ssj-hr / fms-tracker) ──
 const SUPABASE_URL = "https://uppyxzellmuissdlxsmy.supabase.co";
@@ -155,11 +156,12 @@ const CRM_ALL_TABS = [
   { k: "corpgiftdesigns", l: "Corp Gifting Designs", icon: "🎨" },
   { k: "solitairedesigns", l: "Solitaire Designs", icon: "💍" },
   { k: "clientplatform", l: "Client Platform", icon: "🌐" },
+  { k: "blog",         l: "Blog Admin",     icon: "📰" },
 ];
 const CRM_ROLE_DEFAULT_TABS = {
   superadmin: CRM_ALL_TABS.map((t) => t.k),
   admin:      CRM_ALL_TABS.map((t) => t.k),
-  manager:    ["demands", "adleads", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift", "corpgiftdesigns", "solitairedesigns"],
+  manager:    ["demands", "adleads", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift", "corpgiftdesigns", "solitairedesigns", "blog"],
   staff:      ["demands", "adleads", "contacts", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
   telecaller: ["queue", "demands", "adleads"],
 };
@@ -11433,13 +11435,14 @@ export default function App() {
     { k: "corpgiftdesigns", l: "Corp Gifting Designs", icon: "🎨" },
     { k: "solitairedesigns", l: "Solitaire Designs", icon: "💍" },
     { k: "clientplatform", l: "Client Platform", icon: "🌐" },
+    { k: "blog",       l: "Blog Admin",     icon: "📰" },
   ];
 
   // Role-based defaults when app_permissions.crm is not set
   const ROLE_DEFAULT_TABS = {
     superadmin: ALL_TABS.map((t) => t.k),
     admin:      ALL_TABS.map((t) => t.k),
-    manager:    ["demands", "adleads", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift", "corpgiftdesigns", "solitairedesigns", "clientplatform"],
+    manager:    ["demands", "adleads", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift", "corpgiftdesigns", "solitairedesigns", "clientplatform", "blog"],
     staff:      ["demands", "adleads", "contacts", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
     telecaller: ["queue", "demands", "adleads"],
   };
@@ -11605,6 +11608,7 @@ export default function App() {
       {activeScreen === "corpgiftdesigns" && <CorpGiftDesignApprovalsScreen />}
       {activeScreen === "solitairedesigns" && <SolitaireAdminGenerator />}
       {activeScreen === "clientplatform" && <ClientPlatformAdminScreen sb={sb} tenantId={getTenantId()} crmSecret={CRM_SECRET} />}
+      {activeScreen === "blog" && <BlogAdminScreen crmSecret={CRM_SECRET} />}
     </div>
     </ContactFieldsContext.Provider>
   );

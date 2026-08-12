@@ -35,6 +35,7 @@ supabase/.temp/
 # Credentials / local downloads
 downloads/
 .claude/
+credentials.local.md
 
 # Claude Code skill/plugin clones (nested git repos, not app code)
 /everything-claude-code/
