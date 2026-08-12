@@ -5749,16 +5749,23 @@ function RatesScreen() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
+  // Apps Script sometimes returns Google's login/error HTML instead of JSON
+  // on a transient blip — retry a couple times before showing an error.
   const load = async () => {
     setLoading(true); setErr("");
-    try {
-      const res = await fetch(`${APPS_SCRIPT_URL}?action=rates`);
-      const data = await res.json();
-      // Apps Script returns either {ok, rates:[]} (new) or {rows:[]} (old).
-      const rows = data.rates || data.rows || [];
-      if (rows.length) setRates(rows);
-      else setErr(data.error || "No rates returned");
-    } catch (e) { setErr(e.message); }
+    let lastErr = "";
+    for (let i = 0; i < 3; i++) {
+      try {
+        const res = await fetch(`${APPS_SCRIPT_URL}?action=rates`);
+        const data = await res.json();
+        // Apps Script returns either {ok, rates:[]} (new) or {rows:[]} (old).
+        const rows = data.rates || data.rows || [];
+        if (rows.length) { setRates(rows); setLoading(false); return; }
+        lastErr = data.error || "No rates returned";
+      } catch (e) { lastErr = e.message; }
+      if (i < 2) await new Promise((r) => setTimeout(r, 1200 * (i + 1)));
+    }
+    setErr(lastErr);
     setLoading(false);
   };
 
