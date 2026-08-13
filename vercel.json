@@ -29,6 +29,7 @@
     { "path": "/api/staff-task-reminders", "schedule": "30,40,50 5 * * *" },
     { "path": "/api/staff-task-reminders", "schedule": "0,10,20 6 * * *" },
     { "path": "/api/staff-profile-reminders", "schedule": "0 1 * * *" },
+    { "path": "/api/kitty-cron", "schedule": "0 2 * * *" },
     { "path": "/api/catalogue-backup", "schedule": "30 20 * * *" }
   ]
 }
