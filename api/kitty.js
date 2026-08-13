@@ -110,7 +110,7 @@ export default async function handler(req, res) {
     const authFail = checkCrmSecret(req, res);
     if (authFail) return;
     let q = sb.from("kitty_enrollments")
-      .select("*, lead:bullion_leads(name,phone), scheme:kitty_schemes(name,slug,monthly_amount,duration_months,perks), installments:kitty_installments(*)")
+      .select("*, lead:bullion_leads(name,phone), scheme:kitty_schemes(name,slug,monthly_amount,duration_months,perks), installments:kitty_installments(*), redemptions:kitty_redemptions(*)")
       .eq("tenant_id", TENANT_ID).order("created_at", { ascending: false });
     if (req.query.status) q = q.eq("status", req.query.status);
     if (req.query.schemeId) q = q.eq("scheme_id", req.query.schemeId);
@@ -125,7 +125,7 @@ export default async function handler(req, res) {
     const body = parseBody(req);
     if (!body.id || !body.startDate) return res.status(400).json({ ok: false, error: "id_startDate_required" });
     const { data: enrollment, error: fetchErr } = await sb.from("kitty_enrollments")
-      .select("*, scheme:kitty_schemes(monthly_amount,duration_months)")
+      .select("*, scheme:kitty_schemes(monthly_amount,duration_months,perks)")
       .eq("tenant_id", TENANT_ID).eq("id", body.id).maybeSingle();
     if (fetchErr) return res.status(500).json({ ok: false, error: fetchErr.message });
     if (!enrollment) return res.status(404).json({ ok: false, error: "not_found" });
@@ -138,6 +138,12 @@ export default async function handler(req, res) {
     if (updErr) return res.status(500).json({ ok: false, error: updErr.message });
 
     const perks = enrollment.scheme.perks || {};
+    // Gram-based (gullak) schemes don't have a fixed monthly rupee amount —
+    // each purchase is logged ad-hoc via ?action=add-installment instead of
+    // a pre-generated fixed schedule.
+    if (perks.unit === "grams" || enrollment.scheme.monthly_amount == null) {
+      return res.status(200).json({ ok: true, installmentsCreated: 0, note: "gram_based_no_fixed_schedule" });
+    }
     const rows = [];
     for (let m = 1; m <= enrollment.scheme.duration_months; m++) {
       const isFree = perks.free_installment_month && m === perks.free_installment_month;
@@ -151,6 +157,33 @@ export default async function handler(req, res) {
     const { error: insErr } = await sb.from("kitty_installments").insert(rows);
     if (insErr) return res.status(500).json({ ok: false, error: insErr.message });
     return res.status(200).json({ ok: true, installmentsCreated: rows.length });
+  }
+
+  // POST ?action=add-installment — staff. For ad-hoc purchase logging on
+  // gram-based (gullak) enrollments, or any extra/adjustment entry on a
+  // fixed-schedule enrollment. Body: { enrollmentId, monthNumber, dueDate,
+  // amount, gramsPurchased?, ratePerGram?, recordedBy }. If gramsPurchased
+  // is given, rate_locked is derived (amount / grams) so the client account
+  // can total up grams-to-date the same way rate-lock schemes do.
+  if (req.method === "POST" && action === "add-installment") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    if (!body.enrollmentId || !body.amount) return res.status(400).json({ ok: false, error: "enrollmentId_amount_required" });
+    const amount = Number(body.amount);
+    const grams = body.gramsPurchased != null ? Number(body.gramsPurchased) : null;
+    const rateLocked = grams ? amount / grams : (body.ratePerGram != null ? Number(body.ratePerGram) : null);
+    const { data: existingCount } = await sb.from("kitty_installments")
+      .select("month_number", { count: "exact", head: false }).eq("enrollment_id", body.enrollmentId).order("month_number", { ascending: false }).limit(1);
+    const nextMonth = body.monthNumber != null ? Number(body.monthNumber) : ((existingCount?.[0]?.month_number || 0) + 1);
+    const { data, error } = await sb.from("kitty_installments").insert({
+      tenant_id: TENANT_ID, enrollment_id: body.enrollmentId, month_number: nextMonth,
+      due_date: body.dueDate || new Date().toISOString().slice(0, 10),
+      amount, status: "paid", paid_amount: amount, paid_at: new Date().toISOString(),
+      rate_locked: rateLocked, recorded_by: body.recordedBy || null,
+    }).select().single();
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.status(200).json({ ok: true, installment: data });
   }
 
   if (req.method === "POST" && action === "cancel-enrollment") {
@@ -234,7 +267,51 @@ export default async function handler(req, res) {
       status: "completed", claim_status: "unclaimed", notes: body.notes || null,
     }).select().single();
     if (error) return res.status(500).json({ ok: false, error: error.message });
+
+    // Optional: record exactly which months they already paid, so the
+    // enrollment shows real history instead of just a "completed" label.
+    // Body.paidMonths: [{ monthNumber, paidAt (date), amount }]
+    if (Array.isArray(body.paidMonths) && body.paidMonths.length) {
+      const rows = body.paidMonths.map((m) => ({
+        tenant_id: TENANT_ID, enrollment_id: data.id,
+        month_number: Number(m.monthNumber),
+        due_date: m.paidAt || new Date().toISOString().slice(0, 10),
+        amount: m.amount != null ? Number(m.amount) : 0,
+        status: "paid",
+        paid_amount: m.amount != null ? Number(m.amount) : null,
+        paid_at: m.paidAt ? `${m.paidAt}T00:00:00Z` : new Date().toISOString(),
+        recorded_by: body.recordedBy || "staff (legacy import)",
+      }));
+      const { error: instErr } = await sb.from("kitty_installments").insert(rows);
+      if (instErr) return res.status(500).json({ ok: false, error: instErr.message, enrollment: data });
+    }
     return res.status(200).json({ ok: true, enrollment: data });
+  }
+
+  // POST ?action=redeem-enrollment — staff. Body: { id, redemptionType,
+  // itemDescription?, value?, notes?, redeemedBy }. Works from ANY status
+  // (active mid-cycle exit, or completed at the natural end of the term) —
+  // marks the enrollment redeemed, any still-due installments waived (mid-
+  // cycle exit forfeits further collection), and logs a kitty_redemptions
+  // row so what/when/who is on record.
+  if (req.method === "POST" && action === "redeem-enrollment") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    if (!body.id || !body.redemptionType) return res.status(400).json({ ok: false, error: "id_redemptionType_required" });
+
+    const { data: redemption, error } = await sb.from("kitty_redemptions").insert({
+      tenant_id: TENANT_ID, enrollment_id: body.id, redemption_type: body.redemptionType,
+      item_description: body.itemDescription || null,
+      value: body.value != null ? Number(body.value) : null,
+      notes: body.notes || null, redeemed_by: body.redeemedBy || null,
+    }).select().single();
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+
+    await sb.from("kitty_enrollments").update({ status: "redeemed", claim_status: "claimed", claimed_at: new Date().toISOString() }).eq("id", body.id);
+    await sb.from("kitty_installments").update({ status: "waived" }).eq("enrollment_id", body.id).eq("status", "due");
+
+    return res.status(200).json({ ok: true, redemption });
   }
 
   if (req.method === "POST" && action === "update-claim-status") {
