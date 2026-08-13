@@ -30,7 +30,7 @@ function parseBody(req) {
 const SCHEME_FIELDS = (b) => ({
   name: b.name,
   slug: b.slug,
-  monthly_amount: Number(b.monthlyAmount),
+  monthly_amount: b.perks?.unit === "grams" || b.monthlyAmount === "" || b.monthlyAmount == null ? null : Number(b.monthlyAmount),
   duration_months: Number(b.durationMonths) || 12,
   perks: b.perks || {},
   description: b.description || null,
@@ -49,6 +49,30 @@ function addMonths(dateStr, n) {
   return d.toISOString().slice(0, 10);
 }
 
+// Lucky-draw schemes (Golden Bliss/Bloom) cap membership at 100 per
+// 12-month round. Finds the current open batch with room, or opens the
+// next-numbered one if none exists / the current one is full.
+async function getOrCreateOpenBatch(sb, scheme, startDate) {
+  const { data: openBatches } = await sb.from("kitty_batches")
+    .select("*, member_count:kitty_enrollments(count)")
+    .eq("scheme_id", scheme.id).eq("status", "open").order("created_at", { ascending: false });
+
+  for (const b of openBatches || []) {
+    const count = b.member_count?.[0]?.count || 0;
+    if (count < b.max_members) return b;
+    await sb.from("kitty_batches").update({ status: "full" }).eq("id", b.id);
+  }
+
+  const { count: totalBatches } = await sb.from("kitty_batches").select("*", { count: "exact", head: true }).eq("scheme_id", scheme.id);
+  const { data: newBatch, error } = await sb.from("kitty_batches").insert({
+    tenant_id: TENANT_ID, scheme_id: scheme.id,
+    batch_label: `${scheme.name} — Batch ${(totalBatches || 0) + 1}`,
+    start_date: startDate, max_members: 100, status: "open",
+  }).select().single();
+  if (error) throw new Error(error.message);
+  return newBatch;
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
@@ -64,6 +88,33 @@ export default async function handler(req, res) {
       .eq("tenant_id", TENANT_ID).eq("active", true).order("sort_order", { ascending: true });
     if (error) return res.status(500).json({ ok: false, error: error.message });
     return res.status(200).json({ ok: true, schemes: data || [] });
+  }
+
+  // GET ?action=available-numbers&schemeId=X — public. Lucky-draw schemes
+  // only. Opens/reuses the current batch and returns a random sample of
+  // 5-10 free numbers (never the full 1..100 list) for the enrol form's
+  // "pick your number" step.
+  if (req.method === "GET" && action === "available-numbers") {
+    const schemeId = req.query.schemeId;
+    if (!schemeId) return res.status(400).json({ ok: false, error: "schemeId_required" });
+    const { data: scheme } = await sb.from("kitty_schemes").select("id,name,perks").eq("tenant_id", TENANT_ID).eq("id", schemeId).eq("active", true).maybeSingle();
+    if (!scheme) return res.status(400).json({ ok: false, error: "scheme_not_found" });
+    if (!scheme.perks?.lucky_draw) return res.status(400).json({ ok: false, error: "not_a_lucky_draw_scheme" });
+
+    let batch;
+    try { batch = await getOrCreateOpenBatch(sb, scheme, new Date().toISOString().slice(0, 10)); }
+    catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
+
+    const { data: taken } = await sb.from("kitty_enrollments")
+      .select("member_number").eq("batch_id", batch.id).not("member_number", "is", null).not("status", "eq", "cancelled");
+    const takenSet = new Set((taken || []).map((r) => r.member_number));
+    const free = [];
+    for (let n = 1; n <= batch.max_members; n++) if (!takenSet.has(n)) free.push(n);
+    if (!free.length) return res.status(200).json({ ok: true, batchId: batch.id, batchLabel: batch.batch_label, availableNumbers: [] });
+
+    for (let i = free.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [free[i], free[j]] = [free[j], free[i]]; }
+    const sampleSize = Math.min(free.length, 5 + Math.floor(Math.random() * 6)); // 5–10
+    return res.status(200).json({ ok: true, batchId: batch.id, batchLabel: batch.batch_label, availableNumbers: free.slice(0, sampleSize).sort((a, b) => a - b) });
   }
 
   if (req.method === "GET" && action === "admin-list-schemes") {
@@ -125,19 +176,41 @@ export default async function handler(req, res) {
     const body = parseBody(req);
     if (!body.id || !body.startDate) return res.status(400).json({ ok: false, error: "id_startDate_required" });
     const { data: enrollment, error: fetchErr } = await sb.from("kitty_enrollments")
-      .select("*, scheme:kitty_schemes(monthly_amount,duration_months,perks)")
+      .select("*, scheme:kitty_schemes(id,name,monthly_amount,duration_months,perks)")
       .eq("tenant_id", TENANT_ID).eq("id", body.id).maybeSingle();
     if (fetchErr) return res.status(500).json({ ok: false, error: fetchErr.message });
     if (!enrollment) return res.status(404).json({ ok: false, error: "not_found" });
     if (!enrollment.scheme) return res.status(400).json({ ok: false, error: "enrollment_has_no_scheme" });
 
+    const perks = enrollment.scheme.perks || {};
+
+    // Lucky-draw schemes (Golden Bliss/Bloom) run in capped rounds — max 100
+    // members per 12-month batch. All members of a batch share the same
+    // start_date so the monthly draw lines up across the whole round.
+    let batchId = enrollment.batch_id || null;
+    let scheduleStart = body.startDate;
+    if (perks.lucky_draw) {
+      let batch;
+      if (batchId) {
+        // Already assigned a batch + numbered slot at enrol time (the
+        // public "pick your number" step) — reuse it, don't reassign.
+        const { data: existingBatch } = await sb.from("kitty_batches").select("*").eq("id", batchId).maybeSingle();
+        batch = existingBatch;
+      }
+      if (!batch) {
+        try { batch = await getOrCreateOpenBatch(sb, enrollment.scheme, body.startDate); }
+        catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
+      }
+      batchId = batch.id;
+      scheduleStart = batch.start_date;
+    }
+
     const { error: updErr } = await sb.from("kitty_enrollments").update({
-      status: "active", start_date: body.startDate,
+      status: "active", start_date: scheduleStart, batch_id: batchId,
       confirmed_by: body.confirmedBy || null, confirmed_at: new Date().toISOString(),
     }).eq("id", body.id);
     if (updErr) return res.status(500).json({ ok: false, error: updErr.message });
 
-    const perks = enrollment.scheme.perks || {};
     // Gram-based (gullak) schemes don't have a fixed monthly rupee amount —
     // each purchase is logged ad-hoc via ?action=add-installment instead of
     // a pre-generated fixed schedule.
@@ -149,14 +222,27 @@ export default async function handler(req, res) {
       const isFree = perks.free_installment_month && m === perks.free_installment_month;
       rows.push({
         tenant_id: TENANT_ID, enrollment_id: body.id, month_number: m,
-        due_date: addMonths(body.startDate, m - 1),
+        due_date: addMonths(scheduleStart, m - 1),
         amount: enrollment.scheme.monthly_amount,
         status: isFree ? "free" : "due",
       });
     }
     const { error: insErr } = await sb.from("kitty_installments").insert(rows);
     if (insErr) return res.status(500).json({ ok: false, error: insErr.message });
-    return res.status(200).json({ ok: true, installmentsCreated: rows.length });
+    return res.status(200).json({ ok: true, installmentsCreated: rows.length, batchId });
+  }
+
+  // GET ?action=admin-list-batches — staff. Query: schemeId?
+  if (req.method === "GET" && action === "admin-list-batches") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    let q = sb.from("kitty_batches")
+      .select("*, scheme:kitty_schemes(name), member_count:kitty_enrollments(count)")
+      .eq("tenant_id", TENANT_ID).order("created_at", { ascending: false });
+    if (req.query.schemeId) q = q.eq("scheme_id", req.query.schemeId);
+    const { data, error } = await q;
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.status(200).json({ ok: true, batches: (data || []).map((b) => ({ ...b, member_count: b.member_count?.[0]?.count || 0 })) });
   }
 
   // POST ?action=add-installment — staff. For ad-hoc purchase logging on
@@ -227,8 +313,10 @@ export default async function handler(req, res) {
     if (authFail) return;
     const body = parseBody(req);
     if (!body.schemeId || !body.drawMonth) return res.status(400).json({ ok: false, error: "schemeId_drawMonth_required" });
+    // batchId required once a scheme has more than one concurrent round —
+    // keeps a draw scoped to the members who are actually in that round.
     const { data: draw, error } = await sb.from("kitty_draws").insert({
-      tenant_id: TENANT_ID, scheme_id: body.schemeId, draw_month: body.drawMonth,
+      tenant_id: TENANT_ID, scheme_id: body.schemeId, batch_id: body.batchId || null, draw_month: body.drawMonth,
       winner_enrollment_id: body.winnerEnrollmentId || null,
       gold_coin_winner_enrollment_id: body.goldCoinWinnerEnrollmentId || null,
       non_winner_benefit_amount: body.nonWinnerBenefitAmount != null ? Number(body.nonWinnerBenefitAmount) : null,

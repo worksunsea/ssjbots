@@ -24,7 +24,7 @@ export default async function handler(req, res) {
   if (action === "list") {
     if (req.method !== "GET") return res.status(405).json({ ok: false, error: "method_not_allowed" });
     const { data, error } = await sb.from("kitty_enrollments")
-      .select("id,status,is_legacy,legacy_scheme_name,start_date,claim_status,claimed_at,created_at,scheme:kitty_schemes(name,monthly_amount,duration_months,perks),installments:kitty_installments(month_number,due_date,amount,status,paid_at,paid_amount,rate_locked),redemptions:kitty_redemptions(redemption_type,item_description,value,redeemed_at)")
+      .select("id,status,is_legacy,legacy_scheme_name,start_date,claim_status,claimed_at,created_at,member_number,scheme:kitty_schemes(name,monthly_amount,duration_months,perks),installments:kitty_installments(month_number,due_date,amount,status,paid_at,paid_amount,rate_locked),redemptions:kitty_redemptions(redemption_type,item_description,value,redeemed_at)")
       .eq("tenant_id", TENANT_ID).eq("lead_id", session.leadId).order("created_at", { ascending: false });
     if (error) return res.status(500).json({ ok: false, error: error.message });
 

@@ -208,17 +208,40 @@ function exportMonthlyExcel(enrollments, month) {
 function EnrollmentsTab({ crmSecret }) {
   const [status, setStatus] = useState("");
   const [enrollments, setEnrollments] = useState([]);
+  const [batches, setBatches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
 
   const load = useCallback(async () => {
     setLoading(true);
-    const d = await call("admin-list-enrollments", { crmSecret, params: status ? { status } : {} });
+    const [d, b] = await Promise.all([
+      call("admin-list-enrollments", { crmSecret, params: status ? { status } : {} }),
+      call("admin-list-batches", { crmSecret }),
+    ]);
     setEnrollments(d.ok ? d.enrollments : []);
+    setBatches(b.ok ? b.batches : []);
     setLoading(false);
   }, [crmSecret, status]);
 
   useEffect(() => { load(); }, [load]);
+
+  const recordDraw = async (batch) => {
+    const drawMonth = prompt("Draw month (YYYY-MM-01)?", `${month}-01`);
+    if (!drawMonth) return;
+    const batchMembers = enrollments.filter((e) => e.batch_id === batch.id && e.status === "active");
+    const winnerPhone = prompt(`Winner's phone? (members in this batch: ${batchMembers.map((e) => `${e.lead?.name} ${e.lead?.phone}`).join(", ") || "none loaded — try 'All statuses' filter"})`);
+    const winner = batchMembers.find((e) => e.lead?.phone === winnerPhone?.replace(/\D/g, ""));
+    if (winnerPhone && !winner) return alert("No active member in this batch with that phone.");
+    const goldCoinPhone = prompt("Gold coin winner's phone (optional, Bloom only)?") || "";
+    const goldCoinWinner = batchMembers.find((e) => e.lead?.phone === goldCoinPhone.replace(/\D/g, ""));
+    const nonWinnerBenefitAmount = prompt("Non-winner benefit amount (₹, optional)?") || null;
+    const d = await call("record-draw", { method: "POST", crmSecret, body: {
+      schemeId: batch.scheme_id, batchId: batch.id, drawMonth,
+      winnerEnrollmentId: winner?.id || null, goldCoinWinnerEnrollmentId: goldCoinWinner?.id || null,
+      nonWinnerBenefitAmount, recordedBy: "staff",
+    } });
+    if (d.ok) { alert("Draw recorded."); load(); } else alert(d.error);
+  };
 
   const confirm_ = async (id) => {
     const startDate = prompt("Start date for first installment (YYYY-MM-DD)?", new Date().toISOString().slice(0, 10));
@@ -277,11 +300,26 @@ function EnrollmentsTab({ crmSecret }) {
         <label>Export month: <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} /></label>
         <button onClick={() => exportMonthlyExcel(enrollments, month)}>⬇ Download {month} Excel</button>
       </div>
+
+      {batches.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <h4>Lucky-Draw Batches (max 100/round — new round auto-opens when one fills or completes)</h4>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+            {batches.map((b) => (
+              <div key={b.id} style={{ border: "1px solid #ddd", borderRadius: 6, padding: 10, fontSize: 12.5 }}>
+                <b>{b.batch_label}</b><br />
+                {b.member_count}/{b.max_members} members — {b.status} — started {b.start_date}
+                {b.status !== "completed" && <div><button onClick={() => recordDraw(b)} style={{ marginTop: 6 }}>Record This Month's Draw</button></div>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {loading ? <div>Loading…</div> : (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {enrollments.map((e) => (
             <div key={e.id} style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12 }}>
-              <b>{e.lead?.name || "—"}</b> ({e.lead?.phone}) — {e.is_legacy ? e.legacy_scheme_name : e.scheme?.name} — <i>{e.status}</i>
+              <b>{e.lead?.name || "—"}</b> ({e.lead?.phone}) — {e.is_legacy ? e.legacy_scheme_name : e.scheme?.name}{e.member_number ? ` #${e.member_number}` : ""} — <i>{e.status}</i>
               {e.status === "pending_confirmation" && <button onClick={() => confirm_(e.id)} style={{ marginLeft: 8 }}>Confirm & Start</button>}
               {(e.status === "pending_confirmation" || e.status === "active") && <button onClick={() => cancel_(e.id)} style={{ marginLeft: 8 }}>Cancel</button>}
               {e.status === "active" && <button onClick={() => addInstallment(e.id)} style={{ marginLeft: 8 }}>+ Add Purchase/Installment</button>}
