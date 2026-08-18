@@ -34,7 +34,7 @@ export default function KittyAdminScreen({ sb, tenantId, crmSecret, staffName })
   return (
     <div style={{ padding: 20 }}>
       <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
-        {[["schemes", "Schemes"], ["enroll", "Enroll New Member"], ["enrollments", "Enrollments"], ["legacy", "Add Legacy Member"], ["activity", "Activity Log"]].map(([k, l]) => (
+        {[["overview", "Overview"], ["schemes", "Schemes"], ["enroll", "Enroll New Member"], ["enrollments", "Enrollments"], ["legacy", "Add Legacy Member"], ["activity", "Activity Log"]].map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)}
             style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid #d4af37",
               background: tab === k ? "#d4af37" : "transparent", color: tab === k ? "#fff" : "#d4af37", cursor: "pointer" }}>
@@ -42,11 +42,107 @@ export default function KittyAdminScreen({ sb, tenantId, crmSecret, staffName })
           </button>
         ))}
       </div>
+      {tab === "overview" && <OverviewTab crmSecret={crmSecret} actor={actor} />}
       {tab === "schemes" && <SchemesTab sb={sb} tenantId={tenantId} crmSecret={crmSecret} actor={actor} />}
       {tab === "enroll" && <EnrollNewMemberTab crmSecret={crmSecret} actor={actor} />}
       {tab === "enrollments" && <EnrollmentsTab crmSecret={crmSecret} actor={actor} />}
       {tab === "legacy" && <LegacyTab crmSecret={crmSecret} actor={actor} />}
       {tab === "activity" && <ActivityLogTab crmSecret={crmSecret} />}
+    </div>
+  );
+}
+
+// Per-scheme member/payment stats + a pending-payments worklist with
+// on-demand WA reminders (the automatic kitty-cron.js reminder only fires
+// 3 days before due — this is for staff working the list right now).
+function OverviewTab({ crmSecret, actor }) {
+  const [enrollments, setEnrollments] = useState(null);
+  const [sendingId, setSendingId] = useState(null);
+
+  const load = useCallback(async () => {
+    const d = await call("admin-list-enrollments", { crmSecret });
+    setEnrollments(d.ok ? d.enrollments : []);
+  }, [crmSecret]);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (enrollments === null) return <div>Loading…</div>;
+
+  const today = new Date().toISOString().slice(0, 10);
+  const live = enrollments.filter((e) => ["active", "completed", "redeemed"].includes(e.status));
+
+  const bySchemeName = new Map();
+  const pending = [];
+  for (const e of live) {
+    const key = e.is_legacy ? `[Legacy] ${e.legacy_scheme_name}` : (e.scheme?.name || "—");
+    if (!bySchemeName.has(key)) bySchemeName.set(key, { members: 0, paid: 0, unpaid: 0, overdue: 0, onTime: 0, late: 0 });
+    const stat = bySchemeName.get(key);
+    stat.members++;
+    for (const i of e.installments || []) {
+      if (i.status === "paid") {
+        stat.paid++;
+        if (i.paid_at && i.paid_at.slice(0, 10) > i.due_date) stat.late++; else stat.onTime++;
+      } else if (i.status === "due") {
+        stat.unpaid++;
+        if (i.due_date < today) {
+          stat.overdue++;
+          pending.push({ enrollment: e, installment: i });
+        }
+      }
+    }
+  }
+  pending.sort((a, b) => a.installment.due_date.localeCompare(b.installment.due_date));
+
+  const sendReminder = async (installmentId) => {
+    setSendingId(installmentId);
+    const d = await call("send-installment-reminder", { method: "POST", crmSecret, body: { installmentId, actor } });
+    setSendingId(null);
+    if (d.ok) { alert("Reminder sent."); load(); } else alert(d.error);
+  };
+
+  return (
+    <div>
+      <h4>Members & Payments per Kitty</h4>
+      <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 28, fontSize: 12.5 }}>
+        <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
+          <th>Scheme</th><th>Members</th><th>Paid</th><th>Unpaid (due)</th><th>Overdue</th><th>Paid on-time</th><th>Paid late</th>
+        </tr></thead>
+        <tbody>
+          {[...bySchemeName.entries()].map(([name, s]) => (
+            <tr key={name} style={{ borderBottom: "1px solid #eee" }}>
+              <td>{name}</td><td>{s.members}</td><td>{s.paid}</td><td>{s.unpaid}</td>
+              <td style={{ color: s.overdue ? "#B91C1C" : undefined }}>{s.overdue}</td>
+              <td>{s.onTime}</td><td>{s.late}</td>
+            </tr>
+          ))}
+          {!bySchemeName.size && <tr><td colSpan={7}>No active enrollments yet.</td></tr>}
+        </tbody>
+      </table>
+
+      <h4>Pending Payments (overdue — due date already passed)</h4>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+        <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
+          <th>Member</th><th>Scheme</th><th>Installment</th><th>Amount</th><th>Due</th><th>Days late</th><th></th>
+        </tr></thead>
+        <tbody>
+          {pending.map(({ enrollment: e, installment: i }) => (
+            <tr key={i.id} style={{ borderBottom: "1px solid #eee" }}>
+              <td>{e.lead?.name} ({e.lead?.phone})</td>
+              <td>{e.is_legacy ? e.legacy_scheme_name : e.scheme?.name}</td>
+              <td>#{i.month_number}</td>
+              <td>₹{i.amount}</td>
+              <td>{i.due_date}</td>
+              <td>{Math.floor((Date.now() - new Date(i.due_date).getTime()) / 86400000)}</td>
+              <td>
+                <button onClick={() => sendReminder(i.id)} disabled={sendingId === i.id}>
+                  {sendingId === i.id ? "Sending…" : i.reminded_at ? "Send Again" : "Send Reminder"}
+                </button>
+              </td>
+            </tr>
+          ))}
+          {!pending.length && <tr><td colSpan={7}>No overdue payments — everyone's current.</td></tr>}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -426,6 +522,10 @@ function EnrollmentsTab({ crmSecret, actor }) {
     const d = await call("add-installment", { method: "POST", crmSecret, body: { enrollmentId, amount, gramsPurchased, recordedBy: actor, actor } });
     if (d.ok) load(); else alert(d.error);
   };
+  // Two-step: (1) initiate sends the member a WA code + what's being
+  // redeemed, staff never sees the code; (2) staff asks the member to read
+  // it out and enters it here to actually complete the redemption — proves
+  // the member themselves requested it, not just whoever has CRM access.
   const redeem = async (e) => {
     const paidCount = (e.installments || []).filter((i) => i.status === "paid").length;
     const totalCount = (e.installments || []).length;
@@ -436,8 +536,12 @@ function EnrollmentsTab({ crmSecret, actor }) {
     const itemDescription = prompt("Item / benefit description?") || "";
     const value = prompt("Value (₹, optional)?") || null;
     const notes = prompt("Notes (optional)?") || "";
-    const d = await call("redeem-enrollment", { method: "POST", crmSecret, body: { id: e.id, redemptionType, itemDescription, value, notes, redeemedBy: actor, actor } });
-    if (d.ok) load(); else alert(d.error);
+    const d = await call("initiate-redeem", { method: "POST", crmSecret, body: { id: e.id, redemptionType, itemDescription, value, notes, actor } });
+    if (!d.ok) return alert(d.error);
+    const code = prompt(`Code sent to ${d.codeSentTo} on WhatsApp. Ask ${e.lead?.name || "the member"} to read it out, then enter it here to confirm:`);
+    if (!code) return;
+    const d2 = await call("confirm-redeem", { method: "POST", crmSecret, body: { id: e.id, code, redeemedBy: actor, actor } });
+    if (d2.ok) { alert("Redeemed — thank-you message sent."); load(); } else alert(d2.error);
   };
 
   return (

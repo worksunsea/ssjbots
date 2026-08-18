@@ -22,10 +22,17 @@
 //      prior public interest submission needed); paidMonths backfills
 //      already-elapsed months if the member actually started earlier.
 
+import crypto from "crypto";
 import { supa } from "./_lib/supabase.js";
 import { TENANT_ID, checkCrmSecret, normalizePhone } from "./_lib/config.js";
 import { enrollLeadInDrip } from "./_lib/drip.js";
 import { logKittyAudit } from "./_lib/kittyAudit.js";
+import { sendWhatsApp } from "./_lib/wa.js";
+
+const REDEMPTION_CODE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+function hashCode(code) {
+  return crypto.createHash("sha256").update(code).digest("hex");
+}
 
 function parseBody(req) {
   let body = req.body;
@@ -498,6 +505,31 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, installment: data });
   }
 
+  // POST ?action=send-installment-reminder — staff. Body: { installmentId }.
+  // On-demand WA nudge for a pending payment (same wording as kitty-cron.js's
+  // automatic 3-day-before reminder), for staff working the Overview
+  // dashboard's pending-payments list right now instead of waiting for the
+  // next cron tick.
+  if (req.method === "POST" && action === "send-installment-reminder") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    if (!body.installmentId) return res.status(400).json({ ok: false, error: "installmentId_required" });
+    const { data: row } = await sb.from("kitty_installments")
+      .select("id,due_date,amount,month_number,enrollment:kitty_enrollments(lead_id,is_legacy,legacy_scheme_name,scheme:kitty_schemes(name))")
+      .eq("tenant_id", TENANT_ID).eq("id", body.installmentId).maybeSingle();
+    if (!row) return res.status(404).json({ ok: false, error: "not_found" });
+    const { data: lead } = await sb.from("bullion_leads").select("phone").eq("id", row.enrollment?.lead_id).maybeSingle();
+    if (!lead?.phone) return res.status(400).json({ ok: false, error: "member_has_no_phone_on_file" });
+    const schemeName = row.enrollment?.is_legacy ? row.enrollment.legacy_scheme_name : (row.enrollment?.scheme?.name || "your Kitty scheme");
+    const msg = `🪙 Reminder: your ${schemeName} installment #${row.month_number} of ₹${row.amount} is due on ${row.due_date}.\n- Sun Sea Jewellers, Karol Bagh`;
+    const wa = await sendWhatsApp({ phone: lead.phone, msg }).catch(() => ({ status: 0 }));
+    if (wa.status !== 1) return res.status(500).json({ ok: false, error: "whatsapp_send_failed" });
+    await sb.from("kitty_installments").update({ reminded_at: new Date().toISOString() }).eq("id", body.installmentId);
+    await logAudit(sb, { entityType: "installment", entityId: body.installmentId, action: "reminder-sent", actor: body.actor });
+    return res.status(200).json({ ok: true });
+  }
+
   if (req.method === "POST" && action === "record-draw") {
     const authFail = checkCrmSecret(req, res);
     if (authFail) return;
@@ -568,37 +600,121 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, enrollment: data });
   }
 
+  // Actually performs a redemption — shared by the WA-code-verified flow
+  // below (the normal path) and left available as a direct fallback. Works
+  // from ANY status (active mid-cycle exit, or completed at natural end) —
+  // marks the enrollment redeemed, waives any still-due installments (early
+  // exit forfeits further collection AND completion-only perks like
+  // Sparkle's making-charge discount — recorded via is_early_exit).
+  async function performRedemption({ enrollmentId, redemptionType, itemDescription, value, notes, redeemedBy, actor }) {
+    const { data: enrollmentBefore } = await sb.from("kitty_enrollments").select("status").eq("id", enrollmentId).maybeSingle();
+    const isEarlyExit = enrollmentBefore?.status === "active";
+
+    const { data: redemption, error } = await sb.from("kitty_redemptions").insert({
+      tenant_id: TENANT_ID, enrollment_id: enrollmentId, redemption_type: redemptionType,
+      item_description: itemDescription || null,
+      value: value != null ? Number(value) : null,
+      notes: notes || null, redeemed_by: redeemedBy || null, is_early_exit: isEarlyExit,
+    }).select().single();
+    if (error) return { ok: false, error: error.message };
+
+    await sb.from("kitty_enrollments").update({ status: "redeemed", claim_status: "claimed", claimed_at: new Date().toISOString() }).eq("id", enrollmentId);
+    await sb.from("kitty_installments").update({ status: "waived" }).eq("enrollment_id", enrollmentId).eq("status", "due");
+
+    await logAudit(sb, { entityType: "enrollment", entityId: enrollmentId, action: "redeem", actor: actor || redeemedBy, details: { redemptionType, value, isEarlyExit } });
+    return { ok: true, redemption, isEarlyExit };
+  }
+
   // POST ?action=redeem-enrollment — staff. Body: { id, redemptionType,
-  // itemDescription?, value?, notes?, redeemedBy }. Works from ANY status
-  // (active mid-cycle exit, or completed at the natural end of the term) —
-  // marks the enrollment redeemed, any still-due installments waived (mid-
-  // cycle exit forfeits further collection), and logs a kitty_redemptions
-  // row so what/when/who is on record. Early exit (status was 'active', not
-  // 'completed') forfeits completion-only perks (e.g. Sparkle's 50%
-  // making-charge discount) — recorded via is_early_exit; staff still fully
-  // controls the value/type entered, this just flags the context.
+  // itemDescription?, value?, notes?, redeemedBy }. Direct redemption with
+  // no WA code verification — kept as a fallback (e.g. member has no phone
+  // on file). Normal path is initiate-redeem / confirm-redeem below.
   if (req.method === "POST" && action === "redeem-enrollment") {
     const authFail = checkCrmSecret(req, res);
     if (authFail) return;
     const body = parseBody(req);
     if (!body.id || !body.redemptionType) return res.status(400).json({ ok: false, error: "id_redemptionType_required" });
+    const result = await performRedemption({
+      enrollmentId: body.id, redemptionType: body.redemptionType, itemDescription: body.itemDescription,
+      value: body.value, notes: body.notes, redeemedBy: body.redeemedBy, actor: body.actor,
+    });
+    if (!result.ok) return res.status(500).json(result);
+    return res.status(200).json(result);
+  }
 
-    const { data: enrollmentBefore } = await sb.from("kitty_enrollments").select("status").eq("id", body.id).maybeSingle();
-    const isEarlyExit = enrollmentBefore?.status === "active";
+  // POST ?action=initiate-redeem — staff. Body: { id (enrollmentId),
+  // redemptionType, itemDescription?, value?, notes? }. Sends the member a
+  // WA message with a 6-digit code + what's being redeemed. Staff never
+  // sees the code — the member reads it out in person to authenticate that
+  // THEY actually requested this redemption, not just whoever has CRM
+  // access. Code expires in 30 minutes.
+  if (req.method === "POST" && action === "initiate-redeem") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    if (!body.id || !body.redemptionType) return res.status(400).json({ ok: false, error: "id_redemptionType_required" });
 
-    const { data: redemption, error } = await sb.from("kitty_redemptions").insert({
-      tenant_id: TENANT_ID, enrollment_id: body.id, redemption_type: body.redemptionType,
-      item_description: body.itemDescription || null,
-      value: body.value != null ? Number(body.value) : null,
-      notes: body.notes || null, redeemed_by: body.redeemedBy || null, is_early_exit: isEarlyExit,
-    }).select().single();
-    if (error) return res.status(500).json({ ok: false, error: error.message });
+    const { data: enrollment } = await sb.from("kitty_enrollments")
+      .select("id,lead_id,is_legacy,legacy_scheme_name,scheme:kitty_schemes(name)")
+      .eq("tenant_id", TENANT_ID).eq("id", body.id).maybeSingle();
+    if (!enrollment) return res.status(404).json({ ok: false, error: "not_found" });
+    const { data: lead } = await sb.from("bullion_leads").select("phone,name").eq("id", enrollment.lead_id).maybeSingle();
+    if (!lead?.phone) return res.status(400).json({ ok: false, error: "member_has_no_phone_on_file" });
 
-    await sb.from("kitty_enrollments").update({ status: "redeemed", claim_status: "claimed", claimed_at: new Date().toISOString() }).eq("id", body.id);
-    await sb.from("kitty_installments").update({ status: "waived" }).eq("enrollment_id", body.id).eq("status", "due");
+    const code = String(crypto.randomInt(100000, 999999));
+    const schemeName = enrollment.is_legacy ? enrollment.legacy_scheme_name : (enrollment.scheme?.name || "your Kitty");
+    const amountLine = body.value ? `worth ₹${Number(body.value).toLocaleString("en-IN")}` : (body.itemDescription || "");
 
-    await logAudit(sb, { entityType: "enrollment", entityId: body.id, action: "redeem", actor: body.actor || body.redeemedBy, details: { redemptionType: body.redemptionType, value: body.value, isEarlyExit } });
-    return res.status(200).json({ ok: true, redemption, isEarlyExit });
+    const { error: codeErr } = await sb.from("kitty_redemption_codes").insert({
+      tenant_id: TENANT_ID, enrollment_id: body.id, code_hash: hashCode(code),
+      redemption_type: body.redemptionType, item_description: body.itemDescription || null,
+      value: body.value != null ? Number(body.value) : null, notes: body.notes || null,
+      initiated_by: body.actor || null, expires_at: new Date(Date.now() + REDEMPTION_CODE_TTL_MS).toISOString(),
+    });
+    if (codeErr) return res.status(500).json({ ok: false, error: codeErr.message });
+
+    const msg = `🪙 You're redeeming your ${schemeName}${amountLine ? ` ${amountLine}` : ""}.\n\nTo confirm, share this code with our staff: *${code}*\n(Valid 30 minutes — don't share it with anyone else.)\n- Sun Sea Jewellers, Karol Bagh`;
+    const wa = await sendWhatsApp({ phone: lead.phone, msg }).catch(() => ({ status: 0 }));
+    if (wa.status !== 1) return res.status(500).json({ ok: false, error: "whatsapp_send_failed" });
+
+    await logAudit(sb, { entityType: "enrollment", entityId: body.id, action: "redeem-initiated", actor: body.actor, details: { redemptionType: body.redemptionType, value: body.value } });
+    return res.status(200).json({ ok: true, codeSentTo: lead.phone });
+  }
+
+  // POST ?action=confirm-redeem — staff. Body: { id (enrollmentId), code,
+  // redeemedBy }. Verifies the code the member read out, then actually
+  // performs the redemption and sends them a thank-you WA message.
+  if (req.method === "POST" && action === "confirm-redeem") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    if (!body.id || !body.code) return res.status(400).json({ ok: false, error: "id_code_required" });
+
+    const { data: codeRow } = await sb.from("kitty_redemption_codes")
+      .select("*").eq("tenant_id", TENANT_ID).eq("enrollment_id", body.id).is("consumed_at", null)
+      .order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (!codeRow) return res.status(400).json({ ok: false, error: "no_pending_redemption_code" });
+    if (new Date(codeRow.expires_at).getTime() < Date.now()) return res.status(400).json({ ok: false, error: "code_expired" });
+    if (hashCode(String(body.code).trim()) !== codeRow.code_hash) return res.status(400).json({ ok: false, error: "code_mismatch" });
+
+    const result = await performRedemption({
+      enrollmentId: body.id, redemptionType: codeRow.redemption_type, itemDescription: codeRow.item_description,
+      value: codeRow.value, notes: codeRow.notes, redeemedBy: body.redeemedBy || codeRow.initiated_by, actor: body.actor,
+    });
+    if (!result.ok) return res.status(500).json(result);
+
+    await sb.from("kitty_redemption_codes").update({ consumed_at: new Date().toISOString() }).eq("id", codeRow.id);
+
+    const { data: enrollment } = await sb.from("kitty_enrollments")
+      .select("lead_id,is_legacy,legacy_scheme_name,scheme:kitty_schemes(name)").eq("id", body.id).maybeSingle();
+    const { data: lead } = await sb.from("bullion_leads").select("phone").eq("id", enrollment?.lead_id).maybeSingle();
+    if (lead?.phone) {
+      const schemeName = enrollment.is_legacy ? enrollment.legacy_scheme_name : (enrollment.scheme?.name || "your Kitty");
+      await sendWhatsApp({ phone: lead.phone, msg: `🙏 Thank you! Your ${schemeName} has been redeemed successfully.\n- Sun Sea Jewellers, Karol Bagh` }).catch(() => {});
+    }
+
+    await logAudit(sb, { entityType: "enrollment", entityId: body.id, action: "redeem-confirmed", actor: body.actor || body.redeemedBy });
+    return res.status(200).json(result);
   }
 
   if (req.method === "POST" && action === "update-claim-status") {
