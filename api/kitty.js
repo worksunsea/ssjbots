@@ -32,6 +32,26 @@ function parseBody(req) {
   return body || {};
 }
 
+// Schemes redeeming in actual gold (Golden Sparkle's raw-gold option,
+// Gullak) let each member pick their own monthly amount in ₹5,000
+// multiples, ₹5,000–₹3,00,000, instead of the scheme's fixed amount.
+const MIN_FLEXIBLE_AMOUNT = 5000;
+const MAX_FLEXIBLE_AMOUNT = 300000;
+function isGoldRedemptionScheme(perks) {
+  return perks?.redemption === "jewellery_or_raw_gold" || perks?.redemption === "sell_anytime_or_jewellery";
+}
+// Resolves the monthly amount to actually use for a flexible-amount
+// enrollment, validating it's a ₹5,000 multiple in range. Returns
+// { ok:true, amount } or { ok:false, error }.
+function resolveFlexibleAmount(requested, schemeMonthlyAmount) {
+  if (requested == null || requested === "") return { ok: true, amount: schemeMonthlyAmount };
+  const n = Number(requested);
+  if (!Number.isFinite(n) || n < MIN_FLEXIBLE_AMOUNT || n > MAX_FLEXIBLE_AMOUNT || n % MIN_FLEXIBLE_AMOUNT !== 0) {
+    return { ok: false, error: `monthlyAmount must be a multiple of ₹${MIN_FLEXIBLE_AMOUNT}, between ₹${MIN_FLEXIBLE_AMOUNT} and ₹${MAX_FLEXIBLE_AMOUNT}` };
+  }
+  return { ok: true, amount: n };
+}
+
 const SCHEME_FIELDS = (b) => ({
   name: b.name,
   slug: b.slug,
@@ -240,8 +260,15 @@ export default async function handler(req, res) {
       scheduleStart = batch.start_date;
     }
 
+    let monthlyAmountOverride = enrollment.monthly_amount_override;
+    if (isGoldRedemptionScheme(perks) && body.monthlyAmount != null) {
+      const resolved = resolveFlexibleAmount(body.monthlyAmount, enrollment.scheme.monthly_amount);
+      if (!resolved.ok) return res.status(400).json({ ok: false, error: resolved.error });
+      monthlyAmountOverride = resolved.amount;
+    }
+
     const { error: updErr } = await sb.from("kitty_enrollments").update({
-      status: "active", start_date: scheduleStart, batch_id: batchId,
+      status: "active", start_date: scheduleStart, batch_id: batchId, monthly_amount_override: monthlyAmountOverride,
       confirmed_by: body.confirmedBy || null, confirmed_at: new Date().toISOString(),
     }).eq("id", body.id);
     if (updErr) return res.status(500).json({ ok: false, error: updErr.message });
@@ -254,7 +281,7 @@ export default async function handler(req, res) {
     }
     const rows = buildInstallmentSchedule({
       enrollmentId: body.id, scheduleStart, durationMonths: enrollment.scheme.duration_months,
-      monthlyAmount: enrollment.scheme.monthly_amount, perks, paidMonths: body.paidMonths,
+      monthlyAmount: monthlyAmountOverride || enrollment.scheme.monthly_amount, perks, paidMonths: body.paidMonths,
     });
     const { error: insErr } = await sb.from("kitty_installments").insert(rows);
     if (insErr) return res.status(500).json({ ok: false, error: insErr.message });
@@ -280,6 +307,13 @@ export default async function handler(req, res) {
     if (!scheme) return res.status(400).json({ ok: false, error: "scheme_not_found" });
     const perks = scheme.perks || {};
 
+    let monthlyAmountOverride = null;
+    if (isGoldRedemptionScheme(perks) && body.monthlyAmount != null) {
+      const resolved = resolveFlexibleAmount(body.monthlyAmount, scheme.monthly_amount);
+      if (!resolved.ok) return res.status(400).json({ ok: false, error: resolved.error });
+      monthlyAmountOverride = resolved.amount;
+    }
+
     const { data: existingLead } = await sb.from("bullion_leads").select("id").eq("phone", phone).eq("tenant_id", TENANT_ID).maybeSingle();
     let leadId = existingLead?.id;
     if (!leadId) {
@@ -301,7 +335,7 @@ export default async function handler(req, res) {
     }
 
     const { data: enrollment, error: enrollErr } = await sb.from("kitty_enrollments").insert({
-      tenant_id: TENANT_ID, lead_id: leadId, scheme_id: scheme.id, batch_id: batchId,
+      tenant_id: TENANT_ID, lead_id: leadId, scheme_id: scheme.id, batch_id: batchId, monthly_amount_override: monthlyAmountOverride,
       status: "active", start_date: scheduleStart, confirmed_by: body.confirmedBy || "staff", confirmed_at: new Date().toISOString(),
     }).select().single();
     if (enrollErr) return res.status(500).json({ ok: false, error: enrollErr.message });
@@ -320,7 +354,7 @@ export default async function handler(req, res) {
     }
     const rows = buildInstallmentSchedule({
       enrollmentId: enrollment.id, scheduleStart, durationMonths: scheme.duration_months,
-      monthlyAmount: scheme.monthly_amount, perks, paidMonths: body.paidMonths,
+      monthlyAmount: monthlyAmountOverride || scheme.monthly_amount, perks, paidMonths: body.paidMonths,
     });
     const { error: insErr } = await sb.from("kitty_installments").insert(rows);
     if (insErr) return res.status(500).json({ ok: false, error: insErr.message, enrollment });

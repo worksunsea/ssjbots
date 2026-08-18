@@ -73,9 +73,14 @@ function PaidMonthsEditor({ paidMonths, setPaidMonths }) {
   );
 }
 
+function isGoldRedemptionScheme(perks) {
+  return perks?.redemption === "jewellery_or_raw_gold" || perks?.redemption === "sell_anytime_or_jewellery";
+}
+const FLEXIBLE_AMOUNTS = Array.from({ length: 60 }, (_, i) => (i + 1) * 5000); // 5,000 .. 3,00,000
+
 function EnrollNewMemberTab({ crmSecret }) {
   const [schemes, setSchemes] = useState([]);
-  const [f, setF] = useState({ name: "", phone: "", schemeId: "", startDate: new Date().toISOString().slice(0, 10) });
+  const [f, setF] = useState({ name: "", phone: "", schemeId: "", startDate: new Date().toISOString().slice(0, 10), monthlyAmount: "" });
   const [paidMonths, setPaidMonths] = useState([]);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
@@ -85,13 +90,18 @@ function EnrollNewMemberTab({ crmSecret }) {
     call("admin-list-schemes", { crmSecret }).then((d) => setSchemes(d.ok ? d.schemes.filter((s) => s.active) : []));
   }, [crmSecret]);
 
+  const selectedScheme = schemes.find((s) => s.id === f.schemeId);
+  const isFlexible = selectedScheme && isGoldRedemptionScheme(selectedScheme.perks) && selectedScheme.perks?.unit !== "grams";
+
   const submit = async () => {
     if (!f.name || !f.phone || !f.schemeId || !f.startDate) return setMsg("Name, phone, scheme, and start date are all required.");
     setSaving(true);
     const cleanPaidMonths = paidMonths.filter((m) => m.monthNumber !== "").map((m) => ({
       monthNumber: Number(m.monthNumber), paidAt: m.paidAt || null, amount: m.amount === "" ? null : Number(m.amount),
     }));
-    const d = await call("enroll-new-member", { method: "POST", crmSecret, body: { ...f, confirmedBy: "staff", paidMonths: cleanPaidMonths } });
+    const d = await call("enroll-new-member", { method: "POST", crmSecret, body: {
+      ...f, monthlyAmount: isFlexible ? Number(f.monthlyAmount) : null, confirmedBy: "staff", paidMonths: cleanPaidMonths,
+    } });
     setSaving(false);
     if (d.ok) { setMsg("Enrolled — active from " + f.startDate + "."); setF({ name: "", phone: "", schemeId: "", startDate: new Date().toISOString().slice(0, 10) }); setPaidMonths([]); }
     else setMsg(d.error || "Failed");
@@ -103,11 +113,22 @@ function EnrollNewMemberTab({ crmSecret }) {
       <label>Name<input value={f.name} onChange={(e) => set("name", e.target.value)} style={{ display: "block", width: "100%" }} /></label>
       <label>Phone<input value={f.phone} onChange={(e) => set("phone", e.target.value)} style={{ display: "block", width: "100%" }} /></label>
       <label>Scheme
-        <select value={f.schemeId} onChange={(e) => set("schemeId", e.target.value)} style={{ display: "block", width: "100%" }}>
+        <select value={f.schemeId} onChange={(e) => {
+          const s = schemes.find((sc) => sc.id === e.target.value);
+          set("schemeId", e.target.value);
+          set("monthlyAmount", s && isGoldRedemptionScheme(s.perks) && s.perks?.unit !== "grams" ? s.monthly_amount : "");
+        }} style={{ display: "block", width: "100%" }}>
           <option value="">— choose —</option>
           {schemes.map((s) => <option key={s.id} value={s.id}>{s.name}{s.monthly_amount ? ` — ₹${s.monthly_amount}/mo` : ""}</option>)}
         </select>
       </label>
+      {isFlexible && (
+        <label>Monthly amount (member's own choice, ₹5,000 steps up to ₹3,00,000)
+          <select value={f.monthlyAmount} onChange={(e) => set("monthlyAmount", Number(e.target.value))} style={{ display: "block", width: "100%" }}>
+            {FLEXIBLE_AMOUNTS.map((a) => <option key={a} value={a}>₹{a.toLocaleString("en-IN")}/month</option>)}
+          </select>
+        </label>
+      )}
       <label>Start date (first/already-paid installment's month)<input type="date" value={f.startDate} onChange={(e) => set("startDate", e.target.value)} style={{ display: "block", width: "100%" }} /></label>
 
       <PaidMonthsEditor paidMonths={paidMonths} setPaidMonths={setPaidMonths} />

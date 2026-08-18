@@ -5,17 +5,26 @@
 // — staff confirms in person (first payment + start date happen in-store,
 // no payment gateway here) via the CRM Kitty Admin screen.
 //
-// Body: { name, phone, schemeId, batchId?, memberNumber? }
+// Body: { name, phone, schemeId, batchId?, memberNumber?, monthlyAmount? }
 // batchId/memberNumber are required for lucky-draw schemes (Golden
 // Bliss/Bloom) — the client picks a number from api/kitty.js's
 // ?action=available-numbers first. A client can submit this endpoint
 // multiple times for the same scheme — each call is a separate numbered
 // entry, not a dedup-by-phone upsert (only the contact record is upserted).
+// monthlyAmount is optional, only meaningful for gold-redemption schemes
+// (Golden Sparkle, Gullak) — a member's own chosen ₹5,000-multiple monthly
+// amount instead of the scheme default.
 
 import { supa } from "./_lib/supabase.js";
 import { normalizePhone, TENANT_ID } from "./_lib/config.js";
 import { sendPushNotification } from "./_lib/pushNotify.js";
 import { enrollLeadInDrip } from "./_lib/drip.js";
+
+const MIN_FLEXIBLE_AMOUNT = 5000;
+const MAX_FLEXIBLE_AMOUNT = 300000;
+function isGoldRedemptionScheme(perks) {
+  return perks?.redemption === "jewellery_or_raw_gold" || perks?.redemption === "sell_anytime_or_jewellery";
+}
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -43,6 +52,15 @@ export default async function handler(req, res) {
     return res.status(400).json({ ok: false, error: "batchId_memberNumber_required_for_lucky_draw_scheme" });
   }
 
+  let monthlyAmountOverride = null;
+  if (isGoldRedemptionScheme(scheme.perks) && body.monthlyAmount != null) {
+    const n = Number(body.monthlyAmount);
+    if (!Number.isFinite(n) || n < MIN_FLEXIBLE_AMOUNT || n > MAX_FLEXIBLE_AMOUNT || n % MIN_FLEXIBLE_AMOUNT !== 0) {
+      return res.status(400).json({ ok: false, error: `monthlyAmount must be a multiple of ₹${MIN_FLEXIBLE_AMOUNT}, between ₹${MIN_FLEXIBLE_AMOUNT} and ₹${MAX_FLEXIBLE_AMOUNT}` });
+    }
+    monthlyAmountOverride = n;
+  }
+
   // Contacts rule: reuse the existing bullion_leads record for this phone if
   // one already exists, otherwise create a new contact — never a duplicate.
   const { data: existingLead } = await sb.from("bullion_leads")
@@ -65,6 +83,7 @@ export default async function handler(req, res) {
     tenant_id: TENANT_ID, lead_id: lead.id, scheme_id: scheme.id, status: "pending_confirmation",
     batch_id: scheme.perks?.lucky_draw ? body.batchId : null,
     member_number: scheme.perks?.lucky_draw ? Number(body.memberNumber) : null,
+    monthly_amount_override: monthlyAmountOverride,
   }).select("id").single();
   if (enrollErr) {
     // Unique (batch_id, member_number) violation — someone else grabbed
