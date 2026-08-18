@@ -25,6 +25,7 @@
 import { supa } from "./_lib/supabase.js";
 import { TENANT_ID, checkCrmSecret, normalizePhone } from "./_lib/config.js";
 import { enrollLeadInDrip } from "./_lib/drip.js";
+import { logKittyAudit } from "./_lib/kittyAudit.js";
 
 function parseBody(req) {
   let body = req.body;
@@ -72,6 +73,13 @@ function addMonths(dateStr, n) {
   d.setUTCMonth(d.getUTCMonth() + n);
   if (d.getUTCDate() !== day) d.setUTCDate(0); // rolled into next month — clamp back to last day of target month
   return d.toISOString().slice(0, 10);
+}
+
+// Every mutating action logs who did what, when — a real footprint, not
+// just the mutation itself. sb param kept for call-site consistency with
+// the rest of this file even though the shared writer opens its own client.
+async function logAudit(_sb, opts) {
+  await logKittyAudit(opts);
 }
 
 // Builds the full monthly installment schedule for an enrollment.
@@ -187,6 +195,7 @@ export default async function handler(req, res) {
     if (!body.name || !body.slug || !body.monthlyAmount) return res.status(400).json({ ok: false, error: "name_slug_monthlyAmount_required" });
     const { data, error } = await sb.from("kitty_schemes").insert({ ...SCHEME_FIELDS(body), tenant_id: TENANT_ID }).select().single();
     if (error) return res.status(500).json({ ok: false, error: error.message });
+    await logAudit(sb, { entityType: "scheme", entityId: data.id, action: "create", actor: body.actor, details: { name: data.name } });
     return res.status(200).json({ ok: true, scheme: data });
   }
 
@@ -199,6 +208,7 @@ export default async function handler(req, res) {
       .update({ ...SCHEME_FIELDS(body), updated_at: new Date().toISOString() })
       .eq("tenant_id", TENANT_ID).eq("id", body.id).select().single();
     if (error) return res.status(500).json({ ok: false, error: error.message });
+    await logAudit(sb, { entityType: "scheme", entityId: data.id, action: "update", actor: body.actor, details: { name: data.name } });
     return res.status(200).json({ ok: true, scheme: data });
   }
 
@@ -209,6 +219,7 @@ export default async function handler(req, res) {
     if (!body.id) return res.status(400).json({ ok: false, error: "id_required" });
     const { error } = await sb.from("kitty_schemes").delete().eq("tenant_id", TENANT_ID).eq("id", body.id);
     if (error) return res.status(500).json({ ok: false, error: error.message });
+    await logAudit(sb, { entityType: "scheme", entityId: body.id, action: "delete", actor: body.actor });
     return res.status(200).json({ ok: true });
   }
 
@@ -277,6 +288,7 @@ export default async function handler(req, res) {
     // each purchase is logged ad-hoc via ?action=add-installment instead of
     // a pre-generated fixed schedule.
     if (perks.unit === "grams" || enrollment.scheme.monthly_amount == null) {
+      await logAudit(sb, { entityType: "enrollment", entityId: body.id, action: "confirm", actor: body.actor || body.confirmedBy, details: { startDate: scheduleStart, note: "gram_based" } });
       return res.status(200).json({ ok: true, installmentsCreated: 0, note: "gram_based_no_fixed_schedule" });
     }
     const rows = buildInstallmentSchedule({
@@ -285,6 +297,7 @@ export default async function handler(req, res) {
     });
     const { error: insErr } = await sb.from("kitty_installments").insert(rows);
     if (insErr) return res.status(500).json({ ok: false, error: insErr.message });
+    await logAudit(sb, { entityType: "enrollment", entityId: body.id, action: "confirm", actor: body.actor || body.confirmedBy, details: { startDate: scheduleStart, monthlyAmountOverride } });
     return res.status(200).json({ ok: true, installmentsCreated: rows.length, batchId });
   }
 
@@ -350,6 +363,7 @@ export default async function handler(req, res) {
     }
 
     if (perks.unit === "grams" || scheme.monthly_amount == null) {
+      await logAudit(sb, { entityType: "enrollment", entityId: enrollment.id, action: "create", actor: body.actor || body.confirmedBy, details: { name, phone, schemeId: scheme.id, note: "gram_based" } });
       return res.status(200).json({ ok: true, enrollment, installmentsCreated: 0, note: "gram_based_no_fixed_schedule" });
     }
     const rows = buildInstallmentSchedule({
@@ -358,6 +372,7 @@ export default async function handler(req, res) {
     });
     const { error: insErr } = await sb.from("kitty_installments").insert(rows);
     if (insErr) return res.status(500).json({ ok: false, error: insErr.message, enrollment });
+    await logAudit(sb, { entityType: "enrollment", entityId: enrollment.id, action: "create", actor: body.actor || body.confirmedBy, details: { name, phone, schemeId: scheme.id, monthlyAmountOverride, startDate: scheduleStart } });
     return res.status(200).json({ ok: true, enrollment, installmentsCreated: rows.length, batchId });
   }
 
@@ -386,6 +401,7 @@ export default async function handler(req, res) {
     if (!body.id) return res.status(400).json({ ok: false, error: "id_required" });
     const { error } = await sb.from("kitty_batches").update({ status: "closed" }).eq("tenant_id", TENANT_ID).eq("id", body.id);
     if (error) return res.status(500).json({ ok: false, error: error.message });
+    await logAudit(sb, { entityType: "batch", entityId: body.id, action: "close", actor: body.actor });
     return res.status(200).json({ ok: true });
   }
 
@@ -412,6 +428,7 @@ export default async function handler(req, res) {
     if (existing) return res.status(200).json({ ok: true, legacyName: existing });
     const { data, error } = await sb.from("kitty_legacy_scheme_names").insert({ tenant_id: TENANT_ID, name }).select().single();
     if (error) return res.status(500).json({ ok: false, error: error.message });
+    await logAudit(sb, { entityType: "legacy_name", entityId: data.id, action: "create", actor: body.actor, details: { name } });
     return res.status(200).json({ ok: true, legacyName: data });
   }
 
@@ -439,6 +456,7 @@ export default async function handler(req, res) {
       rate_locked: rateLocked, recorded_by: body.recordedBy || null,
     }).select().single();
     if (error) return res.status(500).json({ ok: false, error: error.message });
+    await logAudit(sb, { entityType: "installment", entityId: data.id, action: "create", actor: body.actor || body.recordedBy, details: { enrollmentId: body.enrollmentId, amount, grams } });
     return res.status(200).json({ ok: true, installment: data });
   }
 
@@ -449,6 +467,7 @@ export default async function handler(req, res) {
     if (!body.id) return res.status(400).json({ ok: false, error: "id_required" });
     const { error } = await sb.from("kitty_enrollments").update({ status: "cancelled" }).eq("tenant_id", TENANT_ID).eq("id", body.id);
     if (error) return res.status(500).json({ ok: false, error: error.message });
+    await logAudit(sb, { entityType: "enrollment", entityId: body.id, action: "cancel", actor: body.actor });
     return res.status(200).json({ ok: true });
   }
 
@@ -475,6 +494,7 @@ export default async function handler(req, res) {
     if (!remaining) {
       await sb.from("kitty_enrollments").update({ status: "completed", claim_status: "unclaimed" }).eq("id", data.enrollment_id);
     }
+    await logAudit(sb, { entityType: "installment", entityId: data.id, action: "paid", actor: body.actor || body.recordedBy, details: { paidAmount: data.paid_amount, rateLocked: data.rate_locked } });
     return res.status(200).json({ ok: true, installment: data });
   }
 
@@ -499,6 +519,7 @@ export default async function handler(req, res) {
         .update({ status: "waived" })
         .eq("enrollment_id", body.winnerEnrollmentId).eq("status", "due");
     }
+    await logAudit(sb, { entityType: "batch", entityId: body.batchId, action: "record-draw", actor: body.actor || body.recordedBy, details: { schemeId: body.schemeId, drawMonth: body.drawMonth, winnerEnrollmentId: body.winnerEnrollmentId } });
     return res.status(200).json({ ok: true, draw });
   }
 
@@ -543,6 +564,7 @@ export default async function handler(req, res) {
       const { error: instErr } = await sb.from("kitty_installments").insert(rows);
       if (instErr) return res.status(500).json({ ok: false, error: instErr.message, enrollment: data });
     }
+    await logAudit(sb, { entityType: "enrollment", entityId: data.id, action: "create", actor: body.actor || body.recordedBy, details: { name, phone, legacySchemeName: body.legacySchemeName, isLegacy: true } });
     return res.status(200).json({ ok: true, enrollment: data });
   }
 
@@ -551,25 +573,32 @@ export default async function handler(req, res) {
   // (active mid-cycle exit, or completed at the natural end of the term) —
   // marks the enrollment redeemed, any still-due installments waived (mid-
   // cycle exit forfeits further collection), and logs a kitty_redemptions
-  // row so what/when/who is on record.
+  // row so what/when/who is on record. Early exit (status was 'active', not
+  // 'completed') forfeits completion-only perks (e.g. Sparkle's 50%
+  // making-charge discount) — recorded via is_early_exit; staff still fully
+  // controls the value/type entered, this just flags the context.
   if (req.method === "POST" && action === "redeem-enrollment") {
     const authFail = checkCrmSecret(req, res);
     if (authFail) return;
     const body = parseBody(req);
     if (!body.id || !body.redemptionType) return res.status(400).json({ ok: false, error: "id_redemptionType_required" });
 
+    const { data: enrollmentBefore } = await sb.from("kitty_enrollments").select("status").eq("id", body.id).maybeSingle();
+    const isEarlyExit = enrollmentBefore?.status === "active";
+
     const { data: redemption, error } = await sb.from("kitty_redemptions").insert({
       tenant_id: TENANT_ID, enrollment_id: body.id, redemption_type: body.redemptionType,
       item_description: body.itemDescription || null,
       value: body.value != null ? Number(body.value) : null,
-      notes: body.notes || null, redeemed_by: body.redeemedBy || null,
+      notes: body.notes || null, redeemed_by: body.redeemedBy || null, is_early_exit: isEarlyExit,
     }).select().single();
     if (error) return res.status(500).json({ ok: false, error: error.message });
 
     await sb.from("kitty_enrollments").update({ status: "redeemed", claim_status: "claimed", claimed_at: new Date().toISOString() }).eq("id", body.id);
     await sb.from("kitty_installments").update({ status: "waived" }).eq("enrollment_id", body.id).eq("status", "due");
 
-    return res.status(200).json({ ok: true, redemption });
+    await logAudit(sb, { entityType: "enrollment", entityId: body.id, action: "redeem", actor: body.actor || body.redeemedBy, details: { redemptionType: body.redemptionType, value: body.value, isEarlyExit } });
+    return res.status(200).json({ ok: true, redemption, isEarlyExit });
   }
 
   if (req.method === "POST" && action === "update-claim-status") {
@@ -581,7 +610,79 @@ export default async function handler(req, res) {
     if (body.claimStatus === "claimed") patch.claimed_at = new Date().toISOString();
     const { data, error } = await sb.from("kitty_enrollments").update(patch).eq("tenant_id", TENANT_ID).eq("id", body.id).select().single();
     if (error) return res.status(500).json({ ok: false, error: error.message });
+    await logAudit(sb, { entityType: "enrollment", entityId: body.id, action: "update-claim-status", actor: body.actor, details: { claimStatus: body.claimStatus } });
     return res.status(200).json({ ok: true, enrollment: data });
+  }
+
+  // POST ?action=update-enrollment — staff. Corrects an existing active
+  // enrollment's start date (and/or notes). Shifting the start date
+  // re-dates every still-'due' installment's due_date to match (month N's
+  // due date = new start + N-1 months) — already-paid/free/waived rows are
+  // left alone, since those are settled history, not something a start-date
+  // correction should retroactively rewrite.
+  if (req.method === "POST" && action === "update-enrollment") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    if (!body.id) return res.status(400).json({ ok: false, error: "id_required" });
+
+    const { data: before } = await sb.from("kitty_enrollments").select("*").eq("tenant_id", TENANT_ID).eq("id", body.id).maybeSingle();
+    if (!before) return res.status(404).json({ ok: false, error: "not_found" });
+
+    const patch = {};
+    if (body.notes !== undefined) patch.notes = body.notes;
+    if (body.startDate && body.startDate !== before.start_date) {
+      patch.start_date = body.startDate;
+      const { data: dueRows } = await sb.from("kitty_installments").select("id,month_number").eq("enrollment_id", body.id).eq("status", "due");
+      for (const row of dueRows || []) {
+        await sb.from("kitty_installments").update({ due_date: addMonths(body.startDate, row.month_number - 1) }).eq("id", row.id);
+      }
+    }
+    if (!Object.keys(patch).length) return res.status(400).json({ ok: false, error: "nothing_to_update" });
+
+    const { data, error } = await sb.from("kitty_enrollments").update(patch).eq("id", body.id).select().single();
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    await logAudit(sb, { entityType: "enrollment", entityId: body.id, action: "update", actor: body.actor, details: { before: { startDate: before.start_date, notes: before.notes }, after: patch } });
+    return res.status(200).json({ ok: true, enrollment: data });
+  }
+
+  // POST ?action=update-installment — staff. Corrects a single installment
+  // row (amount, due date, status, paid amount/date, locked rate) after the
+  // fact — e.g. a typo in an amount, or a status set wrong by mistake.
+  if (req.method === "POST" && action === "update-installment") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    if (!body.id) return res.status(400).json({ ok: false, error: "id_required" });
+
+    const { data: before } = await sb.from("kitty_installments").select("*").eq("tenant_id", TENANT_ID).eq("id", body.id).maybeSingle();
+    if (!before) return res.status(404).json({ ok: false, error: "not_found" });
+
+    const patch = {};
+    if (body.amount != null) patch.amount = Number(body.amount);
+    if (body.dueDate) patch.due_date = body.dueDate;
+    if (body.status) patch.status = body.status;
+    if (body.paidAmount != null) patch.paid_amount = Number(body.paidAmount);
+    if (body.paidAt) patch.paid_at = body.paidAt;
+    if (body.rateLocked != null) patch.rate_locked = Number(body.rateLocked);
+    if (!Object.keys(patch).length) return res.status(400).json({ ok: false, error: "nothing_to_update" });
+
+    const { data, error } = await sb.from("kitty_installments").update(patch).eq("id", body.id).select().single();
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    await logAudit(sb, { entityType: "installment", entityId: body.id, action: "update", actor: body.actor, details: { before, after: patch } });
+    return res.status(200).json({ ok: true, installment: data });
+  }
+
+  // GET ?action=admin-list-audit-log — staff. Query: entityType?, entityId?, limit? (default 200)
+  if (req.method === "GET" && action === "admin-list-audit-log") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    let q = sb.from("kitty_audit_log").select("*").eq("tenant_id", TENANT_ID).order("created_at", { ascending: false }).limit(Number(req.query.limit) || 200);
+    if (req.query.entityType) q = q.eq("entity_type", req.query.entityType);
+    if (req.query.entityId) q = q.eq("entity_id", req.query.entityId);
+    const { data, error } = await q;
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.status(200).json({ ok: true, log: data || [] });
   }
 
   return res.status(400).json({ ok: false, error: "unknown_action" });

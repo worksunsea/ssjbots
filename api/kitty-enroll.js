@@ -19,6 +19,7 @@ import { supa } from "./_lib/supabase.js";
 import { normalizePhone, TENANT_ID } from "./_lib/config.js";
 import { sendPushNotification } from "./_lib/pushNotify.js";
 import { enrollLeadInDrip } from "./_lib/drip.js";
+import { logKittyAudit } from "./_lib/kittyAudit.js";
 
 const MIN_FLEXIBLE_AMOUNT = 5000;
 const MAX_FLEXIBLE_AMOUNT = 300000;
@@ -107,6 +108,8 @@ export default async function handler(req, res) {
     body: `${name} — ${scheme.name}`,
     url: "/",
   }).catch(() => {});
+
+  await logKittyAudit({ entityType: "enrollment", entityId: enrollment.id, action: "create", actor: `online:${phone}`, details: { name, phone, schemeId: scheme.id, monthlyAmountOverride } });
 
   return res.status(200).json({ ok: true, enrollmentId: enrollment.id });
 }

@@ -18,6 +18,7 @@
 import { supa } from "./_lib/supabase.js";
 import { sendWhatsApp } from "./_lib/wa.js";
 import { TENANT_ID, DIGEST_CRON_SECRET } from "./_lib/config.js";
+import { logKittyAudit } from "./_lib/kittyAudit.js";
 
 const REMINDER_DAYS_BEFORE = 3;
 const CLAIM_REMINDER_INTERVAL_DAYS = 14;
@@ -97,6 +98,7 @@ export default async function handler(req, res) {
       if (cycleEnd > today) continue;
 
       await sb.from("kitty_batches").update({ status: "completed" }).eq("id", batch.id);
+      await logKittyAudit({ entityType: "batch", entityId: batch.id, action: "auto-complete", actor: "system:cron", details: { batchLabel: batch.batch_label } });
       stats.batchesRolledOver++;
 
       const { data: members } = await sb.from("kitty_enrollments")

@@ -28,12 +28,13 @@ const emptyScheme = () => ({
   description: "", active: true, sortOrder: 0,
 });
 
-export default function KittyAdminScreen({ sb, tenantId, crmSecret }) {
+export default function KittyAdminScreen({ sb, tenantId, crmSecret, staffName }) {
   const [tab, setTab] = useState("schemes");
+  const actor = staffName || "staff";
   return (
     <div style={{ padding: 20 }}>
       <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
-        {[["schemes", "Schemes"], ["enroll", "Enroll New Member"], ["enrollments", "Enrollments"], ["legacy", "Add Legacy Member"]].map(([k, l]) => (
+        {[["schemes", "Schemes"], ["enroll", "Enroll New Member"], ["enrollments", "Enrollments"], ["legacy", "Add Legacy Member"], ["activity", "Activity Log"]].map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)}
             style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid #d4af37",
               background: tab === k ? "#d4af37" : "transparent", color: tab === k ? "#fff" : "#d4af37", cursor: "pointer" }}>
@@ -41,10 +42,58 @@ export default function KittyAdminScreen({ sb, tenantId, crmSecret }) {
           </button>
         ))}
       </div>
-      {tab === "schemes" && <SchemesTab sb={sb} tenantId={tenantId} crmSecret={crmSecret} />}
-      {tab === "enroll" && <EnrollNewMemberTab crmSecret={crmSecret} />}
-      {tab === "enrollments" && <EnrollmentsTab crmSecret={crmSecret} />}
-      {tab === "legacy" && <LegacyTab crmSecret={crmSecret} />}
+      {tab === "schemes" && <SchemesTab sb={sb} tenantId={tenantId} crmSecret={crmSecret} actor={actor} />}
+      {tab === "enroll" && <EnrollNewMemberTab crmSecret={crmSecret} actor={actor} />}
+      {tab === "enrollments" && <EnrollmentsTab crmSecret={crmSecret} actor={actor} />}
+      {tab === "legacy" && <LegacyTab crmSecret={crmSecret} actor={actor} />}
+      {tab === "activity" && <ActivityLogTab crmSecret={crmSecret} />}
+    </div>
+  );
+}
+
+function ActivityLogTab({ crmSecret }) {
+  const [log, setLog] = useState(null);
+  const [entityType, setEntityType] = useState("");
+
+  const load = useCallback(async () => {
+    const d = await call("admin-list-audit-log", { crmSecret, params: entityType ? { entityType } : {} });
+    setLog(d.ok ? d.log : []);
+  }, [crmSecret, entityType]);
+
+  useEffect(() => { load(); }, [load]);
+
+  return (
+    <div>
+      <p>Every enrollment, payment, redemption, edit, and system action — who did it and when. Online (client-submitted) entries show as "online:&lt;phone&gt;"; automated rollovers show as "system:cron".</p>
+      <select value={entityType} onChange={(e) => setEntityType(e.target.value)} style={{ marginBottom: 12 }}>
+        <option value="">All types</option>
+        <option value="scheme">Schemes</option>
+        <option value="enrollment">Enrollments</option>
+        <option value="installment">Installments</option>
+        <option value="batch">Batches</option>
+        <option value="legacy_name">Legacy names</option>
+      </select>
+      {log === null ? <div>Loading…</div> : (
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+          <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
+            <th>When</th><th>Who</th><th>Action</th><th>What</th><th>Details</th>
+          </tr></thead>
+          <tbody>
+            {log.map((row) => (
+              <tr key={row.id} style={{ borderBottom: "1px solid #eee" }}>
+                <td>{new Date(row.created_at).toLocaleString("en-IN")}</td>
+                <td>{row.actor}</td>
+                <td>{row.action}</td>
+                <td>{row.entity_type}</td>
+                <td style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={JSON.stringify(row.details)}>
+                  {row.details ? JSON.stringify(row.details) : ""}
+                </td>
+              </tr>
+            ))}
+            {!log.length && <tr><td colSpan={5}>No activity yet.</td></tr>}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
@@ -78,7 +127,7 @@ function isGoldRedemptionScheme(perks) {
 }
 const FLEXIBLE_AMOUNTS = Array.from({ length: 60 }, (_, i) => (i + 1) * 5000); // 5,000 .. 3,00,000
 
-function EnrollNewMemberTab({ crmSecret }) {
+function EnrollNewMemberTab({ crmSecret, actor }) {
   const [schemes, setSchemes] = useState([]);
   const [f, setF] = useState({ name: "", phone: "", schemeId: "", startDate: new Date().toISOString().slice(0, 10), monthlyAmount: "" });
   const [paidMonths, setPaidMonths] = useState([]);
@@ -100,7 +149,7 @@ function EnrollNewMemberTab({ crmSecret }) {
       monthNumber: Number(m.monthNumber), paidAt: m.paidAt || null, amount: m.amount === "" ? null : Number(m.amount),
     }));
     const d = await call("enroll-new-member", { method: "POST", crmSecret, body: {
-      ...f, monthlyAmount: isFlexible ? Number(f.monthlyAmount) : null, confirmedBy: "staff", paidMonths: cleanPaidMonths,
+      ...f, monthlyAmount: isFlexible ? Number(f.monthlyAmount) : null, confirmedBy: actor, actor, paidMonths: cleanPaidMonths,
     } });
     setSaving(false);
     if (d.ok) { setMsg("Enrolled — active from " + f.startDate + "."); setF({ name: "", phone: "", schemeId: "", startDate: new Date().toISOString().slice(0, 10) }); setPaidMonths([]); }
@@ -139,7 +188,7 @@ function EnrollNewMemberTab({ crmSecret }) {
   );
 }
 
-function SchemesTab({ sb, tenantId, crmSecret }) {
+function SchemesTab({ sb, tenantId, crmSecret, actor }) {
   const [schemes, setSchemes] = useState([]);
   const [funnels, setFunnels] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -158,7 +207,7 @@ function SchemesTab({ sb, tenantId, crmSecret }) {
 
   useEffect(() => { load(); }, [load]);
 
-  if (editing) return <SchemeEditor scheme={editing} funnels={funnels} crmSecret={crmSecret} onDone={() => { setEditing(null); load(); }} onCancel={() => setEditing(null)} />;
+  if (editing) return <SchemeEditor scheme={editing} funnels={funnels} crmSecret={crmSecret} actor={actor} onDone={() => { setEditing(null); load(); }} onCancel={() => setEditing(null)} />;
   if (loading) return <div>Loading…</div>;
 
   return (
@@ -191,7 +240,7 @@ function SchemesTab({ sb, tenantId, crmSecret }) {
   );
 }
 
-function SchemeEditor({ scheme, funnels, crmSecret, onDone, onCancel }) {
+function SchemeEditor({ scheme, funnels, crmSecret, actor, onDone, onCancel }) {
   const [f, setF] = useState(scheme);
   const [saving, setSaving] = useState(false);
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
@@ -205,7 +254,7 @@ function SchemeEditor({ scheme, funnels, crmSecret, onDone, onCancel }) {
         return [k, typeof v === "boolean" ? v : (isNaN(Number(v)) ? v : Number(v))];
       })
     );
-    const body = { ...f, perks: cleanPerks };
+    const body = { ...f, perks: cleanPerks, actor };
     const d = await call(f.id ? "scheme-update" : "scheme-create", { method: "POST", crmSecret, body });
     setSaving(false);
     if (d.ok) onDone(); else alert(d.error || "Save failed");
@@ -213,7 +262,7 @@ function SchemeEditor({ scheme, funnels, crmSecret, onDone, onCancel }) {
 
   const del = async () => {
     if (!f.id || !confirm(`Delete "${f.name}"? This cannot be undone.`)) return;
-    const d = await call("scheme-delete", { method: "POST", crmSecret, body: { id: f.id } });
+    const d = await call("scheme-delete", { method: "POST", crmSecret, body: { id: f.id, actor } });
     if (d.ok) onDone(); else alert(d.error || "Delete failed");
   };
 
@@ -296,7 +345,7 @@ function exportMonthlyExcel(enrollments, month) {
   XLSX.writeFile(wb, `kitty-installments-${month}.xlsx`);
 }
 
-function EnrollmentsTab({ crmSecret }) {
+function EnrollmentsTab({ crmSecret, actor }) {
   const [status, setStatus] = useState("");
   const [enrollments, setEnrollments] = useState([]);
   const [batches, setBatches] = useState([]);
@@ -329,7 +378,7 @@ function EnrollmentsTab({ crmSecret }) {
     const d = await call("record-draw", { method: "POST", crmSecret, body: {
       schemeId: batch.scheme_id, batchId: batch.id, drawMonth,
       winnerEnrollmentId: winner?.id || null, goldCoinWinnerEnrollmentId: goldCoinWinner?.id || null,
-      nonWinnerBenefitAmount, recordedBy: "staff",
+      nonWinnerBenefitAmount, recordedBy: actor, actor,
     } });
     if (d.ok) { alert("Draw recorded."); load(); } else alert(d.error);
   };
@@ -337,12 +386,12 @@ function EnrollmentsTab({ crmSecret }) {
   const confirm_ = async (id) => {
     const startDate = prompt("Start date for first installment (YYYY-MM-DD)?", new Date().toISOString().slice(0, 10));
     if (!startDate) return;
-    const d = await call("confirm-enrollment", { method: "POST", crmSecret, body: { id, startDate, confirmedBy: "staff" } });
+    const d = await call("confirm-enrollment", { method: "POST", crmSecret, body: { id, startDate, confirmedBy: actor, actor } });
     if (d.ok) load(); else alert(d.error);
   };
   const cancel_ = async (id) => {
     if (!confirm("Cancel this enrollment?")) return;
-    const d = await call("cancel-enrollment", { method: "POST", crmSecret, body: { id } });
+    const d = await call("cancel-enrollment", { method: "POST", crmSecret, body: { id, actor } });
     if (d.ok) load(); else alert(d.error);
   };
   const markPaid = async (installmentId) => {
@@ -350,31 +399,44 @@ function EnrollmentsTab({ crmSecret }) {
     if (paidAmount == null) return;
     let rateLocked;
     if (confirm("Is this a rate-lock scheme? Enter locked rate?")) rateLocked = prompt("Locked gold rate (₹/g)?");
-    const d = await call("mark-installment-paid", { method: "POST", crmSecret, body: { installmentId, paidAmount, rateLocked, recordedBy: "staff" } });
+    const d = await call("mark-installment-paid", { method: "POST", crmSecret, body: { installmentId, paidAmount, rateLocked, recordedBy: actor, actor } });
+    if (d.ok) load(); else alert(d.error);
+  };
+  const editInstallment = async (i) => {
+    const amount = prompt("Amount (₹)?", i.amount) ?? i.amount;
+    const dueDate = prompt("Due date (YYYY-MM-DD)?", i.due_date) ?? i.due_date;
+    const status = prompt("Status (due / paid / free / waived)?", i.status) ?? i.status;
+    const d = await call("update-installment", { method: "POST", crmSecret, body: { id: i.id, amount, dueDate, status, actor } });
+    if (d.ok) load(); else alert(d.error);
+  };
+  const editEnrollment = async (e) => {
+    const startDate = prompt("Correct start date (YYYY-MM-DD)? Shifts all still-'due' installments' due dates to match — paid/free/waived ones are left as-is.", e.start_date || new Date().toISOString().slice(0, 10));
+    if (!startDate) return;
+    const d = await call("update-enrollment", { method: "POST", crmSecret, body: { id: e.id, startDate, actor } });
     if (d.ok) load(); else alert(d.error);
   };
   const updateClaim = async (id, claimStatus) => {
-    const d = await call("update-claim-status", { method: "POST", crmSecret, body: { id, claimStatus } });
+    const d = await call("update-claim-status", { method: "POST", crmSecret, body: { id, claimStatus, actor } });
     if (d.ok) load(); else alert(d.error);
   };
   const addInstallment = async (enrollmentId) => {
     const amount = prompt("Amount received (₹)?");
     if (!amount) return;
     const gramsPurchased = prompt("Grams purchased (leave blank if not gram-based / no rate lock)?") || null;
-    const d = await call("add-installment", { method: "POST", crmSecret, body: { enrollmentId, amount, gramsPurchased, recordedBy: "staff" } });
+    const d = await call("add-installment", { method: "POST", crmSecret, body: { enrollmentId, amount, gramsPurchased, recordedBy: actor, actor } });
     if (d.ok) load(); else alert(d.error);
   };
   const redeem = async (e) => {
     const paidCount = (e.installments || []).filter((i) => i.status === "paid").length;
     const totalCount = (e.installments || []).length;
     const isEarly = e.status === "active";
-    if (isEarly && !confirm(`Only ${paidCount}/${totalCount} installments paid — redeem now anyway? Remaining due installments will be waived (member exits early).`)) return;
+    if (isEarly && !confirm(`Only ${paidCount}/${totalCount} installments paid — redeem now anyway?\n\nThis is an EARLY EXIT: completion-only perks (e.g. a making-charge discount) do NOT apply — only what they've actually paid in counts. Remaining due installments will be waived.`)) return;
     const redemptionType = prompt("Redemption type: jewellery / raw_gold / benefit / other", "jewellery");
     if (!redemptionType) return;
     const itemDescription = prompt("Item / benefit description?") || "";
     const value = prompt("Value (₹, optional)?") || null;
     const notes = prompt("Notes (optional)?") || "";
-    const d = await call("redeem-enrollment", { method: "POST", crmSecret, body: { id: e.id, redemptionType, itemDescription, value, notes, redeemedBy: "staff" } });
+    const d = await call("redeem-enrollment", { method: "POST", crmSecret, body: { id: e.id, redemptionType, itemDescription, value, notes, redeemedBy: actor, actor } });
     if (d.ok) load(); else alert(d.error);
   };
 
@@ -403,7 +465,7 @@ function EnrollmentsTab({ crmSecret }) {
                 <div style={{ marginTop: 6, display: "flex", gap: 6 }}>
                   {b.status !== "completed" && <button onClick={() => recordDraw(b)}>Record This Month's Draw</button>}
                   {(b.status === "open" || b.status === "full") && (
-                    <button onClick={async () => { if (!confirm(`Close "${b.batch_label}" to further enrollments?`)) return; const d = await call("close-batch", { method: "POST", crmSecret, body: { id: b.id } }); if (d.ok) load(); else alert(d.error); }}>
+                    <button onClick={async () => { if (!confirm(`Close "${b.batch_label}" to further enrollments?`)) return; const d = await call("close-batch", { method: "POST", crmSecret, body: { id: b.id, actor } }); if (d.ok) load(); else alert(d.error); }}>
                       Close (no more enrollments)
                     </button>
                   )}
@@ -418,6 +480,8 @@ function EnrollmentsTab({ crmSecret }) {
           {enrollments.map((e) => (
             <div key={e.id} style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12 }}>
               <b>{e.lead?.name || "—"}</b> ({e.lead?.phone}) — {e.is_legacy ? e.legacy_scheme_name : e.scheme?.name}{e.member_number ? ` #${e.member_number}` : ""} — <i>{e.status}</i>
+              {e.start_date && <span style={{ marginLeft: 8, fontSize: 11.5, color: "#666" }}>started {e.start_date}</span>}
+              {!e.is_legacy && <button onClick={() => editEnrollment(e)} style={{ marginLeft: 8 }}>Edit Start Date</button>}
               {e.status === "pending_confirmation" && <button onClick={() => confirm_(e.id)} style={{ marginLeft: 8 }}>Confirm & Start</button>}
               {(e.status === "pending_confirmation" || e.status === "active") && <button onClick={() => cancel_(e.id)} style={{ marginLeft: 8 }}>Cancel</button>}
               {e.status === "active" && <button onClick={() => addInstallment(e.id)} style={{ marginLeft: 8 }}>+ Add Purchase/Installment</button>}
@@ -435,9 +499,9 @@ function EnrollmentsTab({ crmSecret }) {
               {e.installments?.length > 0 && (
                 <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
                   {e.installments.sort((a, b) => a.month_number - b.month_number).map((i) => (
-                    <span key={i.month_number} title={i.due_date}
-                      onClick={() => i.status === "due" && markPaid(i.id)}
-                      style={{ padding: "2px 8px", borderRadius: 4, fontSize: 12, cursor: i.status === "due" ? "pointer" : "default",
+                    <span key={i.month_number} title={`Due ${i.due_date} — click to mark paid, shift+click to edit`}
+                      onClick={(ev) => { if (ev.shiftKey) editInstallment(i); else if (i.status === "due") markPaid(i.id); else editInstallment(i); }}
+                      style={{ padding: "2px 8px", borderRadius: 4, fontSize: 12, cursor: "pointer",
                         background: i.status === "paid" ? "#d1fae5" : i.status === "due" ? "#fef3c7" : "#e5e7eb" }}>
                       #{i.month_number} {i.status}
                     </span>
@@ -453,7 +517,7 @@ function EnrollmentsTab({ crmSecret }) {
   );
 }
 
-function LegacyTab({ crmSecret }) {
+function LegacyTab({ crmSecret, actor }) {
   const [f, setF] = useState({ name: "", phone: "", legacySchemeName: "", notes: "" });
   const [paidMonths, setPaidMonths] = useState([emptyPaidMonth()]);
   const [names, setNames] = useState([]);
@@ -471,7 +535,7 @@ function LegacyTab({ crmSecret }) {
   const addNewName = async () => {
     const name = prompt("New old-kitty name (e.g. \"2023 Diwali Kitty\")?");
     if (!name) return;
-    const d = await call("add-legacy-name", { method: "POST", crmSecret, body: { name } });
+    const d = await call("add-legacy-name", { method: "POST", crmSecret, body: { name, actor } });
     if (d.ok) { await loadNames(); set("legacySchemeName", d.legacyName.name); } else alert(d.error);
   };
 
@@ -481,7 +545,7 @@ function LegacyTab({ crmSecret }) {
     const cleanPaidMonths = paidMonths.filter((m) => m.monthNumber !== "").map((m) => ({
       monthNumber: Number(m.monthNumber), paidAt: m.paidAt || null, amount: m.amount === "" ? null : Number(m.amount),
     }));
-    const d = await call("add-legacy-member", { method: "POST", crmSecret, body: { ...f, paidMonths: cleanPaidMonths } });
+    const d = await call("add-legacy-member", { method: "POST", crmSecret, body: { ...f, paidMonths: cleanPaidMonths, recordedBy: actor, actor } });
     setSaving(false);
     if (d.ok) { setMsg("Added — claim reminders will start automatically."); setF({ name: "", phone: "", legacySchemeName: "", notes: "" }); setPaidMonths([emptyPaidMonth()]); }
     else setMsg(d.error || "Failed");

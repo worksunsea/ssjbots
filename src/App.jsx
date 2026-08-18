@@ -11612,7 +11612,7 @@ export default function App() {
       {activeScreen === "solitairedesigns" && <SolitaireAdminGenerator />}
       {activeScreen === "clientplatform" && <ClientPlatformAdminScreen sb={sb} tenantId={getTenantId()} crmSecret={CRM_SECRET} />}
       {activeScreen === "blog" && <BlogAdminScreen crmSecret={CRM_SECRET} />}
-      {activeScreen === "kitty" && <KittyAdminScreen sb={sb} tenantId={getTenantId()} crmSecret={CRM_SECRET} />}
+      {activeScreen === "kitty" && <KittyAdminScreen sb={sb} tenantId={getTenantId()} crmSecret={CRM_SECRET} staffName={user?.name || user?.username || "staff"} />}
     </div>
     </ContactFieldsContext.Provider>
   );
