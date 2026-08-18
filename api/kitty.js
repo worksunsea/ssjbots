@@ -17,9 +17,14 @@
 //      Upserts a bullion_leads row + a completed, unclaimed legacy enrollment
 //      — kitty-cron.js starts reminding them to claim immediately.
 // POST /api/kitty?action=update-claim-status   — staff. Body: { id, claimStatus }
+// POST /api/kitty?action=enroll-new-member     — staff. Body: { name, phone, schemeId,
+//      startDate, confirmedBy, paidMonths? }. Direct in-store enrolment (no
+//      prior public interest submission needed); paidMonths backfills
+//      already-elapsed months if the member actually started earlier.
 
 import { supa } from "./_lib/supabase.js";
 import { TENANT_ID, checkCrmSecret, normalizePhone } from "./_lib/config.js";
+import { enrollLeadInDrip } from "./_lib/drip.js";
 
 function parseBody(req) {
   let body = req.body;
@@ -47,6 +52,36 @@ function addMonths(dateStr, n) {
   d.setUTCMonth(d.getUTCMonth() + n);
   if (d.getUTCDate() !== day) d.setUTCDate(0); // rolled into next month — clamp back to last day of target month
   return d.toISOString().slice(0, 10);
+}
+
+// Builds the full monthly installment schedule for an enrollment.
+// paidMonths (optional) backfills already-elapsed months — e.g. staff is
+// enrolling someone today who actually started 2 months ago and already
+// paid those months in cash: [{ monthNumber, paidAt, amount }].
+function buildInstallmentSchedule({ enrollmentId, scheduleStart, durationMonths, monthlyAmount, perks, paidMonths }) {
+  const paidByMonth = new Map((Array.isArray(paidMonths) ? paidMonths : []).map((m) => [Number(m.monthNumber), m]));
+  const rows = [];
+  for (let m = 1; m <= durationMonths; m++) {
+    const isFree = perks.free_installment_month && m === perks.free_installment_month;
+    const backfill = paidByMonth.get(m);
+    if (backfill) {
+      const amount = backfill.amount != null ? Number(backfill.amount) : monthlyAmount;
+      rows.push({
+        tenant_id: TENANT_ID, enrollment_id: enrollmentId, month_number: m,
+        due_date: backfill.paidAt || addMonths(scheduleStart, m - 1),
+        amount, status: "paid", paid_amount: amount,
+        paid_at: backfill.paidAt ? `${backfill.paidAt}T00:00:00Z` : new Date().toISOString(),
+        recorded_by: "staff (backfill)",
+      });
+    } else {
+      rows.push({
+        tenant_id: TENANT_ID, enrollment_id: enrollmentId, month_number: m,
+        due_date: addMonths(scheduleStart, m - 1),
+        amount: monthlyAmount, status: isFree ? "free" : "due",
+      });
+    }
+  }
+  return rows;
 }
 
 // Lucky-draw schemes (Golden Bliss/Bloom) cap membership at 100 per
@@ -217,19 +252,79 @@ export default async function handler(req, res) {
     if (perks.unit === "grams" || enrollment.scheme.monthly_amount == null) {
       return res.status(200).json({ ok: true, installmentsCreated: 0, note: "gram_based_no_fixed_schedule" });
     }
-    const rows = [];
-    for (let m = 1; m <= enrollment.scheme.duration_months; m++) {
-      const isFree = perks.free_installment_month && m === perks.free_installment_month;
-      rows.push({
-        tenant_id: TENANT_ID, enrollment_id: body.id, month_number: m,
-        due_date: addMonths(scheduleStart, m - 1),
-        amount: enrollment.scheme.monthly_amount,
-        status: isFree ? "free" : "due",
-      });
-    }
+    const rows = buildInstallmentSchedule({
+      enrollmentId: body.id, scheduleStart, durationMonths: enrollment.scheme.duration_months,
+      monthlyAmount: enrollment.scheme.monthly_amount, perks, paidMonths: body.paidMonths,
+    });
     const { error: insErr } = await sb.from("kitty_installments").insert(rows);
     if (insErr) return res.status(500).json({ ok: false, error: insErr.message });
     return res.status(200).json({ ok: true, installmentsCreated: rows.length, batchId });
+  }
+
+  // POST ?action=enroll-new-member — staff. Direct in-store enrolment, no
+  // prior public "interest" submission needed. Body: { name, phone,
+  // schemeId, startDate, confirmedBy, paidMonths? }. paidMonths backfills
+  // already-elapsed months (e.g. member actually started 2 months ago) —
+  // same shape as add-legacy-member: [{ monthNumber, paidAt, amount }].
+  if (req.method === "POST" && action === "enroll-new-member") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    const phone = normalizePhone(body.phone);
+    const name = String(body.name || "").trim();
+    if (!phone || !name || !body.schemeId || !body.startDate) {
+      return res.status(400).json({ ok: false, error: "name_phone_schemeId_startDate_required" });
+    }
+
+    const { data: scheme } = await sb.from("kitty_schemes").select("*").eq("tenant_id", TENANT_ID).eq("id", body.schemeId).maybeSingle();
+    if (!scheme) return res.status(400).json({ ok: false, error: "scheme_not_found" });
+    const perks = scheme.perks || {};
+
+    const { data: existingLead } = await sb.from("bullion_leads").select("id").eq("phone", phone).eq("tenant_id", TENANT_ID).maybeSingle();
+    let leadId = existingLead?.id;
+    if (!leadId) {
+      const { data: inserted, error: leadErr } = await sb.from("bullion_leads").insert({
+        tenant_id: TENANT_ID, phone, name, source: "kitty_staff_enrollment", status: "converted", stage: "greeting",
+      }).select("id").single();
+      if (leadErr) return res.status(500).json({ ok: false, error: leadErr.message });
+      leadId = inserted.id;
+    }
+
+    let batchId = null;
+    let scheduleStart = body.startDate;
+    if (perks.lucky_draw) {
+      let batch;
+      try { batch = await getOrCreateOpenBatch(sb, scheme, body.startDate); }
+      catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
+      batchId = batch.id;
+      scheduleStart = batch.start_date;
+    }
+
+    const { data: enrollment, error: enrollErr } = await sb.from("kitty_enrollments").insert({
+      tenant_id: TENANT_ID, lead_id: leadId, scheme_id: scheme.id, batch_id: batchId,
+      status: "active", start_date: scheduleStart, confirmed_by: body.confirmedBy || "staff", confirmed_at: new Date().toISOString(),
+    }).select().single();
+    if (enrollErr) return res.status(500).json({ ok: false, error: enrollErr.message });
+
+    // Attach to the scheme's WA funnel, same as an online enrolment would.
+    if (scheme.funnel_id) {
+      const { data: funnel } = await sb.from("funnels").select("*").eq("tenant_id", TENANT_ID).eq("id", scheme.funnel_id).eq("active", true).maybeSingle();
+      if (funnel) {
+        const { data: lead } = await sb.from("bullion_leads").select("*").eq("id", leadId).maybeSingle();
+        if (lead) await enrollLeadInDrip({ lead, funnel }).catch(() => {});
+      }
+    }
+
+    if (perks.unit === "grams" || scheme.monthly_amount == null) {
+      return res.status(200).json({ ok: true, enrollment, installmentsCreated: 0, note: "gram_based_no_fixed_schedule" });
+    }
+    const rows = buildInstallmentSchedule({
+      enrollmentId: enrollment.id, scheduleStart, durationMonths: scheme.duration_months,
+      monthlyAmount: scheme.monthly_amount, perks, paidMonths: body.paidMonths,
+    });
+    const { error: insErr } = await sb.from("kitty_installments").insert(rows);
+    if (insErr) return res.status(500).json({ ok: false, error: insErr.message, enrollment });
+    return res.status(200).json({ ok: true, enrollment, installmentsCreated: rows.length, batchId });
   }
 
   // GET ?action=admin-list-batches — staff. Query: schemeId?
@@ -243,6 +338,47 @@ export default async function handler(req, res) {
     const { data, error } = await q;
     if (error) return res.status(500).json({ ok: false, error: error.message });
     return res.status(200).json({ ok: true, batches: (data || []).map((b) => ({ ...b, member_count: b.member_count?.[0]?.count || 0 })) });
+  }
+
+  // POST ?action=close-batch — staff. Manually stops a batch/round from
+  // taking further enrollments (distinct from the automatic 'full' at
+  // capacity or 'completed' at term end) — e.g. staff decides to close a
+  // round early. getOrCreateOpenBatch only ever considers status='open', so
+  // a closed batch is naturally skipped and a new one opens on next enrol.
+  if (req.method === "POST" && action === "close-batch") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    if (!body.id) return res.status(400).json({ ok: false, error: "id_required" });
+    const { error } = await sb.from("kitty_batches").update({ status: "closed" }).eq("tenant_id", TENANT_ID).eq("id", body.id);
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.status(200).json({ ok: true });
+  }
+
+  // GET ?action=admin-list-legacy-names — staff. Dropdown source for the
+  // Legacy Member form.
+  if (req.method === "GET" && action === "admin-list-legacy-names") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const { data, error } = await sb.from("kitty_legacy_scheme_names").select("*").eq("tenant_id", TENANT_ID).order("name");
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.status(200).json({ ok: true, names: data || [] });
+  }
+
+  // POST ?action=add-legacy-name — staff. Adds a new old-kitty name to the
+  // dropdown (idempotent — reuses the existing row if the name already
+  // exists instead of erroring on the unique constraint).
+  if (req.method === "POST" && action === "add-legacy-name") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    const name = String(body.name || "").trim();
+    if (!name) return res.status(400).json({ ok: false, error: "name_required" });
+    const { data: existing } = await sb.from("kitty_legacy_scheme_names").select("*").eq("tenant_id", TENANT_ID).eq("name", name).maybeSingle();
+    if (existing) return res.status(200).json({ ok: true, legacyName: existing });
+    const { data, error } = await sb.from("kitty_legacy_scheme_names").insert({ tenant_id: TENANT_ID, name }).select().single();
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.status(200).json({ ok: true, legacyName: data });
   }
 
   // POST ?action=add-installment — staff. For ad-hoc purchase logging on

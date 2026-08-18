@@ -32,8 +32,8 @@ export default function KittyAdminScreen({ sb, tenantId, crmSecret }) {
   const [tab, setTab] = useState("schemes");
   return (
     <div style={{ padding: 20 }}>
-      <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
-        {[["schemes", "Schemes"], ["enrollments", "Enrollments"], ["legacy", "Add Legacy Member"]].map(([k, l]) => (
+      <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
+        {[["schemes", "Schemes"], ["enroll", "Enroll New Member"], ["enrollments", "Enrollments"], ["legacy", "Add Legacy Member"]].map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)}
             style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid #d4af37",
               background: tab === k ? "#d4af37" : "transparent", color: tab === k ? "#fff" : "#d4af37", cursor: "pointer" }}>
@@ -42,8 +42,78 @@ export default function KittyAdminScreen({ sb, tenantId, crmSecret }) {
         ))}
       </div>
       {tab === "schemes" && <SchemesTab sb={sb} tenantId={tenantId} crmSecret={crmSecret} />}
+      {tab === "enroll" && <EnrollNewMemberTab crmSecret={crmSecret} />}
       {tab === "enrollments" && <EnrollmentsTab crmSecret={crmSecret} />}
       {tab === "legacy" && <LegacyTab crmSecret={crmSecret} />}
+    </div>
+  );
+}
+
+function emptyPaidMonth() { return { monthNumber: "", paidAt: "", amount: "" }; }
+
+// Shared "which months were already paid" widget — used both when
+// enrolling a new member (backfilling months if they actually started
+// earlier) and when hand-entering an old/legacy member's payment history.
+function PaidMonthsEditor({ paidMonths, setPaidMonths }) {
+  const setPaidMonth = (i, k, v) => setPaidMonths((p) => p.map((row, idx) => (idx === i ? { ...row, [k]: v } : row)));
+  return (
+    <div>
+      <h4 style={{ marginTop: 16 }}>Backfill already-paid months</h4>
+      <p style={{ fontSize: 12, color: "#666" }}>Optional — fill in if they actually started earlier and already paid some months in cash/UPI.</p>
+      {paidMonths.map((m, i) => (
+        <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+          <input type="number" placeholder="Month #" value={m.monthNumber} onChange={(e) => setPaidMonth(i, "monthNumber", e.target.value)} style={{ width: 80 }} />
+          <input type="date" placeholder="Paid on" value={m.paidAt} onChange={(e) => setPaidMonth(i, "paidAt", e.target.value)} />
+          <input type="number" placeholder="Amount ₹" value={m.amount} onChange={(e) => setPaidMonth(i, "amount", e.target.value)} style={{ width: 100 }} />
+          <button onClick={() => setPaidMonths((p) => p.filter((_, idx) => idx !== i))}>✕</button>
+        </div>
+      ))}
+      <button onClick={() => setPaidMonths((p) => [...p, emptyPaidMonth()])} style={{ marginBottom: 16 }}>+ Add month</button>
+    </div>
+  );
+}
+
+function EnrollNewMemberTab({ crmSecret }) {
+  const [schemes, setSchemes] = useState([]);
+  const [f, setF] = useState({ name: "", phone: "", schemeId: "", startDate: new Date().toISOString().slice(0, 10) });
+  const [paidMonths, setPaidMonths] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState("");
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+
+  useEffect(() => {
+    call("admin-list-schemes", { crmSecret }).then((d) => setSchemes(d.ok ? d.schemes.filter((s) => s.active) : []));
+  }, [crmSecret]);
+
+  const submit = async () => {
+    if (!f.name || !f.phone || !f.schemeId || !f.startDate) return setMsg("Name, phone, scheme, and start date are all required.");
+    setSaving(true);
+    const cleanPaidMonths = paidMonths.filter((m) => m.monthNumber !== "").map((m) => ({
+      monthNumber: Number(m.monthNumber), paidAt: m.paidAt || null, amount: m.amount === "" ? null : Number(m.amount),
+    }));
+    const d = await call("enroll-new-member", { method: "POST", crmSecret, body: { ...f, confirmedBy: "staff", paidMonths: cleanPaidMonths } });
+    setSaving(false);
+    if (d.ok) { setMsg("Enrolled — active from " + f.startDate + "."); setF({ name: "", phone: "", schemeId: "", startDate: new Date().toISOString().slice(0, 10) }); setPaidMonths([]); }
+    else setMsg(d.error || "Failed");
+  };
+
+  return (
+    <div style={{ maxWidth: 480 }}>
+      <p>Enroll someone directly (walk-in, phone call, etc.) — no need for them to have submitted the online interest form first.</p>
+      <label>Name<input value={f.name} onChange={(e) => set("name", e.target.value)} style={{ display: "block", width: "100%" }} /></label>
+      <label>Phone<input value={f.phone} onChange={(e) => set("phone", e.target.value)} style={{ display: "block", width: "100%" }} /></label>
+      <label>Scheme
+        <select value={f.schemeId} onChange={(e) => set("schemeId", e.target.value)} style={{ display: "block", width: "100%" }}>
+          <option value="">— choose —</option>
+          {schemes.map((s) => <option key={s.id} value={s.id}>{s.name}{s.monthly_amount ? ` — ₹${s.monthly_amount}/mo` : ""}</option>)}
+        </select>
+      </label>
+      <label>Start date (first/already-paid installment's month)<input type="date" value={f.startDate} onChange={(e) => set("startDate", e.target.value)} style={{ display: "block", width: "100%" }} /></label>
+
+      <PaidMonthsEditor paidMonths={paidMonths} setPaidMonths={setPaidMonths} />
+
+      {msg && <div style={{ margin: "8px 0" }}>{msg}</div>}
+      <button onClick={submit} disabled={saving}>{saving ? "Enrolling…" : "Enroll Member"}</button>
     </div>
   );
 }
@@ -309,7 +379,14 @@ function EnrollmentsTab({ crmSecret }) {
               <div key={b.id} style={{ border: "1px solid #ddd", borderRadius: 6, padding: 10, fontSize: 12.5 }}>
                 <b>{b.batch_label}</b><br />
                 {b.member_count}/{b.max_members} members — {b.status} — started {b.start_date}
-                {b.status !== "completed" && <div><button onClick={() => recordDraw(b)} style={{ marginTop: 6 }}>Record This Month's Draw</button></div>}
+                <div style={{ marginTop: 6, display: "flex", gap: 6 }}>
+                  {b.status !== "completed" && <button onClick={() => recordDraw(b)}>Record This Month's Draw</button>}
+                  {(b.status === "open" || b.status === "full") && (
+                    <button onClick={async () => { if (!confirm(`Close "${b.batch_label}" to further enrollments?`)) return; const d = await call("close-batch", { method: "POST", crmSecret, body: { id: b.id } }); if (d.ok) load(); else alert(d.error); }}>
+                      Close (no more enrollments)
+                    </button>
+                  )}
+                </div>
               </div>
             ))}
           </div>
@@ -355,15 +432,27 @@ function EnrollmentsTab({ crmSecret }) {
   );
 }
 
-function emptyPaidMonth() { return { monthNumber: "", paidAt: "", amount: "" }; }
-
 function LegacyTab({ crmSecret }) {
   const [f, setF] = useState({ name: "", phone: "", legacySchemeName: "", notes: "" });
   const [paidMonths, setPaidMonths] = useState([emptyPaidMonth()]);
+  const [names, setNames] = useState([]);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
-  const setPaidMonth = (i, k, v) => setPaidMonths((p) => p.map((row, idx) => (idx === i ? { ...row, [k]: v } : row)));
+
+  const loadNames = useCallback(async () => {
+    const d = await call("admin-list-legacy-names", { crmSecret });
+    setNames(d.ok ? d.names : []);
+  }, [crmSecret]);
+
+  useEffect(() => { loadNames(); }, [loadNames]);
+
+  const addNewName = async () => {
+    const name = prompt("New old-kitty name (e.g. \"2023 Diwali Kitty\")?");
+    if (!name) return;
+    const d = await call("add-legacy-name", { method: "POST", crmSecret, body: { name } });
+    if (d.ok) { await loadNames(); set("legacySchemeName", d.legacyName.name); } else alert(d.error);
+  };
 
   const submit = async () => {
     if (!f.name || !f.phone || !f.legacySchemeName) return setMsg("Name, phone, and old scheme name are required.");
@@ -382,20 +471,18 @@ function LegacyTab({ crmSecret }) {
       <p>Enter old, already-paid-up members who haven't yet claimed their jewellery/benefit. They'll start receiving periodic WhatsApp claim reminders immediately.</p>
       <label>Name<input value={f.name} onChange={(e) => set("name", e.target.value)} style={{ display: "block", width: "100%" }} /></label>
       <label>Phone<input value={f.phone} onChange={(e) => set("phone", e.target.value)} style={{ display: "block", width: "100%" }} /></label>
-      <label>Old scheme name / description<input value={f.legacySchemeName} onChange={(e) => set("legacySchemeName", e.target.value)} style={{ display: "block", width: "100%" }} /></label>
+      <label>Old kitty name
+        <div style={{ display: "flex", gap: 6 }}>
+          <select value={f.legacySchemeName} onChange={(e) => set("legacySchemeName", e.target.value)} style={{ flex: 1 }}>
+            <option value="">— choose —</option>
+            {names.map((n) => <option key={n.id} value={n.name}>{n.name}</option>)}
+          </select>
+          <button type="button" onClick={addNewName}>+ New</button>
+        </div>
+      </label>
       <label>Notes<textarea value={f.notes} onChange={(e) => set("notes", e.target.value)} style={{ display: "block", width: "100%" }} /></label>
 
-      <h4 style={{ marginTop: 16 }}>Which months were paid?</h4>
-      <p style={{ fontSize: 12, color: "#666" }}>Optional but recommended — gives a real record of how many installments they paid and which months, instead of just "completed".</p>
-      {paidMonths.map((m, i) => (
-        <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6 }}>
-          <input type="number" placeholder="Month #" value={m.monthNumber} onChange={(e) => setPaidMonth(i, "monthNumber", e.target.value)} style={{ width: 80 }} />
-          <input type="date" placeholder="Paid on" value={m.paidAt} onChange={(e) => setPaidMonth(i, "paidAt", e.target.value)} />
-          <input type="number" placeholder="Amount ₹" value={m.amount} onChange={(e) => setPaidMonth(i, "amount", e.target.value)} style={{ width: 100 }} />
-          <button onClick={() => setPaidMonths((p) => p.filter((_, idx) => idx !== i))}>✕</button>
-        </div>
-      ))}
-      <button onClick={() => setPaidMonths((p) => [...p, emptyPaidMonth()])} style={{ marginBottom: 16 }}>+ Add month</button>
+      <PaidMonthsEditor paidMonths={paidMonths} setPaidMonths={setPaidMonths} />
 
       {msg && <div style={{ margin: "8px 0" }}>{msg}</div>}
       <button onClick={submit} disabled={saving}>{saving ? "Adding…" : "Add Legacy Member"}</button>
