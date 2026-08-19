@@ -449,6 +449,9 @@ function exportMonthlyExcel(enrollments, month) {
 
 function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
   const [status, setStatus] = useState("");
+  const [schemeFilter, setSchemeFilter] = useState("");
+  const [batchFilter, setBatchFilter] = useState("");
+  const [search, setSearch] = useState("");
   const [enrollments, setEnrollments] = useState([]);
   const [batches, setBatches] = useState([]);
   const [schemes, setSchemes] = useState([]);
@@ -469,6 +472,22 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
   }, [crmSecret, status]);
 
   useEffect(() => { load(); }, [load]);
+
+  const visibleBatches = schemeFilter ? batches.filter((b) => b.scheme_id === schemeFilter) : batches;
+  const searchNorm = search.trim().toLowerCase();
+  const searchDigits = search.replace(/\D/g, "");
+  const filteredEnrollments = enrollments.filter((e) => {
+    if (schemeFilter && e.scheme_id !== schemeFilter) return false;
+    if (batchFilter && e.batch_id !== batchFilter) return false;
+    if (searchNorm) {
+      const name = (e.lead?.name || "").toLowerCase();
+      const phone = e.lead?.phone || "";
+      const nameMatch = name.includes(searchNorm);
+      const phoneMatch = searchDigits && phone.includes(searchDigits);
+      if (!nameMatch && !phoneMatch) return false;
+    }
+    return true;
+  });
 
   const recordDraw = async (batch) => {
     const drawMonth = prompt("Draw month (YYYY-MM-01)?", `${month}-01`);
@@ -593,15 +612,26 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
           <option value="completed">Completed</option>
           <option value="cancelled">Cancelled</option>
         </select>
+        <select value={schemeFilter} onChange={(e) => { setSchemeFilter(e.target.value); setBatchFilter(""); }}>
+          <option value="">All kitties</option>
+          {schemes.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+        {visibleBatches.length > 0 && (
+          <select value={batchFilter} onChange={(e) => setBatchFilter(e.target.value)}>
+            <option value="">All batches</option>
+            {visibleBatches.map((b) => <option key={b.id} value={b.id}>{b.batch_label}</option>)}
+          </select>
+        )}
+        <input placeholder="Search name or mobile…" value={search} onChange={(e) => setSearch(e.target.value)} style={{ width: 180 }} />
         <label>Export month: <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} /></label>
-        <button onClick={() => exportMonthlyExcel(enrollments, month)}>⬇ Download {month} Excel</button>
+        <button onClick={() => exportMonthlyExcel(filteredEnrollments, month)}>⬇ Download {month} Excel</button>
       </div>
 
-      {batches.length > 0 && (
+      {visibleBatches.length > 0 && (
         <div style={{ marginBottom: 20 }}>
           <h4>Lucky-Draw Batches (max 100/round — new round auto-opens when one fills or completes)</h4>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
-            {batches.map((b) => (
+            {visibleBatches.map((b) => (
               <div key={b.id} style={{ border: "1px solid #ddd", borderRadius: 6, padding: 10, fontSize: 12.5 }}>
                 <b>{b.batch_label}</b><br />
                 {b.member_count}/{b.max_members} members — {b.status} — started {b.start_date}
@@ -620,7 +650,7 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
       )}
       {loading ? <div>Loading…</div> : (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          {enrollments.map((e) => (
+          {filteredEnrollments.map((e) => (
             <div key={e.id} style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12 }}>
               <b>{e.lead?.name || "—"}</b> ({e.lead?.phone}) — {e.is_legacy ? e.legacy_scheme_name : e.scheme?.name}{e.member_number ? ` #${e.member_number}` : ""} — <i>{e.status}</i>
               {e.start_date && <span style={{ marginLeft: 8, fontSize: 11.5, color: "#666" }}>started {e.start_date}</span>}
@@ -655,7 +685,7 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
               )}
             </div>
           ))}
-          {!enrollments.length && <div>No enrollments.</div>}
+          {!filteredEnrollments.length && <div>No enrollments match.</div>}
         </div>
       )}
     </div>
