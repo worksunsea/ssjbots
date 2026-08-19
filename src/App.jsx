@@ -15077,7 +15077,6 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   const [saving, setSaving] = useState(false);
   const [saveModal, setSaveModal] = useState(false);
   const [justSaved, setJustSaved] = useState(false); // gates "Send Estimate" — only active right after a save
-  const [sendingEst, setSendingEst] = useState(false); // true while PDF is building/uploading/sending
   const [editingEstId, setEditingEstId] = useState(null);
   const [editingEstOrig, setEditingEstOrig] = useState(null);
   const [walkinOpen, setWalkinOpen] = useState(false);
@@ -15227,7 +15226,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
       }
     });
     // Load recent estimates
-    sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items,lead_id,metadata,bullion_leads(name,phone)").order("created_at", { ascending: false }).limit(8).then(({ data }) => setRecentEstimates(data || []));
+    sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items,lead_id,metadata,version,parent_estimate_id,bullion_leads(name,phone)").order("created_at", { ascending: false }).limit(8).then(({ data }) => setRecentEstimates(data || []));
     // Load pending follow-ups (estimates with linked contact, last 30 days)
     const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     sb.from("bullion_estimates").select("id,mode,total_amount,created_at,lead_id,items,bullion_leads(name,phone)").not("lead_id", "is", null).gte("created_at", since).order("created_at", { ascending: false }).limit(60).then(({ data }) => setPendingFollowups(data || []));
@@ -15302,7 +15301,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   useEffect(() => {
     setSelectedEstimates(new Set());
     if (!saveContact?.id) { setClientHistory([]); return; }
-    sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items").eq("lead_id", saveContact.id).order("created_at", { ascending: false }).limit(20).then(({ data }) => setClientHistory(data || []));
+    sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items,version,parent_estimate_id").eq("lead_id", saveContact.id).order("created_at", { ascending: false }).limit(20).then(({ data }) => setClientHistory(data || []));
   }, [saveContact?.id]);
 
   // ── Search contacts for save ──
@@ -15319,8 +15318,8 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   const [calcStaff, setCalcStaff] = useState([]);
 
   const refreshEstLists = () => {
-    sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items,lead_id,metadata,bullion_leads(name,phone)").order("created_at", { ascending: false }).limit(8).then(({ data }) => setRecentEstimates(data || []));
-    if (saveContact?.id) sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items").eq("lead_id", saveContact.id).order("created_at", { ascending: false }).limit(20).then(({ data }) => setClientHistory(data || []));
+    sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items,lead_id,metadata,version,parent_estimate_id,bullion_leads(name,phone)").order("created_at", { ascending: false }).limit(8).then(({ data }) => setRecentEstimates(data || []));
+    if (saveContact?.id) sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items,version,parent_estimate_id").eq("lead_id", saveContact.id).order("created_at", { ascending: false }).limit(20).then(({ data }) => setClientHistory(data || []));
     const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     sb.from("bullion_estimates").select("id,mode,total_amount,created_at,lead_id,items,bullion_leads(name,phone)").not("lead_id", "is", null).gte("created_at", since).order("created_at", { ascending: false }).limit(60).then(({ data }) => setPendingFollowups(data || []));
   };
@@ -15384,7 +15383,9 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
       }
 
       if (editingEstId) {
-        // UPDATE existing estimate + append audit log
+        // Editing a saved estimate saves a NEW version instead of overwriting
+        // the original row — old versions stay on file untouched so the diff
+        // (what changed, by how much) is always available.
         const origIt = (editingEstOrig?.items || [])[0] || {};
         const newIt = items[0] || {};
         const auditFields = [];
@@ -15393,16 +15394,23 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
           const ov = origIt[f], nv = newIt[f];
           if (ov != null && nv != null && Math.round(Number(ov)) !== Math.round(Number(nv))) auditFields.push({ f, old: Math.round(Number(ov)), new: Math.round(Number(nv)) });
         });
-        const existingChanges = editingEstOrig?.metadata?.changes || [];
-        const newMeta = { ...(editingEstOrig?.metadata || {}), attended_by: attendedBy || null, changes: auditFields.length > 0 ? [...existingChanges, { ts: new Date().toISOString(), by: user?.name || user?.email || "unknown", fields: auditFields }] : existingChanges };
-        const { error } = await sb.from("bullion_estimates").update({ items, total_amount: total || null, lead_id: saveContact?.id || editingEstOrig?.lead_id || null, metadata: newMeta }).eq("id", editingEstId);
-        if (error) { showToast("❌ Update failed: " + error.message); }
+        const rootId = editingEstOrig?.parent_estimate_id || editingEstId;
+        const nextVersion = (editingEstOrig?.version || 1) + 1;
+        const newMeta = { ...(editingEstOrig?.metadata || {}), attended_by: attendedBy || null, changes: [{ ts: new Date().toISOString(), by: user?.name || user?.email || "unknown", from_version: editingEstOrig?.version || 1, fields: auditFields }] };
+        const payload = {
+          lead_id: saveContact?.id || editingEstOrig?.lead_id || null, created_by: user?.name || user?.email,
+          mode, items, total_amount: total || null, metadata: newMeta,
+          visit_id: editingEstOrig?.visit_id || activeVisitId || null,
+          parent_estimate_id: rootId, version: nextVersion,
+        };
+        const { data: verData, error } = await sb.from("bullion_estimates").insert(payload).select("id,version,created_at").single();
+        if (error) { showToast("❌ Save failed: " + error.message); }
         else {
-          await syncCatalogueProduct(editingEstId);
-          showToast("✓ Estimate updated");
+          await syncCatalogueProduct(verData.id);
+          showToast(`✓ Saved as v${nextVersion}`);
           setSaveModal(false);
-          setEditingEstId(null);
-          setEditingEstOrig(null);
+          setEditingEstId(verData.id);
+          setEditingEstOrig({ ...payload, id: verData.id, created_at: verData.created_at });
           setJustSaved(true);
           refreshEstLists();
         }
@@ -15434,6 +15442,13 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ phone: phone.replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, ""), message: text }),
     }).then(r => r.json()).then(d => showToast(d.ok ? "✅ Sent on WhatsApp" : "❌ " + (d.error || "WA failed"))).catch(e => showToast("❌ " + e.message));
+  };
+
+  // Opens WhatsApp Web/app directly with the message prefilled — no Baileys
+  // session, no PDF attachment. Staff sends manually from their own WA.
+  const openWaDirect = (phone, text) => {
+    if (!phone) { showToast("❌ No phone number for this client"); return; }
+    window.open(`https://wa.me/91${normalizePhone(phone)}?text=${encodeURIComponent(text)}`, "_blank");
   };
 
   const fmt = (n) => n == null ? "—" : "₹" + Math.round(n).toLocaleString("en-IN");
@@ -15891,16 +15906,9 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
             <Btn small ghost color={C.blue} onClick={handleJwPrint}>🖨️ Print</Btn>
             <Btn small ghost color={C.blue} onClick={() => downloadEstimatePdf({ title: "ESTIMATE", clientName: saveContact?.name, rows: jwPdfRows, total: fmt(jwCalc.total) })}>📄 Download PDF</Btn>
             {saveContact && (
-              <Btn small ghost={!justSaved} color={C.green} disabled={!justSaved || sendingEst} style={justSaved ? { background: C.green, color: "#fff" } : undefined} onClick={async () => {
-                setSendingEst(true);
-                try {
-                  const r = await sendEstimatePdfOnWA({ phone: saveContact.phone, clientName: saveContact.name, title: "ESTIMATE", sections: [{ rows: jwPdfRows, total: fmt(jwCalc.total) }], caption: jwCaption });
-                  showToast(r.ok ? "✅ Estimate PDF sent on WhatsApp" : "❌ " + (r.error || "Send failed"));
-                } catch (e) { showToast("❌ " + e.message); }
-                setSendingEst(false);
-              }} title={justSaved ? "Send this saved estimate as a PDF on WhatsApp" : "Save the estimate first"}>{sendingEst ? "Sending…" : "📤 Send Estimate"}</Btn>
+              <Btn small ghost={!justSaved} color={C.green} disabled={!justSaved} style={justSaved ? { background: C.green, color: "#fff" } : undefined} onClick={() => openWaDirect(saveContact.phone, jwCaption)} title={justSaved ? "Open WhatsApp with this estimate prefilled" : "Save the estimate first"}>📤 Send Estimate</Btn>
             )}
-            <Btn small ghost color={C.gray} onClick={() => { setJw({ itemImage: "", itemName: "", vendorCode: "", size: "", notes: "", qty: "1", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true, makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "", dia2Wt: "", dia2Unit: "ct", dia2Rate: "", stoneWt: "", stoneUnit: "ct", stoneRate: "", misc1Lbl: "Gemstone", misc1Wt: "", misc1Unit: "g", misc1Rate: "", misc1Deduct: true, misc2Lbl: "Mala", misc2Wt: "", misc2Unit: "g", misc2Rate: "", misc2Deduct: false, misc3Lbl: "Lakh", misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false }); setJwShowMisc(false); setSaveContact(null); setContactSearch(""); setJustSaved(false); saveActiveVisit(null, null, null); try { localStorage.removeItem("calc_active_contact"); } catch {} }}>🔄 New</Btn>
+            <Btn small ghost color={C.gray} onClick={() => { setJw({ itemImage: "", itemName: "", vendorCode: "", size: "", notes: "", qty: "1", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true, makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "", dia2Wt: "", dia2Unit: "ct", dia2Rate: "", stoneWt: "", stoneUnit: "ct", stoneRate: "", misc1Lbl: "Gemstone", misc1Wt: "", misc1Unit: "g", misc1Rate: "", misc1Deduct: true, misc2Lbl: "Mala", misc2Wt: "", misc2Unit: "g", misc2Rate: "", misc2Deduct: false, misc3Lbl: "Lakh", misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false }); setJwShowMisc(false); setEditingEstId(null); setEditingEstOrig(null); setJustSaved(false); }} title="Clear the estimate — selected client stays">🔄 New</Btn>
           </div>
         );
       })()}
@@ -16082,14 +16090,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
             <Btn small ghost color={C.blue} onClick={handleSolPrint}>🖨️ Print</Btn>
             <Btn small ghost color={C.blue} onClick={() => downloadEstimatePdf({ title: "ESTIMATE", clientName: saveContact?.name, rows: solPdfRows, total: fmt(solGrandTotal) })}>📄 Download PDF</Btn>
             {saveContact && (
-              <Btn small ghost={!justSaved} color={C.green} disabled={!justSaved || sendingEst} style={justSaved ? { background: C.green, color: "#fff" } : undefined} onClick={async () => {
-                setSendingEst(true);
-                try {
-                  const r = await sendEstimatePdfOnWA({ phone: saveContact.phone, clientName: saveContact.name, title: "ESTIMATE", sections: [{ rows: solPdfRows, total: fmt(solGrandTotal) }], caption: solCaption });
-                  showToast(r.ok ? "✅ Estimate PDF sent on WhatsApp" : "❌ " + (r.error || "Send failed"));
-                } catch (e) { showToast("❌ " + e.message); }
-                setSendingEst(false);
-              }} title={justSaved ? "Send this saved estimate as a PDF on WhatsApp" : "Save the estimate first"}>{sendingEst ? "Sending…" : "📤 Send Estimate"}</Btn>
+              <Btn small ghost={!justSaved} color={C.green} disabled={!justSaved} style={justSaved ? { background: C.green, color: "#fff" } : undefined} onClick={() => openWaDirect(saveContact.phone, solCaption)} title={justSaved ? "Open WhatsApp with this estimate prefilled" : "Save the estimate first"}>📤 Send Estimate</Btn>
             )}
           </div>
         );
@@ -16219,15 +16220,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
             <Btn small ghost color={C.blue} onClick={handleQuotPrint}>🖨️ Print</Btn>
             <Btn small ghost color={C.blue} onClick={() => downloadEstimatePdf({ title: "QUOTATION", clientName: saveContact?.name, sections: [{ columns: quotColumns, tableRows: quotTableRows, total: quotTotal }], orientation: "landscape", format: "a4" })}>📄 Download PDF</Btn>
             {saveContact ? (
-              <Btn small ghost={!justSaved} color={C.green} disabled={!justSaved || sendingEst} style={justSaved ? { background: C.green, color: "#fff" } : undefined} onClick={async () => {
-                if (!saveContact.phone) { showToast("❌ Selected client has no phone number"); return; }
-                setSendingEst(true);
-                try {
-                  const r = await sendEstimatePdfOnWA({ phone: saveContact.phone, clientName: saveContact.name, title: "QUOTATION", sections: [{ columns: quotColumns, tableRows: quotTableRows, total: quotTotal }], caption: quotCaption, orientation: "landscape", format: "a4" });
-                  showToast(r.ok ? "✅ Quotation PDF sent on WhatsApp" : "❌ " + (r.error || r.message || "Send failed"));
-                } catch (e) { showToast("❌ " + e.message); }
-                setSendingEst(false);
-              }} title={justSaved ? "Send this saved quotation as a PDF on WhatsApp" : "Save the estimate first"}>{sendingEst ? "Sending…" : "📤 Send Estimate"}</Btn>
+              <Btn small ghost={!justSaved} color={C.green} disabled={!justSaved} style={justSaved ? { background: C.green, color: "#fff" } : undefined} onClick={() => openWaDirect(saveContact.phone, quotCaption)} title={justSaved ? "Open WhatsApp with this quotation prefilled" : "Save the estimate first"}>📤 Send Estimate</Btn>
             ) : (
               <span style={{ fontSize: 12, color: "#999", alignSelf: "center" }}>Select a client above to enable Send Estimate</span>
             )}
@@ -16358,7 +16351,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
       {/* Editing banner */}
       {editingEstId && editingEstOrig && (
         <div className="no-print" style={{ background: "#fff3e0", border: "1px solid #ffb74d", borderRadius: 8, padding: "8px 14px", marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 13 }}>
-          <span>✏️ <strong>Editing estimate</strong> from {new Date(editingEstOrig.created_at).toLocaleDateString("en-IN")} · {editingEstOrig.bullion_leads?.name || "No client"} · was ₹{Math.round(editingEstOrig.total_amount || 0).toLocaleString("en-IN")}</span>
+          <span>✏️ <strong>Revising v{editingEstOrig.version || 1}</strong> from {new Date(editingEstOrig.created_at).toLocaleDateString("en-IN")} · {editingEstOrig.bullion_leads?.name || "No client"} · was ₹{Math.round(editingEstOrig.total_amount || 0).toLocaleString("en-IN")} · saving keeps v{editingEstOrig.version || 1} on file and adds v{(editingEstOrig.version || 1) + 1}</span>
           <button onClick={() => { setEditingEstId(null); setEditingEstOrig(null); showToast("Edit cancelled"); }} style={{ background: "none", border: "1px solid #ffb74d", borderRadius: 4, padding: "2px 10px", cursor: "pointer", fontSize: 12 }}>✕ Cancel edit</button>
         </div>
       )}
@@ -16484,7 +16477,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                 <div style={{ fontSize: 11, color: "#555", fontWeight: 600 }}>PREVIOUS ESTIMATES</div>
                 {selectedEstimates.size > 0 && (
-                  <button disabled={sendingEst} onClick={async () => {
+                  <button onClick={() => {
                     const sel = clientHistory.filter(e => selectedEstimates.has(e.id));
                     const labelFor = (e) => {
                       const item = e.items?.[0] || {};
@@ -16493,20 +16486,10 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
                     const dateFor = (e) => new Date(e.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
                     const lines = sel.map((e, i) => `*${i + 1}. ${labelFor(e)}* (${dateFor(e)})${e.total_amount ? `\n₹${Math.round(e.total_amount).toLocaleString("en-IN")}` : ""}`).join("\n\n");
                     const msg = `*ESTIMATE SUMMARY — Sun Sea Jewellers*\n${saveContact?.name ? `For: ${saveContact.name}\n` : ""}\n${lines}\n\n_For queries call us at Sun Sea Jewellers, Mumbai_`;
-                    const sections = sel.map((e) => ({
-                      heading: `${labelFor(e)} — ${dateFor(e)}`,
-                      rows: [["Total", e.total_amount ? fmt(e.total_amount) : "—"]],
-                      total: e.total_amount ? fmt(e.total_amount) : "—",
-                    }));
-                    setSendingEst(true);
-                    try {
-                      const r = await sendEstimatePdfOnWA({ phone: saveContact.phone, clientName: saveContact.name, title: "ESTIMATE SUMMARY", sections, caption: msg });
-                      showToast(r.ok ? "✅ Sent" : "❌ " + (r.error || "Send failed"));
-                    } catch (e) { showToast("❌ " + e.message); }
-                    setSendingEst(false);
+                    openWaDirect(saveContact.phone, msg);
                     setSelectedEstimates(new Set());
-                  }} style={{ background: "#25d366", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 12, fontWeight: 600, cursor: sendingEst ? "not-allowed" : "pointer", opacity: sendingEst ? 0.6 : 1 }}>
-                    {sendingEst ? "Sending…" : `📤 Send ${selectedEstimates.size} selected`}
+                  }} style={{ background: "#25d366", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                    {`📤 Send ${selectedEstimates.size} selected`}
                   </button>
                 )}
               </div>
@@ -16576,7 +16559,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
                       {clientName && <div style={{ color: "#555", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>👤 {clientName}</div>}
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 2 }}>
                         <span style={{ color: "#888", fontSize: 11 }}>{new Date(e.created_at).toLocaleDateString("en-IN")} · {e.mode}</span>
-                        {e.metadata?.changes?.length ? <span style={{ fontSize: 9, color: C.orange }}>edited {e.metadata.changes.length}×</span> : null}
+                        {e.version > 1 ? <span style={{ fontSize: 9, color: C.orange, fontWeight: 700 }}>v{e.version}</span> : null}
                       </div>
                     </div>
                   </div>
