@@ -15339,7 +15339,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     ...(sol.applyGst && solResult.sellTotal ? [["GST @ 1.5% (stone)", fmt(solStoneGst)]] : []),
     ...(sol.applyGst && sol.includeGold && solGoldCalc ? [["GST @ 3% (gold setting)", fmt(solGoldGst)]] : []),
   ];
-  const solCaption = `*ESTIMATE — Sun Sea Jewellers*\n\n*Stone:* ${sol.shape} ${sol.weight}ct ${sol.color}/${sol.clarity} ${sol.cut}\n*Certificate:* ${sol.cert}\n\n*Sell Price:* ${fmt(solResult.sellTotal)}\n${sol.includeGold && solGoldCalc ? `*Setting:* ${fmt(solGoldCalc.total)}\n` : ""}*Total:* ${fmt(solFinalTotal)}\n\n_Sun Sea Jewellers, Delhi_`;
+  const solCaption = `*ESTIMATE — Sun Sea Jewellers*\n\n*Stone:* ${sol.shape} ${sol.weight}ct ${sol.color}/${sol.clarity} ${sol.cut}\n*Certificate:* ${sol.cert}\n\n*Sell Price:* ${fmt(solResult.sellTotal)}\n${sol.includeGold && solGoldCalc ? `*Setting:* ${fmt(solGoldCalc.total)}\n` : ""}*Total:* ${fmt(solFinalTotal)}\n\n_Sun Sea Jewellers, Delhi & Jaipur_`;
 
   // Load history when active client changes
   useEffect(() => {
@@ -15589,7 +15589,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     jw.applyGst ? `*GST (3%):* ${fmt(jwCalc.gst)}` : "",
     jwCalc.qty > 1 ? `\n*Per-piece Total:* ${fmt(jwCalc.perPieceTotal)}\n*Pcs:* ${jwCalc.qty}` : "",
     `\n*Total: ${fmt(jwCalc.total)}*`,
-    `\n_Sun Sea Jewellers, Delhi_`
+    `\n_Sun Sea Jewellers, Delhi & Jaipur_`
   ].filter(Boolean).join("\n");
 
   const handleJwPrint = () => {
@@ -15632,7 +15632,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     const discTxt = sc.sellDisc != null && !isNaN(sc.sellDisc) ? `${sc.sellDisc.toFixed(1)}%` : "—";
     return `${i + 1}. ${r.shape} ${r.weight}ct ${r.color}/${r.clarity} ${r.cut} ${r.cert} · Rap ${rapTxt} · Disc ${discTxt} — ${sc.sellTotal != null ? fmt(sc.sellTotal) : "—"}`;
   });
-  const quotCaption = `*QUOTATION — Sun Sea Jewellers*\n${saveContact?.name ? `For: ${saveContact.name}\n` : ""}\n${quotCaptionLines.join("\n")}\n\nTotal: ${quotTotal}\n\n_Sun Sea Jewellers, Delhi_`;
+  const quotCaption = `*QUOTATION — Sun Sea Jewellers*\n${saveContact?.name ? `For: ${saveContact.name}\n` : ""}\n${quotCaptionLines.join("\n")}\n\nTotal: ${quotTotal}\n\n_Sun Sea Jewellers, Delhi & Jaipur_`;
 
   const handleQuotPrint = () => {
     const doc = buildEstimatePdfDoc({ title: "QUOTATION", clientName: saveContact?.name || saveContact?.phone, sections: [{ columns: quotColumns, tableRows: quotTableRows, total: quotTotal }], orientation: "landscape", format: "a4" });
@@ -16369,7 +16369,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
                     };
                     const dateFor = (e) => new Date(e.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
                     const lines = sel.map((e, i) => `*${i + 1}. ${labelFor(e)}* (${dateFor(e)})${e.total_amount ? `\n₹${Math.round(e.total_amount).toLocaleString("en-IN")}` : ""}`).join("\n\n");
-                    const msg = `*ESTIMATE SUMMARY — Sun Sea Jewellers*\n${saveContact?.name ? `For: ${saveContact.name}\n` : ""}\n${lines}\n\n_For queries call us at Sun Sea Jewellers, Delhi_`;
+                    const msg = `*ESTIMATE SUMMARY — Sun Sea Jewellers*\n${saveContact?.name ? `For: ${saveContact.name}\n` : ""}\n${lines}\n\n_For queries call us at Sun Sea Jewellers, Delhi & Jaipur_`;
                     const sections = sel.map((e) => ({
                       heading: `${labelFor(e)} — ${dateFor(e)}`,
                       rows: [["Total", e.total_amount ? fmt(e.total_amount) : "—"]],
@@ -16501,7 +16501,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
                     : e.mode === "solitaire"
                     ? `${item.shape || ""} ${item.weight || ""}ct ${item.color || ""}/${item.clarity || ""}`.trim()
                     : `Quotation (${e.items?.length || 0} stones)`;
-                  const waMsg = `Hello ${client?.name || ""},\n\nThank you for visiting Sun Sea Jewellers! You had enquired about *${what}*${e.total_amount ? ` (est. ₹${Math.round(e.total_amount).toLocaleString("en-IN")})` : ""}.\n\nWould you like to proceed or have any questions? We're happy to help you make the right choice.\n\n_Sun Sea Jewellers, Delhi_`;
+                  const waMsg = `Hello ${client?.name || ""},\n\nThank you for visiting Sun Sea Jewellers! You had enquired about *${what}*${e.total_amount ? ` (est. ₹${Math.round(e.total_amount).toLocaleString("en-IN")})` : ""}.\n\nWould you like to proceed or have any questions? We're happy to help you make the right choice.\n\n_Sun Sea Jewellers, Delhi & Jaipur_`;
                   return (
                     <tr key={e.id} style={{ borderBottom: "1px solid #f0f0f0" }}>
                       <td style={{ padding: "6px 10px", fontWeight: 600 }}>{client?.name || "—"}</td>
