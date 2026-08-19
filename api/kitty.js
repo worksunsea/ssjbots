@@ -137,10 +137,15 @@ async function getOrCreateOpenBatch(sb, scheme, startDate) {
     await sb.from("kitty_batches").update({ status: "full" }).eq("id", b.id);
   }
 
-  const { count: totalBatches } = await sb.from("kitty_batches").select("*", { count: "exact", head: true }).eq("scheme_id", scheme.id);
+  const { count: sameStartCount } = await sb.from("kitty_batches").select("*", { count: "exact", head: true })
+    .eq("scheme_id", scheme.id).eq("start_date", startDate);
+  // Label by start date, not a running "Batch N" counter — staff need to
+  // tell rounds apart by when they started. Suffix a round letter only in
+  // the rare case two batches genuinely start on the same date.
+  const label = sameStartCount ? `${scheme.name} — ${startDate} (Round ${sameStartCount + 1})` : `${scheme.name} — ${startDate}`;
   const { data: newBatch, error } = await sb.from("kitty_batches").insert({
     tenant_id: TENANT_ID, scheme_id: scheme.id,
-    batch_label: `${scheme.name} — Batch ${(totalBatches || 0) + 1}`,
+    batch_label: label,
     start_date: startDate, max_members: 100, status: "open",
   }).select().single();
   if (error) throw new Error(error.message);
