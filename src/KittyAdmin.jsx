@@ -204,10 +204,10 @@ function PaidMonthsEditor({ paidMonths, setPaidMonths }) {
   return (
     <div>
       <h4 style={{ marginTop: 16 }}>Backfill already-paid months</h4>
-      <p style={{ fontSize: 12, color: "#666" }}>Optional — fill in if they actually started earlier and already paid some months in cash/UPI.</p>
+      <p style={{ fontSize: 12, color: "#666" }}>Optional — fill in if they actually started earlier and already paid some months in cash/UPI. "Installment #" is the payment sequence (1st, 2nd…) — NOT the calendar month. A member who started in December is still installment #1, not #12.</p>
       {paidMonths.map((m, i) => (
         <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6 }}>
-          <input type="number" placeholder="Month #" value={m.monthNumber} onChange={(e) => setPaidMonth(i, "monthNumber", e.target.value)} style={{ width: 80 }} />
+          <input type="number" placeholder="Installment # (1st, 2nd…)" value={m.monthNumber} onChange={(e) => setPaidMonth(i, "monthNumber", e.target.value)} style={{ width: 150 }} />
           <input type="date" placeholder="Paid on" value={m.paidAt} onChange={(e) => setPaidMonth(i, "paidAt", e.target.value)} />
           <input type="number" placeholder="Amount ₹" value={m.amount} onChange={(e) => setPaidMonth(i, "amount", e.target.value)} style={{ width: 100 }} />
           <button onClick={() => setPaidMonths((p) => p.filter((_, idx) => idx !== i))}>✕</button>
@@ -509,9 +509,11 @@ function EnrollmentsTab({ crmSecret, actor }) {
   // Hard delete — for genuine duplicate entries only (double-enrolled by
   // mistake). Blocked server-side once any installment is paid.
   const deleteEnrollment_ = async (e) => {
-    if (prompt(`Type DELETE to permanently remove this duplicate enrollment for ${e.lead?.name || "this member"} (${e.is_legacy ? e.legacy_scheme_name : e.scheme?.name}). This cannot be undone.`) !== "DELETE") return;
+    const typed = prompt(`Type DELETE to permanently remove this duplicate enrollment for ${e.lead?.name || "this member"} (${e.is_legacy ? e.legacy_scheme_name : e.scheme?.name}). This cannot be undone.`);
+    if (typed == null) return; // cancelled — no message needed
+    if ((typed || "").trim().toUpperCase() !== "DELETE") return alert("Didn't match \"DELETE\" — nothing was deleted.");
     const d = await call("delete-enrollment", { method: "POST", crmSecret, body: { id: e.id, actor } });
-    if (d.ok) load(); else alert(d.error);
+    if (d.ok) { alert("Deleted."); load(); } else alert(`Delete failed: ${d.error}`);
   };
   const markPaid = async (installmentId) => {
     const paidAmount = prompt("Amount received?");
