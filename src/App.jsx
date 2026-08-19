@@ -1705,6 +1705,7 @@ function DemandsScreen({ funnels, allTags, adOnly = false }) {
             <tr style={{ textAlign: "left", borderBottom: "2px solid #e5e7eb", color: "#6b7280" }}>
               {manageMode && isManagerPlus && <th style={{ padding: "6px 4px", width: 24 }}></th>}
               <th style={{ padding: "6px 8px" }}>Name / Phone</th>
+              <th style={{ padding: "6px 8px" }}>Stage</th>
               <th style={{ padding: "6px 8px" }}>Requirement</th>
               <th style={{ padding: "6px 8px" }}>Due</th>
               <th style={{ padding: "6px 8px" }}>Status</th>
@@ -1747,6 +1748,9 @@ function DemandsScreen({ funnels, allTags, adOnly = false }) {
                     </div>
                     <div style={{ fontSize: 11, color: "#888" }}>{d.lead?.phone}{d.lead?.lead_source?.name ? ` · 📢 ${d.lead.lead_source.name}` : ""}</div>
                   </td>
+                  <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>
+                    <Pill color={FMS_STEP_COLORS[d.step?.step_type] || C.gray} solid>{d.step?.name || "No step"}</Pill>
+                  </td>
                   <td style={{ padding: "6px 8px", maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#555" }}>
                     {demandEnquiryLine(d)}
                   </td>
@@ -1770,11 +1774,21 @@ function DemandsScreen({ funnels, allTags, adOnly = false }) {
                         setPendingAction(step.action === "call" ? "call" : null);
                       }}>{step.label}</Btn>
                     )}
+                    {/* Callback cadence progress — was invisible before; shows
+                        how many auto-retry attempts have happened (auto-lost
+                        at 6, see api/log-call.js) and whether this is a
+                        client-promised callback vs an auto-cadence retry. */}
+                    {(d.call_attempts > 0 || d.is_callback_promised) && (
+                      <div style={{ fontSize: 10, color: "#999", marginTop: 2 }}>
+                        {d.is_callback_promised && "📌 promised · "}
+                        {d.call_attempts > 0 && `attempt ${d.call_attempts}/6`}
+                      </div>
+                    )}
                   </td>
                 </tr>
                 {sel && selectedLead && selectedDemand?.id === d.id && (
                   <tr>
-                    <td colSpan={manageMode && isManagerPlus ? 6 : 5} style={{ padding: 0 }}>
+                    <td colSpan={manageMode && isManagerPlus ? 7 : 6} style={{ padding: 0 }}>
                       <ConversationPane
                         key={d.id}
                         lead={selectedLead}
