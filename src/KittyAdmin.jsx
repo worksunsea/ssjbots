@@ -513,7 +513,14 @@ function EnrollmentsTab({ crmSecret, actor }) {
     if (typed == null) return; // cancelled — no message needed
     if ((typed || "").trim().toUpperCase() !== "DELETE") return alert("Didn't match \"DELETE\" — nothing was deleted.");
     const d = await call("delete-enrollment", { method: "POST", crmSecret, body: { id: e.id, actor } });
-    if (d.ok) { alert("Deleted."); load(); } else alert(`Delete failed: ${d.error}`);
+    if (d.ok) return alert("Deleted."), load();
+    if (d.error !== "has_paid_installments_cannot_delete_use_cancel") return alert(`Delete failed: ${d.error}`);
+    // Blocked because installments are marked paid — ask staff to confirm
+    // it's a data-entry duplicate, not real money collected twice, before
+    // bypassing the guard.
+    if (!confirm(`This enrollment has PAID installments recorded. Only force-delete if you're SURE this is a duplicate data entry and no real payment was actually collected twice.\n\nForce delete anyway?`)) return;
+    const d2 = await call("delete-enrollment", { method: "POST", crmSecret, body: { id: e.id, actor, force: true } });
+    if (d2.ok) { alert("Deleted (forced past paid-installment guard)."); load(); } else alert(`Delete failed: ${d2.error}`);
   };
   const markPaid = async (installmentId) => {
     const paidAmount = prompt("Amount received?");

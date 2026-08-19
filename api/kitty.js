@@ -836,14 +836,18 @@ export default async function handler(req, res) {
     if (!enrollment) return res.status(404).json({ ok: false, error: "not_found" });
 
     const { data: paidRows } = await sb.from("kitty_installments").select("id").eq("enrollment_id", body.id).eq("status", "paid");
-    if (paidRows?.length) return res.status(400).json({ ok: false, error: "has_paid_installments_cannot_delete_use_cancel" });
+    // force=true bypasses the paid-installment guard — for the specific case
+    // where staff confirms the "paid" rows are duplicate/wrong data entry,
+    // not real money collected twice (e.g. same backfill typed on two
+    // enrollments by mistake). Requires explicit staff confirmation client-side.
+    if (paidRows?.length && !body.force) return res.status(400).json({ ok: false, error: "has_paid_installments_cannot_delete_use_cancel" });
 
     await sb.from("kitty_redemption_codes").delete().eq("enrollment_id", body.id);
     await sb.from("kitty_installments").delete().eq("enrollment_id", body.id);
     const { error: delErr } = await sb.from("kitty_enrollments").delete().eq("tenant_id", TENANT_ID).eq("id", body.id);
     if (delErr) return res.status(500).json({ ok: false, error: delErr.message });
 
-    await logAudit(sb, { entityType: "enrollment", entityId: body.id, action: "delete", actor: body.actor, details: { name: enrollment.lead?.name, phone: enrollment.lead?.phone, schemeName: enrollment.is_legacy ? enrollment.legacy_scheme_name : enrollment.scheme?.name, note: "hard_delete_duplicate" } });
+    await logAudit(sb, { entityType: "enrollment", entityId: body.id, action: "delete", actor: body.actor, details: { name: enrollment.lead?.name, phone: enrollment.lead?.phone, schemeName: enrollment.is_legacy ? enrollment.legacy_scheme_name : enrollment.scheme?.name, note: "hard_delete_duplicate", forcedPastPaidGuard: !!(paidRows?.length && body.force) } });
     return res.status(200).json({ ok: true });
   }
 
