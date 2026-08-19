@@ -11920,14 +11920,28 @@ function newSolRow() {
 // Shows all clients who had estimates saved in the selected period.
 // Does NOT require a formal bullion_visits record — estimates are evidence of walk-ins.
 function WalkinDashboardScreen({ funnels = [], onEditEstimate }) {
-  const [cards, setCards] = useState([]); // [{lead, estimates, firstAt, lastAt}]
+  const [cards, setCards] = useState([]); // [{lead, estimates, firstAt, lastAt, hasVisit, visit}]
   const [loading, setLoading] = useState(true);
   const [dateFilter, setDateFilter] = useState("today");
+  const [sourceFilter, setSourceFilter] = useState("all"); // all | walkin | remote
   const [assigningLead, setAssigningLead] = useState(null);
   const [cardSel, setCardSel] = useState({}); // { cardKey: Set<estimateId> }
   const [toast, setToast] = useState("");
+  const [editingCard, setEditingCard] = useState(null); // card being edited via WalkinEditModal
+  const [pendingEdits, setPendingEdits] = useState([]);
+  const user = loadUser();
+  const canEditDirectly = user?.role === "superadmin" || user?.role === "admin" || user?.role === "manager";
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 3000); };
+
+  const loadPendingEdits = useCallback(async () => {
+    if (!canEditDirectly) return;
+    const { data } = await sb.from("bullion_visit_edit_requests")
+      .select("*, bullion_leads(name,phone)")
+      .eq("tenant_id", getTenantId()).eq("status", "pending")
+      .order("created_at", { ascending: false });
+    setPendingEdits(data || []);
+  }, [canEditDirectly]);
 
   const loadCards = useCallback(async () => {
     setLoading(true);
@@ -11946,7 +11960,7 @@ function WalkinDashboardScreen({ funnels = [], onEditEstimate }) {
     // Primary: every walk-in form entry logged in this period (bullion_visits) —
     // a card must show up here even if staff never went on to save a Calculator estimate.
     let vq = sb.from("bullion_visits")
-      .select("id,visited_at,lead_id,bullion_leads(id,name,phone,city,is_client,client_rating)")
+      .select("id,visited_at,lead_id,notes,price_quoted,items_seen,staff,bullion_leads(id,name,phone,city,is_client,client_rating)")
       .eq("tenant_id", tid)
       .gte("visited_at", since.toISOString());
     if (until) vq = vq.lte("visited_at", until.toISOString());
@@ -11956,13 +11970,17 @@ function WalkinDashboardScreen({ funnels = [], onEditEstimate }) {
     for (const v of (visits || [])) {
       const lid = v.lead_id;
       if (!lid) continue;
-      if (!byLead[lid]) byLead[lid] = { lead: v.bullion_leads || {}, estimates: [], firstAt: v.visited_at, lastAt: v.visited_at };
+      if (!byLead[lid]) byLead[lid] = { lead: v.bullion_leads || {}, estimates: [], firstAt: v.visited_at, lastAt: v.visited_at, hasVisit: false, visit: null };
+      byLead[lid].hasVisit = true;
+      // Keep the most recent visit as the editable one for this card.
+      if (!byLead[lid].visit || v.visited_at >= byLead[lid].visit.visited_at) byLead[lid].visit = v;
       if (v.visited_at < byLead[lid].firstAt) byLead[lid].firstAt = v.visited_at;
       if (v.visited_at > byLead[lid].lastAt) byLead[lid].lastAt = v.visited_at;
     }
 
     // Secondary: estimates saved in this period — attached to the matching visit's card,
-    // or forming their own card when saved directly (no walk-in form entry for that lead).
+    // or forming their own "remote" card when saved with no walk-in form for that lead
+    // (client asked for pricing over WhatsApp/video call and never actually visited).
     let q = sb.from("bullion_estimates")
       .select("id,mode,total_amount,created_at,items,lead_id,visit_id,bullion_leads(id,name,phone,city,is_client,client_rating)")
       .eq("tenant_id", tid)
@@ -11973,7 +11991,7 @@ function WalkinDashboardScreen({ funnels = [], onEditEstimate }) {
 
     for (const e of (ests || [])) {
       const lid = e.lead_id;
-      if (!byLead[lid]) byLead[lid] = { lead: e.bullion_leads || {}, estimates: [], firstAt: e.created_at, lastAt: e.created_at };
+      if (!byLead[lid]) byLead[lid] = { lead: e.bullion_leads || {}, estimates: [], firstAt: e.created_at, lastAt: e.created_at, hasVisit: false, visit: null };
       byLead[lid].estimates.push(e);
       if (e.created_at < byLead[lid].firstAt) byLead[lid].firstAt = e.created_at;
       if (e.created_at > byLead[lid].lastAt) byLead[lid].lastAt = e.created_at;
@@ -11983,6 +12001,8 @@ function WalkinDashboardScreen({ funnels = [], onEditEstimate }) {
     setCards(sorted);
     setLoading(false);
   }, [dateFilter]);
+
+  useEffect(() => { loadPendingEdits(); }, [loadPendingEdits]);
 
   useEffect(() => { loadCards(); }, [loadCards]);
 
@@ -12007,29 +12027,52 @@ function WalkinDashboardScreen({ funnels = [], onEditEstimate }) {
     return "Quotation";
   };
 
+  // "walkin" = a walk-in form was actually filled (bullion_visits row exists).
+  // "remote" = estimate only, no walk-in form — client priced over WA/video
+  // call and never physically visited the store.
+  const visibleCards = cards.filter(c => sourceFilter === "all" ? true : sourceFilter === "walkin" ? c.hasVisit : !c.hasVisit);
+
   return (
     <div style={{ maxWidth: 900, margin: "0 auto", padding: "0 0 40px" }}>
       {toast && <div style={{ position: "fixed", bottom: 24, right: 24, background: "#333", color: "#fff", padding: "10px 18px", borderRadius: 8, fontSize: 13, zIndex: 9999 }}>{toast}</div>}
 
+      {editingCard && (
+        <WalkinEditModal
+          card={editingCard}
+          canEditDirectly={canEditDirectly}
+          user={user}
+          onClose={() => setEditingCard(null)}
+          onSaved={(msg) => { setEditingCard(null); showToast(msg); loadCards(); loadPendingEdits(); }}
+        />
+      )}
+
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
         <div style={{ fontWeight: 700, fontSize: 18 }}>🏪 Walk-in Activity</div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           {["today", "yesterday", "week", "month"].map(d => (
             <button key={d} onClick={() => setDateFilter(d)} style={{ padding: "4px 12px", borderRadius: 6, border: `1px solid ${dateFilter === d ? "#1565c0" : "#ddd"}`, background: dateFilter === d ? "#e3f2fd" : "#fff", fontWeight: dateFilter === d ? 600 : 400, cursor: "pointer", fontSize: 12, textTransform: "capitalize" }}>{d}</button>
+          ))}
+          <span style={{ width: 1, height: 18, background: "#ddd" }} />
+          {[["all", "All"], ["walkin", "🏪 Walk-in only"], ["remote", "📱 Estimate only (no walk-in)"]].map(([k, l]) => (
+            <button key={k} onClick={() => setSourceFilter(k)} style={{ padding: "4px 12px", borderRadius: 6, border: `1px solid ${sourceFilter === k ? "#6a1b9a" : "#ddd"}`, background: sourceFilter === k ? "#f3e5f5" : "#fff", fontWeight: sourceFilter === k ? 600 : 400, cursor: "pointer", fontSize: 12 }}>{l}</button>
           ))}
           <button onClick={loadCards} style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", cursor: "pointer", fontSize: 12 }}>↻</button>
         </div>
       </div>
 
+      {canEditDirectly && pendingEdits.length > 0 && (
+        <PendingWalkinEdits edits={pendingEdits} user={user} onChanged={() => { loadPendingEdits(); loadCards(); }} showToast={showToast} />
+      )}
+
       {/* Stats row */}
-      {!loading && cards.length > 0 && (
+      {!loading && visibleCards.length > 0 && (
         <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
           {[
-            { l: "Clients seen", v: cards.length, c: "#1565c0" },
-            { l: "Estimates done", v: cards.reduce((s, c) => s + c.estimates.length, 0), c: "#6a1b9a" },
-            { l: "Total value quoted", v: "₹" + Math.round(cards.reduce((s, c) => s + c.estimates.reduce((ss, e) => ss + (e.total_amount || 0), 0), 0)).toLocaleString("en-IN"), c: "#2e7d32", small: true },
-            { l: "Existing clients", v: cards.filter(c => c.lead?.is_client).length, c: "#e65100" },
+            { l: "Clients seen", v: visibleCards.length, c: "#1565c0" },
+            { l: "Estimates done", v: visibleCards.reduce((s, c) => s + c.estimates.length, 0), c: "#6a1b9a" },
+            { l: "Total value quoted", v: "₹" + Math.round(visibleCards.reduce((s, c) => s + c.estimates.reduce((ss, e) => ss + (e.total_amount || 0), 0), 0)).toLocaleString("en-IN"), c: "#2e7d32", small: true },
+            { l: "Existing clients", v: visibleCards.filter(c => c.lead?.is_client).length, c: "#e65100" },
           ].map(s => (
             <div key={s.l} style={{ flex: "1 1 120px", background: "#fff", border: "1px solid #eee", borderRadius: 10, padding: "10px 14px", textAlign: "center" }}>
               <div style={{ fontSize: s.small ? 15 : 22, fontWeight: 700, color: s.c }}>{s.v}</div>
@@ -12040,15 +12083,16 @@ function WalkinDashboardScreen({ funnels = [], onEditEstimate }) {
       )}
 
       {/* Cards */}
-      {loading ? <div style={{ textAlign: "center", padding: 40, color: "#aaa" }}>Loading…</div> : cards.length === 0 ? (
+      {loading ? <div style={{ textAlign: "center", padding: 40, color: "#aaa" }}>Loading…</div> : visibleCards.length === 0 ? (
         <div style={{ textAlign: "center", padding: 40, color: "#aaa" }}>
           <div style={{ fontSize: 32, marginBottom: 10 }}>🏪</div>
-          No walk-ins recorded for this period.<br />
+          {cards.length === 0 ? "No walk-ins recorded for this period." : "Nothing matches this filter."}<br />
           <span style={{ fontSize: 12 }}>Walk-in form entries show here automatically; any 💎 Calculator estimates saved for that client attach to the same card.</span>
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {cards.map(({ lead, estimates, firstAt, lastAt }) => {
+          {visibleCards.map((c) => {
+            const { lead, estimates, firstAt, lastAt, hasVisit, visit } = c;
             const timeFirst = new Date(firstAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
             const timeLast = new Date(lastAt).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
             const dateStr = new Date(firstAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
@@ -12061,6 +12105,9 @@ function WalkinDashboardScreen({ funnels = [], onEditEstimate }) {
                     <div style={{ fontWeight: 700, fontSize: 14 }}>
                       {lead.is_client ? "⭐ " : "👣 "}{lead.name || lead.phone || "Unknown"}
                       {lead.is_client && <span style={{ fontSize: 11, marginLeft: 6, background: "#e8f5e9", color: "#2e7d32", padding: "1px 6px", borderRadius: 10 }}>Client</span>}
+                      {hasVisit
+                        ? <span style={{ fontSize: 10, marginLeft: 6, background: "#e3f2fd", color: "#1565c0", padding: "1px 6px", borderRadius: 10 }}>🏪 Walk-in</span>
+                        : <span style={{ fontSize: 10, marginLeft: 6, background: "#fff3e0", color: "#e65100", padding: "1px 6px", borderRadius: 10 }}>📱 Estimate only — no walk-in</span>}
                     </div>
                     <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>
                       {lead.phone && <span style={{ marginRight: 10 }}>{lead.phone}</span>}
@@ -12131,6 +12178,7 @@ function WalkinDashboardScreen({ funnels = [], onEditEstimate }) {
                     <button onClick={() => setAssigningLead(cardKey)} style={{ fontSize: 12, padding: "3px 10px", borderRadius: 6, border: "1px solid #bbb", background: "#fff", cursor: "pointer" }}>➡️ Add to Funnel</button>
                   )}
                   {lead.phone && <button onClick={() => window.open(`https://wa.me/91${lead.phone.replace(/\D/g, "")}`, "_blank")} style={{ fontSize: 12, padding: "3px 10px", borderRadius: 6, border: "1px solid #25d366", background: "#f0fdf4", cursor: "pointer" }}>💬 WhatsApp</button>}
+                  {hasVisit && <button onClick={() => setEditingCard(c)} style={{ fontSize: 12, padding: "3px 10px", borderRadius: 6, border: "1px solid #ffb74d", background: "#fff8e1", cursor: "pointer" }}>{canEditDirectly ? "✏️ Edit walk-in" : "✏️ Request edit"}</button>}
                 </div>
               </div>
             );
@@ -12138,6 +12186,141 @@ function WalkinDashboardScreen({ funnels = [], onEditEstimate }) {
         </div>
       )}
 
+    </div>
+  );
+}
+
+// Edits a walk-in's core fields (lead name/phone/city + visit notes/price
+// quoted/items seen). Admin/manager/superadmin apply straight away; anyone
+// else (the "staff" role — including the person who originally filled the
+// form) submits a bullion_visit_edit_requests row instead, so nothing
+// changes live until an admin reviews the diff and approves it.
+function WalkinEditModal({ card, canEditDirectly, user, onClose, onSaved }) {
+  const { lead, visit } = card;
+  const [form, setForm] = useState({
+    name: lead.name || "", phone: lead.phone || "", city: lead.city || "",
+    notes: visit?.notes || "", price_quoted: visit?.price_quoted != null ? String(visit.price_quoted) : "",
+    items_seen: visit?.items_seen || "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const set = (k, v) => setForm(p => ({ ...p, [k]: v }));
+  const field = (label, key, type = "text") => (
+    <div style={{ marginBottom: 10 }}>
+      <label style={{ fontSize: 11, color: "#888", display: "block", marginBottom: 3 }}>{label}</label>
+      <input type={type} value={form[key]} onChange={e => set(key, e.target.value)}
+        style={{ width: "100%", padding: "7px 10px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13, boxSizing: "border-box" }} />
+    </div>
+  );
+
+  const submit = async () => {
+    setSaving(true); setErr("");
+    const proposed = {
+      name: form.name.trim() || null, phone: form.phone.trim() || null, city: form.city.trim() || null,
+      notes: form.notes.trim() || null,
+      price_quoted: form.price_quoted ? Number(form.price_quoted) : null,
+      items_seen: form.items_seen.trim() || null,
+    };
+    const current = {
+      name: lead.name || null, phone: lead.phone || null, city: lead.city || null,
+      notes: visit?.notes || null, price_quoted: visit?.price_quoted ?? null, items_seen: visit?.items_seen || null,
+    };
+    try {
+      if (canEditDirectly) {
+        if (lead.id) await sb.from("bullion_leads").update({ name: proposed.name, phone: proposed.phone, city: proposed.city }).eq("id", lead.id);
+        if (visit?.id) await sb.from("bullion_visits").update({ notes: proposed.notes, price_quoted: proposed.price_quoted, items_seen: proposed.items_seen }).eq("id", visit.id);
+        onSaved("✅ Walk-in updated");
+      } else {
+        const { error } = await sb.from("bullion_visit_edit_requests").insert({
+          tenant_id: getTenantId(), visit_id: visit?.id || null, lead_id: lead.id,
+          proposed_fields: proposed, current_snapshot: current,
+          requested_by: user?.name || user?.email || null,
+        });
+        if (error) { setErr(error.message); setSaving(false); return; }
+        onSaved("📨 Edit sent for admin approval");
+      }
+    } catch (e) { setErr(e.message); setSaving(false); }
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10000 }} onClick={onClose}>
+      <div style={{ background: "#fff", borderRadius: 12, padding: 20, width: 380, maxWidth: "90vw" }} onClick={e => e.stopPropagation()}>
+        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>{canEditDirectly ? "✏️ Edit Walk-in" : "✏️ Request Walk-in Edit"}</div>
+        {!canEditDirectly && <div style={{ fontSize: 11, color: "#e65100", marginBottom: 12 }}>Your changes go to an admin for approval before anything updates live.</div>}
+        {field("Name", "name")}
+        {field("Phone", "phone")}
+        {field("City", "city")}
+        {field("Notes / description", "notes")}
+        {field("Price quoted (₹)", "price_quoted", "number")}
+        {field("Items seen", "items_seen")}
+        {err && <div style={{ color: "#c0392b", fontSize: 12, marginBottom: 8 }}>{err}</div>}
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 6 }}>
+          <button onClick={onClose} style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", cursor: "pointer", fontSize: 13 }}>Cancel</button>
+          <button onClick={submit} disabled={saving} style={{ padding: "6px 14px", borderRadius: 6, border: "none", background: "#1565c0", color: "#fff", cursor: "pointer", fontSize: 13, opacity: saving ? 0.6 : 1 }}>{saving ? "Saving…" : canEditDirectly ? "Save" : "Submit for approval"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Admin-only panel listing pending walk-in edit requests with a field-by-field
+// diff (current_snapshot vs proposed_fields) — approve applies proposed_fields
+// to bullion_leads/bullion_visits, reject just marks the request rejected.
+function PendingWalkinEdits({ edits, user, onChanged, showToast }) {
+  const [busyId, setBusyId] = useState(null);
+  const FIELD_LABELS = { name: "Name", phone: "Phone", city: "City", notes: "Notes", price_quoted: "Price Quoted", items_seen: "Items Seen" };
+
+  const review = async (req, approve) => {
+    setBusyId(req.id);
+    try {
+      if (approve) {
+        if (req.lead_id) {
+          const { name, phone, city } = req.proposed_fields || {};
+          await sb.from("bullion_leads").update({ name, phone, city }).eq("id", req.lead_id);
+        }
+        if (req.visit_id) {
+          const { notes, price_quoted, items_seen } = req.proposed_fields || {};
+          await sb.from("bullion_visits").update({ notes, price_quoted, items_seen }).eq("id", req.visit_id);
+        }
+      }
+      await sb.from("bullion_visit_edit_requests").update({
+        status: approve ? "approved" : "rejected", reviewed_by: user?.name || user?.email || null, reviewed_at: new Date().toISOString(),
+      }).eq("id", req.id);
+      showToast(approve ? "✅ Edit approved and applied" : "🚫 Edit rejected");
+    } catch (e) { showToast("❌ " + e.message); }
+    setBusyId(null);
+    onChanged();
+  };
+
+  return (
+    <div style={{ background: "#fff8e1", border: "1px solid #ffe082", borderRadius: 10, padding: "12px 16px", marginBottom: 16 }}>
+      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, color: "#e65100" }}>⏳ Pending Walk-in Edits ({edits.length})</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {edits.map(req => {
+          const changedFields = Object.keys(FIELD_LABELS).filter(f => (req.proposed_fields?.[f] ?? null) !== (req.current_snapshot?.[f] ?? null));
+          return (
+            <div key={req.id} style={{ background: "#fff", border: "1px solid #ffe082", borderRadius: 8, padding: "10px 12px" }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+                {req.bullion_leads?.name || req.bullion_leads?.phone || "Client"} — requested by {req.requested_by || "unknown"} · {new Date(req.created_at).toLocaleString("en-IN")}
+              </div>
+              <div style={{ fontSize: 12, marginBottom: 8 }}>
+                {changedFields.length === 0 ? <span style={{ color: "#888" }}>No field changes detected.</span> : changedFields.map(f => (
+                  <div key={f} style={{ display: "flex", gap: 6, marginBottom: 2 }}>
+                    <span style={{ color: "#888", minWidth: 90 }}>{FIELD_LABELS[f]}:</span>
+                    <span style={{ color: "#c0392b", textDecoration: "line-through" }}>{req.current_snapshot?.[f] ?? "—"}</span>
+                    <span>→</span>
+                    <span style={{ color: "#2e7d32", fontWeight: 600 }}>{req.proposed_fields?.[f] ?? "—"}</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button disabled={busyId === req.id} onClick={() => review(req, true)} style={{ fontSize: 12, padding: "3px 12px", borderRadius: 6, border: "none", background: "#2e7d32", color: "#fff", cursor: "pointer" }}>✓ Approve</button>
+                <button disabled={busyId === req.id} onClick={() => review(req, false)} style={{ fontSize: 12, padding: "3px 12px", borderRadius: 6, border: "1px solid #c0392b", background: "#fff", color: "#c0392b", cursor: "pointer" }}>✕ Reject</button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -15158,6 +15341,12 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   const [newClientPhone, setNewClientPhone] = useState("");
   const [syncPending, setSyncPending] = useState(0);
   const user = loadUser();
+  // Salespeople (role "staff") only see estimates they created themselves —
+  // managers/admins/superadmin see everyone's. Matches the identity written
+  // to created_by on save (user?.name || user?.email, see saveEstimate).
+  const isStaffRole = user?.role === "staff";
+  const myIdentity = user?.name || user?.email || null;
+  const scopeToMine = (query) => (isStaffRole && myIdentity) ? query.eq("created_by", myIdentity) : query;
 
   const EST_QUEUE = "calc_est_queue";
   const queueEstimate = (payload) => {
@@ -15249,10 +15438,10 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
       }
     });
     // Load recent estimates
-    sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items,lead_id,metadata,version,parent_estimate_id,bullion_leads(name,phone)").order("created_at", { ascending: false }).limit(8).then(({ data }) => setRecentEstimates(data || []));
+    scopeToMine(sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items,lead_id,metadata,version,parent_estimate_id,bullion_leads(name,phone)")).order("created_at", { ascending: false }).limit(8).then(({ data }) => setRecentEstimates(data || []));
     // Load pending follow-ups (estimates with linked contact, last 30 days)
     const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    sb.from("bullion_estimates").select("id,mode,total_amount,created_at,lead_id,items,bullion_leads(name,phone)").not("lead_id", "is", null).gte("created_at", since).order("created_at", { ascending: false }).limit(60).then(({ data }) => setPendingFollowups(data || []));
+    scopeToMine(sb.from("bullion_estimates").select("id,mode,total_amount,created_at,lead_id,items,bullion_leads(name,phone)")).not("lead_id", "is", null).gte("created_at", since).order("created_at", { ascending: false }).limit(60).then(({ data }) => setPendingFollowups(data || []));
     // Sync any locally queued estimates that failed to reach DB
     try {
       const q = JSON.parse(localStorage.getItem("calc_est_queue") || "[]");
@@ -15345,7 +15534,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   useEffect(() => {
     setSelectedEstimates(new Set());
     if (!saveContact?.id) { setClientHistory([]); return; }
-    sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items,version,parent_estimate_id").eq("lead_id", saveContact.id).order("created_at", { ascending: false }).limit(20).then(({ data }) => setClientHistory(data || []));
+    scopeToMine(sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items,version,parent_estimate_id")).eq("lead_id", saveContact.id).order("created_at", { ascending: false }).limit(20).then(({ data }) => setClientHistory(data || []));
   }, [saveContact?.id]);
 
   // ── Search contacts for save ──
@@ -15362,10 +15551,10 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   const [calcStaff, setCalcStaff] = useState([]);
 
   const refreshEstLists = () => {
-    sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items,lead_id,metadata,version,parent_estimate_id,bullion_leads(name,phone)").order("created_at", { ascending: false }).limit(8).then(({ data }) => setRecentEstimates(data || []));
-    if (saveContact?.id) sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items,version,parent_estimate_id").eq("lead_id", saveContact.id).order("created_at", { ascending: false }).limit(20).then(({ data }) => setClientHistory(data || []));
+    scopeToMine(sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items,lead_id,metadata,version,parent_estimate_id,bullion_leads(name,phone)")).order("created_at", { ascending: false }).limit(8).then(({ data }) => setRecentEstimates(data || []));
+    if (saveContact?.id) scopeToMine(sb.from("bullion_estimates").select("id,mode,total_amount,created_at,items,version,parent_estimate_id")).eq("lead_id", saveContact.id).order("created_at", { ascending: false }).limit(20).then(({ data }) => setClientHistory(data || []));
     const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    sb.from("bullion_estimates").select("id,mode,total_amount,created_at,lead_id,items,bullion_leads(name,phone)").not("lead_id", "is", null).gte("created_at", since).order("created_at", { ascending: false }).limit(60).then(({ data }) => setPendingFollowups(data || []));
+    scopeToMine(sb.from("bullion_estimates").select("id,mode,total_amount,created_at,lead_id,items,bullion_leads(name,phone)")).not("lead_id", "is", null).gte("created_at", since).order("created_at", { ascending: false }).limit(60).then(({ data }) => setPendingFollowups(data || []));
   };
 
   // Creates/updates the linked catalogue_products row when a collection was
@@ -16438,7 +16627,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
       {/* Recent estimates */}
       {recentEstimates.length > 0 && (
         <div className="no-print" style={{ marginTop: 16 }}>
-          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8, color: "#555" }}>Recent Estimates</div>
+          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8, color: "#555" }}>{isStaffRole ? "My Recent Estimates" : "Recent Estimates (all staff)"}</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8 }}>
             {recentEstimates.map(e => {
               const it = (e.items || [])[0] || {};
