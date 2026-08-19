@@ -14,6 +14,7 @@ async function call(action, { method = "GET", body, crmSecret, params } = {}) {
   const qs = new URLSearchParams({ action, ...(params || {}) }).toString();
   const res = await fetch(`${API}?${qs}`, {
     method,
+    cache: "no-store",
     headers: { "Content-Type": "application/json", "x-crm-secret": crmSecret },
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
@@ -29,7 +30,7 @@ const emptyScheme = () => ({
 });
 
 export default function KittyAdminScreen({ sb, tenantId, crmSecret, staffName }) {
-  const [tab, setTab] = useState("schemes");
+  const [tab, setTab] = useState("enrollments");
   const actor = staffName || "staff";
   return (
     <div style={{ padding: 20 }}>
@@ -45,7 +46,7 @@ export default function KittyAdminScreen({ sb, tenantId, crmSecret, staffName })
       {tab === "overview" && <OverviewTab crmSecret={crmSecret} actor={actor} />}
       {tab === "schemes" && <SchemesTab sb={sb} tenantId={tenantId} crmSecret={crmSecret} actor={actor} />}
       {tab === "enroll" && <EnrollNewMemberTab crmSecret={crmSecret} actor={actor} />}
-      {tab === "enrollments" && <EnrollmentsTab crmSecret={crmSecret} actor={actor} />}
+      {tab === "enrollments" && <EnrollmentsTab crmSecret={crmSecret} actor={actor} onNewEnroll={() => setTab("enroll")} />}
       {tab === "legacy" && <LegacyTab crmSecret={crmSecret} actor={actor} />}
       {tab === "activity" && <ActivityLogTab crmSecret={crmSecret} />}
     </div>
@@ -441,7 +442,7 @@ function exportMonthlyExcel(enrollments, month) {
   XLSX.writeFile(wb, `kitty-installments-${month}.xlsx`);
 }
 
-function EnrollmentsTab({ crmSecret, actor }) {
+function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
   const [status, setStatus] = useState("");
   const [enrollments, setEnrollments] = useState([]);
   const [batches, setBatches] = useState([]);
@@ -579,6 +580,7 @@ function EnrollmentsTab({ crmSecret, actor }) {
   return (
     <div>
       <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
+        {onNewEnroll && <button onClick={onNewEnroll} style={{ fontWeight: 600 }}>+ New Enroll</button>}
         <select value={status} onChange={(e) => setStatus(e.target.value)}>
           <option value="">All statuses</option>
           <option value="pending_confirmation">Pending confirmation</option>
