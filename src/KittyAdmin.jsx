@@ -84,10 +84,15 @@ function OverviewTab({ crmSecret, actor }) {
         stat.paid++;
         if (i.paid_at && i.paid_at.slice(0, 10) > i.due_date) stat.late++; else stat.onTime++;
       } else if (i.status === "due") {
-        stat.unpaid++;
-        if (i.due_date < today) {
-          stat.overdue++;
-          pending.push({ enrollment: e, installment: i });
+        // Only count as "unpaid" once its due date has actually arrived —
+        // a month 11 installment sitting in the future isn't unpaid yet,
+        // it just hasn't come due. Overdue is a subset (due date passed).
+        if (i.due_date <= today) {
+          stat.unpaid++;
+          if (i.due_date < today) {
+            stat.overdue++;
+            pending.push({ enrollment: e, installment: i });
+          }
         }
       }
     }
