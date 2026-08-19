@@ -457,6 +457,8 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
   const [schemes, setSchemes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
+  const [changingSchemeFor, setChangingSchemeFor] = useState(null); // enrollment id, or null
+  const [pickedSchemeId, setPickedSchemeId] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -520,15 +522,14 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
   };
   // Corrects a wrongly-picked scheme. Only allowed pre-payment — the API
   // rejects it once any installment is marked paid (use cancel + re-enroll
-  // instead in that case, to preserve payment history).
-  const changeScheme = async (e) => {
-    const options = schemes.map((s) => `${s.id.slice(0, 8)}… = ${s.name}`).join("\n");
-    const newSchemeId = prompt(`Change scheme for ${e.lead?.name || "this member"} (currently ${e.scheme?.name}).\nPick a scheme ID:\n${options}`);
-    if (!newSchemeId) return;
-    const match = schemes.find((s) => s.id === newSchemeId || s.id.startsWith(newSchemeId));
-    if (!match) return alert("No scheme matches that ID.");
-    if (!confirm(`Switch to "${match.name}"? This rebuilds the installment schedule from scratch (only allowed since nothing's been paid yet).`)) return;
-    const d = await call("change-scheme", { method: "POST", crmSecret, body: { id: e.id, newSchemeId: match.id, actor } });
+  // instead in that case, to preserve payment history). Inline <select>
+  // instead of a typed-ID prompt — staff shouldn't have to copy scheme IDs.
+  const applyChangeScheme = async (e) => {
+    if (!pickedSchemeId || pickedSchemeId === e.scheme_id) return setChangingSchemeFor(null);
+    const match = schemes.find((s) => s.id === pickedSchemeId);
+    if (!confirm(`Switch to "${match?.name}"? This rebuilds the installment schedule from scratch (only allowed since nothing's been paid yet).`)) return;
+    const d = await call("change-scheme", { method: "POST", crmSecret, body: { id: e.id, newSchemeId: pickedSchemeId, actor } });
+    setChangingSchemeFor(null);
     if (d.ok) load(); else alert(d.error);
   };
   // Hard delete — for genuine duplicate entries only (double-enrolled by
@@ -655,7 +656,20 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
               <b>{e.lead?.name || "—"}</b> ({e.lead?.phone}) — {e.is_legacy ? e.legacy_scheme_name : e.scheme?.name}{e.member_number ? ` #${e.member_number}` : ""} — <i>{e.status}</i>
               {e.start_date && <span style={{ marginLeft: 8, fontSize: 11.5, color: "#666" }}>started {e.start_date}</span>}
               {!e.is_legacy && <button onClick={() => editEnrollment(e)} style={{ marginLeft: 8 }}>Edit Start Date</button>}
-              {!e.is_legacy && (e.status === "pending_confirmation" || e.status === "active") && <button onClick={() => changeScheme(e)} style={{ marginLeft: 8 }}>Change Scheme</button>}
+              {!e.is_legacy && (e.status === "pending_confirmation" || e.status === "active") && (
+                changingSchemeFor === e.id ? (
+                  <span style={{ marginLeft: 8 }}>
+                    <select value={pickedSchemeId} onChange={(ev) => setPickedSchemeId(ev.target.value)} autoFocus>
+                      <option value="">Pick scheme…</option>
+                      {schemes.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                    <button onClick={() => applyChangeScheme(e)} style={{ marginLeft: 4 }}>Apply</button>
+                    <button onClick={() => setChangingSchemeFor(null)} style={{ marginLeft: 4 }}>Cancel</button>
+                  </span>
+                ) : (
+                  <button onClick={() => { setChangingSchemeFor(e.id); setPickedSchemeId(e.scheme_id || ""); }} style={{ marginLeft: 8 }}>Change Scheme</button>
+                )
+              )}
               {e.status === "pending_confirmation" && <button onClick={() => confirm_(e.id)} style={{ marginLeft: 8 }}>Confirm & Start</button>}
               {(e.status === "pending_confirmation" || e.status === "active") && <button onClick={() => cancel_(e.id)} style={{ marginLeft: 8 }}>Cancel</button>}
               <button onClick={() => deleteEnrollment_(e)} style={{ marginLeft: 8, color: "#b91c1c" }}>Delete (duplicate)</button>
