@@ -129,7 +129,6 @@ const OCCASION_TYPES = ["wedding", "anniversary", "birthday", "Diwali gifting", 
 const FOR_WHOM_OPTIONS = ["self", "daughter", "son", "wife", "husband", "mother", "father", "sister", "brother", "other"];
 const FMS_STEP_COLORS = { new: C.gray, bot_activated: C.blue, qualifying: C.purple, catalog_sent: C.orange, call_needed: C.red, quoted: C.yellow, negotiating: C.orange, order_confirmed: C.green, delivered: C.green, closed: "#999" };
 const CRM_ALL_TABS = [
-  { k: "queue",       l: "My Queue",    icon: "📞" },
   { k: "approvals",   l: "Approvals",   icon: "✅" },
   { k: "demands",     l: "Demands",     icon: "🎯" },
   { k: "adleads",     l: "AdLeads",     icon: "📢" },
@@ -165,7 +164,7 @@ const CRM_ROLE_DEFAULT_TABS = {
   admin:      CRM_ALL_TABS.map((t) => t.k),
   manager:    ["demands", "adleads", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift", "corpgiftdesigns", "solitairedesigns", "blog", "kitty"],
   staff:      ["demands", "adleads", "contacts", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
-  telecaller: ["queue", "demands", "adleads"],
+  telecaller: ["demands", "adleads"],
 };
 
 // ── HELPERS ──
@@ -1417,6 +1416,7 @@ function DemandsScreen({ funnels, allTags, adOnly = false }) {
   const [filterCat, setFilterCat] = useState("");
   const [filterTemp, setFilterTemp] = useState(""); // "" | hot|warm|cold|converted|dead
   const [activeDueFilter, setActiveDueFilter] = useState(""); // "" | overdue|today|week|later|none — set by tapping a summary chip
+  const [myLeadsOnly, setMyLeadsOnly] = useState(false); // folds the old separate Telecaller Queue tab into this screen: assigned-to-me, sorted by next callback due
   const [search, setSearch] = useState("");
   const [adding, setAdding] = useState(false);
   const [addingWalkin, setAddingWalkin] = useState(false);
@@ -1429,6 +1429,7 @@ function DemandsScreen({ funnels, allTags, adOnly = false }) {
   const [showClosed, setShowClosed] = useState(false);
   const [pendingAction, setPendingAction] = useState(null); // "call" | null — auto-opens a modal in ConversationPane on select
   const myRole = loadUser()?.role;
+  const myId = loadUser()?.id;
   const isManagerPlus = ["superadmin", "admin", "manager"].includes(myRole);
   useEffect(() => {
     sb.from("staff").select("id,name,username,role,app_permissions").eq("tenant_id", getTenantId()).neq("type", "artisan").order("name")
@@ -1482,6 +1483,10 @@ function DemandsScreen({ funnels, allTags, adOnly = false }) {
       !["converted", "dead"].includes(d.lead?.status)
     );
     if (filterTemp) rows = rows.filter((d) => demandTemperature(d) === filterTemp);
+    // Folds the old separate Telecaller Queue tab into this screen — same
+    // "assigned to me" scope that screen used, just as a toggle here instead
+    // of a whole second screen/API/priority implementation.
+    if (myLeadsOnly) rows = rows.filter((d) => d.assigned_staff_id === myId);
     if (!search) return rows;
     const s = search.toLowerCase();
     return rows.filter((d) =>
@@ -1492,7 +1497,7 @@ function DemandsScreen({ funnels, allTags, adOnly = false }) {
       (d.ai_summary || "").toLowerCase().includes(s) ||
       (d.occasion || "").toLowerCase().includes(s)
     );
-  }, [demands, search, filterTemp, adOnly]);
+  }, [demands, search, filterTemp, adOnly, myLeadsOnly, myId]);
 
   const dueCounts = useMemo(() => {
     const c = { overdue: 0, today: 0, week: 0, later: 0, none: 0 };
@@ -1501,9 +1506,19 @@ function DemandsScreen({ funnels, allTags, adOnly = false }) {
   }, [openBase]);
 
   const filtered = useMemo(() => {
-    if (!activeDueFilter) return openBase;
-    return openBase.filter((d) => dueDateBucket(d) === activeDueFilter);
-  }, [openBase, activeDueFilter]);
+    let rows = activeDueFilter ? openBase.filter((d) => dueDateBucket(d) === activeDueFilter) : openBase;
+    // "My Leads" sorts by next callback due (soonest first) instead of the
+    // occasion-date bucket — this is the actual worklist order the old
+    // Queue screen used ("what do I call next").
+    if (myLeadsOnly) {
+      rows = [...rows].sort((a, b) => {
+        const at = a.next_call_at ? new Date(a.next_call_at).getTime() : Infinity;
+        const bt = b.next_call_at ? new Date(b.next_call_at).getTime() : Infinity;
+        return at - bt;
+      });
+    }
+    return rows;
+  }, [openBase, activeDueFilter, myLeadsOnly]);
 
   const closedFiltered = useMemo(() => {
     const SUPPLIER_SOURCES = new Set(["seller_enquiry", "supplier", "vendor", "karigar", "wholesale", "kariger"]);
@@ -1617,6 +1632,7 @@ function DemandsScreen({ funnels, allTags, adOnly = false }) {
             <option value="converted">✅ Converted</option>
             <option value="dead">💀 Dead</option>
           </Select>
+          <Btn small color={myLeadsOnly ? C.blue : C.gray} ghost={!myLeadsOnly} onClick={() => setMyLeadsOnly((v) => !v)} style={myLeadsOnly ? { color: "#fff" } : undefined}>👤 My Leads</Btn>
           <Btn ghost small color={C.gray} onClick={load}>↻</Btn>
           <Btn small color="#16a085" onClick={() => setAddingWalkin(true)} style={{ color: "#fff" }}>+ Walk-in</Btn>
           <Btn small color={C.blue} onClick={() => setAdding(true)}>+ New Demand</Btn>
@@ -1680,7 +1696,22 @@ function DemandsScreen({ funnels, allTags, adOnly = false }) {
           </div>
         )}
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 10 }}>
+        {/* Flat table — one row per demand, mirrors the pre-CRM spreadsheet
+            workflow instead of a card grid. Row click expands ConversationPane
+            inline below it, same behavior/props as before. */}
+        <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+          <thead>
+            <tr style={{ textAlign: "left", borderBottom: "2px solid #e5e7eb", color: "#6b7280" }}>
+              {manageMode && isManagerPlus && <th style={{ padding: "6px 4px", width: 24 }}></th>}
+              <th style={{ padding: "6px 8px" }}>Name / Phone</th>
+              <th style={{ padding: "6px 8px" }}>Requirement</th>
+              <th style={{ padding: "6px 8px" }}>Due</th>
+              <th style={{ padding: "6px 8px" }}>Status</th>
+              <th style={{ padding: "6px 8px" }}>Next Step</th>
+            </tr>
+          </thead>
+          <tbody>
           {filtered.map((d) => {
             const sel = d.lead?.id === selectedLeadId;
             const isBulkChecked = bulkSelected.has(d.id);
@@ -1689,120 +1720,124 @@ function DemandsScreen({ funnels, allTags, adOnly = false }) {
             const dueMeta = DUE_BUCKET_META[dueBucket];
             const dueLine = [d.occasion, d.occasion_date ? fmtD(d.occasion_date) : ""].filter(Boolean).join(" · ") || "No date set";
             const step = nextStepFor(d);
+            const tempInfo = demandTemperature(d);
+            const tMeta = tempMeta(tempInfo);
             return (
               <React.Fragment key={d.id}>
-                <div style={{ position: "relative", gridColumn: sel ? "1 / -1" : "auto" }}>
-                {/* Bulk-select checkbox — behind Manage mode, manager+ only */}
-                {manageMode && isManagerPlus && (
-                  <input type="checkbox" checked={isBulkChecked}
-                    onChange={(e) => { e.stopPropagation(); setBulkSelected((prev) => { const next = new Set(prev); e.target.checked ? next.add(d.id) : next.delete(d.id); return next; }); }}
-                    style={{ position: "absolute", top: 10, left: 8, zIndex: 2, width: 15, height: 15, cursor: "pointer" }} />
-                )}
-                <Card
+                <tr
                   onClick={() => {
                     if (sel) { setSelectedLeadId(null); setSelectedDemand(null); }
                     else { setSelectedLeadId(d.lead?.id || null); setSelectedDemand(d); }
                     setPendingAction(null);
                   }}
-                  style={{
-                    paddingLeft: manageMode && isManagerPlus ? 28 : 14,
-                    background: sel ? "#eef5ff" : isBulkChecked ? "#f0f7ff" : "#fff",
-                    border: `2px solid ${sel ? C.blue : isBulkChecked ? C.blue : dueMeta.color}`,
-                    cursor: "pointer",
-                    display: "flex", flexDirection: "column", gap: 5,
-                  }}
+                  style={{ cursor: "pointer", background: sel ? "#eef5ff" : isBulkChecked ? "#f0f7ff" : "#fff", borderBottom: "1px solid #f0f0f0", borderLeft: `3px solid ${dueMeta.color}` }}
                 >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6 }}>
-                    <strong style={{ fontSize: 13, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {d.lead?.name || (isLid(d.lead?.phone) ? (d.lead?.wa_display_name || displayPhone(d.lead?.phone)) : d.lead?.phone) || "Unknown"}
-                    </strong>
-                    <Pill color={dueMeta.color} solid>{dueBucket === "overdue" ? `🔴 ${dueMeta.label}` : dueBucket === "today" ? `🟠 ${dueMeta.label}` : dueBucket === "week" ? `🟡 ${dueMeta.label}` : dueMeta.label}</Pill>
-                  </div>
-                  <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
-                    {(() => { const t = demandTemperature(d); const m = tempMeta(t); return <Pill color={m.color} solid>{m.label}{d.temperature_override ? " 📌" : ""}</Pill>; })()}
-                    {isVip && <Pill color="#d97706" solid>⭐ VIP</Pill>}
-                    {d.lead?.lead_source?.name && <Pill color={C.purple} solid>📢 {d.lead.lead_source.name}</Pill>}
-                  </div>
-                  <div style={{ fontSize: 12, color: "#555" }}>{demandEnquiryLine(d)}</div>
-                  <div style={{ fontSize: 11, color: "#888" }}>Due: {dueLine}</div>
-                  {step.action === "none" ? (
-                    <span style={{ fontSize: 11, color: "#999" }}>{step.label}</span>
-                  ) : step.disabled ? (
-                    <span style={{ fontSize: 11, color: step.color, padding: "4px 10px", border: `1px solid ${step.color}`, borderRadius: 6, alignSelf: "flex-start" }}>{step.label}</span>
-                  ) : (
-                    <Btn small color={step.color} onClick={(e) => {
-                      e.stopPropagation();
-                      setSelectedLeadId(d.lead?.id || null);
-                      setSelectedDemand(d);
-                      setPendingAction(step.action === "call" ? "call" : null);
-                    }}>{step.label}</Btn>
+                  {manageMode && isManagerPlus && (
+                    <td style={{ padding: "6px 4px" }}>
+                      <input type="checkbox" checked={isBulkChecked}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => { setBulkSelected((prev) => { const next = new Set(prev); e.target.checked ? next.add(d.id) : next.delete(d.id); return next; }); }}
+                        style={{ width: 15, height: 15, cursor: "pointer" }} />
+                    </td>
                   )}
-                </Card>
-                </div>{/* end position:relative wrapper */}
+                  <td style={{ padding: "6px 8px", maxWidth: 160 }}>
+                    <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {d.lead?.name || (isLid(d.lead?.phone) ? (d.lead?.wa_display_name || displayPhone(d.lead?.phone)) : d.lead?.phone) || "Unknown"}
+                      {isVip && " ⭐"}
+                    </div>
+                    <div style={{ fontSize: 11, color: "#888" }}>{d.lead?.phone}{d.lead?.lead_source?.name ? ` · 📢 ${d.lead.lead_source.name}` : ""}</div>
+                  </td>
+                  <td style={{ padding: "6px 8px", maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#555" }}>
+                    {demandEnquiryLine(d)}
+                  </td>
+                  <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>
+                    <Pill color={dueMeta.color} solid>{dueBucket === "overdue" ? "🔴" : dueBucket === "today" ? "🟠" : dueBucket === "week" ? "🟡" : ""} {dueMeta.label}</Pill>
+                    <div style={{ fontSize: 10.5, color: "#999", marginTop: 2 }}>{dueLine}</div>
+                  </td>
+                  <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>
+                    <Pill color={tMeta.color} solid>{tMeta.label}{d.temperature_override ? " 📌" : ""}</Pill>
+                  </td>
+                  <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>
+                    {step.action === "none" ? (
+                      <span style={{ fontSize: 11, color: "#999" }}>{step.label}</span>
+                    ) : step.disabled ? (
+                      <span style={{ fontSize: 11, color: step.color }}>{step.label}</span>
+                    ) : (
+                      <Btn small color={step.color} onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedLeadId(d.lead?.id || null);
+                        setSelectedDemand(d);
+                        setPendingAction(step.action === "call" ? "call" : null);
+                      }}>{step.label}</Btn>
+                    )}
+                  </td>
+                </tr>
                 {sel && selectedLead && selectedDemand?.id === d.id && (
-                  <ConversationPane
-                    key={d.id}
-                    lead={selectedLead}
-                    funnel={selectedFunnel}
-                    onClose={() => { setSelectedLeadId(null); setSelectedDemand(null); setPendingAction(null); }}
-                    onChanged={load}
-                    allTags={allTags}
-                    demand={selectedDemand}
-                    onAdvanceStep={d.step?.step_type !== "call" ? () => advanceStep(d) : null}
-                    onRollbackStep={() => rollbackStep(d)}
-                    onMergeDuplicate={() => {
-                      const secId = window.prompt("Enter the duplicate lead ID to merge into this record (find it in Contacts tab):");
-                      if (secId?.trim()) setMergeModal({ primaryId: d.lead?.id, secondaryId: secId.trim() });
-                    }}
-                    autoOpen={pendingAction}
-                  />
+                  <tr>
+                    <td colSpan={manageMode && isManagerPlus ? 6 : 5} style={{ padding: 0 }}>
+                      <ConversationPane
+                        key={d.id}
+                        lead={selectedLead}
+                        funnel={selectedFunnel}
+                        onClose={() => { setSelectedLeadId(null); setSelectedDemand(null); setPendingAction(null); }}
+                        onChanged={load}
+                        allTags={allTags}
+                        demand={selectedDemand}
+                        onAdvanceStep={d.step?.step_type !== "call" ? () => advanceStep(d) : null}
+                        onRollbackStep={() => rollbackStep(d)}
+                        onMergeDuplicate={() => {
+                          const secId = window.prompt("Enter the duplicate lead ID to merge into this record (find it in Contacts tab):");
+                          if (secId?.trim()) setMergeModal({ primaryId: d.lead?.id, secondaryId: secId.trim() });
+                        }}
+                        autoOpen={pendingAction}
+                      />
+                    </td>
+                  </tr>
                 )}
               </React.Fragment>
             );
           })}
-          {!filtered.length && !loading && (
-            <div style={{ padding: 20, textAlign: "center", color: "#aaa", fontSize: 13 }}>
-              No active demands. Click "+ New Demand" to add one.
-            </div>
-          )}
+          </tbody>
+        </table>
+        </div>
+        {!filtered.length && !loading && (
+          <div style={{ padding: 20, textAlign: "center", color: "#aaa", fontSize: 13 }}>
+            No active demands. Click "+ New Demand" to add one.
+          </div>
+        )}
 
-          {/* ── Closed / Converted section ── */}
-          {closedFiltered.length > 0 && (
-            <div style={{ marginTop: 16 }}>
-              <button
-                onClick={() => setShowClosed((v) => !v)}
-                style={{ width: "100%", padding: "8px 14px", background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 8, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 13, color: "#6b7280", fontWeight: 600 }}>
-                <span>✅ Closed / Converted ({closedFiltered.length})</span>
-                <span>{showClosed ? "▲ hide" : "▼ show"}</span>
-              </button>
-              {showClosed && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 6 }}>
-                  {closedFiltered.map((d) => {
-                    const sel = d.lead?.id === selectedLeadId;
-                    const outcome = d.outcome || (d.lead?.status === "dead" ? "lost" : "converted");
-                    const outcomeColor = outcome === "converted" ? "#16a085" : "#6b7280";
-                    const outcomeLabel = outcome === "converted" ? "✅ Converted" : outcome === "lost" ? "❌ Lost" : outcome === "junk" ? "🗑 Junk" : "💀 Dead";
-                    return (
-                      <React.Fragment key={d.id}>
-                        <div
-                          onClick={() => {
-                            if (sel) { setSelectedLeadId(null); setSelectedDemand(null); }
-                            else { setSelectedLeadId(d.lead?.id || null); setSelectedDemand(d); }
-                          }}
-                          style={{ padding: "8px 12px", background: sel ? "#f0fdf4" : "#fafafa", border: `1px solid ${sel ? "#86efac" : "#e5e7eb"}`, borderRadius: 8, cursor: "pointer", opacity: 0.85 }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                            <strong style={{ fontSize: 13, color: "#374151" }}>{d.lead?.name || d.lead?.phone || "Unknown"}</strong>
-                            <div style={{ display: "flex", gap: 4 }}>
-                              <Pill color={outcomeColor} solid>{outcomeLabel}</Pill>
-                              {d.lead?.phone && <span style={{ fontSize: 11, color: "#9ca3af" }}>{d.lead.phone}</span>}
-                            </div>
-                          </div>
-                          <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 2, display: "flex", justifyContent: "space-between" }}>
-                            <span>{d.description || "(no description)"}</span>
-                            <span>{fmtDT(d.updated_at)}</span>
-                          </div>
-                        </div>
-                        {sel && selectedLead && selectedDemand?.id === d.id && (
+        {/* ── Closed / Converted section ── */}
+        {closedFiltered.length > 0 && (
+          <div style={{ marginTop: 16 }}>
+            <button
+              onClick={() => setShowClosed((v) => !v)}
+              style={{ width: "100%", padding: "8px 14px", background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 8, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: 13, color: "#6b7280", fontWeight: 600 }}>
+              <span>✅ Closed / Converted ({closedFiltered.length})</span>
+              <span>{showClosed ? "▲ hide" : "▼ show"}</span>
+            </button>
+            {showClosed && (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, marginTop: 6 }}>
+                <tbody>
+                {closedFiltered.map((d) => {
+                  const sel = d.lead?.id === selectedLeadId;
+                  const outcome = d.outcome || (d.lead?.status === "dead" ? "lost" : "converted");
+                  const outcomeColor = outcome === "converted" ? "#16a085" : "#6b7280";
+                  const outcomeLabel = outcome === "converted" ? "✅ Converted" : outcome === "lost" ? "❌ Lost" : outcome === "junk" ? "🗑 Junk" : "💀 Dead";
+                  return (
+                    <React.Fragment key={d.id}>
+                      <tr
+                        onClick={() => {
+                          if (sel) { setSelectedLeadId(null); setSelectedDemand(null); }
+                          else { setSelectedLeadId(d.lead?.id || null); setSelectedDemand(d); }
+                        }}
+                        style={{ cursor: "pointer", background: sel ? "#f0fdf4" : "#fafafa", borderBottom: "1px solid #f0f0f0", opacity: 0.85 }}>
+                        <td style={{ padding: "6px 8px", fontWeight: 600, color: "#374151" }}>{d.lead?.name || d.lead?.phone || "Unknown"}</td>
+                        <td style={{ padding: "6px 8px", color: "#9ca3af" }}>{d.description || "(no description)"}</td>
+                        <td style={{ padding: "6px 8px" }}><Pill color={outcomeColor} solid>{outcomeLabel}</Pill></td>
+                        <td style={{ padding: "6px 8px", color: "#9ca3af", whiteSpace: "nowrap" }}>{fmtDT(d.updated_at)}</td>
+                      </tr>
+                      {sel && selectedLead && selectedDemand?.id === d.id && (
+                        <tr><td colSpan={4} style={{ padding: 0 }}>
                           <ConversationPane
                             lead={selectedLead}
                             funnel={selectedFunnel}
@@ -1814,15 +1849,16 @@ function DemandsScreen({ funnels, allTags, adOnly = false }) {
                             onRollbackStep={null}
                             onMergeDuplicate={null}
                           />
-                        )}
-                      </React.Fragment>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+                        </td></tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -11259,7 +11295,7 @@ export default function App() {
     // Saurav's own login only — jump straight to Vendors → new-vendor card
     // scan form on every app open. Everyone else keeps the normal default.
     if (user?.username === "saurav") return "vendors";
-    return isTelecallerUser ? "queue" : "demands";
+    return "demands";
   });
   const [, forceNavRefresh] = useState(0); // re-render after localStorage-only pinned-tabs changes
   const [moreTabsOpen, setMoreTabsOpen] = useState(false);
@@ -11409,7 +11445,6 @@ export default function App() {
 
   // Tabs filtered by app_permissions (set in SSJ HR → People → Permissions tab)
   const ALL_TABS = [
-    { k: "queue",      l: "My Queue",    icon: "📞" },
     { k: "approvals",  l: "Approvals",   icon: "✅" },
     { k: "demands",    l: "Demands",     icon: "🎯" },
     { k: "adleads",    l: "AdLeads",     icon: "📢" },
@@ -11447,7 +11482,7 @@ export default function App() {
     admin:      ALL_TABS.map((t) => t.k),
     manager:    ["demands", "adleads", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift", "corpgiftdesigns", "solitairedesigns", "clientplatform", "blog", "kitty"],
     staff:      ["demands", "adleads", "contacts", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
-    telecaller: ["queue", "demands", "adleads"],
+    telecaller: ["demands", "adleads"],
   };
 
   // admin/superadmin always get all tabs regardless of stored app_permissions.crm
@@ -11513,7 +11548,6 @@ export default function App() {
       <ContactFieldsContext.Provider value={cfCtx}>
         <div style={{ maxWidth: 1280, margin: "0 auto", padding: "0.5rem" }}>
           {embedScreen === "demands"  && <DemandsScreen funnels={funnels} allTags={allTags} />}
-          {embedScreen === "queue"    && <TelecallerQueueScreen funnels={funnels} />}
           {embedScreen === "contacts" && <ContactsScreen funnels={funnels} />}
         </div>
       </ContactFieldsContext.Provider>
@@ -11580,7 +11614,6 @@ export default function App() {
         )}
       </div>
 
-      {activeScreen === "queue" && <TelecallerQueueScreen funnels={funnels} />}
       {activeScreen === "approvals" && <ApprovalsScreen funnels={funnels} canApprove={canWriteTab(user, "approvals")} />}
       {activeScreen === "demands" && <DemandsScreen funnels={funnels} allTags={allTags} />}
       {activeScreen === "adleads" && <DemandsScreen funnels={funnels} allTags={allTags} adOnly />}
