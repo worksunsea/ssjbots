@@ -107,7 +107,13 @@ function buildInstallmentSchedule({ enrollmentId, scheduleStart, durationMonths,
       const amount = backfill.amount != null ? Number(backfill.amount) : monthlyAmount;
       rows.push({
         tenant_id: TENANT_ID, enrollment_id: enrollmentId, month_number: m,
-        due_date: backfill.paidAt || addMonths(scheduleStart, m - 1),
+        // due_date always follows the theoretical schedule position, same
+        // as an un-backfilled row — NOT the real paidAt date. Paying early
+        // or late is normal and shouldn't shift a month's slot in the
+        // sequence; mixing the two made due_date non-monotonic across
+        // month numbers whenever staff's paidAt didn't match schedule math,
+        // which made later (still-due) months look wildly overdue.
+        due_date: addMonths(scheduleStart, m - 1),
         amount, status: "paid", paid_amount: amount,
         paid_at: backfill.paidAt ? `${backfill.paidAt}T00:00:00Z` : new Date().toISOString(),
         recorded_by: "staff (backfill)",
