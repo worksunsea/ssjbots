@@ -21,6 +21,10 @@
 //      startDate, confirmedBy, paidMonths? }. Direct in-store enrolment (no
 //      prior public interest submission needed); paidMonths backfills
 //      already-elapsed months if the member actually started earlier.
+// POST /api/kitty?action=change-scheme         — staff. Body: { id, newSchemeId }.
+//      Corrects a wrongly-picked scheme; blocked once any installment is paid.
+// POST /api/kitty?action=delete-enrollment      — staff. Body: { id }.
+//      Hard-deletes a genuine duplicate entry; blocked once any installment is paid.
 
 import crypto from "crypto";
 import { supa } from "./_lib/supabase.js";
@@ -760,6 +764,87 @@ export default async function handler(req, res) {
     if (error) return res.status(500).json({ ok: false, error: error.message });
     await logAudit(sb, { entityType: "enrollment", entityId: body.id, action: "update", actor: body.actor, details: { before: { startDate: before.start_date, notes: before.notes }, after: patch } });
     return res.status(200).json({ ok: true, enrollment: data });
+  }
+
+  // POST ?action=change-scheme — staff. Corrects a wrongly-picked scheme on
+  // an enrollment. Body: { id, newSchemeId, actor }. Only allowed while
+  // nothing's actually been paid yet (no 'paid' installments) — once real
+  // money has moved, cancel and re-enroll instead so payment history isn't
+  // lost. Rebuilds the installment schedule from scratch under the new
+  // scheme (old due/free rows deleted, new ones generated); reassigns a
+  // lucky-draw batch if the new scheme uses one.
+  if (req.method === "POST" && action === "change-scheme") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    if (!body.id || !body.newSchemeId) return res.status(400).json({ ok: false, error: "id_newSchemeId_required" });
+
+    const { data: enrollment } = await sb.from("kitty_enrollments").select("*, scheme:kitty_schemes(*)").eq("tenant_id", TENANT_ID).eq("id", body.id).maybeSingle();
+    if (!enrollment) return res.status(404).json({ ok: false, error: "not_found" });
+    if (enrollment.is_legacy) return res.status(400).json({ ok: false, error: "cannot_change_scheme_on_legacy_enrollment" });
+
+    const { data: paidRows } = await sb.from("kitty_installments").select("id").eq("enrollment_id", body.id).eq("status", "paid");
+    if (paidRows?.length) return res.status(400).json({ ok: false, error: "has_paid_installments_cancel_and_reenroll_instead" });
+
+    const { data: newScheme } = await sb.from("kitty_schemes").select("*").eq("tenant_id", TENANT_ID).eq("id", body.newSchemeId).maybeSingle();
+    if (!newScheme) return res.status(400).json({ ok: false, error: "scheme_not_found" });
+    const newPerks = newScheme.perks || {};
+
+    await sb.from("kitty_installments").delete().eq("enrollment_id", body.id);
+
+    let batchId = null;
+    let scheduleStart = enrollment.start_date || new Date().toISOString().slice(0, 10);
+    if (newPerks.lucky_draw) {
+      let batch;
+      try { batch = await getOrCreateOpenBatch(sb, newScheme, scheduleStart); }
+      catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
+      batchId = batch.id;
+      scheduleStart = batch.start_date;
+    }
+
+    const patch = { scheme_id: newScheme.id, batch_id: batchId, monthly_amount_override: null, start_date: scheduleStart };
+    const { data: updated, error: updErr } = await sb.from("kitty_enrollments").update(patch).eq("id", body.id).select().single();
+    if (updErr) return res.status(500).json({ ok: false, error: updErr.message });
+
+    let installmentsCreated = 0;
+    if (newPerks.unit !== "grams" && newScheme.monthly_amount != null) {
+      const rows = buildInstallmentSchedule({
+        enrollmentId: body.id, scheduleStart, durationMonths: newScheme.duration_months,
+        monthlyAmount: newScheme.monthly_amount, perks: newPerks, paidMonths: null,
+      });
+      const { error: insErr } = await sb.from("kitty_installments").insert(rows);
+      if (insErr) return res.status(500).json({ ok: false, error: insErr.message, enrollment: updated });
+      installmentsCreated = rows.length;
+    }
+    await logAudit(sb, { entityType: "enrollment", entityId: body.id, action: "change-scheme", actor: body.actor, details: { fromSchemeId: enrollment.scheme_id, fromSchemeName: enrollment.scheme?.name, toSchemeId: newScheme.id, toSchemeName: newScheme.name } });
+    return res.status(200).json({ ok: true, enrollment: updated, installmentsCreated });
+  }
+
+  // POST ?action=delete-enrollment — staff. Hard-deletes a genuine duplicate
+  // entry (e.g. staff double-enrolled the same member by mistake). Body:
+  // { id, actor }. Blocked if any installment is 'paid' — real money means
+  // it's not a duplicate, use cancel-enrollment (soft) instead, which keeps
+  // the record for the audit trail. Deletes installments + any pending
+  // redemption codes first (FK children), then the enrollment row itself.
+  if (req.method === "POST" && action === "delete-enrollment") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    if (!body.id) return res.status(400).json({ ok: false, error: "id_required" });
+
+    const { data: enrollment } = await sb.from("kitty_enrollments").select("*, scheme:kitty_schemes(name), lead:bullion_leads(name,phone)").eq("tenant_id", TENANT_ID).eq("id", body.id).maybeSingle();
+    if (!enrollment) return res.status(404).json({ ok: false, error: "not_found" });
+
+    const { data: paidRows } = await sb.from("kitty_installments").select("id").eq("enrollment_id", body.id).eq("status", "paid");
+    if (paidRows?.length) return res.status(400).json({ ok: false, error: "has_paid_installments_cannot_delete_use_cancel" });
+
+    await sb.from("kitty_redemption_codes").delete().eq("enrollment_id", body.id);
+    await sb.from("kitty_installments").delete().eq("enrollment_id", body.id);
+    const { error: delErr } = await sb.from("kitty_enrollments").delete().eq("tenant_id", TENANT_ID).eq("id", body.id);
+    if (delErr) return res.status(500).json({ ok: false, error: delErr.message });
+
+    await logAudit(sb, { entityType: "enrollment", entityId: body.id, action: "delete", actor: body.actor, details: { name: enrollment.lead?.name, phone: enrollment.lead?.phone, schemeName: enrollment.is_legacy ? enrollment.legacy_scheme_name : enrollment.scheme?.name, note: "hard_delete_duplicate" } });
+    return res.status(200).json({ ok: true });
   }
 
   // POST ?action=update-installment — staff. Corrects a single installment

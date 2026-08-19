@@ -445,17 +445,20 @@ function EnrollmentsTab({ crmSecret, actor }) {
   const [status, setStatus] = useState("");
   const [enrollments, setEnrollments] = useState([]);
   const [batches, setBatches] = useState([]);
+  const [schemes, setSchemes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [d, b] = await Promise.all([
+    const [d, b, s] = await Promise.all([
       call("admin-list-enrollments", { crmSecret, params: status ? { status } : {} }),
       call("admin-list-batches", { crmSecret }),
+      call("admin-list-schemes", { crmSecret }),
     ]);
     setEnrollments(d.ok ? d.enrollments : []);
     setBatches(b.ok ? b.batches : []);
+    setSchemes(s.ok ? s.schemes : []);
     setLoading(false);
   }, [crmSecret, status]);
 
@@ -488,6 +491,26 @@ function EnrollmentsTab({ crmSecret, actor }) {
   const cancel_ = async (id) => {
     if (!confirm("Cancel this enrollment?")) return;
     const d = await call("cancel-enrollment", { method: "POST", crmSecret, body: { id, actor } });
+    if (d.ok) load(); else alert(d.error);
+  };
+  // Corrects a wrongly-picked scheme. Only allowed pre-payment — the API
+  // rejects it once any installment is marked paid (use cancel + re-enroll
+  // instead in that case, to preserve payment history).
+  const changeScheme = async (e) => {
+    const options = schemes.map((s) => `${s.id.slice(0, 8)}… = ${s.name}`).join("\n");
+    const newSchemeId = prompt(`Change scheme for ${e.lead?.name || "this member"} (currently ${e.scheme?.name}).\nPick a scheme ID:\n${options}`);
+    if (!newSchemeId) return;
+    const match = schemes.find((s) => s.id === newSchemeId || s.id.startsWith(newSchemeId));
+    if (!match) return alert("No scheme matches that ID.");
+    if (!confirm(`Switch to "${match.name}"? This rebuilds the installment schedule from scratch (only allowed since nothing's been paid yet).`)) return;
+    const d = await call("change-scheme", { method: "POST", crmSecret, body: { id: e.id, newSchemeId: match.id, actor } });
+    if (d.ok) load(); else alert(d.error);
+  };
+  // Hard delete — for genuine duplicate entries only (double-enrolled by
+  // mistake). Blocked server-side once any installment is paid.
+  const deleteEnrollment_ = async (e) => {
+    if (prompt(`Type DELETE to permanently remove this duplicate enrollment for ${e.lead?.name || "this member"} (${e.is_legacy ? e.legacy_scheme_name : e.scheme?.name}). This cannot be undone.`) !== "DELETE") return;
+    const d = await call("delete-enrollment", { method: "POST", crmSecret, body: { id: e.id, actor } });
     if (d.ok) load(); else alert(d.error);
   };
   const markPaid = async (installmentId) => {
@@ -586,8 +609,10 @@ function EnrollmentsTab({ crmSecret, actor }) {
               <b>{e.lead?.name || "—"}</b> ({e.lead?.phone}) — {e.is_legacy ? e.legacy_scheme_name : e.scheme?.name}{e.member_number ? ` #${e.member_number}` : ""} — <i>{e.status}</i>
               {e.start_date && <span style={{ marginLeft: 8, fontSize: 11.5, color: "#666" }}>started {e.start_date}</span>}
               {!e.is_legacy && <button onClick={() => editEnrollment(e)} style={{ marginLeft: 8 }}>Edit Start Date</button>}
+              {!e.is_legacy && (e.status === "pending_confirmation" || e.status === "active") && <button onClick={() => changeScheme(e)} style={{ marginLeft: 8 }}>Change Scheme</button>}
               {e.status === "pending_confirmation" && <button onClick={() => confirm_(e.id)} style={{ marginLeft: 8 }}>Confirm & Start</button>}
               {(e.status === "pending_confirmation" || e.status === "active") && <button onClick={() => cancel_(e.id)} style={{ marginLeft: 8 }}>Cancel</button>}
+              <button onClick={() => deleteEnrollment_(e)} style={{ marginLeft: 8, color: "#b91c1c" }}>Delete (duplicate)</button>
               {e.status === "active" && <button onClick={() => addInstallment(e.id)} style={{ marginLeft: 8 }}>+ Add Purchase/Installment</button>}
               {(e.status === "active" || e.status === "completed") && (
                 <button onClick={() => redeem(e)} style={{ marginLeft: 8, fontWeight: 600 }}>
