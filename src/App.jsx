@@ -11722,11 +11722,15 @@ function computeJewelleryEstimate(jw, makingMode, gRate) {
   const goldVal = netGold * gRate;
   const makingR = makingMode === "per_g" ? parseFloat(jw.makingRatePg || 0) : parseFloat(jw.makingRatePct || 0);
   const isBelow1g = gross > 0 && gross < 1;
-  const making = isBelow1g ? 2000 : (makingMode === "per_g" ? netGold * makingR : goldVal * (makingR / 100));
+  const makingMrp = isBelow1g ? 2000 : (makingMode === "per_g" ? netGold * makingR : goldVal * (makingR / 100));
+  const makingDiscPct = Math.min(100, Math.max(0, parseFloat(jw.makingDiscPct || 0)));
+  const making = makingMrp * (1 - makingDiscPct / 100);
   const d1raw = parseFloat(jw.dia1Wt || 0);
   const d2raw = parseFloat(jw.dia2Wt || 0);
   const straw = parseFloat(jw.stoneWt || 0);
-  const diaTotal = d1raw * parseFloat(jw.dia1Rate || 0) + d2raw * parseFloat(jw.dia2Rate || 0) + straw * parseFloat(jw.stoneRate || 0);
+  const diaMrp = d1raw * parseFloat(jw.dia1Rate || 0) + d2raw * parseFloat(jw.dia2Rate || 0) + straw * parseFloat(jw.stoneRate || 0);
+  const diaDiscPct = Math.min(100, Math.max(0, parseFloat(jw.diaDiscPct || 0)));
+  const diaTotal = diaMrp * (1 - diaDiscPct / 100);
   const miscVal = (wt, rate) => { const w = parseFloat(wt || 0), r = parseFloat(rate || 0); return w > 0 ? w * r : r; };
   const misc1Val = miscVal(jw.misc1Wt, jw.misc1Rate);
   const misc2Val = miscVal(jw.misc2Wt, jw.misc2Rate);
@@ -11736,13 +11740,19 @@ function computeJewelleryEstimate(jw, makingMode, gRate) {
   const gst = jw.applyGst ? subTotal * 0.03 : 0;
   const qty = Math.max(1, parseInt(jw.qty || "1", 10) || 1);
   const perPieceTotal = subTotal + gst;
-  return { gross, gRate, netGold, goldVal, making, makingR, makingMode, isBelow1g, diaTotal, miscTotal, subTotal, gst, qty, perPieceTotal, total: perPieceTotal * qty };
+  return { gross, gRate, netGold, goldVal, making, makingMrp, makingDiscPct, makingR, makingMode, isBelow1g, diaTotal, diaMrp, diaDiscPct, miscTotal, subTotal, gst, qty, perPieceTotal, total: perPieceTotal * qty };
 }
 
 // "Gold" or "Silver" — drives every metal-value label (results, print, PDF, WA)
 // so choosing a silver purity doesn't leave "Gold Value" etc. on screen/output.
 function metalLabel(purityIdx) {
   return /silver/i.test(PURITIES[purityIdx]?.l || "") ? "Silver" : "Gold";
+}
+
+// Purity label without the "(xx.x%)" fineness parenthetical — customer-facing
+// output (PDF/WA captions) only needs "22kt", not "22kt (91.6%)".
+function purityShortLabel(purityIdx) {
+  return (PURITIES[purityIdx]?.l || "Custom").replace(/\s*\([^)]*\)\s*$/, "");
 }
 
 // Shared jewellery pricing input block — used verbatim by both the
@@ -11777,6 +11787,10 @@ function JewelleryPricingFields({ jw, setJw, makingMode, onMakingModeChange, liv
             ? <input style={inp} type="number" value={jw.makingRatePg} onChange={(e) => setJw((p) => ({ ...p, makingRatePg: e.target.value }))} placeholder="1500" />
             : <input style={inp} type="number" value={jw.makingRatePct} onChange={(e) => setJw((p) => ({ ...p, makingRatePct: e.target.value }))} placeholder="15" />}
         </div>
+        <div>
+          <label style={lbl}>Making Discount % (off MRP)</label>
+          <input style={{ ...inp, background: parseFloat(jw.makingDiscPct || 0) > 0 ? "#fff3e0" : "#fff" }} type="number" min="0" max="100" step="1" value={jw.makingDiscPct || ""} onChange={(e) => setJw((p) => ({ ...p, makingDiscPct: e.target.value }))} placeholder="0" />
+        </div>
         <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, alignSelf: "end", paddingBottom: 8 }}>
           <input type="checkbox" checked={jw.applyGst} onChange={(e) => setJw((p) => ({ ...p, applyGst: e.target.checked }))} /> Apply 3% GST
         </label>
@@ -11801,6 +11815,10 @@ function JewelleryPricingFields({ jw, setJw, makingMode, onMakingModeChange, liv
               <div><label style={lbl}>{label} Rate (₹/g)</label><input style={inp} type="number" value={jw[rateK]} onChange={(e) => setJw((p) => ({ ...p, [rateK]: e.target.value }))} placeholder="0" /></div>
             </div>
           ))}
+          <div style={{ marginBottom: 8 }}>
+            <label style={lbl}>Diamond/Stone Discount % (off MRP)</label>
+            <input style={{ ...inp, maxWidth: 160, background: parseFloat(jw.diaDiscPct || 0) > 0 ? "#fff3e0" : "#fff" }} type="number" min="0" max="100" step="1" value={jw.diaDiscPct || ""} onChange={(e) => setJw((p) => ({ ...p, diaDiscPct: e.target.value }))} placeholder="0" />
+          </div>
           <div style={{ marginBottom: 8 }}>
             <button type="button" style={{ fontSize: 12, padding: "5px 12px", borderRadius: 6, border: "1px solid #c9a0dc", background: "#fdf4ff", cursor: "pointer", color: "#7b2d8b", marginBottom: 8 }}
               onClick={() => setJw((p) => ({ ...p, misc1Lbl: "Kundan", misc1Deduct: true }))}
@@ -12334,7 +12352,7 @@ function openEstimateSlipWindow(est, liveRates = {}, clientPhone = "") {
     const dRows = [];
     const pdfRows = [];
     const addRow = (label, value) => { dRows.push(row(label, value)); pdfRows.push([label, value]); };
-    addRow("Purity", PURITIES[it.purityIdx]?.l || "Custom");
+    addRow("Purity", purityShortLabel(it.purityIdx));
     if (it.grossWt) addRow("Gross Weight", `${parseFloat(it.grossWt||0).toFixed(3)} g`);
     if (it.netGold != null) addRow(`Net ${metal} Weight`, `${netGold.toFixed(3)} g`);
     if (it.gRate > 0) addRow(`${metal} Rate`, `₹${Math.round(it.gRate).toLocaleString("en-IN")}/g`);
@@ -12344,11 +12362,15 @@ function openEstimateSlipWindow(est, liveRates = {}, clientPhone = "") {
         ? makingRateLabel(parseFloat(it.makingMode === "per_g" ? it.makingRatePg : it.makingRatePct) || 0, it.makingMode, it.isBelow1g)
         : (netGold > 0 ? `₹${Math.round(making / netGold).toLocaleString("en-IN")}/g (effective)` : "—");
       addRow("Making Rate", makingRateTxt);
-      addRow("Making Total", fmtN(making));
+      addRow("Making Total", it.makingMrp > 0 && it.makingDiscPct > 0 ? `${fmtN(it.makingMrp)} → ${fmtN(making)}  (${it.makingDiscPct}% off)` : fmtN(making));
     }
-    if (parseFloat(it.dia1Wt||0) > 0 && it.dia1Rate > 0) addRow(`Diamond 1 (${parseFloat(it.dia1Wt)}${it.dia1Unit} @ ₹${it.dia1Rate})`, fmtN(parseFloat(it.dia1Wt||0)*parseFloat(it.dia1Rate||0)));
-    if (parseFloat(it.dia2Wt||0) > 0 && it.dia2Rate > 0) addRow(`Diamond 2 (${parseFloat(it.dia2Wt)}${it.dia2Unit} @ ₹${it.dia2Rate})`, fmtN(parseFloat(it.dia2Wt||0)*parseFloat(it.dia2Rate||0)));
-    if (parseFloat(it.stoneWt||0) > 0 && it.stoneRate > 0) addRow(`Stone (${parseFloat(it.stoneWt)}${it.stoneUnit} @ ₹${it.stoneRate})`, fmtN(parseFloat(it.stoneWt||0)*parseFloat(it.stoneRate||0)));
+    if (diaTotal > 0 && it.diaMrp > 0 && it.diaDiscPct > 0) {
+      addRow("Diamond/Stone", `${fmtN(it.diaMrp)} → ${fmtN(diaTotal)}  (${it.diaDiscPct}% off)`);
+    } else {
+      if (parseFloat(it.dia1Wt||0) > 0 && it.dia1Rate > 0) addRow(`Diamond 1 (${parseFloat(it.dia1Wt)}${it.dia1Unit} @ ₹${it.dia1Rate})`, fmtN(parseFloat(it.dia1Wt||0)*parseFloat(it.dia1Rate||0)));
+      if (parseFloat(it.dia2Wt||0) > 0 && it.dia2Rate > 0) addRow(`Diamond 2 (${parseFloat(it.dia2Wt)}${it.dia2Unit} @ ₹${it.dia2Rate})`, fmtN(parseFloat(it.dia2Wt||0)*parseFloat(it.dia2Rate||0)));
+      if (parseFloat(it.stoneWt||0) > 0 && it.stoneRate > 0) addRow(`Stone (${parseFloat(it.stoneWt)}${it.stoneUnit} @ ₹${it.stoneRate})`, fmtN(parseFloat(it.stoneWt||0)*parseFloat(it.stoneRate||0)));
+    }
     [["misc1Lbl","misc1Wt","misc1Unit","misc1Rate"],["misc2Lbl","misc2Wt","misc2Unit","misc2Rate"],["misc3Lbl","misc3Wt","misc3Unit","misc3Rate"]].forEach(([lk,wk,uk,rk]) => {
       const mr = parseFloat(it[rk]||0); if (!mr) return;
       const mw = parseFloat(it[wk]||0);
@@ -12367,7 +12389,7 @@ function openEstimateSlipWindow(est, liveRates = {}, clientPhone = "") {
     <table>${dRows.join("")}<tr class="total-row"><td>GRAND TOTAL</td><td style="text-align:right;">${fmtN(est.total_amount)}</td></tr></table>
     <div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill</div>
     <div class="btnrow"><button class="printbtn" onclick="window.print()">🖨️ Print</button>${waBtnHtml}${recalcBtnHtml}</div>`;
-    const waCaption = `*ESTIMATE — Sun Sea Jewellers*\n${clientName ? "For: " + clientName + "\n" : ""}Date: ${date}\n\n${it.itemName ? it.itemName + "\n" : ""}Purity: ${PURITIES[it.purityIdx]?.l || "Custom"}\nGross Wt: ${it.grossWt || "—"}g\n${qty > 1 ? `Pcs: ${qty}\n` : ""}Total: ${fmtN(est.total_amount)}\n\n_This is an estimate only_`;
+    const waCaption = `*ESTIMATE — Sun Sea Jewellers*\n${clientName ? "For: " + clientName + "\n" : ""}Date: ${date}\n\n${it.itemName ? it.itemName + "\n" : ""}Purity: ${purityShortLabel(it.purityIdx)}\nGross Wt: ${it.grossWt || "—"}g\n${qty > 1 ? `Pcs: ${qty}\n` : ""}Total: ${fmtN(est.total_amount)}\n\n_This is an estimate only_`;
     const pdfPayload = JSON.stringify({ phone: waPhone, clientName, title: "ESTIMATE", sections: [{ rows: pdfRows, total: fmtN(est.total_amount) }], caption: waCaption }).replace(/</g, "\\u003c");
     extraScript = `
 var SEND_PAYLOAD=${pdfPayload};
@@ -12380,7 +12402,7 @@ function sendPdf(){
   });
 }
 var TODAY_RATE=${todayRate},NET_GOLD=${netGold},MAKING=${making},DIA_TOTAL=${diaTotal},MISC_TOTAL=${miscTotal},APPLY_GST=${applyGst},QTY=${qty};
-var CLIENT="${clientName.replace(/"/g,"'")}",IMG="${(it.itemImage||"").replace(/"/g,"'")}",INAME="${(it.itemName||"").replace(/"/g,"'")}",PURITY="${(PURITIES[it.purityIdx]?.l||"Custom").replace(/"/g,"'")}",GWGT="${(it.grossWt||"").toString().replace(/"/g,"'")}",NGWGT="${netGold.toFixed(3)}",METAL="${metal}";
+var CLIENT="${clientName.replace(/"/g,"'")}",IMG="${(it.itemImage||"").replace(/"/g,"'")}",INAME="${(it.itemName||"").replace(/"/g,"'")}",PURITY="${purityShortLabel(it.purityIdx).replace(/"/g,"'")}",GWGT="${(it.grossWt||"").toString().replace(/"/g,"'")}",NGWGT="${netGold.toFixed(3)}",METAL="${metal}";
 var MAKING_RATE_TXT="${(it.makingMode ? makingRateLabel(parseFloat(it.makingMode === "per_g" ? it.makingRatePg : it.makingRatePct) || 0, it.makingMode, it.isBelow1g) : (netGold > 0 ? `₹${Math.round(making / netGold).toLocaleString("en-IN")}/g (effective)` : "—")).replace(/"/g,"'")}",DIA1="${it.dia1Wt||""}",DIA1U="${it.dia1Unit||""}",DIA1R="${it.dia1Rate||""}",DIA2="${it.dia2Wt||""}",DIA2U="${it.dia2Unit||""}",DIA2R="${it.dia2Rate||""}",STW="${it.stoneWt||""}",STU="${it.stoneUnit||""}",STR="${it.stoneRate||""}";
 function fmtR(n){return n==null?"—":"₹"+Math.round(n).toLocaleString("en-IN");}
 function expandImg(src){var w=window.open("","_blank","width=600,height=600");w.document.write("<body style='margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh'><img src='"+src+"' style='max-width:100%;max-height:100vh;object-fit:contain'/></body>");w.document.close();}
@@ -15077,6 +15099,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   const [saving, setSaving] = useState(false);
   const [saveModal, setSaveModal] = useState(false);
   const [justSaved, setJustSaved] = useState(false); // gates "Send Estimate" — only active right after a save
+  const [sendingEst, setSendingEst] = useState(false); // true while PDF is building/uploading/sending
   const [editingEstId, setEditingEstId] = useState(null);
   const [editingEstOrig, setEditingEstOrig] = useState(null);
   const [walkinOpen, setWalkinOpen] = useState(false);
@@ -15166,7 +15189,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   // Jewellery state
   const [jw, setJw] = useState({
     itemImage: "", itemName: "", vendorCode: "", size: "", notes: "", qty: "1", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true,
-    makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "",
+    makingRatePg: "1500", makingRatePct: "15", makingDiscPct: "", diaDiscPct: "", dia1Wt: "", dia1Unit: "ct", dia1Rate: "",
     dia2Wt: "", dia2Unit: "ct", dia2Rate: "",
     stoneWt: "", stoneUnit: "ct", stoneRate: "",
     misc1Lbl: "Gemstone", misc1Wt: "", misc1Unit: "g", misc1Rate: "", misc1Deduct: true,
@@ -15296,6 +15319,27 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   const solGoldGst = sol.applyGst && sol.includeGold && solGoldCalc ? solGoldCalc.total * 0.03 : 0;
   const solTotalGst = solStoneGst + solGoldGst;
   const solFinalTotal = solGrandTotal != null ? solGrandTotal + solTotalGst : null;
+
+  // Shared by Print, Download PDF, and Send Estimate — same source of truth, so
+  // all three always show identical numbers in the identical layout.
+  const solPdfRows = [
+    ["Shape", sol.shape],
+    ["Weight", `${sol.weight} ct`],
+    ["Colour / Clarity", `${sol.color} / ${sol.clarity}`],
+    ["Cut", sol.cut],
+    ["Certificate", sol.cert],
+    ...(solResult.sellPpc != null ? [["Sell Price/ct", fmt(solResult.sellPpc)]] : []),
+    ["Stone Total", solResult.sellTotal != null ? fmt(solResult.sellTotal) : "—"],
+    ...(sol.includeGold && solGoldCalc ? [
+      ["Gold + Making", fmt(solGoldCalc.goldVal + solGoldCalc.making)],
+      ...(solGoldCalc.diaInShank > 0 ? [["Diamond in Shank", fmt(solGoldCalc.diaInShank)]] : []),
+      ...(solGoldCalc.gemVal > 0 ? [["Gemstone / Other", fmt(solGoldCalc.gemVal)]] : []),
+      ["Setting Total", fmt(solGoldCalc.total)],
+    ] : []),
+    ...(sol.applyGst && solResult.sellTotal ? [["GST @ 1.5% (stone)", fmt(solStoneGst)]] : []),
+    ...(sol.applyGst && sol.includeGold && solGoldCalc ? [["GST @ 3% (gold setting)", fmt(solGoldGst)]] : []),
+  ];
+  const solCaption = `*ESTIMATE — Sun Sea Jewellers*\n\n*Stone:* ${sol.shape} ${sol.weight}ct ${sol.color}/${sol.clarity} ${sol.cut}\n*Certificate:* ${sol.cert}\n\n*Sell Price:* ${fmt(solResult.sellTotal)}\n${sol.includeGold && solGoldCalc ? `*Setting:* ${fmt(solGoldCalc.total)}\n` : ""}*Total:* ${fmt(solFinalTotal)}\n\n_Sun Sea Jewellers, Delhi_`;
 
   // Load history when active client changes
   useEffect(() => {
@@ -15444,13 +15488,6 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     }).then(r => r.json()).then(d => showToast(d.ok ? "✅ Sent on WhatsApp" : "❌ " + (d.error || "WA failed"))).catch(e => showToast("❌ " + e.message));
   };
 
-  // Opens WhatsApp Web/app directly with the message prefilled — no Baileys
-  // session, no PDF attachment. Staff sends manually from their own WA.
-  const openWaDirect = (phone, text) => {
-    if (!phone) { showToast("❌ No phone number for this client"); return; }
-    window.open(`https://wa.me/91${normalizePhone(phone)}?text=${encodeURIComponent(text)}`, "_blank");
-  };
-
   const fmt = (n) => n == null ? "—" : "₹" + Math.round(n).toLocaleString("en-IN");
   const inp = { padding: "6px 10px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13, width: "100%", boxSizing: "border-box" };
   const lbl = { fontSize: 11, color: "#888", marginBottom: 3, display: "block" };
@@ -15463,6 +15500,18 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: "1px solid #f5f5f5", fontWeight: highlight ? 700 : 400, color: highlight ? C.blue : "#333" }}>
       <span style={{ fontSize: 13, color: highlight ? C.blue : "#666" }}>{label}</span>
       <span style={{ fontSize: 13 }}>{val}</span>
+    </div>
+  );
+
+  // Same as resultRow, but when discPct > 0 shows the MRP struck through next
+  // to the discounted total, so staff and client can both see the markdown.
+  const resultRowDisc = (label, mrp, discPct, finalVal) => (
+    <div style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: "1px solid #f5f5f5" }}>
+      <span style={{ fontSize: 13, color: "#666" }}>{label}{discPct > 0 ? <span style={{ color: C.orange, fontWeight: 600 }}> ({discPct}% off)</span> : null}</span>
+      <span style={{ fontSize: 13 }}>
+        {discPct > 0 && <span style={{ color: "#999", textDecoration: "line-through", marginRight: 6 }}>{fmt(mrp)}</span>}
+        {fmt(finalVal)}
+      </span>
     </div>
   );
 
@@ -15515,206 +15564,80 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     setJw(p => ({ ...p, catalogueImages: p.catalogueImages.filter((_, i) => i !== idx) }));
   };
 
+  // Single source of truth for the jewellery estimate's line items — used by
+  // Print, Download PDF, and Send Estimate so all three always show the exact
+  // same numbers in the exact same format (previously Print built its own
+  // separate HTML layout that could drift from the PDF one).
+  const jwPdfRows = [
+    ["Item", jw.itemName || "—"],
+    [`${metalLabel(jw.purityIdx)} (${purityShortLabel(jw.purityIdx)})`, fmt(jwCalc.goldVal)],
+    ["Making Rate", makingRateLabel(jwCalc.makingR, jwCalc.makingMode, jwCalc.isBelow1g)],
+    ["Making Total", jwCalc.makingDiscPct > 0 ? `${fmt(jwCalc.makingMrp)} → ${fmt(jwCalc.making)}  (${jwCalc.makingDiscPct}% off)` : fmt(jwCalc.making)],
+    ...(jwCalc.diaMrp > 0 ? [["Diamond/Stone", jwCalc.diaDiscPct > 0 ? `${fmt(jwCalc.diaMrp)} → ${fmt(jwCalc.diaTotal)}  (${jwCalc.diaDiscPct}% off)` : fmt(jwCalc.diaTotal)]] : []),
+    ...(jwCalc.miscTotal > 0 ? [["Misc", fmt(jwCalc.miscTotal)]] : []),
+    ...(jw.applyGst ? [["GST (3%)", fmt(jwCalc.gst)]] : []),
+    ...(jwCalc.qty > 1 ? [["Per-piece Total", fmt(jwCalc.perPieceTotal)], ["Pcs", String(jwCalc.qty)]] : []),
+  ];
+  const jwCaption = [
+    `*ESTIMATE — Sun Sea Jewellers*`,
+    jw.itemName ? `\n*Item:* ${jw.itemName}` : "",
+    `\n*${metalLabel(jw.purityIdx)} (${purityShortLabel(jw.purityIdx)}):* ${fmt(jwCalc.goldVal)}`,
+    `*Making Rate:* ${makingRateLabel(jwCalc.makingR, jwCalc.makingMode, jwCalc.isBelow1g)}`,
+    jwCalc.makingDiscPct > 0 ? `*Making Total:* ~${fmt(jwCalc.makingMrp)}~ *${fmt(jwCalc.making)}* (${jwCalc.makingDiscPct}% off)` : `*Making Total:* ${fmt(jwCalc.making)}`,
+    jwCalc.diaMrp > 0 ? (jwCalc.diaDiscPct > 0 ? `*Diamond/Stone:* ~${fmt(jwCalc.diaMrp)}~ *${fmt(jwCalc.diaTotal)}* (${jwCalc.diaDiscPct}% off)` : `*Diamond/Stone:* ${fmt(jwCalc.diaTotal)}`) : "",
+    jwCalc.miscTotal > 0 ? `*Misc:* ${fmt(jwCalc.miscTotal)}` : "",
+    jw.applyGst ? `*GST (3%):* ${fmt(jwCalc.gst)}` : "",
+    jwCalc.qty > 1 ? `\n*Per-piece Total:* ${fmt(jwCalc.perPieceTotal)}\n*Pcs:* ${jwCalc.qty}` : "",
+    `\n*Total: ${fmt(jwCalc.total)}*`,
+    `\n_Sun Sea Jewellers, Delhi_`
+  ].filter(Boolean).join("\n");
+
   const handleJwPrint = () => {
-    const today = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" });
-    const purityLabel = PURITIES[jw.purityIdx]?.l || "Custom";
-    const rows = [];
-    const row = (label, value) => `<tr><td style="padding:3px 6px;color:#444;font-size:13px;">${label}</td><td style="padding:3px 6px;text-align:right;font-size:13px;">${value}</td></tr>`;
-
-    const metal = metalLabel(jw.purityIdx);
-    rows.push(row("Purity", purityLabel));
-    rows.push(row("Gross Weight", `${parseFloat(jw.grossWt||0).toFixed(3)} g`));
-    rows.push(row(`Net ${metal} Weight`, `${jwCalc.netGold.toFixed(3)} g`));
-    rows.push(row(`${metal} Rate`, `₹${Math.round(jwCalc.gRate).toLocaleString("en-IN")}/g`));
-    rows.push(row(`${metal} Value`, fmt(jwCalc.goldVal)));
-    rows.push(row("Making Rate", makingRateLabel(jwCalc.makingR, jwCalc.makingMode, jwCalc.isBelow1g)));
-    rows.push(row("Making Total", fmt(jwCalc.making)));
-    if (parseFloat(jw.dia1Wt||0)) rows.push(row(`Diamond 1 (${parseFloat(jw.dia1Wt)}${jw.dia1Unit} @ ₹${jw.dia1Rate})`, fmt(parseFloat(jw.dia1Wt||0)*parseFloat(jw.dia1Rate||0))));
-    if (parseFloat(jw.dia2Wt||0)) rows.push(row(`Diamond 2 (${parseFloat(jw.dia2Wt)}${jw.dia2Unit} @ ₹${jw.dia2Rate})`, fmt(parseFloat(jw.dia2Wt||0)*parseFloat(jw.dia2Rate||0))));
-    if (parseFloat(jw.stoneWt||0)) rows.push(row(`Stone (${parseFloat(jw.stoneWt)}${jw.stoneUnit} @ ₹${jw.stoneRate})`, fmt(parseFloat(jw.stoneWt||0)*parseFloat(jw.stoneRate||0))));
-    [["misc1","misc1Lbl","misc1Wt","misc1Unit","misc1Rate"],["misc2","misc2Lbl","misc2Wt","misc2Unit","misc2Rate"],["misc3","misc3Lbl","misc3Wt","misc3Unit","misc3Rate"]].forEach(([,lk,wk,uk,rk]) => {
-      const mw = parseFloat(jw[wk]||0), mr = parseFloat(jw[rk]||0);
-      if (!mr) return;
-      const mv = mw > 0 ? mw * mr : mr;
-      const mlabel = mw > 0 ? `${jw[lk]||"Misc"} (${mw}${jw[uk]})` : (jw[lk]||"Misc");
-      rows.push(row(mlabel, fmt(mv)));
-    });
-    if (jwCalc.qty > 1) {
-      rows.push(row("Per-piece Total", fmt(jwCalc.perPieceTotal)));
-      rows.push(row("Pcs", jwCalc.qty));
-    }
-
-    const clientName = saveContact?.name || saveContact?.phone || "";
-    const html = `<!DOCTYPE html><html><head><title>Estimate</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: 'Georgia', serif; background: #fff; color: #222; }
-  @page { size: A5 portrait; margin: 15mm; }
-  .wrap { max-width: 400px; margin: 0 auto; }
-  .om { font-size: 32px; color: #8b6914; text-align: center; margin-bottom: 4px; }
-  .title { font-size: 20px; letter-spacing: 3px; text-align: center; font-weight: bold; margin-bottom: 2px; }
-  .date { font-size: 12px; color: #666; text-align: center; margin-bottom: 4px; }
-  .client { font-size: 13px; color: #333; text-align: center; margin-bottom: 10px; font-style: italic; }
-  .item-header { display: flex; align-items: center; gap: 10px; margin: 8px 0 6px; }
-  .item-img { width: 52px; height: 52px; object-fit: cover; border-radius: 5px; cursor: pointer; border: 1px solid #ddd; flex-shrink: 0; }
-  .item-name { font-size: 15px; font-weight: bold; }
-  hr { border: none; border-top: 1px solid #bbb; margin: 8px 0; }
-  hr.thick { border-top: 2px solid #333; }
-  table { width: 100%; border-collapse: collapse; }
-  .total-row td { padding: 5px 6px; font-size: 16px; font-weight: bold; border-top: 2px solid #333; }
-  .disclaimer { font-size: 10px; color: #888; text-align: center; margin-top: 14px; line-height: 1.7; }
-</style>
-<script>
-  function expandImg(src) {
-    var w=window.open('','_blank','width=600,height=600');
-    w.document.write('<body style="margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh"><img src="'+src+'" style="max-width:100%;max-height:100vh;object-fit:contain"/></body>');
-    w.document.close();
-  }
-</script>
-</head><body>
-<div class="wrap">
-  <div class="om">ॐ</div>
-  <div class="title">ESTIMATE</div>
-  <div class="date">${today}</div>
-  ${clientName ? `<div class="client">Prepared for: ${clientName}</div>` : ""}
-  <hr class="thick"/>
-  <div class="item-header">
-    ${jw.itemImage ? `<img class="item-img" src="${jw.itemImage}" alt="item" onclick="expandImg('${jw.itemImage}')"/>` : ""}
-    ${jw.itemName ? `<div class="item-name">${jw.itemName}</div>` : ""}
-  </div>
-  <table>${rows.join("")}
-  ${jw.applyGst ? `<tr><td style="padding:3px 6px;font-size:13px;color:#555;">GST @ 3%</td><td style="padding:3px 6px;text-align:right;font-size:13px;">${fmt(jwCalc.gst)}</td></tr>` : ""}
-  <tr class="total-row"><td>GRAND TOTAL</td><td style="text-align:right;">${fmt(jwCalc.total)}</td></tr>
-  </table>
-  <div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill
-  </div>
-</div>
-</body></html>`;
-
-    const win = window.open("", "_blank", "width=600,height=800");
-    win.document.write(html);
-    win.document.close();
-    win.onload = () => { win.print(); };
-    win.onafterprint = () => win.close();
+    const doc = buildEstimatePdfDoc({ title: "ESTIMATE", clientName: saveContact?.name || saveContact?.phone, rows: jwPdfRows, total: fmt(jwCalc.total) });
+    doc.autoPrint();
+    window.open(doc.output("bloburl"), "_blank");
   };
 
   const handleSolPrint = () => {
-    const today = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" });
-    const clientName = saveContact?.name || saveContact?.phone || "";
-    const row = (label, value) => `<tr><td style="padding:3px 6px;color:#444;font-size:13px;">${label}</td><td style="padding:3px 6px;text-align:right;font-size:13px;">${value}</td></tr>`;
-    const rows = [];
-    rows.push(row("Shape", sol.shape));
-    rows.push(row("Weight", `${sol.weight} ct`));
-    rows.push(row("Colour / Clarity", `${sol.color} / ${sol.clarity}`));
-    rows.push(row("Cut", sol.cut));
-    rows.push(row("Certificate", sol.cert));
-    if (solResult.sellPpc != null) rows.push(row("Sell Price/ct", fmt(solResult.sellPpc)));
-    rows.push(row("Stone Total", solResult.sellTotal != null ? fmt(solResult.sellTotal) : "—"));
-    if (sol.includeGold && solGoldCalc) {
-      rows.push(row("Gold + Making", fmt(solGoldCalc.goldVal + solGoldCalc.making)));
-      if (solGoldCalc.diaInShank > 0) rows.push(row("Diamond in Shank", fmt(solGoldCalc.diaInShank)));
-      if (solGoldCalc.gemVal > 0) rows.push(row("Gemstone / Other", fmt(solGoldCalc.gemVal)));
-      rows.push(row("Setting Total", fmt(solGoldCalc.total)));
-    }
-    const html = `<!DOCTYPE html><html><head><title>Estimate</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: 'Georgia', serif; background: #fff; color: #222; }
-  @page { size: A5 portrait; margin: 15mm; }
-  .wrap { max-width: 400px; margin: 0 auto; }
-  .om { font-size: 32px; color: #8b6914; text-align: center; margin-bottom: 4px; }
-  .title { font-size: 20px; letter-spacing: 3px; text-align: center; font-weight: bold; margin-bottom: 2px; }
-  .date { font-size: 12px; color: #666; text-align: center; margin-bottom: 4px; }
-  .client { font-size: 13px; color: #333; text-align: center; margin-bottom: 10px; font-style: italic; }
-  hr { border: none; border-top: 1px solid #bbb; margin: 8px 0; }
-  hr.thick { border-top: 2px solid #333; }
-  table { width: 100%; border-collapse: collapse; }
-  .total-row td { padding: 5px 6px; font-size: 16px; font-weight: bold; border-top: 2px solid #333; }
-  .disclaimer { font-size: 10px; color: #888; text-align: center; margin-top: 14px; line-height: 1.7; }
-</style></head><body>
-<div class="wrap">
-  <div class="om">ॐ</div>
-  <div class="title">ESTIMATE</div>
-  <div class="date">${today}</div>
-  ${clientName ? `<div class="client">Prepared for: ${clientName}</div>` : ""}
-  <hr class="thick"/>
-  <table>${rows.join("")}
-  ${sol.applyGst && solResult.sellTotal != null ? `<tr><td style="padding:3px 6px;font-size:13px;color:#555;">GST @ 1.5% (stone)</td><td style="padding:3px 6px;text-align:right;font-size:13px;">${fmt(solStoneGst)}</td></tr>` : ""}
-  ${sol.applyGst && sol.includeGold && solGoldCalc ? `<tr><td style="padding:3px 6px;font-size:13px;color:#555;">GST @ 3% (gold setting)</td><td style="padding:3px 6px;text-align:right;font-size:13px;">${fmt(solGoldGst)}</td></tr>` : ""}
-  <tr class="total-row"><td>GRAND TOTAL</td><td style="text-align:right;">${fmt(solFinalTotal)}</td></tr>
-  </table>
-  <div class="disclaimer">This is an estimate only · Gold rates apply on full payment · Not a final bill
-  </div>
-</div>
-</body></html>`;
-    const win = window.open("", "_blank", "width=600,height=800");
-    win.document.write(html);
-    win.document.close();
-    win.onload = () => { win.print(); };
-    win.onafterprint = () => win.close();
+    const doc = buildEstimatePdfDoc({ title: "ESTIMATE", clientName: saveContact?.name || saveContact?.phone, rows: solPdfRows, total: fmt(solFinalTotal) });
+    doc.autoPrint();
+    window.open(doc.output("bloburl"), "_blank");
   };
 
+  // Shared by Print, Download PDF, and Send Estimate — one source of truth.
+  const quotColumns = [
+    { label: "#", width: 20 },
+    { label: "Shape", width: 55 },
+    { label: "Weight", width: 55 },
+    { label: "Colour/Clarity", width: 85 },
+    { label: "Cut", width: 55 },
+    { label: "Cert", width: 45 },
+    { label: "Rap INR/ct", width: 90, align: "right" },
+    { label: "Disc%", width: 55, align: "right" },
+    { label: "Price", width: 90, align: "right" },
+  ];
+  const quotTableRows = rows.map((r, i) => {
+    const sc = solCalc(r);
+    const rapTxt = sc.rapInrPerCt != null ? "₹" + Math.round(sc.rapInrPerCt).toLocaleString("en-IN") : "—";
+    const discTxt = sc.sellDisc != null && !isNaN(sc.sellDisc) ? `${sc.sellDisc.toFixed(1)}%` : "—";
+    return {
+      cells: [i + 1, r.shape, `${r.weight} ct`, `${r.color}/${r.clarity}`, r.cut, r.cert, rapTxt, discTxt, sc.sellTotal != null ? fmt(sc.sellTotal) : "—"],
+      notes: r.notes || "",
+    };
+  });
+  const quotTotal = fmt(rows.reduce((s, r) => s + (solCalc(r).sellTotal || 0), 0));
+  const quotCaptionLines = rows.map((r, i) => {
+    const sc = solCalc(r);
+    const rapTxt = sc.rapInrPerCt != null ? "₹" + Math.round(sc.rapInrPerCt).toLocaleString("en-IN") : "—";
+    const discTxt = sc.sellDisc != null && !isNaN(sc.sellDisc) ? `${sc.sellDisc.toFixed(1)}%` : "—";
+    return `${i + 1}. ${r.shape} ${r.weight}ct ${r.color}/${r.clarity} ${r.cut} ${r.cert} · Rap ${rapTxt} · Disc ${discTxt} — ${sc.sellTotal != null ? fmt(sc.sellTotal) : "—"}`;
+  });
+  const quotCaption = `*QUOTATION — Sun Sea Jewellers*\n${saveContact?.name ? `For: ${saveContact.name}\n` : ""}\n${quotCaptionLines.join("\n")}\n\nTotal: ${quotTotal}\n\n_Sun Sea Jewellers, Delhi_`;
+
   const handleQuotPrint = () => {
-    const today = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" });
-    const clientName = saveContact?.name || saveContact?.phone || "";
-    const quotTotalN = rows.reduce((s, r) => s + (solCalc(r).sellTotal || 0), 0);
-    const stoneRows = rows.map((r, i) => {
-      const sc = solCalc(r);
-      const rapTxt = sc.rapInrPerCt != null ? "₹" + Math.round(sc.rapInrPerCt).toLocaleString("en-IN") : "—";
-      const discTxt = sc.sellDisc != null && !isNaN(sc.sellDisc) ? `${sc.sellDisc.toFixed(1)}%` : "—";
-      const mainRow = `<tr style="border-bottom:${r.notes ? "none" : "1px solid #eee"};">
-        <td style="padding:4px 6px;font-size:12px;color:#888;">${i + 1}</td>
-        <td style="padding:4px 6px;font-size:12px;">${r.shape}</td>
-        <td style="padding:4px 6px;font-size:12px;">${r.weight} ct</td>
-        <td style="padding:4px 6px;font-size:12px;">${r.color} / ${r.clarity}</td>
-        <td style="padding:4px 6px;font-size:12px;">${r.cut}</td>
-        <td style="padding:4px 6px;font-size:12px;">${r.cert}</td>
-        <td style="padding:4px 6px;font-size:12px;text-align:right;">${rapTxt}</td>
-        <td style="padding:4px 6px;font-size:12px;text-align:right;">${discTxt}</td>
-        <td style="padding:4px 6px;font-size:12px;text-align:right;font-weight:600;">${sc.sellTotal != null ? fmt(sc.sellTotal) : "—"}</td>
-      </tr>`;
-      const notesRow = r.notes ? `<tr style="border-bottom:1px solid #eee;"><td colspan="9" style="padding:0 6px 6px;font-size:11px;color:#777;">📝 ${r.notes}</td></tr>` : "";
-      return mainRow + notesRow;
-    }).join("");
-    const html = `<!DOCTYPE html><html><head><title>Quotation</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: 'Georgia', serif; background: #fff; color: #222; }
-  @page { size: A4 landscape; margin: 12mm; }
-  .wrap { max-width: 100%; margin: 0 auto; }
-  .om { font-size: 28px; color: #8b6914; text-align: center; margin-bottom: 4px; }
-  .title { font-size: 18px; letter-spacing: 3px; text-align: center; font-weight: bold; margin-bottom: 2px; }
-  .date { font-size: 12px; color: #666; text-align: center; margin-bottom: 4px; }
-  .client { font-size: 13px; color: #333; text-align: center; margin-bottom: 10px; font-style: italic; }
-  hr { border: none; border-top: 1px solid #bbb; margin: 8px 0; }
-  hr.thick { border-top: 2px solid #333; }
-  table { width: 100%; border-collapse: collapse; }
-  th { padding: 5px 6px; font-size: 11px; color: #555; text-align: left; border-bottom: 2px solid #333; font-weight: 600; }
-  th:last-child { text-align: right; }
-  tfoot td { padding: 8px 6px; font-size: 14px; font-weight: bold; border-top: 2px solid #333; }
-  .disclaimer { font-size: 10px; color: #888; text-align: center; margin-top: 14px; line-height: 1.7; }
-</style></head><body>
-<div class="wrap">
-  <div class="om">ॐ</div>
-  <div class="title">QUOTATION</div>
-  <div class="date">${today}</div>
-  ${clientName ? `<div class="client">Prepared for: ${clientName}</div>` : ""}
-  <hr class="thick"/>
-  <table>
-    <thead><tr>
-      <th>#</th><th>Shape</th><th>Weight</th><th>Colour/Clarity</th><th>Cut</th><th>Cert</th><th style="text-align:right;">Rap INR/ct</th><th style="text-align:right;">Disc%</th><th style="text-align:right;">Price</th>
-    </tr></thead>
-    <tbody>${stoneRows}</tbody>
-    <tfoot><tr><td colspan="8">Total</td><td style="text-align:right;">${fmt(quotTotalN)}</td></tr></tfoot>
-  </table>
-  <div class="disclaimer">This is an estimate only · Prices subject to change · Not a final bill</div>
-</div>
-</body></html>`;
-    const win = window.open("", "_blank", "width=600,height=800");
-    win.document.write(html);
-    win.document.close();
-    win.onload = () => { win.print(); };
-    win.onafterprint = () => win.close();
+    const doc = buildEstimatePdfDoc({ title: "QUOTATION", clientName: saveContact?.name || saveContact?.phone, sections: [{ columns: quotColumns, tableRows: quotTableRows, total: quotTotal }], orientation: "landscape", format: "a4" });
+    doc.autoPrint();
+    window.open(doc.output("bloburl"), "_blank");
   };
 
   const loadEstimateForEdit = (est) => {
@@ -15727,6 +15650,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
         goldRateOverride: it.gRate ? String(Math.round(it.gRate)) : "",
         applyGst: it.applyGst !== false,
         makingRatePg: it.makingRatePg || "1500", makingRatePct: it.makingRatePct || "15",
+        makingDiscPct: it.makingDiscPct || "", diaDiscPct: it.diaDiscPct || "",
         dia1Wt: it.dia1Wt || "", dia1Unit: it.dia1Unit || "ct", dia1Rate: it.dia1Rate || "",
         dia2Wt: it.dia2Wt || "", dia2Unit: it.dia2Unit || "ct", dia2Rate: it.dia2Rate || "",
         stoneWt: it.stoneWt || "", stoneUnit: it.stoneUnit || "ct", stoneRate: it.stoneRate || "",
@@ -15862,8 +15786,8 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
         {resultRow(`Net ${metalLabel(jw.purityIdx)} Weight`, `${jwCalc.netGold.toFixed(3)} g`)}
         {resultRow(`${metalLabel(jw.purityIdx)} Value`, fmt(jwCalc.goldVal))}
         {resultRow("Making Rate", makingRateLabel(jwCalc.makingR, jwCalc.makingMode, jwCalc.isBelow1g))}
-        {resultRow("Making Total", fmt(jwCalc.making))}
-        {resultRow("Diamond / Stone Total", fmt(jwCalc.diaTotal))}
+        {resultRowDisc("Making Total", jwCalc.makingMrp, jwCalc.makingDiscPct, jwCalc.making)}
+        {resultRowDisc("Diamond / Stone Total", jwCalc.diaMrp, jwCalc.diaDiscPct, jwCalc.diaTotal)}
         {jwCalc.miscTotal > 0 && resultRow("Misc Total", fmt(jwCalc.miscTotal))}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 0" }}>
           <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
@@ -15877,38 +15801,22 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
         {resultRow(jwCalc.qty > 1 ? "GRAND TOTAL (all pcs)" : "GRAND TOTAL", fmt(jwCalc.total), true)}
       </div>
       {(() => {
-        const jwPdfRows = [
-          ["Item", jw.itemName || "—"],
-          [`${metalLabel(jw.purityIdx)} (${PURITIES[jw.purityIdx]?.l || "Custom"})`, fmt(jwCalc.goldVal)],
-          ["Making Rate", makingRateLabel(jwCalc.makingR, jwCalc.makingMode, jwCalc.isBelow1g)],
-          ["Making Total", fmt(jwCalc.making)],
-          ...(jwCalc.diaTotal > 0 ? [["Diamond/Stone", fmt(jwCalc.diaTotal)]] : []),
-          ...(jwCalc.miscTotal > 0 ? [["Misc", fmt(jwCalc.miscTotal)]] : []),
-          ...(jw.applyGst ? [["GST (3%)", fmt(jwCalc.gst)]] : []),
-          ...(jwCalc.qty > 1 ? [["Per-piece Total", fmt(jwCalc.perPieceTotal)], ["Pcs", String(jwCalc.qty)]] : []),
-        ];
-        const jwCaption = [
-          `*ESTIMATE — Sun Sea Jewellers*`,
-          jw.itemName ? `\n*Item:* ${jw.itemName}` : "",
-          `\n*${metalLabel(jw.purityIdx)} (${PURITIES[jw.purityIdx]?.l || "Custom"}):* ${fmt(jwCalc.goldVal)}`,
-          `*Making Rate:* ${makingRateLabel(jwCalc.makingR, jwCalc.makingMode, jwCalc.isBelow1g)}`,
-          `*Making Total:* ${fmt(jwCalc.making)}`,
-          jwCalc.diaTotal > 0 ? `*Diamond/Stone:* ${fmt(jwCalc.diaTotal)}` : "",
-          jwCalc.miscTotal > 0 ? `*Misc:* ${fmt(jwCalc.miscTotal)}` : "",
-          jw.applyGst ? `*GST (3%):* ${fmt(jwCalc.gst)}` : "",
-          jwCalc.qty > 1 ? `\n*Per-piece Total:* ${fmt(jwCalc.perPieceTotal)}\n*Pcs:* ${jwCalc.qty}` : "",
-          `\n*Total: ${fmt(jwCalc.total)}*`,
-          `\n_Sun Sea Jewellers, Mumbai_`
-        ].filter(Boolean).join("\n");
         return (
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <Btn small color={editingEstId ? C.orange : C.blue} onClick={() => { setJustSaved(false); setSaveModal(true); }}>{editingEstId ? "💾 Update Estimate" : "💾 Save Estimate"}</Btn>
             <Btn small ghost color={C.blue} onClick={handleJwPrint}>🖨️ Print</Btn>
             <Btn small ghost color={C.blue} onClick={() => downloadEstimatePdf({ title: "ESTIMATE", clientName: saveContact?.name, rows: jwPdfRows, total: fmt(jwCalc.total) })}>📄 Download PDF</Btn>
             {saveContact && (
-              <Btn small ghost={!justSaved} color={C.green} disabled={!justSaved} style={justSaved ? { background: C.green, color: "#fff" } : undefined} onClick={() => openWaDirect(saveContact.phone, jwCaption)} title={justSaved ? "Open WhatsApp with this estimate prefilled" : "Save the estimate first"}>📤 Send Estimate</Btn>
+              <Btn small ghost={!justSaved} color={C.green} disabled={!justSaved || sendingEst} style={justSaved ? { background: C.green, color: "#fff" } : undefined} onClick={async () => {
+                setSendingEst(true);
+                try {
+                  const r = await sendEstimatePdfOnWA({ phone: saveContact.phone, clientName: saveContact.name, title: "ESTIMATE", sections: [{ rows: jwPdfRows, total: fmt(jwCalc.total) }], caption: jwCaption });
+                  showToast(r.ok ? "✅ Estimate PDF sent on WhatsApp" : "❌ " + (r.error || "Send failed"));
+                } catch (e) { showToast("❌ " + e.message); }
+                setSendingEst(false);
+              }} title={justSaved ? "Send this saved estimate as a PDF on WhatsApp" : "Save the estimate first"}>{sendingEst ? "Sending…" : "📤 Send Estimate"}</Btn>
             )}
-            <Btn small ghost color={C.gray} onClick={() => { setJw({ itemImage: "", itemName: "", vendorCode: "", size: "", notes: "", qty: "1", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true, makingRatePg: "1500", makingRatePct: "15", dia1Wt: "", dia1Unit: "ct", dia1Rate: "", dia2Wt: "", dia2Unit: "ct", dia2Rate: "", stoneWt: "", stoneUnit: "ct", stoneRate: "", misc1Lbl: "Gemstone", misc1Wt: "", misc1Unit: "g", misc1Rate: "", misc1Deduct: true, misc2Lbl: "Mala", misc2Wt: "", misc2Unit: "g", misc2Rate: "", misc2Deduct: false, misc3Lbl: "Lakh", misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false }); setJwShowMisc(false); setEditingEstId(null); setEditingEstOrig(null); setJustSaved(false); }} title="Clear the estimate — selected client stays">🔄 New</Btn>
+            <Btn small ghost color={C.gray} onClick={() => { setJw({ itemImage: "", itemName: "", vendorCode: "", size: "", notes: "", qty: "1", grossWt: "", purityIdx: 2, customPurity: "", goldRateOverride: "", applyGst: true, makingRatePg: "1500", makingRatePct: "15", makingDiscPct: "", diaDiscPct: "", dia1Wt: "", dia1Unit: "ct", dia1Rate: "", dia2Wt: "", dia2Unit: "ct", dia2Rate: "", stoneWt: "", stoneUnit: "ct", stoneRate: "", misc1Lbl: "Gemstone", misc1Wt: "", misc1Unit: "g", misc1Rate: "", misc1Deduct: true, misc2Lbl: "Mala", misc2Wt: "", misc2Unit: "g", misc2Rate: "", misc2Deduct: false, misc3Lbl: "Lakh", misc3Wt: "", misc3Unit: "g", misc3Rate: "", misc3Deduct: false }); setJwShowMisc(false); setEditingEstId(null); setEditingEstOrig(null); setJustSaved(false); }} title="Clear the estimate — selected client stays">🔄 New</Btn>
           </div>
         );
       })()}
@@ -16076,21 +15984,20 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
         )}
       </div>
       {(() => {
-        const sc = solCalc(sol);
-        const solPdfRows = [
-          ["Stone", `${sol.shape} ${sol.weight}ct ${sol.color}/${sol.clarity} ${sol.cut}`],
-          ["Certificate", sol.cert],
-          ["Sell Price", fmt(sc.sellTotal)],
-          ...(sol.includeGold && solGoldCalc ? [["Setting", fmt(solGoldCalc.total)]] : []),
-        ];
-        const solCaption = `*ESTIMATE — Sun Sea Jewellers*\n\n*Stone:* ${sol.shape} ${sol.weight}ct ${sol.color}/${sol.clarity} ${sol.cut}\n*Certificate:* ${sol.cert}\n\n*Sell Price:* ${fmt(sc.sellTotal)}\n${sol.includeGold && solGoldCalc ? `*Setting:* ${fmt(solGoldCalc.total)}\n` : ""}*Total:* ${fmt(solGrandTotal)}\n\n_Sun Sea Jewellers, Mumbai_`;
         return (
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <Btn small color={editingEstId ? C.orange : C.blue} onClick={() => { setJustSaved(false); setSaveModal(true); }}>{editingEstId ? "💾 Update Estimate" : "💾 Save Estimate"}</Btn>
             <Btn small ghost color={C.blue} onClick={handleSolPrint}>🖨️ Print</Btn>
-            <Btn small ghost color={C.blue} onClick={() => downloadEstimatePdf({ title: "ESTIMATE", clientName: saveContact?.name, rows: solPdfRows, total: fmt(solGrandTotal) })}>📄 Download PDF</Btn>
+            <Btn small ghost color={C.blue} onClick={() => downloadEstimatePdf({ title: "ESTIMATE", clientName: saveContact?.name, rows: solPdfRows, total: fmt(solFinalTotal) })}>📄 Download PDF</Btn>
             {saveContact && (
-              <Btn small ghost={!justSaved} color={C.green} disabled={!justSaved} style={justSaved ? { background: C.green, color: "#fff" } : undefined} onClick={() => openWaDirect(saveContact.phone, solCaption)} title={justSaved ? "Open WhatsApp with this estimate prefilled" : "Save the estimate first"}>📤 Send Estimate</Btn>
+              <Btn small ghost={!justSaved} color={C.green} disabled={!justSaved || sendingEst} style={justSaved ? { background: C.green, color: "#fff" } : undefined} onClick={async () => {
+                setSendingEst(true);
+                try {
+                  const r = await sendEstimatePdfOnWA({ phone: saveContact.phone, clientName: saveContact.name, title: "ESTIMATE", sections: [{ rows: solPdfRows, total: fmt(solFinalTotal) }], caption: solCaption });
+                  showToast(r.ok ? "✅ Estimate PDF sent on WhatsApp" : "❌ " + (r.error || "Send failed"));
+                } catch (e) { showToast("❌ " + e.message); }
+                setSendingEst(false);
+              }} title={justSaved ? "Send this saved estimate as a PDF on WhatsApp" : "Save the estimate first"}>{sendingEst ? "Sending…" : "📤 Send Estimate"}</Btn>
             )}
           </div>
         );
@@ -16182,37 +16089,6 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
         >{quotShowExtra ? "▲ Hide Notes" : "▼ Notes"}</button>
       </div>
       {(() => {
-        // Column layout matches handleQuotPrint's HTML table 1:1 so Download
-        // PDF / Send Estimate no longer look different from what Print shows.
-        const quotColumns = [
-          { label: "#", width: 20 },
-          { label: "Shape", width: 55 },
-          { label: "Weight", width: 55 },
-          { label: "Colour/Clarity", width: 85 },
-          { label: "Cut", width: 55 },
-          { label: "Cert", width: 45 },
-          { label: "Rap INR/ct", width: 90, align: "right" },
-          { label: "Disc%", width: 55, align: "right" },
-          { label: "Price", width: 90, align: "right" },
-        ];
-        const quotTableRows = rows.map((r, i) => {
-          const sc = solCalc(r);
-          const rapTxt = sc.rapInrPerCt != null ? "₹" + Math.round(sc.rapInrPerCt).toLocaleString("en-IN") : "—";
-          const discTxt = sc.sellDisc != null && !isNaN(sc.sellDisc) ? `${sc.sellDisc.toFixed(1)}%` : "—";
-          return {
-            cells: [i + 1, r.shape, `${r.weight} ct`, `${r.color}/${r.clarity}`, r.cut, r.cert, rapTxt, discTxt, sc.sellTotal != null ? fmt(sc.sellTotal) : "—"],
-            notes: r.notes || "",
-          };
-        });
-        const quotTotal = fmt(rows.reduce((s, r) => s + (solCalc(r).sellTotal || 0), 0));
-        const clientName = saveContact?.name || saveContact?.phone || "";
-        const quotCaptionLines = rows.map((r, i) => {
-          const sc = solCalc(r);
-          const rapTxt = sc.rapInrPerCt != null ? "₹" + Math.round(sc.rapInrPerCt).toLocaleString("en-IN") : "—";
-          const discTxt = sc.sellDisc != null && !isNaN(sc.sellDisc) ? `${sc.sellDisc.toFixed(1)}%` : "—";
-          return `${i + 1}. ${r.shape} ${r.weight}ct ${r.color}/${r.clarity} ${r.cut} ${r.cert} · Rap ${rapTxt} · Disc ${discTxt} — ${sc.sellTotal != null ? fmt(sc.sellTotal) : "—"}`;
-        });
-        const quotCaption = `*QUOTATION — Sun Sea Jewellers*\n${clientName ? `For: ${clientName}\n` : ""}\n${quotCaptionLines.join("\n")}\n\nTotal: ${quotTotal}\n\n_Sun Sea Jewellers, Mumbai_`;
         return (
           <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
             <Btn small color={C.green} onClick={() => setRows(p => [...p, newSolRow()])}>+ Add Stone</Btn>
@@ -16220,7 +16096,15 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
             <Btn small ghost color={C.blue} onClick={handleQuotPrint}>🖨️ Print</Btn>
             <Btn small ghost color={C.blue} onClick={() => downloadEstimatePdf({ title: "QUOTATION", clientName: saveContact?.name, sections: [{ columns: quotColumns, tableRows: quotTableRows, total: quotTotal }], orientation: "landscape", format: "a4" })}>📄 Download PDF</Btn>
             {saveContact ? (
-              <Btn small ghost={!justSaved} color={C.green} disabled={!justSaved} style={justSaved ? { background: C.green, color: "#fff" } : undefined} onClick={() => openWaDirect(saveContact.phone, quotCaption)} title={justSaved ? "Open WhatsApp with this quotation prefilled" : "Save the estimate first"}>📤 Send Estimate</Btn>
+              <Btn small ghost={!justSaved} color={C.green} disabled={!justSaved || sendingEst} style={justSaved ? { background: C.green, color: "#fff" } : undefined} onClick={async () => {
+                if (!saveContact.phone) { showToast("❌ Selected client has no phone number"); return; }
+                setSendingEst(true);
+                try {
+                  const r = await sendEstimatePdfOnWA({ phone: saveContact.phone, clientName: saveContact.name, title: "QUOTATION", sections: [{ columns: quotColumns, tableRows: quotTableRows, total: quotTotal }], caption: quotCaption, orientation: "landscape", format: "a4" });
+                  showToast(r.ok ? "✅ Quotation PDF sent on WhatsApp" : "❌ " + (r.error || r.message || "Send failed"));
+                } catch (e) { showToast("❌ " + e.message); }
+                setSendingEst(false);
+              }} title={justSaved ? "Send this saved quotation as a PDF on WhatsApp" : "Save the estimate first"}>{sendingEst ? "Sending…" : "📤 Send Estimate"}</Btn>
             ) : (
               <span style={{ fontSize: 12, color: "#999", alignSelf: "center" }}>Select a client above to enable Send Estimate</span>
             )}
@@ -16477,7 +16361,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                 <div style={{ fontSize: 11, color: "#555", fontWeight: 600 }}>PREVIOUS ESTIMATES</div>
                 {selectedEstimates.size > 0 && (
-                  <button onClick={() => {
+                  <button disabled={sendingEst} onClick={async () => {
                     const sel = clientHistory.filter(e => selectedEstimates.has(e.id));
                     const labelFor = (e) => {
                       const item = e.items?.[0] || {};
@@ -16485,11 +16369,21 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
                     };
                     const dateFor = (e) => new Date(e.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
                     const lines = sel.map((e, i) => `*${i + 1}. ${labelFor(e)}* (${dateFor(e)})${e.total_amount ? `\n₹${Math.round(e.total_amount).toLocaleString("en-IN")}` : ""}`).join("\n\n");
-                    const msg = `*ESTIMATE SUMMARY — Sun Sea Jewellers*\n${saveContact?.name ? `For: ${saveContact.name}\n` : ""}\n${lines}\n\n_For queries call us at Sun Sea Jewellers, Mumbai_`;
-                    openWaDirect(saveContact.phone, msg);
+                    const msg = `*ESTIMATE SUMMARY — Sun Sea Jewellers*\n${saveContact?.name ? `For: ${saveContact.name}\n` : ""}\n${lines}\n\n_For queries call us at Sun Sea Jewellers, Delhi_`;
+                    const sections = sel.map((e) => ({
+                      heading: `${labelFor(e)} — ${dateFor(e)}`,
+                      rows: [["Total", e.total_amount ? fmt(e.total_amount) : "—"]],
+                      total: e.total_amount ? fmt(e.total_amount) : "—",
+                    }));
+                    setSendingEst(true);
+                    try {
+                      const r = await sendEstimatePdfOnWA({ phone: saveContact.phone, clientName: saveContact.name, title: "ESTIMATE SUMMARY", sections, caption: msg });
+                      showToast(r.ok ? "✅ Sent" : "❌ " + (r.error || "Send failed"));
+                    } catch (e) { showToast("❌ " + e.message); }
+                    setSendingEst(false);
                     setSelectedEstimates(new Set());
-                  }} style={{ background: "#25d366", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                    {`📤 Send ${selectedEstimates.size} selected`}
+                  }} style={{ background: "#25d366", color: "#fff", border: "none", borderRadius: 6, padding: "3px 10px", fontSize: 12, fontWeight: 600, cursor: sendingEst ? "not-allowed" : "pointer", opacity: sendingEst ? 0.6 : 1 }}>
+                    {sendingEst ? "Sending…" : `📤 Send ${selectedEstimates.size} selected`}
                   </button>
                 )}
               </div>
@@ -16607,7 +16501,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
                     : e.mode === "solitaire"
                     ? `${item.shape || ""} ${item.weight || ""}ct ${item.color || ""}/${item.clarity || ""}`.trim()
                     : `Quotation (${e.items?.length || 0} stones)`;
-                  const waMsg = `Hello ${client?.name || ""},\n\nThank you for visiting Sun Sea Jewellers! You had enquired about *${what}*${e.total_amount ? ` (est. ₹${Math.round(e.total_amount).toLocaleString("en-IN")})` : ""}.\n\nWould you like to proceed or have any questions? We're happy to help you make the right choice.\n\n_Sun Sea Jewellers, Mumbai_`;
+                  const waMsg = `Hello ${client?.name || ""},\n\nThank you for visiting Sun Sea Jewellers! You had enquired about *${what}*${e.total_amount ? ` (est. ₹${Math.round(e.total_amount).toLocaleString("en-IN")})` : ""}.\n\nWould you like to proceed or have any questions? We're happy to help you make the right choice.\n\n_Sun Sea Jewellers, Delhi_`;
                   return (
                     <tr key={e.id} style={{ borderBottom: "1px solid #f0f0f0" }}>
                       <td style={{ padding: "6px 10px", fontWeight: 600 }}>{client?.name || "—"}</td>
