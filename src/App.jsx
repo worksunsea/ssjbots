@@ -15517,6 +15517,12 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
 
   const jwCalc = computeJewelleryEstimate(jw, makingMode, getGoldRatePg(jw.purityIdx, jw.goldRateOverride));
 
+  // fmt is used by solPdfRows/solCaption below (built right after solCalc,
+  // long before the render helpers section) — must be declared before them,
+  // not after, or every render throws a TDZ ReferenceError and blanks the
+  // whole Calculator screen.
+  const fmt = (n) => n == null ? "—" : "₹" + Math.round(n).toLocaleString("en-IN");
+
   // ── Solitaire calculation ──
   const solCalc = (stone) => {
     const w = parseFloat(stone.weight || 0);
@@ -15724,7 +15730,6 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     }).then(r => r.json()).then(d => showToast(d.ok ? "✅ Sent on WhatsApp" : "❌ " + (d.error || "WA failed"))).catch(e => showToast("❌ " + e.message));
   };
 
-  const fmt = (n) => n == null ? "—" : "₹" + Math.round(n).toLocaleString("en-IN");
   const inp = { padding: "6px 10px", border: "1px solid #ddd", borderRadius: 6, fontSize: 13, width: "100%", boxSizing: "border-box" };
   const lbl = { fontSize: 11, color: "#888", marginBottom: 3, display: "block" };
   const card = { background: "#fff", border: "1px solid #eee", borderRadius: 10, padding: "16px", marginBottom: 12 };
