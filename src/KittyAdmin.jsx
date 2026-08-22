@@ -108,6 +108,7 @@ function OverviewTab({ crmSecret, actor }) {
 
   return (
     <div>
+      <p style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Total active enrollments: {live.length}</p>
       <h4>Members & Payments per Kitty</h4>
       <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 28, fontSize: 12.5 }}>
         <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
