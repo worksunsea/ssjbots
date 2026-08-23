@@ -885,6 +885,33 @@ export default async function handler(req, res) {
     stats.transitioned++;
   }
 
+  // ── 2b. Auto-resume bot after 24h of no contact ──────────────────
+  // bot_paused is set true either by staff manually messaging (api/send.js)
+  // or the bot's own HANDOFF action (webhook.js) — both cases pause
+  // indefinitely today. Auto-resume it once 24h have passed with no message
+  // in EITHER direction (last_msg_at is bumped on every inbound AND every
+  // manual outbound), so a lead doesn't sit permanently un-nurtured just
+  // because staff replied once and then moved on.
+  const resumeCutoffIso = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const { data: staleHandoffs } = await sb
+    .from("bullion_leads")
+    .select("id, phone, name, last_msg_at, status")
+    .eq("tenant_id", TENANT_ID)
+    .eq("bot_paused", true)
+    .eq("dnd", false)
+    .not("status", "in", "(converted,dead)")
+    .lt("last_msg_at", resumeCutoffIso)
+    .limit(50);
+  let autoResumed = 0;
+  for (const lead of staleHandoffs || []) {
+    await sb.from("bullion_leads").update({
+      bot_paused: false,
+      status: lead.status === "handoff" ? "active" : lead.status,
+    }).eq("id", lead.id);
+    autoResumed++;
+  }
+  stats.autoResumed = autoResumed;
+
   // ── 3. Calendar enrollments (bday + anniversary) ────────────────
   // Enroll leads whose event is within 25 days (so the -20 day step fires on time).
   // Idempotency: skip if already enrolled in this funnel in last 11 months.

@@ -294,13 +294,16 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, handled: "job_enquiry_link" });
     }
 
-    // ── Corporate gifting enquiry — deterministic keyword match, no AI needed ──
+    // ── Corporate coin gifting enquiry — deterministic keyword match, no AI ───
     // Explicit instruction (2026-08-23): route bulk/corporate-gifting phrasing
-    // and generic business-growth phrasing straight into the corporate_gifting
-    // funnel + a visible demand, instead of the pure-FAQ path. Scoped to this
-    // one funnel only — kept in sync with funnels.match_keywords (see migration
-    // 0109) but matched here deterministically like JOB_KEYWORDS above, not via
-    // the AI — this does NOT reinstate general funnel-routing for the bot.
+    // and generic business-growth phrasing straight into the ALREADY-BUILT
+    // "corporatecoingifting" funnel (5-step drip, real ad copy, persona
+    // "Rajesh") instead of the pure-FAQ path. No custom reply is sent here —
+    // the funnel's own Step 1 (trigger_type after_last_inbound, 10min delay)
+    // IS the first reply, so we don't want to double-send. Scoped to this one
+    // funnel only — kept in sync with funnels.match_keywords, matched here
+    // deterministically like JOB_KEYWORDS above, not via the AI — this does
+    // NOT reinstate general funnel-routing for the bot.
     const CORP_GIFT_KEYWORDS = [
       "corporate gift", "corporate gifting", "client gifting", "employee gifting",
       "bulk gift", "gift for clients", "gift for employees", "customer gifting",
@@ -308,26 +311,20 @@ export default async function handler(req, res) {
       "boost sales", "boost my sales", "grow my business", "grow my store",
       "grow my shop", "increase business", "increase footfall", "clothing store",
     ];
+    const CORP_GIFT_FUNNEL_ID = "corporatecoingifting";
     const msgLowerForCorpGift = msg.toLowerCase();
-    if (CORP_GIFT_KEYWORDS.some((k) => msgLowerForCorpGift.includes(k))) {
-      const corpGiftLink = "https://ssjbot.gemtre.in/corporategiftingcoins";
-      const corpGiftReply = `Great — Sun Sea Jewellers also does bulk corporate gold & silver coin gifting, custom-branded with your logo, for client & employee gifting. 🎁\n\nView live catalogue, pricing, and place your enquiry here:\n👉 ${corpGiftLink}\n\nOur team will follow up once you submit your requirement.`;
-      await sendWhatsApp({ phone: jid || phone, msg: corpGiftReply, client: waClient || WA_SESSION_CLIENT_ID });
-      await qx(sb.from("bullion_messages").insert({
-        tenant_id: TENANT_ID, lead_id: leadRow.id, phone,
-        direction: "out", body: corpGiftReply, stage: leadRow.stage || "greeting", status: "sent", wa_client: waClient || null,
-      }));
+    if (CORP_GIFT_KEYWORDS.some((k) => msgLowerForCorpGift.includes(k)) && leadRow.funnel_id !== CORP_GIFT_FUNNEL_ID) {
       await qx(sb.from("bullion_leads").update({ source: leadRow.source || "corporate_gifting_wa" }).eq("id", leadRow.id));
 
-      await transitionLeadToFunnel({ leadId: leadRow.id, newFunnelId: "corporate_gifting", reason: "wa_keyword_match" }).catch((e) => console.error("corp gift funnel transition failed", e));
+      const transition = await transitionLeadToFunnel({ leadId: leadRow.id, newFunnelId: CORP_GIFT_FUNNEL_ID, reason: "wa_keyword_match" }).catch((e) => { console.error("corp gift funnel transition failed", e); return null; });
 
       const { data: existingCgDemand } = await sb.from("bullion_demands")
-        .select("id").eq("lead_id", leadRow.id).eq("funnel_id", "corporate_gifting").maybeSingle();
+        .select("id").eq("lead_id", leadRow.id).eq("funnel_id", CORP_GIFT_FUNNEL_ID).maybeSingle();
       if (!existingCgDemand) {
         await qx(sb.from("bullion_demands").insert({
-          tenant_id: TENANT_ID, lead_id: leadRow.id, funnel_id: "corporate_gifting",
+          tenant_id: TENANT_ID, lead_id: leadRow.id, funnel_id: CORP_GIFT_FUNNEL_ID,
           product_category: "gold_coin",
-          ai_summary: `WA business enquiry: "${msg.slice(0, 200)}" — corporate gifting interest, directed to landing page.`,
+          ai_summary: `WA business enquiry: "${msg.slice(0, 200)}" — corporate coin gifting interest, enrolled in drip.`,
           bot_active: false, created_by: "bot",
         }), (e) => console.error("corp gift demand create failed", e));
         sendPushNotification({
@@ -338,7 +335,9 @@ export default async function handler(req, res) {
         }).catch(() => {});
       }
 
-      return res.status(200).json({ ok: true, handled: "corporate_gifting_link" });
+      if (transition?.ok) return res.status(200).json({ ok: true, handled: "corporate_gifting_enrolled" });
+      // Transition failed (e.g. funnel inactive/missing) — fall through to
+      // the normal FAQ path below so the customer still gets a reply.
     }
 
     // ── Build prompt + call Claude ────────────────────────────────────────────
