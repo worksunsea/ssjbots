@@ -17,7 +17,7 @@
 
 import { supa } from "./_lib/supabase.js";
 import { sendWhatsApp } from "./_lib/wa.js";
-import { TENANT_ID, DIGEST_CRON_SECRET } from "./_lib/config.js";
+import { TENANT_ID, DIGEST_CRON_SECRET, KITTY_WA_CLIENT_ID } from "./_lib/config.js";
 import { logKittyAudit } from "./_lib/kittyAudit.js";
 
 const REMINDER_DAYS_BEFORE = 3;
@@ -63,7 +63,7 @@ export default async function handler(req, res) {
       if (!lead?.phone || lead.dnd) continue;
       const schemeName = row.enrollment.scheme?.name || "your Kitty scheme";
       const msg = `🪙 Reminder: your ${schemeName} installment #${row.month_number} of ₹${row.amount} is due on ${row.due_date}.\n- Sun Sea Jewellers, Karol Bagh`;
-      const wa = await sendWhatsApp({ phone: lead.phone, msg }).catch(() => ({ status: 0 }));
+      const wa = await sendWhatsApp({ phone: lead.phone, msg, client: KITTY_WA_CLIENT_ID }).catch(() => ({ status: 0 }));
       if (wa.status !== 1) { stats.failed++; continue; }
       await sb.from("kitty_installments").update({ reminded_at: new Date().toISOString() }).eq("id", row.id);
       stats.dueReminders++;
@@ -81,7 +81,7 @@ export default async function handler(req, res) {
       if (!lead?.phone || lead.dnd) continue;
       const schemeName = row.legacy_scheme_name || row.scheme?.name || "your Kitty scheme";
       const msg = `🎁 Your ${schemeName} is complete and waiting to be claimed! Visit Sun Sea Jewellers, Karol Bagh to pick your jewellery/benefit whenever convenient.\n- Sun Sea Jewellers`;
-      const wa = await sendWhatsApp({ phone: lead.phone, msg }).catch(() => ({ status: 0 }));
+      const wa = await sendWhatsApp({ phone: lead.phone, msg, client: KITTY_WA_CLIENT_ID }).catch(() => ({ status: 0 }));
       if (wa.status !== 1) { stats.failed++; continue; }
       await sb.from("kitty_enrollments").update({ claim_status: "reminded", last_claim_reminded_at: new Date().toISOString() }).eq("id", row.id);
       stats.claimReminders++;
@@ -107,7 +107,7 @@ export default async function handler(req, res) {
         const { data: lead } = await sb.from("bullion_leads").select("phone,dnd").eq("id", m.lead_id).maybeSingle();
         if (!lead?.phone || lead.dnd) continue;
         const msg = `🪙 Your ${batch.scheme.name} (${batch.batch_label}) round has completed! Enroll for the next round anytime — visit https://ssj.in/kitty-schemes or reply here.\n- Sun Sea Jewellers, Karol Bagh`;
-        const wa = await sendWhatsApp({ phone: lead.phone, msg }).catch(() => ({ status: 0 }));
+        const wa = await sendWhatsApp({ phone: lead.phone, msg, client: KITTY_WA_CLIENT_ID }).catch(() => ({ status: 0 }));
         if (wa.status === 1) stats.rolloverNudges++; else stats.failed++;
       }
     }

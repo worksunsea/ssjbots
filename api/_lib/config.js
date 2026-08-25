@@ -54,6 +54,15 @@ export const WA_SESSION_CLIENT_ID = process.env.WA_SESSION_CLIENT_ID || "Recepti
 // client id. Until then it falls back to the Reception session.
 export const TASKS_WA_CLIENT_ID = process.env.TASKS_WA_CLIENT_ID || WA_SESSION_CLIENT_ID;
 
+// Dedicated number for ALL Kitty Schemes communication — payment reminders,
+// unclaimed-benefit nudges, batch-rollover nudges, redemption codes/
+// confirmations, and anything else the kitty module sends. New connection,
+// number 9205065375 (owner instruction, 2026-08-25): pair it in wa-service
+// (POST /clients with a new client_id, scan QR from that phone) and set
+// KITTY_WA_CLIENT_ID to that client id. Until then it falls back to the
+// Reception session — same pattern as TASKS_WA_CLIENT_ID above.
+export const KITTY_WA_CLIENT_ID = process.env.KITTY_WA_CLIENT_ID || WA_SESSION_CLIENT_ID;
+
 // Only these WA numbers run the bot (reply to inbound messages).
 // Other numbers (birthday/anniversary) are send-only.
 // Hardcoded to 8860866000 only (2026-07-15) — 9312839912 was replying too, unwanted.

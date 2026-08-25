@@ -28,7 +28,7 @@
 
 import crypto from "crypto";
 import { supa } from "./_lib/supabase.js";
-import { TENANT_ID, checkCrmSecret, normalizePhone } from "./_lib/config.js";
+import { TENANT_ID, checkCrmSecret, normalizePhone, KITTY_WA_CLIENT_ID } from "./_lib/config.js";
 import { enrollLeadInDrip } from "./_lib/drip.js";
 import { logKittyAudit } from "./_lib/kittyAudit.js";
 import { sendWhatsApp } from "./_lib/wa.js";
@@ -539,7 +539,7 @@ export default async function handler(req, res) {
     if (lead.dnd) return res.status(400).json({ ok: false, error: "member_opted_out_dnd" });
     const schemeName = row.enrollment?.is_legacy ? row.enrollment.legacy_scheme_name : (row.enrollment?.scheme?.name || "your Kitty scheme");
     const msg = `🪙 Reminder: your ${schemeName} installment #${row.month_number} of ₹${row.amount} is due on ${row.due_date}.\n- Sun Sea Jewellers, Karol Bagh`;
-    const wa = await sendWhatsApp({ phone: lead.phone, msg }).catch(() => ({ status: 0 }));
+    const wa = await sendWhatsApp({ phone: lead.phone, msg, client: KITTY_WA_CLIENT_ID }).catch(() => ({ status: 0 }));
     if (wa.status !== 1) return res.status(500).json({ ok: false, error: "whatsapp_send_failed" });
     await sb.from("kitty_installments").update({ reminded_at: new Date().toISOString() }).eq("id", body.installmentId);
     await logAudit(sb, { entityType: "installment", entityId: body.installmentId, action: "reminder-sent", actor: body.actor });
@@ -690,7 +690,7 @@ export default async function handler(req, res) {
     if (codeErr) return res.status(500).json({ ok: false, error: codeErr.message });
 
     const msg = `🪙 You're redeeming your ${schemeName}${amountLine ? ` ${amountLine}` : ""}.\n\nTo confirm, share this code with our staff: *${code}*\n(Valid 30 minutes — don't share it with anyone else.)\n- Sun Sea Jewellers, Karol Bagh`;
-    const wa = await sendWhatsApp({ phone: lead.phone, msg }).catch(() => ({ status: 0 }));
+    const wa = await sendWhatsApp({ phone: lead.phone, msg, client: KITTY_WA_CLIENT_ID }).catch(() => ({ status: 0 }));
     if (wa.status !== 1) return res.status(500).json({ ok: false, error: "whatsapp_send_failed" });
 
     await logAudit(sb, { entityType: "enrollment", entityId: body.id, action: "redeem-initiated", actor: body.actor, details: { redemptionType: body.redemptionType, value: body.value } });
@@ -726,7 +726,7 @@ export default async function handler(req, res) {
     const { data: lead } = await sb.from("bullion_leads").select("phone").eq("id", enrollment?.lead_id).maybeSingle();
     if (lead?.phone) {
       const schemeName = enrollment.is_legacy ? enrollment.legacy_scheme_name : (enrollment.scheme?.name || "your Kitty");
-      await sendWhatsApp({ phone: lead.phone, msg: `🙏 Thank you! Your ${schemeName} has been redeemed successfully.\n- Sun Sea Jewellers, Karol Bagh` }).catch(() => {});
+      await sendWhatsApp({ phone: lead.phone, msg: `🙏 Thank you! Your ${schemeName} has been redeemed successfully.\n- Sun Sea Jewellers, Karol Bagh`, client: KITTY_WA_CLIENT_ID }).catch(() => {});
     }
 
     await logAudit(sb, { entityType: "enrollment", entityId: body.id, action: "redeem-confirmed", actor: body.actor || body.redeemedBy });

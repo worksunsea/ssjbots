@@ -9,7 +9,7 @@ Two completely separate send systems:
 - **Baileys / wa-service** (self-hosted, Synology NAS) — `sendWhatsApp`/`sendWhatsAppMedia` in `api/_lib/wa.js`. Used for bot replies and all internal/staff/owner messaging.
 - **WbizTool** (paid third-party API) — `sendWhatsAppWbiz`/`sendWhatsAppMediaWbiz` in `api/_lib/wa.js`. Used for lead-facing outreach: drip, demand opening, authority assets, visit reminders, broadcasts.
 
-### The 5 numbers and their intended purpose (owner policy, 2026-08-21)
+### The numbers and their intended purpose
 
 | Number | Purpose | Config identifier |
 |---|---|---|
@@ -18,6 +18,7 @@ Two completely separate send systems:
 | **8588867820** | Backup for 8448271248 if that number goes down | not yet wired in code |
 | **9899226225** | Birthday/anniversary + other general client communications (policy) | **owner decision 2026-08-25: leave birthday/anniversary/after-marriage funnels on 8860866000 for now — do not move to 9899226225.** Revisit only if explicitly asked again. |
 | **9953229430** | Admin bot: internal documentation + owner bot replies only, never client-facing | not currently in `BOT_NUMBERS` |
+| **9205065375** | **Kitty Schemes — ALL communication**: payment reminders, unclaimed-benefit nudges, batch-rollover nudges, redemption codes/confirmations, any future kitty send. New connection (owner instruction, 2026-08-25). | `KITTY_WA_CLIENT_ID` — wired into every `sendWhatsApp()` call in `api/kitty.js` and `api/kitty-cron.js`. **Falls back to Reception (8860866000) until this number is paired in wa-service and `KITTY_WA_CLIENT_ID` env var is set — pair it and set the env var, or kitty messages keep going out from the chatbot number.** |
 
 **2026-08-25 fix:** `api/staff-otp-send.js`, `api/send-profile-link.js`, and `api/staff-profile-reminders.js` were hardcoded to `WA_SESSION_CLIENT_ID` (the client-facing Reception number) instead of `TASKS_WA_CLIENT_ID` — confirmed by the owner receiving a staff OTP from 8860866000 instead of 8448271248. All three switched to `TASKS_WA_CLIENT_ID`, matching every other internal staff-facing sender in the table below.
 
@@ -32,8 +33,8 @@ Two completely separate send systems:
 | Funnel drip / birthday / anniversary / after-marriage | `api/cron.js` | WbizTool | `funnel.wbiztool_client` (falls back to `WBIZTOOL_DEFAULT_CLIENT`) |
 | Demand opening + authority assets + visit reminders | `api/demand.js` (sent via `api/cron.js`) | WbizTool | `funnel.wbiztool_client` |
 | Broadcast campaigns | `api/broadcast-send.js` (sent via `api/cron.js`) | WbizTool | funnel's client |
-| Kitty due/claim/rollover reminders (proactive) | `api/kitty-cron.js`, `api/kitty.js` `send-installment-reminder` | **Baileys** (not Wbiz — inconsistent with other lead-facing sends) | default session — DND-checked since 2026-08-25 |
-| Kitty redemption code / confirmation (transactional) | `api/kitty.js` | Baileys | default session — deliberately NOT DND-gated, member is actively mid-redemption |
+| Kitty due/claim/rollover reminders (proactive) | `api/kitty-cron.js`, `api/kitty.js` `send-installment-reminder` | Baileys | `KITTY_WA_CLIENT_ID` — DND-checked since 2026-08-25 |
+| Kitty redemption code / confirmation (transactional) | `api/kitty.js` | Baileys | `KITTY_WA_CLIENT_ID` — deliberately NOT DND-gated, member is actively mid-redemption |
 | Staff task/KRA reminder | `api/staff-task-reminders.js` | Baileys | `TASKS_WA_CLIENT_ID` |
 | Evening completion reminder | `api/evening-completion-reminder.js` | Baileys | `TASKS_WA_CLIENT_ID` |
 | Task-assigned notify | `api/notify-task-assigned.js`, `api/_lib/taskCommand.js` | Baileys | `TASKS_WA_CLIENT_ID` |
@@ -173,6 +174,7 @@ Update this file whenever: a number's purpose changes, a new WA-send code path i
 
 **Still open, no action taken (need info before touching):**
 - `TASKS_WA_CLIENT_ID` (8448271248) — never confirmed paired to a live Baileys session in Vercel env vars; falls back to Reception (8860866000) if unset. Verify the env var directly.
+- `KITTY_WA_CLIENT_ID` (9205065375) — code is wired (2026-08-25), but the number itself isn't confirmed paired in wa-service yet, and the `KITTY_WA_CLIENT_ID` Vercel env var isn't confirmed set. Until both are done, kitty messages keep going out from Reception (8860866000) via the fallback. **Verify both directly, then confirm a real kitty message arrives from 9205065375.**
 - 8588867820 as backup for 8448271248 — no failover logic exists in code.
 - 9953229430 as admin-bot reply number — would require adding it to `BOT_NUMBERS`, a real behavior change (starts auto-replying). Confirm a wa-service session is paired first.
-- Kitty sends use Baileys while other lead-facing sends use WbizTool — inconsistent but not confirmed broken; left as-is.
+- Kitty sends still use Baileys while other lead-facing sends use WbizTool — inconsistent but not confirmed broken; left as-is.
