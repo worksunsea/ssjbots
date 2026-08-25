@@ -12,7 +12,7 @@
 //   the paper — surfaced so the scanning staff member can chase them down
 //   before the job is created, not just silently left empty.
 
-import { askAIVisionDeepSeek, parseBotJson } from "./_lib/ai.js";
+import { askAI, parseBotJson } from "./_lib/ai.js";
 import { checkCrmSecret } from "./_lib/config.js";
 
 export const config = { maxDuration: 30 };
@@ -108,9 +108,15 @@ export default async function handler(req, res) {
   if (!imageUrl) return res.status(400).json({ ok: false, error: "imageUrl_required" });
 
   const system = "You extract structured field data from a photographed handwritten jewellery-shop paper form. Respond with ONLY a JSON object, no prose, no markdown fences.";
+  // "high" detail sends the image at full resolution in tiles instead of downsampling
+  // to ~512px — same setting vendor-card-scan.js uses, needed to read small handwriting.
+  const content = [
+    { type: "text", text: PROMPTS[formType] },
+    { type: "image_url", image_url: { url: imageUrl, detail: "high" } },
+  ];
 
   try {
-    const { text } = await askAIVisionDeepSeek({ system, promptText: PROMPTS[formType], imageUrls: [imageUrl], maxTokens: 1200 });
+    const { text } = await askAI({ system, messages: [{ role: "user", content }], maxTokens: 1200 });
     const parsed = parseBotJson(text);
     if (!parsed) return res.status(502).json({ ok: false, error: "ai_no_parseable_json" });
     const missing = (CRITICAL_FIELDS[formType] || []).filter(k => parsed[k] === null || parsed[k] === undefined || parsed[k] === "" || (Array.isArray(parsed[k]) && parsed[k].length === 0));
