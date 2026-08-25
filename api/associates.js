@@ -77,9 +77,13 @@ export default async function handler(req, res) {
     if (!code) return res.status(400).json({ ok: false, error: "missing_code" });
     const { data: assoc } = await sb.from("bullion_associates").select("id, display_name, headline").eq("referral_code", code).eq("status", "active").maybeSingle();
     if (!assoc) return res.status(200).json({ ok: true, tracked: false });
-    await sb.from("bullion_referral_visits").insert({
-      tenant_id: TENANT_ID, associate_id: assoc.id, landing_path: body.path || "/",
-    }).catch(() => {});
+    // .catch() doesn't exist on a supabase-js query builder (only .then()) —
+    // chaining it throws synchronously instead of catching a rejection.
+    try {
+      await sb.from("bullion_referral_visits").insert({
+        tenant_id: TENANT_ID, associate_id: assoc.id, landing_path: body.path || "/",
+      });
+    } catch {}
     return res.status(200).json({ ok: true, tracked: true, associate: { displayName: assoc.display_name, headline: assoc.headline } });
   }
 

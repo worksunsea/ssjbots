@@ -142,18 +142,23 @@ export default async function handler(req, res) {
   const { error } = await sb.from("bullion_scheduled_messages").insert(rows);
   if (error) return res.status(500).json({ ok: false, error: error.message });
 
-  // Log this broadcast send for history
-  await sb.from("bullion_broadcast_sends").insert({
-    tenant_id: funnel.tenant_id,
-    funnel_id: funnelId,
-    message_text: step.message_template,
-    media_url: mediaUrl || null,
-    media_type: mediaType || null,
-    filter_json: { ...filter, includeAll, pace },
-    recipient_count: rows.length,
-    skipped_count: skipped,
-    created_by: createdBy || null,
-  }).catch(() => {}); // non-critical, don't fail the request
+  // Log this broadcast send for history. .catch() doesn't exist on a
+  // supabase-js query builder (only .then()) — chaining it throws
+  // synchronously instead of catching a rejection, which would 500 the
+  // whole request after the broadcast rows were already enrolled.
+  try {
+    await sb.from("bullion_broadcast_sends").insert({
+      tenant_id: funnel.tenant_id,
+      funnel_id: funnelId,
+      message_text: step.message_template,
+      media_url: mediaUrl || null,
+      media_type: mediaType || null,
+      filter_json: { ...filter, includeAll, pace },
+      recipient_count: rows.length,
+      skipped_count: skipped,
+      created_by: createdBy || null,
+    });
+  } catch {} // non-critical, don't fail the request
 
   return res.status(200).json({ ok: true, created: rows.length, skipped });
 }
