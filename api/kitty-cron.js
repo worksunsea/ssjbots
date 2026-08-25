@@ -59,8 +59,8 @@ export default async function handler(req, res) {
 
     for (const row of due || []) {
       if (row.enrollment?.status !== "active") continue;
-      const { data: lead } = await sb.from("bullion_leads").select("phone,name").eq("id", row.enrollment.lead_id).maybeSingle();
-      if (!lead?.phone) continue;
+      const { data: lead } = await sb.from("bullion_leads").select("phone,name,dnd").eq("id", row.enrollment.lead_id).maybeSingle();
+      if (!lead?.phone || lead.dnd) continue;
       const schemeName = row.enrollment.scheme?.name || "your Kitty scheme";
       const msg = `🪙 Reminder: your ${schemeName} installment #${row.month_number} of ₹${row.amount} is due on ${row.due_date}.\n- Sun Sea Jewellers, Karol Bagh`;
       const wa = await sendWhatsApp({ phone: lead.phone, msg }).catch(() => ({ status: 0 }));
@@ -77,8 +77,8 @@ export default async function handler(req, res) {
       .or(`last_claim_reminded_at.is.null,last_claim_reminded_at.lt.${cutoff}`);
 
     for (const row of unclaimed || []) {
-      const { data: lead } = await sb.from("bullion_leads").select("phone,name").eq("id", row.lead_id).maybeSingle();
-      if (!lead?.phone) continue;
+      const { data: lead } = await sb.from("bullion_leads").select("phone,name,dnd").eq("id", row.lead_id).maybeSingle();
+      if (!lead?.phone || lead.dnd) continue;
       const schemeName = row.legacy_scheme_name || row.scheme?.name || "your Kitty scheme";
       const msg = `🎁 Your ${schemeName} is complete and waiting to be claimed! Visit Sun Sea Jewellers, Karol Bagh to pick your jewellery/benefit whenever convenient.\n- Sun Sea Jewellers`;
       const wa = await sendWhatsApp({ phone: lead.phone, msg }).catch(() => ({ status: 0 }));
@@ -104,8 +104,8 @@ export default async function handler(req, res) {
       const { data: members } = await sb.from("kitty_enrollments")
         .select("id,lead_id,status").eq("batch_id", batch.id).in("status", ["active", "completed"]);
       for (const m of members || []) {
-        const { data: lead } = await sb.from("bullion_leads").select("phone").eq("id", m.lead_id).maybeSingle();
-        if (!lead?.phone) continue;
+        const { data: lead } = await sb.from("bullion_leads").select("phone,dnd").eq("id", m.lead_id).maybeSingle();
+        if (!lead?.phone || lead.dnd) continue;
         const msg = `🪙 Your ${batch.scheme.name} (${batch.batch_label}) round has completed! Enroll for the next round anytime — visit https://ssj.in/kitty-schemes or reply here.\n- Sun Sea Jewellers, Karol Bagh`;
         const wa = await sendWhatsApp({ phone: lead.phone, msg }).catch(() => ({ status: 0 }));
         if (wa.status === 1) stats.rolloverNudges++; else stats.failed++;

@@ -534,8 +534,9 @@ export default async function handler(req, res) {
       .select("id,due_date,amount,month_number,enrollment:kitty_enrollments(lead_id,is_legacy,legacy_scheme_name,scheme:kitty_schemes(name))")
       .eq("tenant_id", TENANT_ID).eq("id", body.installmentId).maybeSingle();
     if (!row) return res.status(404).json({ ok: false, error: "not_found" });
-    const { data: lead } = await sb.from("bullion_leads").select("phone").eq("id", row.enrollment?.lead_id).maybeSingle();
+    const { data: lead } = await sb.from("bullion_leads").select("phone,dnd").eq("id", row.enrollment?.lead_id).maybeSingle();
     if (!lead?.phone) return res.status(400).json({ ok: false, error: "member_has_no_phone_on_file" });
+    if (lead.dnd) return res.status(400).json({ ok: false, error: "member_opted_out_dnd" });
     const schemeName = row.enrollment?.is_legacy ? row.enrollment.legacy_scheme_name : (row.enrollment?.scheme?.name || "your Kitty scheme");
     const msg = `🪙 Reminder: your ${schemeName} installment #${row.month_number} of ₹${row.amount} is due on ${row.due_date}.\n- Sun Sea Jewellers, Karol Bagh`;
     const wa = await sendWhatsApp({ phone: lead.phone, msg }).catch(() => ({ status: 0 }));
