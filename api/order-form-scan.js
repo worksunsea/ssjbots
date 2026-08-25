@@ -6,7 +6,12 @@
 // the extracted values in the normal job form for staff to review/edit
 // before saving, same as vendor-card-scan.js does for vendor cards.
 //
-// Body: { formType: "order"|"repair", imageUrl }
+// Body: { formType: "order"|"repair", imageDataUrl }
+//   imageDataUrl must be a base64 data: URI, not an http(s) URL — OpenAI's
+//   fetch-by-URL path was unreliably 400ing ("unable to download content
+//   before the timeout") on freshly-uploaded Supabase Storage public URLs,
+//   so the caller sends image bytes inline instead of a URL for OpenAI to
+//   go fetch itself.
 // Returns: { ok:true, fields: {...}, missing: [string] }
 //   "missing" lists operationally-critical fields the model found blank on
 //   the paper — surfaced so the scanning staff member can chase them down
@@ -103,16 +108,16 @@ export default async function handler(req, res) {
   let body = req.body;
   if (typeof body === "string") { try { body = JSON.parse(body); } catch { body = {}; } }
   body = body || {};
-  const { formType, imageUrl } = body;
+  const { formType, imageDataUrl } = body;
   if (formType !== "order" && formType !== "repair") return res.status(400).json({ ok: false, error: "formType_must_be_order_or_repair" });
-  if (!imageUrl) return res.status(400).json({ ok: false, error: "imageUrl_required" });
+  if (!imageDataUrl || !imageDataUrl.startsWith("data:image/")) return res.status(400).json({ ok: false, error: "imageDataUrl_required" });
 
   const system = "You extract structured field data from a photographed handwritten jewellery-shop paper form. Respond with ONLY a JSON object, no prose, no markdown fences.";
   // "high" detail sends the image at full resolution in tiles instead of downsampling
   // to ~512px — same setting vendor-card-scan.js uses, needed to read small handwriting.
   const content = [
     { type: "text", text: PROMPTS[formType] },
-    { type: "image_url", image_url: { url: imageUrl, detail: "high" } },
+    { type: "image_url", image_url: { url: imageDataUrl, detail: "high" } },
   ];
 
   try {
