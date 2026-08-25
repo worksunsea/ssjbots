@@ -5,6 +5,8 @@ export const SUPABASE_URL = process.env.SUPABASE_URL || "https://uppyxzellmuissd
 export const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 // Switched from Anthropic to OpenAI (2026-07-09) — see api/_lib/ai.js.
 export const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+// DeepSeek — used only by the FMS order/repair-form OCR scan (deepseek-v4-flash-vision-exp).
+export const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 // fal.ai — used by the Solitaire Jewellery AI Design Generator for image
 // generation (flux-pro/v1.1 text-to-image, flux-pro/kontext for
 // reference-based edits) instead of OpenAI gpt-image-1.
