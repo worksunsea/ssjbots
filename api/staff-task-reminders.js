@@ -81,7 +81,7 @@ function buildReminderText({ name, quote, delegations, todayTasks, today }) {
   lines.push("", `✅ Today's other tasks (${todayTasks.length}):`);
   if (todayTasks.length) todayTasks.forEach((t) => lines.push(`- ${t.title}`));
   else lines.push("Nothing scheduled for today.");
-  lines.push("", "Please update the status in the HR app. Have a great day! 🚀");
+  lines.push("", "Tap to open & mark done: https://hr.gemtre.in/?goto=tasks&tab=mine", "Have a great day! 🚀");
   return lines.join("\n");
 }
 

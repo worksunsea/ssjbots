@@ -118,7 +118,7 @@ export default async function handler(req, res) {
       if (b.kras.length) lines.push(`\nKRAs not marked done today (${b.kras.length}):`, ...b.kras.map((t) => `- ${t.title}`));
       if (b.dueToday.length) lines.push(`\nDue today, not yet completed (${b.dueToday.length}):`, ...b.dueToday.map((t) => `- ${t.title}`));
       if (b.overdue.length) lines.push(`\nAlready overdue (${b.overdue.length}):`, ...b.overdue.map((t) => `- ${t.title} (due ${t.due_date})`));
-      lines.push("\nComplete them here: https://hr.gemtre.in/?goto=tasks");
+      lines.push("\nComplete them here: https://hr.gemtre.in/?goto=tasks&tab=mine");
       const msg = lines.join("\n");
 
       let waSent = false, waError = null;
