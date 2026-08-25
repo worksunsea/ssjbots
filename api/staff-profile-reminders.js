@@ -11,7 +11,7 @@
 import { supa } from "./_lib/supabase.js";
 import { sendWhatsApp } from "./_lib/wa.js";
 import { staffPhoneMap } from "./_lib/staffPhone.js";
-import { TENANT_ID, DIGEST_CRON_SECRET, WA_SESSION_CLIENT_ID, REPORTING_URL } from "./_lib/config.js";
+import { TENANT_ID, DIGEST_CRON_SECRET, TASKS_WA_CLIENT_ID, REPORTING_URL } from "./_lib/config.js";
 
 export const config = { maxDuration: 280 };
 
@@ -130,7 +130,7 @@ export default async function handler(req, res) {
       const message = lines.join("\n");
 
       if (targetPhone) {
-        await sendWhatsApp({ phone: targetPhone, msg: message, client: WA_SESSION_CLIENT_ID }).catch(() => {});
+        await sendWhatsApp({ phone: targetPhone, msg: message, client: TASKS_WA_CLIENT_ID }).catch(() => {});
       }
       await fetch(`${origin}/api/push`, {
         method: "POST",

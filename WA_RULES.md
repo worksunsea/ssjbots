@@ -19,7 +19,9 @@ Two completely separate send systems:
 | **9899226225** | Birthday/anniversary + other general client communications | intended `wbiztool_client` for calendar funnels — currently these funnels default to `WBIZTOOL_DEFAULT_CLIENT` (8860866000) unless a funnel row explicitly overrides `wbiztool_client` |
 | **9953229430** | Admin bot: internal documentation + owner bot replies only, never client-facing | not currently in `BOT_NUMBERS` |
 
-**Known gap:** `TASKS_WA_CLIENT_ID` (`api/_lib/config.js`) has never had a live pairing confirmed in code — it falls back to the Reception (8860866000) session, meaning staff task/KRA/schedule-reminder messages may still be going out from the chatbot number today, not 8448271248. **Verify this directly** before assuming it's fixed.
+**2026-08-25 fix:** `api/staff-otp-send.js`, `api/send-profile-link.js`, and `api/staff-profile-reminders.js` were hardcoded to `WA_SESSION_CLIENT_ID` (the client-facing Reception number) instead of `TASKS_WA_CLIENT_ID` — confirmed by the owner receiving a staff OTP from 8860866000 instead of 8448271248. All three switched to `TASKS_WA_CLIENT_ID`, matching every other internal staff-facing sender in the table below.
+
+**Still-open gap:** `TASKS_WA_CLIENT_ID` (`api/_lib/config.js`) falls back to the Reception session (`WA_SESSION_CLIENT_ID`) whenever the env var itself isn't set. The code fix above only matters if `TASKS_WA_CLIENT_ID` is actually set to 8448271248's paired Baileys session in Vercel env vars — **verify that env var directly** (not checkable from this session) if messages still arrive from 8860866000 after this fix deploys.
 
 ### Per-category channel map
 
@@ -35,14 +37,14 @@ Two completely separate send systems:
 | Evening completion reminder | `api/evening-completion-reminder.js` | Baileys | `TASKS_WA_CLIENT_ID` |
 | Task-assigned notify | `api/notify-task-assigned.js`, `api/_lib/taskCommand.js` | Baileys | `TASKS_WA_CLIENT_ID` |
 | Schedule reminders (Saurav's calendar) | `api/schedule-reminders.js` | Baileys | `TASKS_WA_CLIENT_ID` |
-| Staff profile-completion nudge | `api/staff-profile-reminders.js` | Baileys | `WA_SESSION_CLIENT_ID` |
+| Staff profile-completion nudge | `api/staff-profile-reminders.js` | Baileys | `TASKS_WA_CLIENT_ID` |
 | Owner morning/evening digest | `api/digest-ping.js` | Baileys | `WA_SESSION_CLIENT_ID` |
 | Connection/session-down alert | `api/connection-alert.js` | **WbizTool** (deliberate — Baileys may be the thing that's down) | none |
 | Contact-update referral | `api/contact-update.js` | WbizTool | none |
 | Catalogue send | `api/catalogue.js` | WbizTool | none |
 | Generic CRM send (`/api/send`, `/api/send-media`) | `api/send.js`, `api/send-media.js` | Baileys | caller-supplied or default |
 | Missed-call / job-enquiry auto-reply | `api/webhook.js` | Baileys | inbound session |
-| Staff OTP / profile link | `api/staff-otp-send.js`, `api/send-profile-link.js` | Baileys | `WA_SESSION_CLIENT_ID` |
+| Staff OTP / profile link | `api/staff-otp-send.js`, `api/send-profile-link.js` | Baileys | `TASKS_WA_CLIENT_ID` |
 
 No WA sender found for corporate-gifting or calculator-estimate flows in this repo — confirm whether those are handled elsewhere or genuinely don't send WA.
 
