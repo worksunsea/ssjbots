@@ -16,7 +16,7 @@ Two completely separate send systems:
 | **8860866000** | Client-facing chatbot ONLY | `BOT_NUMBERS`, `WA_SESSION_CLIENT_ID`="Reception", `WBIZTOOL_DEFAULT_CLIENT`="7560" |
 | **8448271248** | Internal communications + order messages to vendors/clients, step-wise as needed | `TASKS_WA_CLIENT_ID` (intended — falls back to Reception until paired) |
 | **8588867820** | Backup for 8448271248 if that number goes down | not yet wired in code |
-| **9899226225** | Birthday/anniversary + other general client communications | intended `wbiztool_client` for calendar funnels — currently these funnels default to `WBIZTOOL_DEFAULT_CLIENT` (8860866000) unless a funnel row explicitly overrides `wbiztool_client` |
+| **9899226225** | Birthday/anniversary + other general client communications (policy) | **owner decision 2026-08-25: leave birthday/anniversary/after-marriage funnels on 8860866000 for now — do not move to 9899226225.** Revisit only if explicitly asked again. |
 | **9953229430** | Admin bot: internal documentation + owner bot replies only, never client-facing | not currently in `BOT_NUMBERS` |
 
 **2026-08-25 fix:** `api/staff-otp-send.js`, `api/send-profile-link.js`, and `api/staff-profile-reminders.js` were hardcoded to `WA_SESSION_CLIENT_ID` (the client-facing Reception number) instead of `TASKS_WA_CLIENT_ID` — confirmed by the owner receiving a staff OTP from 8860866000 instead of 8448271248. All three switched to `TASKS_WA_CLIENT_ID`, matching every other internal staff-facing sender in the table below.
@@ -32,7 +32,8 @@ Two completely separate send systems:
 | Funnel drip / birthday / anniversary / after-marriage | `api/cron.js` | WbizTool | `funnel.wbiztool_client` (falls back to `WBIZTOOL_DEFAULT_CLIENT`) |
 | Demand opening + authority assets + visit reminders | `api/demand.js` (sent via `api/cron.js`) | WbizTool | `funnel.wbiztool_client` |
 | Broadcast campaigns | `api/broadcast-send.js` (sent via `api/cron.js`) | WbizTool | funnel's client |
-| Kitty due/claim/rollover/redemption reminders | `api/kitty-cron.js`, `api/kitty.js` | **Baileys** (not Wbiz — inconsistent with other lead-facing sends) | default session |
+| Kitty due/claim/rollover reminders (proactive) | `api/kitty-cron.js`, `api/kitty.js` `send-installment-reminder` | **Baileys** (not Wbiz — inconsistent with other lead-facing sends) | default session — DND-checked since 2026-08-25 |
+| Kitty redemption code / confirmation (transactional) | `api/kitty.js` | Baileys | default session — deliberately NOT DND-gated, member is actively mid-redemption |
 | Staff task/KRA reminder | `api/staff-task-reminders.js` | Baileys | `TASKS_WA_CLIENT_ID` |
 | Evening completion reminder | `api/evening-completion-reminder.js` | Baileys | `TASKS_WA_CLIENT_ID` |
 | Task-assigned notify | `api/notify-task-assigned.js`, `api/_lib/taskCommand.js` | Baileys | `TASKS_WA_CLIENT_ID` |
@@ -59,7 +60,7 @@ This gates **every** funnel drip step, birthday/anniversary/after-marriage messa
 - **Auto-approved** (no human step): broadcast rows, visit-day/visit-reminder rows created at demand creation.
 - **Requires manual approval**: everything else — regular funnel steps, AI-drafted calendar birthday/anniversary messages. No endpoint in this repo flips `approved` to true for these; that happens in the CRM's Approvals screen. AI preview generation only drafts the message text — it does not approve.
 
-**As of 2026-08-22: ~941 messages sit unapproved, oldest from mid-July. Nothing overdue-and-approved is stuck — the backlog is entirely on the human-approval side.** No message has actually sent via this queue since **2026-04-26** (see chat log / verify again before trusting this number long-term, it will drift).
+**2026-08-25: the entire unapproved backlog (1,658 rows, oldest from mid-July) was cancelled** (`status: canceled, canceled_reason: owner_cleared_unapproved_backlog_2026-08-25`) — a deliberate reset, not a bug fix. The approval queue starts clean from this date forward. If it grows unattended again, re-run the same cancel (filter `status='pending' AND approved=false`) rather than letting it silently pile up for months.
 
 Diagnostic-only endpoints (do not approve anything): `action=approvals_audit`, `action=reject_stale_calendar`, `action=calendar_enroll_audit`.
 
@@ -91,7 +92,9 @@ Column: `bullion_leads.dnd` + `dnd_reason` + `dnd_at`.
 
 **Checked in:** `api/cron.js` send loop, calendar-enrollment queries, `api/broadcast-send.js` recipient query, `api/webhook.js` inbound bot-reply path.
 
-**NOT checked in** (confirmed by grep): `api/kitty-cron.js`, `api/kitty.js`, `api/demand.js`, `api/catalogue.js`, `api/notify-task-assigned.js`, `api/send.js`, `api/send-media.js`, `api/send-profile-link.js`, `api/digest-ping.js`, staff-*-reminders crons, `api/schedule-reminders.js`. Kitty and demand messages are lower-risk (transactional to an opted-in member), but this is a real gap for anyone relying on DND being universal.
+**Fixed 2026-08-25**: `api/kitty-cron.js` (due reminder, unclaimed-benefit reminder, batch-rollover nudge) and `api/kitty.js`'s staff-triggered `send-installment-reminder` now check `lead.dnd` before sending — these are proactive nudges. Kitty's redemption-code and redemption-confirmation sends deliberately stayed unguarded — those are transactional responses to an action the member is actively taking, not proactive outreach.
+
+**Still NOT checked in** (confirmed by grep): `api/demand.js`, `api/catalogue.js`, `api/notify-task-assigned.js`, `api/send.js`, `api/send-media.js`, `api/send-profile-link.js`, `api/digest-ping.js`, staff-*-reminders crons, `api/schedule-reminders.js`. Demand-opening messages route through `bullion_scheduled_messages` and ARE covered by the master `cron.js` dnd check (§3) — the gap there is only for a hypothetical direct/immediate send path, which doesn't currently exist for demands. `send.js`/`send-media.js` are staff-discretion sends (a human is choosing to send, similar reasoning to redemption codes). `catalogue.js`/`contact-update.js` are on-demand responses to a client request. Staff/owner-facing crons (task reminders, digest, schedule) are internal, not lead-facing — DND is a lead concept, doesn't apply.
 
 **No hardcoded "STOP" keyword matcher exists.** DND is entirely AI-classifier-driven: the system prompt (`api/_lib/prompt.js`) instructs the model to set `action: "DND"` on stop/unsubscribe/complaint/abuse language; `webhook.js` reads that field and sets `dnd: true`. **If the AI call fails, the fallback reply is a generic "will get back to you" with `action: "CONTINUE"` — DND does NOT get set even if the user's message said "STOP".** There is no regex safety net.
 
@@ -166,4 +169,10 @@ No DB override exists for `BOT_NUMBERS` — hardcoded intentionally after incide
 
 ## Maintenance
 
-Update this file whenever: a number's purpose changes, a new WA-send code path is added, an approval/gating rule changes, or a new incident forces a fix. Treat §2's "941 unapproved / last sent 2026-04-26" numbers as a snapshot, not live state — re-verify before quoting them.
+Update this file whenever: a number's purpose changes, a new WA-send code path is added, an approval/gating rule changes, or a new incident forces a fix. Treat any point-in-time counts in this file as snapshots, not live state — re-verify before quoting them.
+
+**Still open, no action taken (need info before touching):**
+- `TASKS_WA_CLIENT_ID` (8448271248) — never confirmed paired to a live Baileys session in Vercel env vars; falls back to Reception (8860866000) if unset. Verify the env var directly.
+- 8588867820 as backup for 8448271248 — no failover logic exists in code.
+- 9953229430 as admin-bot reply number — would require adding it to `BOT_NUMBERS`, a real behavior change (starts auto-replying). Confirm a wa-service session is paired first.
+- Kitty sends use Baileys while other lead-facing sends use WbizTool — inconsistent but not confirmed broken; left as-is.
