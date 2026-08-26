@@ -29,13 +29,24 @@ const emptyScheme = () => ({
   description: "", active: true, sortOrder: 0,
 });
 
-// Gram-based (Gullak) enrollments never get a fixed rupee installment
-// schedule — every entry is an ad-hoc logged purchase, always status:"paid".
-// Grams aren't stored directly (kitty_installments has no grams column);
-// they're always derived as paid amount / locked rate, same math the
-// public "My Kitty" member view (api/kitty-client.js) already uses.
-const isGramScheme = (e) => !e.is_legacy && e.scheme?.perks?.unit === "grams";
-const gramsFor = (i) => (i.rate_locked ? Number(i.paid_amount ?? i.amount ?? 0) / Number(i.rate_locked) : null);
+// Gold-tracked schemes: Gullak (unit:"grams", ad-hoc logged purchases, no
+// fixed schedule) AND rate-lock rupee schemes like Golden Sparkle
+// (redemption: "jewellery_or_raw_gold"/"sell_anytime_or_jewellery" — fixed
+// monthly rupee installments that convert to grams via a per-entry locked
+// rate). Both accumulate real gold; only the schedule shape differs. Grams
+// aren't stored directly (kitty_installments has no grams column); they're
+// always derived as paid amount / locked rate, same math the public
+// "My Kitty" member view (api/kitty-client.js) already uses. Mirrors
+// isGoldRedemptionScheme() in api/kitty.js — keep in sync if that changes.
+const isGramScheme = (e) => {
+  if (e.is_legacy) return false;
+  const perks = e.scheme?.perks;
+  return perks?.unit === "grams" || perks?.redemption === "jewellery_or_raw_gold" || perks?.redemption === "sell_anytime_or_jewellery";
+};
+// Only show grams for actually-settled rows (paid/free) — a "due" row can
+// carry a stray paid_amount from data entry without being paid yet, and
+// showing grams on it would look like it's already counted.
+const gramsFor = (i) => (i.rate_locked && (i.status === "paid" || i.status === "free") ? Number(i.paid_amount ?? i.amount ?? 0) / Number(i.rate_locked) : null);
 function enrollmentGrams(e) {
   const paid = (e.installments || []).filter((i) => i.status === "paid" || i.status === "free");
   return paid.reduce((sum, i) => (i.rate_locked ? sum + Number(i.paid_amount ?? i.amount ?? 0) / Number(i.rate_locked) : sum), 0);
