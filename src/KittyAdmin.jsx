@@ -29,6 +29,18 @@ const emptyScheme = () => ({
   description: "", active: true, sortOrder: 0,
 });
 
+// Gram-based (Gullak) enrollments never get a fixed rupee installment
+// schedule — every entry is an ad-hoc logged purchase, always status:"paid".
+// Grams aren't stored directly (kitty_installments has no grams column);
+// they're always derived as paid amount / locked rate, same math the
+// public "My Kitty" member view (api/kitty-client.js) already uses.
+const isGramScheme = (e) => !e.is_legacy && e.scheme?.perks?.unit === "grams";
+const gramsFor = (i) => (i.rate_locked ? Number(i.paid_amount ?? i.amount ?? 0) / Number(i.rate_locked) : null);
+function enrollmentGrams(e) {
+  const paid = (e.installments || []).filter((i) => i.status === "paid" || i.status === "free");
+  return paid.reduce((sum, i) => (i.rate_locked ? sum + Number(i.paid_amount ?? i.amount ?? 0) / Number(i.rate_locked) : sum), 0);
+}
+
 export default function KittyAdminScreen({ sb, tenantId, crmSecret, staffName }) {
   const [tab, setTab] = useState("enrollments");
   const actor = staffName || "staff";
@@ -72,9 +84,29 @@ function OverviewTab({ crmSecret, actor }) {
   const today = new Date().toISOString().slice(0, 10);
   const live = enrollments.filter((e) => ["active", "completed", "redeemed"].includes(e.status));
 
+  const GULLAK_STALE_DAYS = 45;
   const bySchemeName = new Map();
+  const gullakStats = new Map();
   const pending = [];
   for (const e of live) {
+    if (isGramScheme(e)) {
+      // Gram-based (Gullak) enrollments never generate a "due" installment
+      // schedule — every entry is an ad-hoc logged purchase, always
+      // status:"paid". The paid/unpaid/overdue framing below is meaningless
+      // for these (unpaid would always show 0) — track separately instead.
+      const key = e.scheme?.name || "—";
+      if (!gullakStats.has(key)) gullakStats.set(key, { members: 0, totalGrams: 0, stale: [] });
+      const s = gullakStats.get(key);
+      s.members++;
+      s.totalGrams += enrollmentGrams(e);
+      const paidDates = (e.installments || []).filter((i) => i.status === "paid" && i.paid_at).map((i) => i.paid_at.slice(0, 10));
+      const lastPurchase = paidDates.sort().pop() || null;
+      const daysSince = lastPurchase ? Math.floor((Date.now() - new Date(lastPurchase).getTime()) / 86400000) : null;
+      if (daysSince === null || daysSince >= GULLAK_STALE_DAYS) {
+        s.stale.push({ name: e.lead?.name, phone: e.lead?.phone, lastPurchase, daysSince });
+      }
+      continue;
+    }
     const key = e.is_legacy ? `[Legacy] ${e.legacy_scheme_name}` : (e.scheme?.name || "—");
     if (!bySchemeName.has(key)) bySchemeName.set(key, { members: 0, paid: 0, unpaid: 0, overdue: 0, onTime: 0, late: 0 });
     const stat = bySchemeName.get(key);
@@ -98,6 +130,7 @@ function OverviewTab({ crmSecret, actor }) {
     }
   }
   pending.sort((a, b) => a.installment.due_date.localeCompare(b.installment.due_date));
+  const gullakStale = [...gullakStats.values()].flatMap((s) => s.stale).sort((a, b) => (b.daysSince ?? 99999) - (a.daysSince ?? 99999));
 
   const sendReminder = async (installmentId) => {
     setSendingId(installmentId);
@@ -125,6 +158,41 @@ function OverviewTab({ crmSecret, actor }) {
           {!bySchemeName.size && <tr><td colSpan={7}>No active enrollments yet.</td></tr>}
         </tbody>
       </table>
+
+      {gullakStats.size > 0 && (
+        <>
+          <h4>Gullak (Gram-Based) Holdings</h4>
+          <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 28, fontSize: 12.5 }}>
+            <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
+              <th>Scheme</th><th>Members</th><th>Total grams held</th>
+            </tr></thead>
+            <tbody>
+              {[...gullakStats.entries()].map(([name, s]) => (
+                <tr key={name} style={{ borderBottom: "1px solid #eee" }}>
+                  <td>{name}</td><td>{s.members}</td><td>{s.totalGrams.toFixed(3)} g</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <h4>Gullak — Members Who Haven't Purchased in {GULLAK_STALE_DAYS}+ Days</h4>
+          <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 28, fontSize: 12.5 }}>
+            <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
+              <th>Name</th><th>Phone</th><th>Last purchase</th><th>Days since</th>
+            </tr></thead>
+            <tbody>
+              {gullakStale.map((m, idx) => (
+                <tr key={idx} style={{ borderBottom: "1px solid #eee" }}>
+                  <td>{m.name || "—"}</td><td>{m.phone || "—"}</td>
+                  <td>{m.lastPurchase || "never"}</td>
+                  <td style={{ color: "#B91C1C" }}>{m.daysSince ?? "—"}</td>
+                </tr>
+              ))}
+              {!gullakStale.length && <tr><td colSpan={4}>Everyone's current.</td></tr>}
+            </tbody>
+          </table>
+        </>
+      )}
 
       <h4>Pending Payments (overdue — due date already passed)</h4>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
@@ -460,6 +528,11 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
   const [changingSchemeFor, setChangingSchemeFor] = useState(null); // enrollment id, or null
   const [pickedSchemeId, setPickedSchemeId] = useState("");
+  const [goldRate, setGoldRate] = useState(null); // today's live 995/24kt rate — reference only, for gullak rate-cut entries
+
+  useEffect(() => {
+    fetch("/api/rates").then((r) => r.json()).then((d) => { if (d.ok) setGoldRate(d.rates?.spot?.gold24kt || null); }).catch(() => {});
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -477,6 +550,21 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
   useEffect(() => { load(); }, [load]);
 
   const visibleBatches = schemeFilter ? batches.filter((b) => b.scheme_id === schemeFilter) : batches;
+
+  // Standing reference, not affected by the scheme/status/search filters
+  // below — cross-scheme gold holdings per client (a client can have more
+  // than one gullak-type enrollment).
+  const gullakByPhone = new Map();
+  for (const e of enrollments) {
+    if (!isGramScheme(e) || !["active", "completed", "redeemed"].includes(e.status)) continue;
+    const key = e.lead?.phone || "—";
+    if (!gullakByPhone.has(key)) gullakByPhone.set(key, { name: e.lead?.name, phone: key, grams: 0, count: 0 });
+    const rec = gullakByPhone.get(key);
+    rec.grams += enrollmentGrams(e);
+    rec.count++;
+  }
+  const gullakHoldings = [...gullakByPhone.values()].sort((a, b) => b.grams - a.grams);
+
   const searchNorm = search.trim().toLowerCase();
   const searchDigits = search.replace(/\D/g, "");
   const filteredEnrollments = enrollments.filter((e) => {
@@ -553,7 +641,7 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
     const paidAmount = prompt("Amount received?");
     if (paidAmount == null) return;
     let rateLocked;
-    if (confirm("Is this a rate-lock scheme? Enter locked rate?")) rateLocked = prompt("Locked gold rate (₹/g)?");
+    if (confirm("Is this a rate-lock scheme? Enter locked rate?")) rateLocked = prompt(`Locked gold rate (₹/g)?${goldRate ? ` [today's live 995 rate: ₹${Math.round(goldRate)}/g]` : ""}`);
     const d = await call("mark-installment-paid", { method: "POST", crmSecret, body: { installmentId, paidAmount, rateLocked, recordedBy: actor, actor } });
     if (d.ok) load(); else alert(d.error);
   };
@@ -575,7 +663,7 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
     if (d.ok) load(); else alert(d.error);
   };
   const addInstallment = async (enrollmentId) => {
-    const amount = prompt("Amount received (₹)?");
+    const amount = prompt(`Amount received (₹)?${goldRate ? ` [today's live 995 rate: ₹${Math.round(goldRate)}/g]` : ""}`);
     if (!amount) return;
     const gramsPurchased = prompt("Grams purchased (leave blank if not gram-based / no rate lock)?") || null;
     const d = await call("add-installment", { method: "POST", crmSecret, body: { enrollmentId, amount, gramsPurchased, recordedBy: actor, actor } });
@@ -605,6 +693,26 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
 
   return (
     <div>
+      {goldRate && (
+        <div style={{ marginBottom: 12, fontSize: 13, color: "#92400e", fontWeight: 600 }}>
+          🪙 Today's live 24KT (995) rate: ₹{Math.round(goldRate).toLocaleString("en-IN")}/g — reference only, enter the actual rate you're cutting when logging a purchase.
+        </div>
+      )}
+      {gullakHoldings.length > 0 && (
+        <details style={{ marginBottom: 16, border: "1px solid #f0d9a0", borderRadius: 8, padding: "8px 12px", background: "#fffaf0" }}>
+          <summary style={{ cursor: "pointer", fontWeight: 600, color: "#92400e" }}>Gullak Gold Holdings by Client ({gullakHoldings.length})</summary>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, marginTop: 8 }}>
+            <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}><th>Name</th><th>Phone</th><th>Enrollments</th><th>Total grams</th></tr></thead>
+            <tbody>
+              {gullakHoldings.map((h) => (
+                <tr key={h.phone} style={{ borderBottom: "1px solid #eee" }}>
+                  <td>{h.name || "—"}</td><td>{h.phone}</td><td>{h.count}</td><td>{h.grams.toFixed(3)} g</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
+      )}
       <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
         {onNewEnroll && <button onClick={onNewEnroll} style={{ fontWeight: 600 }}>+ New Enroll</button>}
         <select value={status} onChange={(e) => setStatus(e.target.value)}>
@@ -656,6 +764,11 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
             <div key={e.id} style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12 }}>
               <b>{e.lead?.name || "—"}</b> ({e.lead?.phone}) — {e.is_legacy ? e.legacy_scheme_name : e.scheme?.name}{e.member_number ? ` #${e.member_number}` : ""} — <i>{e.status}</i>
               {e.start_date && <span style={{ marginLeft: 8, fontSize: 11.5, color: "#666" }}>started {e.start_date}</span>}
+              {isGramScheme(e) && (
+                <div style={{ marginTop: 4, fontSize: 13, fontWeight: 600, color: "#92400e" }}>
+                  Gold held: {enrollmentGrams(e).toFixed(3)} g
+                </div>
+              )}
               {!e.is_legacy && <button onClick={() => editEnrollment(e)} style={{ marginLeft: 8 }}>Edit Start Date</button>}
               {!e.is_legacy && (e.status === "pending_confirmation" || e.status === "active") && (
                 changingSchemeFor === e.id ? (
@@ -688,14 +801,19 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
               )}
               {e.installments?.length > 0 && (
                 <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  {e.installments.sort((a, b) => a.month_number - b.month_number).map((i) => (
-                    <span key={i.month_number} title={`Due ${i.due_date} — click to mark paid, shift+click to edit`}
-                      onClick={(ev) => { if (ev.shiftKey) editInstallment(i); else if (i.status === "due") markPaid(i.id); else editInstallment(i); }}
-                      style={{ padding: "2px 8px", borderRadius: 4, fontSize: 12, cursor: "pointer",
-                        background: i.status === "paid" ? "#d1fae5" : i.status === "due" ? "#fef3c7" : "#e5e7eb" }}>
-                      #{i.month_number} {i.status}
-                    </span>
-                  ))}
+                  {e.installments.sort((a, b) => a.month_number - b.month_number).map((i) => {
+                    const g = gramsFor(i);
+                    const rateTxt = i.rate_locked ? ` — rate ₹${Number(i.rate_locked).toLocaleString("en-IN")}/g` : "";
+                    const gramsTxt = g ? ` — ${g.toFixed(3)}g` : "";
+                    return (
+                      <span key={i.month_number} title={`Due ${i.due_date}${rateTxt}${gramsTxt} — click to mark paid, shift+click to edit`}
+                        onClick={(ev) => { if (ev.shiftKey) editInstallment(i); else if (i.status === "due") markPaid(i.id); else editInstallment(i); }}
+                        style={{ padding: "2px 8px", borderRadius: 4, fontSize: 12, cursor: "pointer",
+                          background: i.status === "paid" ? "#d1fae5" : i.status === "due" ? "#fef3c7" : "#e5e7eb" }}>
+                        #{i.month_number} {i.status}{i.rate_locked ? ` · ₹${Number(i.rate_locked).toLocaleString("en-IN")}/g` : ""}{g ? ` · ${g.toFixed(3)}g` : ""}
+                      </span>
+                    );
+                  })}
                 </div>
               )}
             </div>
