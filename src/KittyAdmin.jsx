@@ -648,11 +648,28 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
     const d2 = await call("delete-enrollment", { method: "POST", crmSecret, body: { id: e.id, actor, force: true } });
     if (d2.ok) { alert("Deleted (forced past paid-installment guard)."); load(); } else alert(`Delete failed: ${d2.error}`);
   };
+  // Loops until a valid whole-number ₹/g rate is entered (or the user gives
+  // up) — a decimal here is almost always a mistyped grams value (real
+  // incident, 2026-08-26: Upasana Khanna's rate got entered as 0.1635
+  // instead of ~₹152,900/g, inflating her computed gold holding 1000x).
+  const promptRate = (label) => {
+    while (true) {
+      const raw = prompt(`${label}${goldRate ? ` [today's live 995 rate: ₹${Math.round(goldRate)}/g]` : ""}`);
+      if (raw == null || raw.trim() === "") return null;
+      const n = Number(raw);
+      if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1000) {
+        alert("Gold rate must be a whole number, ₹/g (e.g. 152900) — no decimals, and not a small number (that looks like a grams value). Try again.");
+        continue;
+      }
+      return n;
+    }
+  };
+
   const markPaid = async (installmentId) => {
     const paidAmount = prompt("Amount received?");
     if (paidAmount == null) return;
     let rateLocked;
-    if (confirm("Is this a rate-lock scheme? Enter locked rate?")) rateLocked = prompt(`Locked gold rate (₹/g)?${goldRate ? ` [today's live 995 rate: ₹${Math.round(goldRate)}/g]` : ""}`);
+    if (confirm("Is this a rate-lock scheme? Enter locked rate?")) rateLocked = promptRate("Locked gold rate (₹/g)?");
     const d = await call("mark-installment-paid", { method: "POST", crmSecret, body: { installmentId, paidAmount, rateLocked, recordedBy: actor, actor } });
     if (d.ok) load(); else alert(d.error);
   };
@@ -676,7 +693,11 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
   const addInstallment = async (enrollmentId) => {
     const amount = prompt(`Amount received (₹)?${goldRate ? ` [today's live 995 rate: ₹${Math.round(goldRate)}/g]` : ""}`);
     if (!amount) return;
-    const gramsPurchased = prompt("Grams purchased (leave blank if not gram-based / no rate lock)?") || null;
+    // Grams are always entered/stored to 3 decimals (e.g. 1.635g) — round
+    // here so the derived rate (amount / grams) doesn't drift on a stray
+    // extra-precision entry.
+    const gramsRaw = prompt("Grams purchased (leave blank if not gram-based / no rate lock)?");
+    const gramsPurchased = gramsRaw ? (Math.round(Number(gramsRaw) * 1000) / 1000).toFixed(3) : null;
     const d = await call("add-installment", { method: "POST", crmSecret, body: { enrollmentId, amount, gramsPurchased, recordedBy: actor, actor } });
     if (d.ok) load(); else alert(d.error);
   };

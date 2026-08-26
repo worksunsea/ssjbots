@@ -52,6 +52,19 @@ const MAX_FLEXIBLE_AMOUNT = 300000;
 function isGoldRedemptionScheme(perks) {
   return perks?.redemption === "jewellery_or_raw_gold" || perks?.redemption === "sell_anytime_or_jewellery";
 }
+// A locked gold rate is always a whole-number ₹/gram figure, never a
+// decimal — a decimal almost always means staff typed a GRAMS value into
+// the rate field by mistake (real incident, 2026-08-26: Upasana Khanna's
+// installment got rate_locked=0.1635 instead of ~₹152,900/g, inflating her
+// computed holding to 152,900g). Returns { ok:true, value } or { ok:false, error }.
+function validateRateLocked(raw) {
+  if (raw == null || raw === "") return { ok: true, value: null };
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return { ok: false, error: "rate_locked must be a number" };
+  if (!Number.isInteger(n)) return { ok: false, error: "rate_locked must be a whole number (₹/g) — no decimals. Looks like a grams value was entered instead of a rate." };
+  if (n < 1000) return { ok: false, error: "rate_locked looks too small to be a real ₹/g gold rate" };
+  return { ok: true, value: n };
+}
 // Resolves the monthly amount to actually use for a flexible-amount
 // enrollment, validating it's a ₹5,000 multiple in range. Returns
 // { ok:true, amount } or { ok:false, error }.
@@ -466,8 +479,18 @@ export default async function handler(req, res) {
     const body = parseBody(req);
     if (!body.enrollmentId || !body.amount) return res.status(400).json({ ok: false, error: "enrollmentId_amount_required" });
     const amount = Number(body.amount);
-    const grams = body.gramsPurchased != null ? Number(body.gramsPurchased) : null;
-    const rateLocked = grams ? amount / grams : (body.ratePerGram != null ? Number(body.ratePerGram) : null);
+    // Grams are always entered/stored to 3 decimals (e.g. 1.635g) — round
+    // here so a stray extra-precision entry doesn't silently drift the
+    // derived rate.
+    const grams = body.gramsPurchased != null ? Math.round(Number(body.gramsPurchased) * 1000) / 1000 : null;
+    let rateLocked = null;
+    if (grams) {
+      rateLocked = amount / grams; // derived, not staff-typed — naturally fractional, not subject to the whole-number rule
+    } else if (body.ratePerGram != null) {
+      const rateCheck = validateRateLocked(body.ratePerGram);
+      if (!rateCheck.ok) return res.status(400).json({ ok: false, error: rateCheck.error });
+      rateLocked = rateCheck.value;
+    }
     const { data: existingCount } = await sb.from("kitty_installments")
       .select("month_number", { count: "exact", head: false }).eq("enrollment_id", body.enrollmentId).order("month_number", { ascending: false }).limit(1);
     const nextMonth = body.monthNumber != null ? Number(body.monthNumber) : ((existingCount?.[0]?.month_number || 0) + 1);
@@ -498,11 +521,13 @@ export default async function handler(req, res) {
     if (authFail) return;
     const body = parseBody(req);
     if (!body.installmentId) return res.status(400).json({ ok: false, error: "installmentId_required" });
+    const rateCheck = validateRateLocked(body.rateLocked);
+    if (!rateCheck.ok) return res.status(400).json({ ok: false, error: rateCheck.error });
     const { data, error } = await sb.from("kitty_installments").update({
       status: "paid",
       paid_amount: body.paidAmount != null ? Number(body.paidAmount) : null,
       paid_at: new Date().toISOString(),
-      rate_locked: body.rateLocked != null ? Number(body.rateLocked) : null,
+      rate_locked: rateCheck.value,
       recorded_by: body.recordedBy || null,
     }).eq("tenant_id", TENANT_ID).eq("id", body.installmentId).select().single();
     if (error) return res.status(500).json({ ok: false, error: error.message });
@@ -881,7 +906,11 @@ export default async function handler(req, res) {
     if (body.status) patch.status = body.status;
     if (body.paidAmount != null) patch.paid_amount = Number(body.paidAmount);
     if (body.paidAt) patch.paid_at = body.paidAt;
-    if (body.rateLocked != null) patch.rate_locked = Number(body.rateLocked);
+    if (body.rateLocked != null) {
+      const rateCheck = validateRateLocked(body.rateLocked);
+      if (!rateCheck.ok) return res.status(400).json({ ok: false, error: rateCheck.error });
+      patch.rate_locked = rateCheck.value;
+    }
     if (!Object.keys(patch).length) return res.status(400).json({ ok: false, error: "nothing_to_update" });
 
     const { data, error } = await sb.from("kitty_installments").update(patch).eq("id", body.id).select().single();
