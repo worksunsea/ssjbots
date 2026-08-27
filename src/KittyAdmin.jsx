@@ -516,6 +516,8 @@ function exportMonthlyExcel(enrollments, month) {
         "Installment Status": i.status,
         "Paid Amount": i.paid_amount || "",
         "Paid At": i.paid_at ? i.paid_at.slice(0, 10) : "",
+        "Payment Method": i.payment_method || "",
+        "Payment Remarks": i.payment_remarks || "",
         "Claim Status": e.claim_status !== "not_applicable" ? e.claim_status : "",
       });
     }
@@ -665,19 +667,38 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
     }
   };
 
+  const PAYMENT_METHODS = ["cash", "upi", "bank_transfer", "card", "cheque", "other"];
+  const promptPaymentMethod = () => {
+    while (true) {
+      const raw = prompt(`Payment method? (${PAYMENT_METHODS.join(" / ")})`, "cash");
+      if (raw == null) return null;
+      const v = raw.trim().toLowerCase();
+      if (!PAYMENT_METHODS.includes(v)) {
+        alert(`Must be one of: ${PAYMENT_METHODS.join(", ")}`);
+        continue;
+      }
+      return v;
+    }
+  };
+
   const markPaid = async (installmentId) => {
     const paidAmount = prompt("Amount received?");
     if (paidAmount == null) return;
+    const paymentMethod = promptPaymentMethod();
+    if (paymentMethod == null) return;
+    const paymentRemarks = prompt("Remarks (UPI ref no. / transfer ref no. / cash given to whom)? Optional.") || null;
     let rateLocked;
     if (confirm("Is this a rate-lock scheme? Enter locked rate?")) rateLocked = promptRate("Locked gold rate (₹/g)?");
-    const d = await call("mark-installment-paid", { method: "POST", crmSecret, body: { installmentId, paidAmount, rateLocked, recordedBy: actor, actor } });
+    const d = await call("mark-installment-paid", { method: "POST", crmSecret, body: { installmentId, paidAmount, paymentMethod, paymentRemarks, rateLocked, recordedBy: actor, actor } });
     if (d.ok) load(); else alert(d.error);
   };
   const editInstallment = async (i) => {
     const amount = prompt("Amount (₹)?", i.amount) ?? i.amount;
     const dueDate = prompt("Due date (YYYY-MM-DD)?", i.due_date) ?? i.due_date;
     const status = prompt("Status (due / paid / free / waived)?", i.status) ?? i.status;
-    const d = await call("update-installment", { method: "POST", crmSecret, body: { id: i.id, amount, dueDate, status, actor } });
+    const paymentMethod = prompt(`Payment method? (${PAYMENT_METHODS.join(" / ")})`, i.payment_method || "") || i.payment_method || null;
+    const paymentRemarks = prompt("Remarks (UPI ref no. / transfer ref no. / cash given to whom)?", i.payment_remarks || "") ?? i.payment_remarks;
+    const d = await call("update-installment", { method: "POST", crmSecret, body: { id: i.id, amount, dueDate, status, paymentMethod, paymentRemarks, actor } });
     if (d.ok) load(); else alert(d.error);
   };
   const editEnrollment = async (e) => {
@@ -698,7 +719,10 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
     // extra-precision entry.
     const gramsRaw = prompt("Grams purchased (leave blank if not gram-based / no rate lock)?");
     const gramsPurchased = gramsRaw ? (Math.round(Number(gramsRaw) * 1000) / 1000).toFixed(3) : null;
-    const d = await call("add-installment", { method: "POST", crmSecret, body: { enrollmentId, amount, gramsPurchased, recordedBy: actor, actor } });
+    const paymentMethod = promptPaymentMethod();
+    if (paymentMethod == null) return;
+    const paymentRemarks = prompt("Remarks (UPI ref no. / transfer ref no. / cash given to whom)? Optional.") || null;
+    const d = await call("add-installment", { method: "POST", crmSecret, body: { enrollmentId, amount, gramsPurchased, paymentMethod, paymentRemarks, recordedBy: actor, actor } });
     if (d.ok) load(); else alert(d.error);
   };
   // Two-step: (1) initiate sends the member a WA code + what's being
@@ -837,8 +861,9 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
                     const g = gramsFor(i);
                     const rateTxt = i.rate_locked ? ` — rate ₹${Number(i.rate_locked).toLocaleString("en-IN")}/g` : "";
                     const gramsTxt = g ? ` — ${g.toFixed(3)}g` : "";
+                    const payTxt = i.payment_method ? ` — paid via ${i.payment_method}${i.payment_remarks ? ` (${i.payment_remarks})` : ""}` : "";
                     return (
-                      <span key={i.month_number} title={`Due ${i.due_date}${rateTxt}${gramsTxt} — click to mark paid, shift+click to edit`}
+                      <span key={i.month_number} title={`Due ${i.due_date}${rateTxt}${gramsTxt}${payTxt} — click to mark paid, shift+click to edit`}
                         onClick={(ev) => { if (ev.shiftKey) editInstallment(i); else if (i.status === "due") markPaid(i.id); else editInstallment(i); }}
                         style={{ padding: "2px 8px", borderRadius: 4, fontSize: 12, cursor: "pointer",
                           background: i.status === "paid" ? "#d1fae5" : i.status === "due" ? "#fef3c7" : "#e5e7eb" }}>

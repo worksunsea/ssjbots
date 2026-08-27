@@ -499,6 +499,7 @@ export default async function handler(req, res) {
       due_date: body.dueDate || new Date().toISOString().slice(0, 10),
       amount, status: "paid", paid_amount: amount, paid_at: new Date().toISOString(),
       rate_locked: rateLocked, recorded_by: body.recordedBy || null,
+      payment_method: body.paymentMethod || null, payment_remarks: body.paymentRemarks || null,
     }).select().single();
     if (error) return res.status(500).json({ ok: false, error: error.message });
     await logAudit(sb, { entityType: "installment", entityId: data.id, action: "create", actor: body.actor || body.recordedBy, details: { enrollmentId: body.enrollmentId, amount, grams } });
@@ -529,6 +530,7 @@ export default async function handler(req, res) {
       paid_at: new Date().toISOString(),
       rate_locked: rateCheck.value,
       recorded_by: body.recordedBy || null,
+      payment_method: body.paymentMethod || null, payment_remarks: body.paymentRemarks || null,
     }).eq("tenant_id", TENANT_ID).eq("id", body.installmentId).select().single();
     if (error) return res.status(500).json({ ok: false, error: error.message });
 
@@ -906,6 +908,8 @@ export default async function handler(req, res) {
     if (body.status) patch.status = body.status;
     if (body.paidAmount != null) patch.paid_amount = Number(body.paidAmount);
     if (body.paidAt) patch.paid_at = body.paidAt;
+    if (body.paymentMethod != null) patch.payment_method = body.paymentMethod;
+    if (body.paymentRemarks != null) patch.payment_remarks = body.paymentRemarks;
     if (body.rateLocked != null) {
       const rateCheck = validateRateLocked(body.rateLocked);
       if (!rateCheck.ok) return res.status(400).json({ ok: false, error: rateCheck.error });
