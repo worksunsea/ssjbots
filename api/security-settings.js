@@ -22,13 +22,15 @@ async function requireSuperadmin(sb, staffId) {
 }
 
 async function getOrCreateSettings(sb, tenantId) {
-  const { data } = await sb.from("tenant_security_settings").select("*").eq("tenant_id", tenantId).maybeSingle();
+  const { data, error: selErr } = await sb.from("tenant_security_settings").select("*").eq("tenant_id", tenantId).maybeSingle();
+  if (selErr) console.error("getOrCreateSettings select failed:", selErr.message);
   if (data) return data;
-  const { data: created } = await sb
+  const { data: created, error: insErr } = await sb
     .from("tenant_security_settings")
     .insert({ tenant_id: tenantId })
     .select("*")
     .single();
+  if (insErr) console.error("getOrCreateSettings insert failed:", insErr.message);
   return created;
 }
 
@@ -69,18 +71,20 @@ export default async function handler(req, res) {
   if (action === "generate" || action === "rotate") {
     const secret = new Secret({ size: 20 });
     const totp = new TOTP({ issuer: "SSJ CRM", label: "Office Device", algorithm: "SHA1", digits: 6, period: 30, secret });
-    await sb
+    const { error } = await sb
       .from("tenant_security_settings")
       .update({ totp_secret: secret.base32, totp_enabled: true, updated_at: new Date().toISOString(), updated_by: staffId })
       .eq("tenant_id", tenantId);
+    if (error) return res.status(500).json({ ok: false, error: error.message });
     return res.status(200).json({ ok: true, otpauthUri: totp.toString(), secret: secret.base32 });
   }
 
   if (action === "enable" || action === "disable") {
-    await sb
+    const { error } = await sb
       .from("tenant_security_settings")
       .update({ totp_enabled: action === "enable", updated_at: new Date().toISOString(), updated_by: staffId })
       .eq("tenant_id", tenantId);
+    if (error) return res.status(500).json({ ok: false, error: error.message });
     return res.status(200).json({ ok: true });
   }
 
