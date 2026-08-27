@@ -27,14 +27,15 @@ export async function getSecuritySettings(sb, tenantId) {
 export async function recentlyVerifiedByName(sb, tenantId, staffName, reauthDays) {
   if (!staffName) return false;
   const cutoff = new Date(Date.now() - reauthDays * 86400000).toISOString();
-  const { data } = await sb
+  const { data, error } = await sb
     .from("device_verifications")
     .select("id")
     .eq("tenant_id", tenantId)
     .ilike("staff_name", staffName.trim())
-    .gte("created_at", cutoff)
+    .gte("verified_at", cutoff)
     .limit(1)
     .maybeSingle();
+  if (error) console.error("recentlyVerifiedByName query failed:", error.message);
   return !!data;
 }
 
