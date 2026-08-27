@@ -1,7 +1,8 @@
-// Official staff messages go to the OFFICE phone first (the company device),
-// then the personal phone, then the legacy staff.phone as last resort.
-// Pass {preferPersonal: true} for after-hours nudges (e.g. the 7:30pm
-// completion reminder) where the office phone likely isn't being checked.
+// Official staff messages (daily reminders, warnings, anything from the
+// system) go to staff.phone — the "WhatsApp / Login Phone" field in ssj-hr's
+// staff profile (App.jsx labels it exactly that; it's also what they log
+// into the HR app with). employee_docs office/personal phone is only a
+// fallback for staff with no login phone on file yet.
 // Loads employee_docs once so reminder loops don't N+1 the lookup.
 export async function staffPhoneMap(sb, tenantId) {
   const { data } = await sb
@@ -18,11 +19,11 @@ export async function staffPhoneMap(sb, tenantId) {
 
   return {
     // s: a staff row ({id?, name?, phone?}) — returns best phone or null
-    forStaff(s, { preferPersonal = false } = {}) {
+    forStaff(s) {
       if (!s) return null;
+      if (s.phone) return s.phone;
       const d = (s.id != null && byId.get(String(s.id))) || (s.name && byName.get(s.name.trim().toLowerCase()));
-      const fromDocs = d && (preferPersonal ? (d.personal_phone || d.office_phone) : (d.office_phone || d.personal_phone));
-      return fromDocs || s.phone || null;
+      return (d && (d.office_phone || d.personal_phone)) || null;
     },
   };
 }

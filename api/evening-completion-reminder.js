@@ -123,7 +123,7 @@ export default async function handler(req, res) {
       const msg = lines.join("\n");
 
       let waSent = false, waError = null;
-      const targetPhone = phones.forStaff(staffRow, { preferPersonal: true });
+      const targetPhone = phones.forStaff(staffRow);
       if (targetPhone) {
         const wa = await sendWhatsApp({ phone: targetPhone, msg, client: TASKS_WA_CLIENT_ID });
         waSent = wa.status === 1;
