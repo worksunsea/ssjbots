@@ -1,15 +1,18 @@
 // Shared logic behind the office 2FA gate — one TOTP secret kept on a single
-// physical office phone, checked per-STAFF-MEMBER every `reauth_days` (default
-// 15), independent of which device/app they're logging into. Used by both
-// device-check.js (ssjbots' own login) and office-totp-check.js (cross-app,
-// called by ssj-hr/ssj-suite so all three apps share the one office code).
+// physical office phone, checked per-DEVICE (browser) every `reauth_days`
+// (default 15). Used by both device-check.js (ssjbots' own login) and
+// office-totp-check.js (cross-app, called by ssj-hr/fms-tracker so all apps
+// share the one office code). Device identity is a UUID shared across all
+// three apps via a `Domain=.gemtre.in` cookie set by each app's own
+// office-totp-check.js proxy — see that file for the cookie logic — so one
+// verification on any app trusts that browser everywhere.
 //
-// Per-user recency is tracked in the existing `device_verifications` log,
-// matched by lower-cased staff_name — not staff_id, since staff_id spaces
-// differ across apps (ssjbots/ssj-hr/ssj-suite each have their own staff
-// tables/uuid spaces) but a person's name is the one thing consistent
-// everywhere. No new tables needed — this table already logs every
-// successful verification with a staff_name column.
+// Trust used to also fall back to "has this staff NAME verified anywhere
+// recently" (recentlyVerifiedByName, now removed) — that let one person's
+// verification on one device silently cover every other device they used,
+// which defeats per-device trust. Removed; device_verifications is now a
+// pure audit log (who verified, from what IP/device, when), not a trust
+// source.
 
 import { TOTP, Secret } from "otpauth";
 
@@ -22,21 +25,39 @@ export async function getSecuritySettings(sb, tenantId) {
   return data;
 }
 
-// Has this staff member (by name) verified the office code within reauth_days,
-// from ANY device or app? If so, they skip re-entry.
-export async function recentlyVerifiedByName(sb, tenantId, staffName, reauthDays) {
-  if (!staffName) return false;
-  const cutoff = new Date(Date.now() - reauthDays * 86400000).toISOString();
+// Is this exact device (by device_token) currently trusted? Bumps
+// last_seen_at on a hit so "last used" stays accurate for the admin panel.
+export async function checkDeviceTrust(sb, tenantId, deviceToken) {
+  if (!deviceToken) return false;
   const { data, error } = await sb
-    .from("device_verifications")
-    .select("id")
+    .from("trusted_devices")
+    .select("id,trusted_until")
     .eq("tenant_id", tenantId)
-    .ilike("staff_name", staffName.trim())
-    .gte("verified_at", cutoff)
-    .limit(1)
+    .eq("device_token", deviceToken)
     .maybeSingle();
-  if (error) console.error("recentlyVerifiedByName query failed:", error.message);
-  return !!data;
+  if (error) { console.error("checkDeviceTrust query failed:", error.message); return false; }
+  if (!data || new Date(data.trusted_until) <= new Date()) return false;
+  await sb.from("trusted_devices").update({ last_seen_at: new Date().toISOString() }).eq("id", data.id);
+  return true;
+}
+
+// Marks this device trusted for reauthDays from now, after a successful code.
+export async function upsertTrustedDevice(sb, { tenantId, deviceToken, label, ip, staffId, staffName, reauthDays }) {
+  const trustedUntil = new Date(Date.now() + reauthDays * 86400000).toISOString();
+  const { error } = await sb.from("trusted_devices").upsert(
+    {
+      tenant_id: tenantId,
+      device_token: deviceToken,
+      label: label || null,
+      ip: ip || null,
+      verified_by_staff_id: staffId || null,
+      verified_by_name: staffName || null,
+      trusted_until: trustedUntil,
+      last_seen_at: new Date().toISOString(),
+    },
+    { onConflict: "tenant_id,device_token" }
+  );
+  if (error) console.error("upsertTrustedDevice failed:", error.message);
 }
 
 export function validateOfficeCode(totpSecret, code) {

@@ -1,8 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   REAUTH_DAYS_DEFAULT,
   DEVICE_TRUST_DAYS_DEFAULT,
-  getDeviceToken,
   isSessionExpired,
   shouldForceLogout,
   isTrustedUntilValid,
@@ -109,33 +108,5 @@ describe('isTrustedUntilValid', () => {
     const trustedUntil = new Date(NOW + DEVICE_TRUST_DAYS_DEFAULT * DAY_MS).toISOString();
     expect(isTrustedUntilValid(trustedUntil, NOW)).toBe(true);
     expect(isTrustedUntilValid(trustedUntil, NOW + (DEVICE_TRUST_DAYS_DEFAULT + 1) * DAY_MS)).toBe(false);
-  });
-});
-
-// ─── getDeviceToken ──────────────────────────────────────────────────────────
-
-describe('getDeviceToken', () => {
-  beforeEach(() => {
-    localStorage.clear();
-  });
-
-  it('generates a token on first call and persists it', () => {
-    const token = getDeviceToken();
-    expect(typeof token).toBe('string');
-    expect(token.length).toBeGreaterThan(0);
-    expect(localStorage.getItem('ssj_device_token')).toBe(token);
-  });
-
-  it('returns the same token on subsequent calls (same device)', () => {
-    const first = getDeviceToken();
-    const second = getDeviceToken();
-    expect(second).toBe(first);
-  });
-
-  it('a cleared localStorage produces a different token (new device)', () => {
-    const first = getDeviceToken();
-    localStorage.clear();
-    const second = getDeviceToken();
-    expect(second).not.toBe(first);
   });
 });

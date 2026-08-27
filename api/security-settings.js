@@ -46,9 +46,15 @@ export default async function handler(req, res) {
     const settings = await getOrCreateSettings(sb, tenantId);
     const { data: devices } = await sb
       .from("trusted_devices")
-      .select("id,device_token,label,verified_by_name,trusted_until,last_seen_at,created_at")
+      .select("id,device_token,label,ip,verified_by_name,trusted_until,last_seen_at,created_at")
       .eq("tenant_id", tenantId)
       .order("last_seen_at", { ascending: false });
+    const { data: verifications } = await sb
+      .from("device_verifications")
+      .select("id,staff_name,ip,device,verified_at")
+      .eq("tenant_id", tenantId)
+      .order("verified_at", { ascending: false })
+      .limit(50);
 
     return res.status(200).json({
       ok: true,
@@ -57,6 +63,7 @@ export default async function handler(req, res) {
       reauthDays: settings?.reauth_days ?? 15,
       deviceTrustDays: settings?.device_trust_days ?? 30,
       devices: devices || [],
+      verifications: verifications || [],
     });
   }
 

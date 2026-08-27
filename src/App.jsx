@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import QRCode from "qrcode";
 import { jsPDF } from "jspdf";
 import { secureImageUpload, secureNonImageUpload, compressImageOnly } from "./utils/imageUpload";
-import { getDeviceToken, shouldForceLogout, SESSION_POLL_MS } from "./utils/session-security";
+import { shouldForceLogout, SESSION_POLL_MS } from "./utils/session-security";
 import { sendPushNotification } from "./utils/pushNotify";
 import { SolitaireJewelleryScreen, SolitaireAdminGenerator } from "./SolitaireJewellery";
 import ClientPlatformAdminScreen from "./ClientPlatformAdminScreen";
@@ -343,7 +343,7 @@ function LoginScreen({ onLogin }) {
       const res = await fetch("/api/device-check", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
-        body: JSON.stringify({ tenantId: data.tenant_id, deviceToken: getDeviceToken(), staffId: data.id, staffName: data.name || data.username }),
+        body: JSON.stringify({ tenantId: data.tenant_id, staffId: data.id, staffName: data.name || data.username }),
       }).then((r) => r.json());
       setLoading(false);
       if (res?.needsTotp) { setPendingUser(data); setStage("totp"); return; }
@@ -362,7 +362,7 @@ function LoginScreen({ onLogin }) {
       const res = await fetch("/api/device-check", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
-        body: JSON.stringify({ tenantId: pendingUser.tenant_id, deviceToken: getDeviceToken(), staffId: pendingUser.id, staffName: pendingUser.name || pendingUser.username, code }),
+        body: JSON.stringify({ tenantId: pendingUser.tenant_id, staffId: pendingUser.id, staffName: pendingUser.name || pendingUser.username, code }),
       }).then((r) => r.json());
       setLoading(false);
       if (!res?.ok) { setErr("Wrong code. Check the office authenticator and try again."); return; }
@@ -392,6 +392,7 @@ function LoginScreen({ onLogin }) {
       <p style={{ fontSize: 13, color: "#888", margin: "0 0 24px" }}>Leads · Funnels · Approvals · Analytics</p>
       {logoutReason === "expired" && <p style={{ fontSize: 12, color: C.orange, margin: "0 0 12px" }}>Your session expired after 15 days. Please log in again.</p>}
       {logoutReason === "deactivated" && <p style={{ fontSize: 12, color: C.red, margin: "0 0 12px" }}>Your account was deactivated. Contact your administrator.</p>}
+      {logoutReason === "totp_expired" && <p style={{ fontSize: 12, color: C.orange, margin: "0 0 12px" }}>This device's login expired. Please log in again with the office code.</p>}
       <label style={{ fontSize: 11, color: "#888", display: "block", marginBottom: 4 }}>USERNAME</label>
       <input value={u} onChange={(e) => setU(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} style={{ width: "100%", fontSize: 14, marginBottom: 12, padding: 8, borderRadius: 8, border: "1px solid #ddd" }} />
       <label style={{ fontSize: 11, color: "#888", display: "block", marginBottom: 4 }}>PASSWORD</label>
@@ -11397,6 +11398,18 @@ export default function App() {
         logout(data.active === false ? "deactivated" : "expired");
         return;
       }
+      // Also re-check office-TOTP device trust — includes superadmin, no
+      // exemption, since this is a separate control from the password-login
+      // clock above. Fail-open on network errors (don't lock staff out over
+      // a blip); only force logout on a clear, confirmed "needs code" reply.
+      try {
+        const totpRes = await fetch("/api/device-check", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
+          body: JSON.stringify({ tenantId: user.tenant_id, staffId: user.id, staffName: user.name || user.username }),
+        }).then((r) => r.json());
+        if (totpRes?.ok && totpRes.needsTotp) { logout("totp_expired"); return; }
+      } catch { /* network blip — don't force logout */ }
       if (JSON.stringify(data.app_permissions) !== JSON.stringify(user.app_permissions)) {
         const updated = { ...user, app_permissions: data.app_permissions };
         saveUser(updated);
