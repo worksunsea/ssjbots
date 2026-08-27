@@ -347,7 +347,7 @@ function LoginScreen({ onLogin }) {
       }).then((r) => r.json());
       setLoading(false);
       if (res?.needsTotp) { setPendingUser(data); setStage("totp"); return; }
-      finishLogin(data);
+      finishLogin({ ...data, totpVerifiedAt: Date.now() });
     } catch {
       // device-check unreachable — fail open on login (don't lock staff out over a network blip)
       setLoading(false);
@@ -366,7 +366,7 @@ function LoginScreen({ onLogin }) {
       }).then((r) => r.json());
       setLoading(false);
       if (!res?.ok) { setErr("Wrong code. Check the office authenticator and try again."); return; }
-      finishLogin(pendingUser);
+      finishLogin({ ...pendingUser, totpVerifiedAt: Date.now() });
     } catch {
       setLoading(false);
       setErr("Couldn't verify the code — check your connection and try again.");
@@ -11400,16 +11400,18 @@ export default function App() {
       }
       // Also re-check office-TOTP device trust — includes superadmin, no
       // exemption, since this is a separate control from the password-login
-      // clock above. Fail-open on network errors (don't lock staff out over
-      // a blip); only force logout on a clear, confirmed "needs code" reply.
-      try {
-        const totpRes = await fetch("/api/device-check", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
-          body: JSON.stringify({ tenantId: user.tenant_id, staffId: user.id, staffName: user.name || user.username }),
-        }).then((r) => r.json());
-        if (totpRes?.ok && totpRes.needsTotp) { logout("totp_expired"); return; }
-      } catch { /* network blip — don't force logout */ }
+      // clock above. Deliberately a LOCAL clock check (totpVerifiedAt,
+      // stamped at login), not a live server call — an earlier version
+      // called /api/device-check on every poll and force-logged-out anyone
+      // whose ssj_device_id cookie didn't stick (e.g. third-party/embedded-
+      // iframe cookie blocking), which created a kick-relogin-kick loop for
+      // at least one staff member. The server is still the source of truth
+      // at fresh login time; this only decides whether an already-open tab
+      // should be sent back there.
+      if (user.totpVerifiedAt && Date.now() - user.totpVerifiedAt > 15 * 86400000) {
+        logout("totp_expired");
+        return;
+      }
       if (JSON.stringify(data.app_permissions) !== JSON.stringify(user.app_permissions)) {
         const updated = { ...user, app_permissions: data.app_permissions };
         saveUser(updated);
