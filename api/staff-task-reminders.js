@@ -127,7 +127,7 @@ export default async function handler(req, res) {
       .select("staff_name")
       .eq("tenant_id", TENANT_ID)
       .eq("reminder_date", today);
-    const alreadySentSet = new Set((alreadySent || []).map((r) => r.staff_name.toLowerCase()));
+    const alreadySentSet = new Set((alreadySent || []).map((r) => r.staff_name.trim().toLowerCase()));
 
     // Karigars (type=artisan) are not staff and never get app logins or
     // task assignments — see feedback_karigars_not_staff.
@@ -166,7 +166,7 @@ export default async function handler(req, res) {
       // Log as handled regardless of send success — a permanently-missing
       // phone/failed send shouldn't retry every 5 minutes for the rest of
       // the window; it'll get picked up again tomorrow.
-      await sb.from("task_reminder_log").insert({ tenant_id: TENANT_ID, staff_name: staffRow.name, reminder_date: today });
+      await sb.from("task_reminder_log").insert({ tenant_id: TENANT_ID, staff_name: staffRow.name.trim(), reminder_date: today });
 
       if (i < batch.length - 1) await sleep(SEND_GAP_MS);
     }
