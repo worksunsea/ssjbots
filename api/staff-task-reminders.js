@@ -88,7 +88,10 @@ function buildReminderText({ name, quote, delegations, todayTasks, today }) {
 
 export default async function handler(req, res) {
   if (!checkAuth(req)) return res.status(401).json({ ok: false, error: "unauthorized" });
-  if (!isReminderWindowIST()) return res.status(200).json({ ok: true, skipped: "outside_reminder_window" });
+  // force=1 lets an authenticated manual call (Saurav) run outside the
+  // 11am window — e.g. to catch up a day the cron silently failed on.
+  const forceRun = req.query?.force === "1" || req.query?.force === "true";
+  if (!isReminderWindowIST() && !forceRun) return res.status(200).json({ ok: true, skipped: "outside_reminder_window" });
 
   const sb = supa();
   const today = todayIST();
@@ -129,6 +132,9 @@ export default async function handler(req, res) {
     // Karigars (type=artisan) are not staff and never get app logins or
     // task assignments — see feedback_karigars_not_staff.
     const activeStaff = (staffRows || []).filter((s) => s.name && s.type !== "artisan" && !alreadySentSet.has(s.name.trim().toLowerCase()));
+    // Saurav first on a catch-up/manual run, so he sees the message land
+    // before it fans out to everyone else.
+    activeStaff.sort((a, b) => Number(!nameEq(a.name, "saurav")) - Number(!nameEq(b.name, "saurav")));
     const batch = activeStaff.slice(0, BATCH_SIZE);
 
     if (!batch.length) {
