@@ -7,7 +7,7 @@
 
 import { supa } from "./_lib/supabase.js";
 import { sendPushNotification } from "./_lib/pushNotify.js";
-import { TENANT_ID, DIGEST_CRON_SECRET } from "./_lib/config.js";
+import { TENANT_ID, DIGEST_CRON_SECRET, CRON_SECRET } from "./_lib/config.js";
 
 const nameEq = (a, b) => String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
 
@@ -17,6 +17,7 @@ function checkAuth(req) {
   const query = req.query?.secret || "";
   const authHeader = req.headers["authorization"] || "";
   if (authHeader === `Bearer ${DIGEST_CRON_SECRET}`) return true;
+  if (CRON_SECRET && authHeader === `Bearer ${CRON_SECRET}`) return true;
   return header === DIGEST_CRON_SECRET || query === DIGEST_CRON_SECRET || Boolean(req.headers["x-vercel-cron"]);
 }
 

@@ -40,6 +40,11 @@ export const OWNER_PHONES = (process.env.OWNER_PHONES || "9811464488,9810442333,
 // (comma-separated), without being trusted for owner WA commands.
 export const DIGEST_EXTRA_RECIPIENTS = process.env.DIGEST_EXTRA_RECIPIENTS || "";
 export const DIGEST_CRON_SECRET = process.env.DIGEST_CRON_SECRET || process.env.CRON_SECRET || "";
+// Vercel's own cron trigger always sends `Authorization: Bearer <CRON_SECRET>`
+// using the literal CRON_SECRET-named env var — never DIGEST_CRON_SECRET, even
+// when both are set. checkAuth() in each cron-triggered endpoint must accept
+// this value too, or every native Vercel Cron tick 401s silently.
+export const CRON_SECRET = process.env.CRON_SECRET || "";
 export const REPORTING_URL = process.env.REPORTING_URL || "https://hr.gemtre.in/reporting";
 
 // wa-service's bare /send route falls back to a "default"/"main" session that

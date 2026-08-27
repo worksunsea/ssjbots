@@ -16,7 +16,7 @@
 import { supa } from "./_lib/supabase.js";
 import { sendWhatsApp } from "./_lib/wa.js";
 import { staffPhoneMap } from "./_lib/staffPhone.js";
-import { TENANT_ID, DIGEST_CRON_SECRET, TASKS_WA_CLIENT_ID } from "./_lib/config.js";
+import { TENANT_ID, DIGEST_CRON_SECRET, CRON_SECRET, TASKS_WA_CLIENT_ID } from "./_lib/config.js";
 
 export const config = { maxDuration: 280 };
 
@@ -30,6 +30,7 @@ function checkAuth(req) {
   const query = req.query?.secret || "";
   const authHeader = req.headers["authorization"] || "";
   if (authHeader === `Bearer ${DIGEST_CRON_SECRET}`) return true;
+  if (CRON_SECRET && authHeader === `Bearer ${CRON_SECRET}`) return true;
   return header === DIGEST_CRON_SECRET || query === DIGEST_CRON_SECRET || Boolean(req.headers["x-vercel-cron"]);
 }
 

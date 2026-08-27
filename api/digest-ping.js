@@ -9,7 +9,7 @@ import { sendPushNotification } from "./_lib/pushNotify.js";
 import { runEmailDigest } from "./_lib/emailDigest.js";
 import { getUpcomingEvents, formatEventsLine } from "./_lib/birthdays.js";
 import { getOverdueDelegations, getOpenHelpSlips, getPendingLeaves, getWalkinStats } from "./_lib/reportQueries.js";
-import { OWNER_PHONE, DIGEST_EXTRA_RECIPIENTS, DIGEST_CRON_SECRET, REPORTING_URL, WA_SESSION_CLIENT_ID } from "./_lib/config.js";
+import { OWNER_PHONE, DIGEST_EXTRA_RECIPIENTS, DIGEST_CRON_SECRET, CRON_SECRET, REPORTING_URL, WA_SESSION_CLIENT_ID } from "./_lib/config.js";
 
 function checkAuth(req) {
   if (!DIGEST_CRON_SECRET) return true; // dev mode
@@ -20,6 +20,7 @@ function checkAuth(req) {
   // so every scheduled tick 401'd and never ran.
   const authHeader = req.headers["authorization"] || "";
   if (authHeader === `Bearer ${DIGEST_CRON_SECRET}`) return true;
+  if (CRON_SECRET && authHeader === `Bearer ${CRON_SECRET}`) return true;
   return header === DIGEST_CRON_SECRET || query === DIGEST_CRON_SECRET || Boolean(req.headers["x-vercel-cron"]);
 }
 
