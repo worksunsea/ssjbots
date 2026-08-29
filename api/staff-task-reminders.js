@@ -129,9 +129,10 @@ export default async function handler(req, res) {
       .eq("reminder_date", today);
     const alreadySentSet = new Set((alreadySent || []).map((r) => r.staff_name.trim().toLowerCase()));
 
-    // Karigars (type=artisan) are not staff and never get app logins or
-    // task assignments — see feedback_karigars_not_staff.
-    const activeStaff = (staffRows || []).filter((s) => s.name && s.type !== "artisan" && !alreadySentSet.has(s.name.trim().toLowerCase()));
+    // Karigars (type=artisan) and vendors (type=vendor) are not internal
+    // staff — see feedback_karigars_not_staff. They only ever hear from the
+    // system via FMS step delay pushes, never this internal daily digest.
+    const activeStaff = (staffRows || []).filter((s) => s.name && s.type !== "artisan" && s.type !== "vendor" && !alreadySentSet.has(s.name.trim().toLowerCase()));
     // Saurav first on a catch-up/manual run, so he sees the message land
     // before it fans out to everyone else.
     activeStaff.sort((a, b) => Number(!nameEq(a.name, "saurav")) - Number(!nameEq(b.name, "saurav")));

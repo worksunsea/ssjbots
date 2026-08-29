@@ -18,18 +18,20 @@ function todayIST() {
   return new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
 }
 
-// Karigars (type=artisan) are not staff and never get app logins or task
-// assignments — see feedback_karigars_not_staff. Filtered client-side
-// (not .neq("type", "artisan") in the query) because SQL's <> against a
-// NULL type column would silently exclude legitimate staff rows that
-// predate this field.
+// Karigars (type=artisan) and vendors (type=vendor) are not internal staff
+// and never get app logins or task assignments — see
+// feedback_karigars_not_staff. Vendors only ever hear from the system via
+// FMS step delay pushes (fms-delay-push.js), never task/internal-working
+// messages. Filtered client-side (not .neq("type", "artisan") in the query)
+// because SQL's <> against a NULL type column would silently exclude
+// legitimate staff rows that predate this field.
 export async function getActiveStaff(sb) {
   const { data } = await sb
     .from("staff")
     .select("id,name,phone,type")
     .eq("tenant_id", TENANT_ID)
     .eq("active", true);
-  return (data || []).filter((s) => s.name && s.type !== "artisan");
+  return (data || []).filter((s) => s.name && s.type !== "artisan" && s.type !== "vendor");
 }
 
 // Inserts a task row matching ssj-hr's createTask shape (App.jsx createTask).

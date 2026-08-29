@@ -1,5 +1,5 @@
 // GET /api/evening-completion-reminder — fired by Vercel cron at 7:30pm IST.
-// For each active staff member (not karigars, not Saurav — he gets the
+// For each active staff member (not karigars/vendors, not Saurav — he gets the
 // owner-facing view via digest-ping/reporting instead), checks:
 //   1. Today's KRAs (recurring tasks) not yet marked done today
 //   2. One-time delegations due today, not yet completed (about to go overdue)
@@ -55,7 +55,7 @@ export default async function handler(req, res) {
       .select("id,name,phone,type")
       .eq("tenant_id", TENANT_ID)
       .eq("active", true);
-    const activeStaff = (staffRows || []).filter((s) => s.type !== "artisan" && !nameEq(s.name, "Saurav"));
+    const activeStaff = (staffRows || []).filter((s) => s.type !== "artisan" && s.type !== "vendor" && !nameEq(s.name, "Saurav"));
 
     const { data: kras } = await sb
       .from("tasks")

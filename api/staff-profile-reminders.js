@@ -86,7 +86,7 @@ export default async function handler(req, res) {
       .select("id,name,phone,onboard_token,type")
       .eq("tenant_id", TENANT_ID)
       .eq("active", true);
-    const eligibleStaff = (staff || []).filter((s) => s.type !== "artisan");
+    const eligibleStaff = (staff || []).filter((s) => s.type !== "artisan" && s.type !== "vendor");
 
     const docCols = new Set(["staff_id", "na_fields"]);
     for (const [f] of REQUIRED_FIELDS) docCols.add(f);

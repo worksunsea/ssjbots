@@ -1,7 +1,7 @@
 // GET /api/morning-due-today-push — fired by cron-job.org ~11am IST.
 // Per-employee push (not the owner digest) listing one-time delegations due
 // TODAY, so nothing due today gets missed. Not Saurav (owner view lives in
-// digest-ping/reporting) and not karigars. Self-guarded to the 11am IST hour.
+// digest-ping/reporting) and not karigars/vendors. Self-guarded to the 11am IST hour.
 // Tapping the push opens the My Tasks tab directly (url below).
 
 import { supa } from "./_lib/supabase.js";
@@ -66,7 +66,7 @@ export default async function handler(req, res) {
       .select("id,name,type")
       .eq("tenant_id", TENANT_ID)
       .eq("active", true);
-    const activeStaff = (staffRows || []).filter((s) => s.type !== "artisan");
+    const activeStaff = (staffRows || []).filter((s) => s.type !== "artisan" && s.type !== "vendor");
 
     let sent = 0;
     const results = [];
