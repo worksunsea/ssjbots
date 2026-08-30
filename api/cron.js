@@ -653,11 +653,12 @@ export default async function handler(req, res) {
   }
 
   // ── 1. Flush due drip messages ──────────────────────────────────
-  // Corporate gifting (2026-08-30, explicit instruction) skips the approval
-  // gate entirely — fully automated funnel, no staff review step. Every
-  // other funnel (birthday, anniversary, etc.) still requires approved=true,
-  // same as before.
-  const AUTO_APPROVE_FUNNEL_IDS = ["corporatecoingifting"];
+  // Explicit instruction (2026-08-30): every funnel except birthday/
+  // anniversary now skips the approval gate entirely — fully automated,
+  // no staff review step. Birthday/anniversary keep requiring
+  // approved=true, same as before (personal-occasion messages staff still
+  // wants to see before they go out).
+  const APPROVAL_REQUIRED_FUNNEL_IDS = ["birthday", "anniversary"];
   const { data: due } = await sb
     .from("bullion_scheduled_messages")
     .select(`
@@ -667,7 +668,7 @@ export default async function handler(req, res) {
       funnel:funnels!inner(id,name,active,wbiztool_client,next_on_convert,next_on_exhaust,tenant_id,goal,kind)
     `)
     .eq("status", "pending")
-    .or(`approved.eq.true,funnel_id.in.(${AUTO_APPROVE_FUNNEL_IDS.join(",")})`)
+    .or(`approved.eq.true,funnel_id.not.in.(${APPROVAL_REQUIRED_FUNNEL_IDS.join(",")})`)
     .lte("send_at", nowIso)
     .order("send_at", { ascending: true })
     .limit(BATCH);
