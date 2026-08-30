@@ -2,8 +2,11 @@
 //      corporate-gifting coin products grouped by category tab, with live price.
 // POST /api/corporate-gifting?action=lead     — public, no auth. Captures a lead
 //      (name, phone, email, quantity, neededBy, city), upserts bullion_leads,
-//      and enrolls into the 'corporate_gifting' funnel (no-op until Saurav
-//      configures its WA session + drip steps in the Funnels tab).
+//      and enrolls into the 'corporatecoingifting' funnel (5-step drip, real
+//      ad copy — same funnel api/webhook.js routes WA-inbound keyword matches
+//      into, see migration 0109/0110). Was pointed at a dead, empty
+//      'corporate_gifting' funnel until 2026-08-30 — landing-page leads never
+//      got a single drip message despite this looking wired up.
 // POST /api/corporate-gifting?action=enquire   — public, no auth. Logs a cart
 //      enquiry as a bullion_demands row (visible on the Demands sheet) so
 //      staff see it even though the actual message goes out via wa.me, not
@@ -15,6 +18,8 @@ import { normalizePhone, TENANT_ID, checkCrmSecret } from "./_lib/config.js";
 import { getRates } from "./_lib/rates.js";
 import { enrollLeadInDrip } from "./_lib/drip.js";
 import { generateBrandedDesigns } from "./_lib/imageGen.js";
+
+const CORP_GIFT_FUNNEL_ID = "corporatecoingifting";
 
 export const config = { maxDuration: 60 };
 
@@ -137,22 +142,22 @@ export default async function handler(req, res) {
     if (existing) {
       await sb.from("bullion_leads").update({
         name, email: email || undefined, city: city || undefined,
-        source: "corporate_gifting", funnel_id: "corporate_gifting",
+        source: "corporate_gifting", funnel_id: CORP_GIFT_FUNNEL_ID,
         extra_fields: extraFields, updated_at: new Date().toISOString(),
       }).eq("id", existing.id);
     } else {
       const { data: newLead, error: insErr } = await sb.from("bullion_leads").insert({
         tenant_id: TENANT_ID, phone, name, email, city,
-        status: "new", source: "corporate_gifting", funnel_id: "corporate_gifting",
+        status: "new", source: "corporate_gifting", funnel_id: CORP_GIFT_FUNNEL_ID,
         extra_fields: extraFields,
       }).select("id").single();
       if (insErr) return res.status(500).json({ ok: false, error: insErr.message });
       leadId = newLead.id;
     }
 
-    const { data: funnel } = await sb.from("funnels").select("*").eq("id", "corporate_gifting").maybeSingle();
+    const { data: funnel } = await sb.from("funnels").select("*").eq("id", CORP_GIFT_FUNNEL_ID).maybeSingle();
     if (funnel?.active) {
-      await enrollLeadInDrip({ lead: { id: leadId, name, phone, city, funnel_id: "corporate_gifting" }, funnel });
+      await enrollLeadInDrip({ lead: { id: leadId, name, phone, city, funnel_id: CORP_GIFT_FUNNEL_ID }, funnel });
     }
 
     await attributeReferral({ refCode: body.ref_code, leadId, orderReference: "corporate gifting enquiry" }).catch(() => {});
@@ -187,7 +192,7 @@ export default async function handler(req, res) {
     const { data: demand, error } = await sb.from("bullion_demands").insert({
       tenant_id: lead.tenant_id,
       lead_id: lead.id,
-      funnel_id: "corporate_gifting",
+      funnel_id: CORP_GIFT_FUNNEL_ID,
       description,
       product_category: "gold_coin",
       enquiry_items: enquiryItems,
