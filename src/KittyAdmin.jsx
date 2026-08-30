@@ -280,22 +280,32 @@ function ActivityLogTab({ crmSecret }) {
   );
 }
 
-function emptyPaidMonth() { return { monthNumber: "", paidAt: "", amount: "" }; }
+function emptyPaidMonth() { return { monthNumber: "", paidAt: "", amount: "", gramsPurchased: "", paymentMethod: "cash", paymentRemarks: "" }; }
+const PAID_MONTH_PAYMENT_METHODS = ["cash", "upi", "bank_transfer", "card", "cheque", "other"];
 
 // Shared "which months were already paid" widget — used both when
 // enrolling a new member (backfilling months if they actually started
 // earlier) and when hand-entering an old/legacy member's payment history.
-function PaidMonthsEditor({ paidMonths, setPaidMonths }) {
+// isGramBased shows the Grams field, needed for gullak/rate-lock schemes so
+// the backfilled entries count toward gold weight, not just rupees paid.
+function PaidMonthsEditor({ paidMonths, setPaidMonths, isGramBased }) {
   const setPaidMonth = (i, k, v) => setPaidMonths((p) => p.map((row, idx) => (idx === i ? { ...row, [k]: v } : row)));
   return (
     <div>
       <h4 style={{ marginTop: 16 }}>Backfill already-paid months</h4>
       <p style={{ fontSize: 12, color: "#666" }}>Optional — fill in if they actually started earlier and already paid some months in cash/UPI. "Installment #" is the payment sequence (1st, 2nd…) — NOT the calendar month. A member who started in December is still installment #1, not #12.</p>
       {paidMonths.map((m, i) => (
-        <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+        <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6, flexWrap: "wrap", alignItems: "center" }}>
           <input type="number" placeholder="Installment # (1st, 2nd…)" value={m.monthNumber} onChange={(e) => setPaidMonth(i, "monthNumber", e.target.value)} style={{ width: 150 }} />
           <input type="date" placeholder="Paid on" value={m.paidAt} onChange={(e) => setPaidMonth(i, "paidAt", e.target.value)} />
           <input type="number" placeholder="Amount ₹" value={m.amount} onChange={(e) => setPaidMonth(i, "amount", e.target.value)} style={{ width: 100 }} />
+          {isGramBased && (
+            <input type="number" placeholder="Grams purchased" value={m.gramsPurchased} onChange={(e) => setPaidMonth(i, "gramsPurchased", e.target.value)} style={{ width: 130 }} />
+          )}
+          <select value={m.paymentMethod} onChange={(e) => setPaidMonth(i, "paymentMethod", e.target.value)}>
+            {PAID_MONTH_PAYMENT_METHODS.map((pm) => <option key={pm} value={pm}>{pm}</option>)}
+          </select>
+          <input type="text" placeholder="Remarks (UPI ref / cash given to whom)" value={m.paymentRemarks} onChange={(e) => setPaidMonth(i, "paymentRemarks", e.target.value)} style={{ width: 220 }} />
           <button onClick={() => setPaidMonths((p) => p.filter((_, idx) => idx !== i))}>✕</button>
         </div>
       ))}
@@ -323,12 +333,15 @@ function EnrollNewMemberTab({ crmSecret, actor }) {
 
   const selectedScheme = schemes.find((s) => s.id === f.schemeId);
   const isFlexible = selectedScheme && isGoldRedemptionScheme(selectedScheme.perks) && selectedScheme.perks?.unit !== "grams";
+  const isGramBased = selectedScheme?.perks?.unit === "grams";
 
   const submit = async () => {
     if (!f.name || !f.phone || !f.schemeId || !f.startDate) return setMsg("Name, phone, scheme, and start date are all required.");
     setSaving(true);
     const cleanPaidMonths = paidMonths.filter((m) => m.monthNumber !== "").map((m) => ({
       monthNumber: Number(m.monthNumber), paidAt: m.paidAt || null, amount: m.amount === "" ? null : Number(m.amount),
+      gramsPurchased: m.gramsPurchased === "" ? null : Number(m.gramsPurchased),
+      paymentMethod: m.paymentMethod || null, paymentRemarks: m.paymentRemarks || null,
     }));
     const d = await call("enroll-new-member", { method: "POST", crmSecret, body: {
       ...f, monthlyAmount: isFlexible ? Number(f.monthlyAmount) : null, confirmedBy: actor, actor, paidMonths: cleanPaidMonths,
@@ -362,7 +375,7 @@ function EnrollNewMemberTab({ crmSecret, actor }) {
       )}
       <label>Start date (first/already-paid installment's month)<input type="date" value={f.startDate} onChange={(e) => set("startDate", e.target.value)} style={{ display: "block", width: "100%" }} /></label>
 
-      <PaidMonthsEditor paidMonths={paidMonths} setPaidMonths={setPaidMonths} />
+      <PaidMonthsEditor paidMonths={paidMonths} setPaidMonths={setPaidMonths} isGramBased={isGramBased} />
 
       {msg && <div style={{ margin: "8px 0" }}>{msg}</div>}
       <button onClick={submit} disabled={saving}>{saving ? "Enrolling…" : "Enroll Member"}</button>
@@ -668,13 +681,27 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
   };
 
   const PAYMENT_METHODS = ["cash", "upi", "bank_transfer", "card", "cheque", "other"];
-  const promptPaymentMethod = () => {
+  const promptPaymentMethod = (current) => {
     while (true) {
-      const raw = prompt(`Payment method? (${PAYMENT_METHODS.join(" / ")})`, "cash");
+      const raw = prompt(`Payment method? (${PAYMENT_METHODS.join(" / ")})`, current || "cash");
       if (raw == null) return null;
       const v = raw.trim().toLowerCase();
       if (!PAYMENT_METHODS.includes(v)) {
         alert(`Must be one of: ${PAYMENT_METHODS.join(", ")}`);
+        continue;
+      }
+      return v;
+    }
+  };
+
+  const INSTALLMENT_STATUSES = ["due", "paid", "free", "waived"];
+  const promptStatus = (current) => {
+    while (true) {
+      const raw = prompt(`Status? (${INSTALLMENT_STATUSES.join(" / ")})`, current);
+      if (raw == null) return null;
+      const v = raw.trim().toLowerCase();
+      if (!INSTALLMENT_STATUSES.includes(v)) {
+        alert(`Must be one of: ${INSTALLMENT_STATUSES.join(", ")}`);
         continue;
       }
       return v;
@@ -695,10 +722,31 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
   const editInstallment = async (i) => {
     const amount = prompt("Amount (₹)?", i.amount) ?? i.amount;
     const dueDate = prompt("Due date (YYYY-MM-DD)?", i.due_date) ?? i.due_date;
-    const status = prompt("Status (due / paid / free / waived)?", i.status) ?? i.status;
-    const paymentMethod = prompt(`Payment method? (${PAYMENT_METHODS.join(" / ")})`, i.payment_method || "") || i.payment_method || null;
+    const status = promptStatus(i.status) ?? i.status;
+    const paymentMethod = promptPaymentMethod(i.payment_method) ?? i.payment_method ?? null;
     const paymentRemarks = prompt("Remarks (UPI ref no. / transfer ref no. / cash given to whom)?", i.payment_remarks || "") ?? i.payment_remarks;
-    const d = await call("update-installment", { method: "POST", crmSecret, body: { id: i.id, amount, dueDate, status, paymentMethod, paymentRemarks, actor } });
+
+    // Gold weight is stored as rate_locked (₹/g) — paid_amount / rate_locked
+    // gives the grams. Wrong weight at entry couldn't be fixed before this,
+    // since neither grams nor rate_locked were editable here at all. Sent as
+    // gramsPurchased (not a pre-computed rateLocked) so the server derives
+    // rate_locked the same way add-installment does — naturally fractional,
+    // not subject to the whole-number typed-rate validation.
+    const currentGrams = i.rate_locked ? Number(amount) / Number(i.rate_locked) : null;
+    const gramsRaw = prompt(
+      `Grams purchased (for gold-weight calc)? Leave blank to keep unchanged.${currentGrams ? ` Currently ~${currentGrams.toFixed(3)}g.` : ""}`,
+      ""
+    );
+    let gramsPurchased;
+    if (gramsRaw) {
+      const grams = Math.round(Number(gramsRaw) * 1000) / 1000;
+      if (!grams || !Number.isFinite(grams)) alert("Invalid grams value — gold weight left unchanged.");
+      else gramsPurchased = grams;
+    }
+
+    const body = { id: i.id, amount, dueDate, status, paymentMethod, paymentRemarks, actor };
+    if (gramsPurchased != null) body.gramsPurchased = gramsPurchased;
+    const d = await call("update-installment", { method: "POST", crmSecret, body });
     if (d.ok) load(); else alert(d.error);
   };
   const editEnrollment = async (e) => {
@@ -909,6 +957,8 @@ function LegacyTab({ crmSecret, actor }) {
     setSaving(true);
     const cleanPaidMonths = paidMonths.filter((m) => m.monthNumber !== "").map((m) => ({
       monthNumber: Number(m.monthNumber), paidAt: m.paidAt || null, amount: m.amount === "" ? null : Number(m.amount),
+      gramsPurchased: m.gramsPurchased === "" ? null : Number(m.gramsPurchased),
+      paymentMethod: m.paymentMethod || null, paymentRemarks: m.paymentRemarks || null,
     }));
     const d = await call("add-legacy-member", { method: "POST", crmSecret, body: { ...f, paidMonths: cleanPaidMonths, recordedBy: actor, actor } });
     setSaving(false);
@@ -932,7 +982,7 @@ function LegacyTab({ crmSecret, actor }) {
       </label>
       <label>Notes<textarea value={f.notes} onChange={(e) => set("notes", e.target.value)} style={{ display: "block", width: "100%" }} /></label>
 
-      <PaidMonthsEditor paidMonths={paidMonths} setPaidMonths={setPaidMonths} />
+      <PaidMonthsEditor paidMonths={paidMonths} setPaidMonths={setPaidMonths} isGramBased />
 
       {msg && <div style={{ margin: "8px 0" }}>{msg}</div>}
       <button onClick={submit} disabled={saving}>{saving ? "Adding…" : "Add Legacy Member"}</button>

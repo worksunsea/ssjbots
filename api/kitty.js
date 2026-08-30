@@ -130,6 +130,7 @@ function buildInstallmentSchedule({ enrollmentId, scheduleStart, durationMonths,
         amount, status: "paid", paid_amount: amount,
         paid_at: backfill.paidAt ? `${backfill.paidAt}T00:00:00Z` : new Date().toISOString(),
         recorded_by: "staff (backfill)",
+        payment_method: backfill.paymentMethod || null, payment_remarks: backfill.paymentRemarks || null,
       });
     } else {
       rows.push({
@@ -398,8 +399,35 @@ export default async function handler(req, res) {
     }
 
     if (perks.unit === "grams" || scheme.monthly_amount == null) {
-      await logAudit(sb, { entityType: "enrollment", entityId: enrollment.id, action: "create", actor: body.actor || body.confirmedBy, details: { name, phone, schemeId: scheme.id, note: "gram_based" } });
-      return res.status(200).json({ ok: true, enrollment, installmentsCreated: 0, note: "gram_based_no_fixed_schedule" });
+      // No fixed monthly schedule for gram-based (gullak) schemes — but
+      // staff can still backfill purchases the member already made before
+      // being entered into the system today. Was previously dropped
+      // silently here (paidMonths only ever wired into
+      // buildInstallmentSchedule below), so a gullak member's real history
+      // never made it into kitty_installments and neither the admin view
+      // nor the client's My Kitty page ever showed it.
+      let installmentsCreated = 0;
+      if (Array.isArray(body.paidMonths) && body.paidMonths.length) {
+        const rows = body.paidMonths.map((m, idx) => {
+          const amount = Number(m.amount);
+          const grams = m.gramsPurchased != null ? (Math.round(Number(m.gramsPurchased) * 1000) / 1000) : null;
+          return {
+            tenant_id: TENANT_ID, enrollment_id: enrollment.id,
+            month_number: m.monthNumber != null ? Number(m.monthNumber) : idx + 1,
+            due_date: m.paidAt || new Date().toISOString().slice(0, 10),
+            amount, status: "paid", paid_amount: amount,
+            paid_at: m.paidAt ? `${m.paidAt}T00:00:00Z` : new Date().toISOString(),
+            rate_locked: grams ? amount / grams : null,
+            recorded_by: "staff (backfill)",
+            payment_method: m.paymentMethod || null, payment_remarks: m.paymentRemarks || null,
+          };
+        });
+        const { error: gramInsErr } = await sb.from("kitty_installments").insert(rows);
+        if (gramInsErr) return res.status(500).json({ ok: false, error: gramInsErr.message, enrollment });
+        installmentsCreated = rows.length;
+      }
+      await logAudit(sb, { entityType: "enrollment", entityId: enrollment.id, action: "create", actor: body.actor || body.confirmedBy, details: { name, phone, schemeId: scheme.id, note: "gram_based", installmentsCreated } });
+      return res.status(200).json({ ok: true, enrollment, installmentsCreated, note: "gram_based_no_fixed_schedule" });
     }
     const rows = buildInstallmentSchedule({
       enrollmentId: enrollment.id, scheduleStart, durationMonths: scheme.duration_months,
@@ -626,16 +654,20 @@ export default async function handler(req, res) {
     // enrollment shows real history instead of just a "completed" label.
     // Body.paidMonths: [{ monthNumber, paidAt (date), amount }]
     if (Array.isArray(body.paidMonths) && body.paidMonths.length) {
-      const rows = body.paidMonths.map((m) => ({
-        tenant_id: TENANT_ID, enrollment_id: data.id,
-        month_number: Number(m.monthNumber),
-        due_date: m.paidAt || new Date().toISOString().slice(0, 10),
-        amount: m.amount != null ? Number(m.amount) : 0,
-        status: "paid",
-        paid_amount: m.amount != null ? Number(m.amount) : null,
-        paid_at: m.paidAt ? `${m.paidAt}T00:00:00Z` : new Date().toISOString(),
-        recorded_by: body.recordedBy || "staff (legacy import)",
-      }));
+      const rows = body.paidMonths.map((m) => {
+        const amount = m.amount != null ? Number(m.amount) : 0;
+        const grams = m.gramsPurchased != null ? (Math.round(Number(m.gramsPurchased) * 1000) / 1000) : null;
+        return {
+          tenant_id: TENANT_ID, enrollment_id: data.id,
+          month_number: Number(m.monthNumber),
+          due_date: m.paidAt || new Date().toISOString().slice(0, 10),
+          amount, status: "paid", paid_amount: m.amount != null ? amount : null,
+          paid_at: m.paidAt ? `${m.paidAt}T00:00:00Z` : new Date().toISOString(),
+          rate_locked: grams ? amount / grams : null,
+          recorded_by: body.recordedBy || "staff (legacy import)",
+          payment_method: m.paymentMethod || null, payment_remarks: m.paymentRemarks || null,
+        };
+      });
       const { error: instErr } = await sb.from("kitty_installments").insert(rows);
       if (instErr) return res.status(500).json({ ok: false, error: instErr.message, enrollment: data });
     }
@@ -910,7 +942,16 @@ export default async function handler(req, res) {
     if (body.paidAt) patch.paid_at = body.paidAt;
     if (body.paymentMethod != null) patch.payment_method = body.paymentMethod;
     if (body.paymentRemarks != null) patch.payment_remarks = body.paymentRemarks;
-    if (body.rateLocked != null) {
+    if (body.gramsPurchased != null) {
+      // Derived from amount/grams, not staff-typed — naturally fractional,
+      // same as add-installment. Lets staff correct a wrong gold weight by
+      // re-entering grams rather than having to guess back a whole-number
+      // rate that doesn't apply here.
+      const grams = Number(body.gramsPurchased);
+      if (!grams || !Number.isFinite(grams)) return res.status(400).json({ ok: false, error: "invalid_gramsPurchased" });
+      const amountForRate = body.amount != null ? Number(body.amount) : Number(before.amount);
+      patch.rate_locked = amountForRate / grams;
+    } else if (body.rateLocked != null) {
       const rateCheck = validateRateLocked(body.rateLocked);
       if (!rateCheck.ok) return res.status(400).json({ ok: false, error: rateCheck.error });
       patch.rate_locked = rateCheck.value;
