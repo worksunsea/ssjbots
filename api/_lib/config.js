@@ -73,6 +73,16 @@ export const KITTY_WA_CLIENT_ID = process.env.KITTY_WA_CLIENT_ID || WA_SESSION_C
 // Hardcoded to 8860866000 only (2026-07-15) — 9312839912 was replying too, unwanted.
 export const BOT_NUMBERS = ["8860866000"];
 
+// Razorpay — powers Swarn Suraksha (online kitty scheme): one-time top-up
+// orders and fixed-amount monthly auto-debit subscriptions. Blank until the
+// merchant account is set up; api/kitty-payment.js and
+// api/razorpay-webhook.js return a clear "razorpay_not_configured" error
+// instead of crashing while these are unset — no code path here can move
+// real money until all three are filled in.
+export const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || "";
+export const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || "";
+export const RAZORPAY_WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET || "";
+
 // Secret shared between CRM frontend and these API functions.
 // Set VITE_CRM_SECRET (frontend) + CRM_SECRET (Vercel env) to the same value.
 export const CRM_SECRET = process.env.CRM_SECRET || "";

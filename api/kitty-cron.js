@@ -19,6 +19,7 @@ import { supa } from "./_lib/supabase.js";
 import { sendWhatsApp } from "./_lib/wa.js";
 import { TENANT_ID, DIGEST_CRON_SECRET, CRON_SECRET, KITTY_WA_CLIENT_ID } from "./_lib/config.js";
 import { logKittyAudit } from "./_lib/kittyAudit.js";
+import { getSwarnScheme } from "./_lib/swarnSuraksha.js";
 
 const REMINDER_DAYS_BEFORE = 3;
 const CLAIM_REMINDER_INTERVAL_DAYS = 14;
@@ -49,7 +50,7 @@ export default async function handler(req, res) {
   const sb = supa();
   const today = todayIST();
   const windowEnd = new Date(Date.now() + 5.5 * 3600000 + REMINDER_DAYS_BEFORE * 86400000).toISOString().slice(0, 10);
-  const stats = { dueReminders: 0, claimReminders: 0, batchesRolledOver: 0, rolloverNudges: 0, failed: 0 };
+  const stats = { dueReminders: 0, claimReminders: 0, batchesRolledOver: 0, rolloverNudges: 0, swarnFrozen: 0, failed: 0 };
 
   try {
     // ── 1. Monthly due reminders ──────────────────────────────────
@@ -110,6 +111,30 @@ export default async function handler(req, res) {
         const msg = `🪙 Your ${batch.scheme.name} (${batch.batch_label}) round has completed! Enroll for the next round anytime — visit https://ssj.in/kitty-schemes or reply here.\n- Sun Sea Jewellers, Karol Bagh`;
         const wa = await sendWhatsApp({ phone: lead.phone, msg, client: KITTY_WA_CLIENT_ID }).catch(() => ({ status: 0 }));
         if (wa.status === 1) stats.rolloverNudges++; else stats.failed++;
+      }
+    }
+
+    // ── 4. Swarn Suraksha 11-month freeze ───────────────────────────
+    // RBI guidance caps an online-sold gold scheme at 11 months. Proactively
+    // freezes here (rather than waiting for a stray payment to trigger
+    // ensureUnfrozenEnrollment in kitty-payment.js/razorpay-webhook.js) so
+    // the client sees "come redeem in-store" promptly, not only if/when
+    // they happen to pay again.
+    const swarnScheme = await getSwarnScheme(sb);
+    if (swarnScheme?.perks?.max_duration_months) {
+      const { data: liveEnrollments } = await sb.from("kitty_enrollments")
+        .select("id,lead_id,start_date").eq("tenant_id", TENANT_ID).eq("scheme_id", swarnScheme.id)
+        .eq("status", "active").is("frozen_at", null);
+      for (const e of liveEnrollments || []) {
+        if (addMonths(e.start_date, swarnScheme.perks.max_duration_months) > today) continue;
+        await sb.from("kitty_enrollments").update({ frozen_at: new Date().toISOString(), status: "completed", claim_status: "unclaimed" }).eq("id", e.id);
+        await logKittyAudit({ entityType: "enrollment", entityId: e.id, action: "auto_freeze_11mo", actor: "system:cron" });
+        stats.swarnFrozen++;
+        const { data: lead } = await sb.from("bullion_leads").select("phone,dnd").eq("id", e.lead_id).maybeSingle();
+        if (!lead?.phone || lead.dnd) continue;
+        const msg = `🪙 Your ${swarnScheme.name} scheme has completed its 11-month term and is now ready to redeem — visit Sun Sea Jewellers, Karol Bagh to collect (redemption is in-store only). Want to keep saving? Start a fresh Swarn Suraksha anytime.\n- Sun Sea Jewellers`;
+        const wa = await sendWhatsApp({ phone: lead.phone, msg, client: KITTY_WA_CLIENT_ID }).catch(() => ({ status: 0 }));
+        if (wa.status !== 1) stats.failed++;
       }
     }
 
