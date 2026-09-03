@@ -1,7 +1,8 @@
 // /api/kitty-payment — client-session gated (Authorization: Bearer <token
 // from api/client-auth>), CORS open for ssj-website. Powers the Swarn
 // Suraksha self-serve flow: enroll, quote a top-up, create a Razorpay
-// order for a top-up, and set up/cancel a monthly auto-debit subscription.
+// order for a top-up, and set up/cancel an auto-debit subscription
+// (daily, weekly, fortnightly, or monthly — client's choice).
 // Actual money only moves once RAZORPAY_KEY_ID/SECRET are configured —
 // every action below fails cleanly with razorpay_not_configured until then.
 //
@@ -17,6 +18,16 @@ import { getSwarnScheme, gramsPurchasedTodayByLead, ensureUnfrozenEnrollment } f
 import { logKittyAudit } from "./_lib/kittyAudit.js";
 
 const RAZORPAY_KEY_ID_PUBLIC = process.env.RAZORPAY_KEY_ID || "";
+
+// Razorpay has no native "fortnightly" period — built from period="daily",
+// interval=15. days is used to size total_count against the scheme's
+// remaining 11-month window.
+const FREQUENCIES = {
+  daily: { period: "daily", interval: 1, days: 1, label: "Daily" },
+  weekly: { period: "weekly", interval: 1, days: 7, label: "Weekly" },
+  fortnightly: { period: "daily", interval: 15, days: 15, label: "Every 15 days" },
+  monthly: { period: "monthly", interval: 1, days: 30, label: "Monthly" },
+};
 
 function todayIST() {
   return new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
@@ -119,16 +130,20 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, orderId: order.id, amountPaise, razorpayKeyId: RAZORPAY_KEY_ID_PUBLIC, enrollmentId: enrollment.id, installmentId: installment.id });
   }
 
-  // POST ?action=create-subscription — body { enrollmentId, monthlyAmount, startDay? }.
-  // monthlyAmount fixed at signup, must be a ₹5,000 multiple (same rule as
-  // every other flexible-amount kitty scheme). Cancels any existing live
-  // subscription on the enrollment first — one active mandate at a time.
+  // POST ?action=create-subscription — body { enrollmentId, amount, frequency }.
+  // frequency: daily | weekly | fortnightly | monthly. amount is the fixed
+  // per-charge amount at that cadence, chosen at signup (min ₹100 — no
+  // forced ₹5,000-multiple rule here since daily/weekly contributions are
+  // naturally small; that rule is specific to the older fixed-monthly
+  // schemes). Cancels any existing live subscription on the enrollment
+  // first — one active mandate at a time.
   if (req.method === "POST" && action === "create-subscription") {
     if (!razorpayConfigured()) return res.status(400).json({ ok: false, error: "razorpay_not_configured" });
     const body = req.body || {};
-    const monthlyAmount = Number(body.monthlyAmount);
-    if (!body.enrollmentId || !monthlyAmount || monthlyAmount <= 0 || monthlyAmount % 5000 !== 0) {
-      return res.status(400).json({ ok: false, error: "monthlyAmount_must_be_multiple_of_5000" });
+    const amount = Number(body.amount);
+    const freq = FREQUENCIES[body.frequency];
+    if (!body.enrollmentId || !amount || amount < 100 || !freq) {
+      return res.status(400).json({ ok: false, error: "enrollmentId_amount_min100_and_valid_frequency_required", validFrequencies: Object.keys(FREQUENCIES) });
     }
 
     let enrollment = await loadEnrollment(sb, body.enrollmentId, session.leadId);
@@ -143,14 +158,15 @@ export default async function handler(req, res) {
         const customer = await createOrGetCustomer({ name: lead?.name || "Sun Sea Jewellers client", phone: session.phone });
         customerId = customer.id;
       }
-      const plan = await createPlan({ amountPaise: monthlyAmount * 100, name: `${scheme.name} — ₹${monthlyAmount}/mo` });
+      const plan = await createPlan({ amountPaise: amount * 100, name: `${scheme.name} — ₹${amount} ${freq.label}`, period: freq.period, interval: freq.interval });
 
       // Cap total charges to whatever's left of the 11-month window from
-      // this enrollment's own start date, so the mandate can never outlive
-      // the RBI freeze point on its own.
-      const maxMonths = scheme.perks?.max_duration_months || 11;
-      const monthsElapsed = Math.max(0, Math.floor((Date.now() - new Date(`${enrollment.start_date}T00:00:00Z`).getTime()) / (30 * 86400000)));
-      const totalCount = Math.max(1, maxMonths - monthsElapsed);
+      // this enrollment's own start date, at this cadence's charge
+      // frequency, so the mandate can never outlive the RBI freeze point
+      // on its own.
+      const maxDays = (scheme.perks?.max_duration_months || 11) * 30;
+      const daysElapsed = Math.max(0, Math.floor((Date.now() - new Date(`${enrollment.start_date}T00:00:00Z`).getTime()) / 86400000));
+      const totalCount = Math.max(1, Math.ceil((maxDays - daysElapsed) / freq.days));
       const startAt = Math.floor(Date.now() / 1000) + 86400; // tomorrow — Razorpay requires start_at in the future
 
       if (enrollment.razorpay_subscription_id) {
@@ -159,9 +175,9 @@ export default async function handler(req, res) {
       const subscription = await createSubscription({ planId: plan.id, customerId, totalCount, startAt });
 
       await sb.from("kitty_enrollments").update({
-        razorpay_customer_id: customerId, razorpay_subscription_id: subscription.id, monthly_amount_override: monthlyAmount,
+        razorpay_customer_id: customerId, razorpay_subscription_id: subscription.id, monthly_amount_override: amount, swarn_frequency: body.frequency,
       }).eq("id", enrollment.id);
-      await logKittyAudit({ entityType: "enrollment", entityId: enrollment.id, action: "subscription_created", actor: session.phone, details: { monthlyAmount, subscriptionId: subscription.id } });
+      await logKittyAudit({ entityType: "enrollment", entityId: enrollment.id, action: "subscription_created", actor: session.phone, details: { amount, frequency: body.frequency, subscriptionId: subscription.id } });
 
       return res.status(200).json({ ok: true, subscriptionId: subscription.id, shortUrl: subscription.short_url, enrollmentId: enrollment.id });
     } catch (e) {

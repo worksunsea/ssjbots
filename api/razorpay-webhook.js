@@ -14,7 +14,8 @@
 //   payment.captured      — a Swarn Suraksha top-up order was paid. Finds
 //                            the awaiting_payment installment by order_id,
 //                            marks it paid.
-//   subscription.charged  — a monthly auto-debit fired. Finds the
+//   subscription.charged  — an auto-debit fired (daily/weekly/fortnightly/
+//                            monthly, per what the client chose). Finds the
 //                            enrollment by subscription_id, rolls it to a
 //                            fresh cycle first if the 11-month freeze has
 //                            passed, then records the payment as a new

@@ -41,9 +41,11 @@ export function createOrGetCustomer({ name, phone, email }) {
 }
 
 // Plans are cheap and Razorpay has no "find by amount" lookup — a fresh
-// plan per subscription call is fine for this volume.
-export function createPlan({ amountPaise, name }) {
-  return rzp("/plans", { method: "POST", body: { period: "monthly", interval: 1, item: { name, amount: Math.round(amountPaise), currency: "INR" } } });
+// plan per subscription call is fine for this volume. period/interval let
+// callers build daily, weekly, fortnightly (period="daily", interval=15),
+// or monthly cadences — Razorpay has no native "fortnightly" period.
+export function createPlan({ amountPaise, name, period = "monthly", interval = 1 }) {
+  return rzp("/plans", { method: "POST", body: { period, interval, item: { name, amount: Math.round(amountPaise), currency: "INR" } } });
 }
 
 // startAt: unix seconds for the first charge. total_count: number of
