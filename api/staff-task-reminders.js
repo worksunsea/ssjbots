@@ -17,6 +17,7 @@ import { supa } from "./_lib/supabase.js";
 import { sendWhatsApp } from "./_lib/wa.js";
 import { staffPhoneMap } from "./_lib/staffPhone.js";
 import { TENANT_ID, DIGEST_CRON_SECRET, CRON_SECRET, TASKS_WA_CLIENT_ID } from "./_lib/config.js";
+import { isHolidayToday, staffOnLeaveToday } from "./_lib/holidays.js";
 
 export const config = { maxDuration: 280 };
 
@@ -97,6 +98,11 @@ export default async function handler(req, res) {
   const today = todayIST();
 
   try {
+    const holiday = await isHolidayToday(sb, TENANT_ID, today);
+    if (holiday) return res.status(200).json({ ok: true, skipped: "holiday", holiday: holiday.name });
+
+    const onLeave = await staffOnLeaveToday(sb, TENANT_ID, today);
+
     const [{ data: staffRows }, { data: delegationRows }, { data: todayTaskRows }, quote] = await Promise.all([
       sb.from("staff").select("id,name,phone,type").eq("tenant_id", TENANT_ID).eq("active", true),
       sb.from("tasks").select("title,assigned_to,due_date")
@@ -132,7 +138,7 @@ export default async function handler(req, res) {
     // Karigars (type=artisan) and vendors (type=vendor) are not internal
     // staff — see feedback_karigars_not_staff. They only ever hear from the
     // system via FMS step delay pushes, never this internal daily digest.
-    const activeStaff = (staffRows || []).filter((s) => s.name && s.type !== "artisan" && s.type !== "vendor" && !alreadySentSet.has(s.name.trim().toLowerCase()));
+    const activeStaff = (staffRows || []).filter((s) => s.name && s.type !== "artisan" && s.type !== "vendor" && !alreadySentSet.has(s.name.trim().toLowerCase()) && !onLeave.has(s.name.trim().toLowerCase()));
     // Saurav first on a catch-up/manual run, so he sees the message land
     // before it fans out to everyone else.
     activeStaff.sort((a, b) => Number(!nameEq(a.name, "saurav")) - Number(!nameEq(b.name, "saurav")));

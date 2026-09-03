@@ -14,6 +14,7 @@ import { sendWhatsApp } from "./_lib/wa.js";
 import { sendPushNotification } from "./_lib/pushNotify.js";
 import { staffPhoneMap } from "./_lib/staffPhone.js";
 import { TENANT_ID, DIGEST_CRON_SECRET, CRON_SECRET, TASKS_WA_CLIENT_ID } from "./_lib/config.js";
+import { isHolidayToday, staffOnLeaveToday } from "./_lib/holidays.js";
 
 export const config = { maxDuration: 280 };
 
@@ -50,12 +51,17 @@ export default async function handler(req, res) {
   const today = todayIST();
 
   try {
+    const holiday = await isHolidayToday(sb, TENANT_ID, today);
+    if (holiday) return res.status(200).json({ ok: true, skipped: "holiday", holiday: holiday.name });
+
+    const onLeave = await staffOnLeaveToday(sb, TENANT_ID, today);
+
     const { data: staffRows } = await sb
       .from("staff")
       .select("id,name,phone,type")
       .eq("tenant_id", TENANT_ID)
       .eq("active", true);
-    const activeStaff = (staffRows || []).filter((s) => s.type !== "artisan" && s.type !== "vendor" && !nameEq(s.name, "Saurav"));
+    const activeStaff = (staffRows || []).filter((s) => s.type !== "artisan" && s.type !== "vendor" && !nameEq(s.name, "Saurav") && !onLeave.has(s.name.trim().toLowerCase()));
 
     const { data: kras } = await sb
       .from("tasks")
@@ -99,6 +105,7 @@ export default async function handler(req, res) {
 
     const pendingNames = [...byStaff.keys()]
       .filter((n) => !alreadySentSet.has(n.toLowerCase()))
+      .filter((n) => !onLeave.has(n.trim().toLowerCase()))
       .filter((n) => {
         const b = byStaff.get(n);
         return b.kras.length || b.dueToday.length || b.overdue.length;

@@ -7,6 +7,7 @@
 import { supa } from "./_lib/supabase.js";
 import { sendPushNotification } from "./_lib/pushNotify.js";
 import { TENANT_ID, DIGEST_CRON_SECRET, CRON_SECRET } from "./_lib/config.js";
+import { isHolidayToday, staffOnLeaveToday } from "./_lib/holidays.js";
 
 const nameEq = (a, b) => String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
 
@@ -37,6 +38,11 @@ export default async function handler(req, res) {
   const today = todayIST();
 
   try {
+    const holiday = await isHolidayToday(sb, TENANT_ID, today);
+    if (holiday) return res.status(200).json({ ok: true, skipped: "holiday", holiday: holiday.name });
+
+    const onLeave = await staffOnLeaveToday(sb, TENANT_ID, today);
+
     const { data: dueTodayTasks } = await sb
       .from("tasks")
       .select("title,assigned_to")
@@ -72,6 +78,7 @@ export default async function handler(req, res) {
     const results = [];
     for (const [staffName, tasks] of byStaff) {
       if (alreadySentSet.has(staffName.toLowerCase())) continue;
+      if (onLeave.has(staffName.toLowerCase())) continue;
       const staffRow = activeStaff.find((s) => nameEq(s.name, staffName));
       if (staffRow?.id) {
         const r = await sendPushNotification({
