@@ -964,6 +964,47 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, installment: data });
   }
 
+  // POST ?action=set-monthly-rate — staff. Rate-lock schemes (e.g. Golden
+  // Sparkle) book the same day's gold rate for every member who pays that
+  // month, but staff were re-typing that identical rate per person per
+  // payment. This sets rate_locked once for every ALREADY-PAID installment
+  // of the given scheme whose paid_at falls in the given month — any date
+  // within the month, matching how the scheme actually works. A later
+  // per-person correction still goes through update-installment as before.
+  // Body: { schemeId, month ("YYYY-MM"), ratePerGram, actor }.
+  if (req.method === "POST" && action === "set-monthly-rate") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    if (!body.schemeId || !body.month) return res.status(400).json({ ok: false, error: "schemeId_month_required" });
+    if (!/^\d{4}-\d{2}$/.test(body.month)) return res.status(400).json({ ok: false, error: "month must be YYYY-MM" });
+    const rateCheck = validateRateLocked(body.ratePerGram);
+    if (!rateCheck.ok) return res.status(400).json({ ok: false, error: rateCheck.error });
+    if (rateCheck.value == null) return res.status(400).json({ ok: false, error: "ratePerGram_required" });
+
+    const { data: enrollmentRows } = await sb.from("kitty_enrollments")
+      .select("id").eq("tenant_id", TENANT_ID).eq("scheme_id", body.schemeId);
+    const enrollmentIds = (enrollmentRows || []).map((e) => e.id);
+    if (!enrollmentIds.length) return res.status(200).json({ ok: true, updated: 0 });
+
+    const monthStart = `${body.month}-01`;
+    const [y, m] = body.month.split("-").map(Number);
+    const monthEnd = new Date(Date.UTC(m === 12 ? y + 1 : y, m === 12 ? 0 : m, 1)).toISOString().slice(0, 10);
+
+    const { data: updated, error } = await sb.from("kitty_installments")
+      .update({ rate_locked: rateCheck.value })
+      .eq("tenant_id", TENANT_ID)
+      .in("enrollment_id", enrollmentIds)
+      .eq("status", "paid")
+      .gte("paid_at", monthStart)
+      .lt("paid_at", monthEnd)
+      .select("id");
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+
+    await logAudit(sb, { entityType: "kitty_monthly_rate", entityId: body.schemeId, action: "bulk_set_rate", actor: body.actor, details: { schemeId: body.schemeId, month: body.month, ratePerGram: rateCheck.value, updated: updated?.length || 0 } });
+    return res.status(200).json({ ok: true, updated: updated?.length || 0 });
+  }
+
   // GET ?action=admin-list-audit-log — staff. Query: entityType?, entityId?, limit? (default 200)
   if (req.method === "GET" && action === "admin-list-audit-log") {
     const authFail = checkCrmSecret(req, res);

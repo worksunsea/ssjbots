@@ -680,6 +680,20 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
     }
   };
 
+  // Bulk-sets one gold rate for every ALREADY-PAID installment of the
+  // selected kitty in the selected month — for rate-lock schemes like
+  // Golden Sparkle, so staff enter the day's booked rate once instead of
+  // re-typing it per person per payment. A wrong individual entry can still
+  // be fixed afterward via the usual per-installment "Edit" (update-installment).
+  const setMonthlyRate = async (schemeId, monthStr) => {
+    const scheme = schemes.find((s) => s.id === schemeId);
+    const rate = promptRate(`Booked gold rate (₹/g) for "${scheme?.name}" — ${monthStr}, applied to everyone who paid this month?`);
+    if (rate == null) return;
+    if (!confirm(`Apply ₹${rate.toLocaleString("en-IN")}/g to every payment already recorded for "${scheme?.name}" in ${monthStr}? This overwrites any rate already set on those installments.`)) return;
+    const d = await call("set-monthly-rate", { method: "POST", crmSecret, body: { schemeId, month: monthStr, ratePerGram: rate, actor } });
+    if (d.ok) { alert(`Rate applied to ${d.updated} payment${d.updated === 1 ? "" : "s"}.`); load(); } else alert(d.error);
+  };
+
   const PAYMENT_METHODS = ["cash", "upi", "bank_transfer", "card", "cheque", "other"];
   const promptPaymentMethod = (current) => {
     while (true) {
@@ -839,6 +853,11 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
         <input placeholder="Search name or mobile…" value={search} onChange={(e) => setSearch(e.target.value)} style={{ width: 180 }} />
         <label>Export month: <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} /></label>
         <button onClick={() => exportMonthlyExcel(filteredEnrollments, month)}>⬇ Download {month} Excel</button>
+        {schemeFilter && (
+          <button onClick={() => setMonthlyRate(schemeFilter, month)} title="Applies one ₹/g rate to everyone who already paid this scheme this month — correct any individual entry later as usual">
+            💰 Set {month} rate for this kitty
+          </button>
+        )}
       </div>
 
       {visibleBatches.length > 0 && (
