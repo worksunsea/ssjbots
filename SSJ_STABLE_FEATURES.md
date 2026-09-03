@@ -1,6 +1,6 @@
 # SSJ Stable Features — Do Not Break
 **App:** ssjbot.gemtre.in · Supabase + Vercel + React/Vite  
-**Last updated:** 2026-07-02  
+**Last updated:** 2026-09-03  
 **Owner:** Saurav, Sun Sea Jewellers, Karol Bagh  
 **Super Admin email:** work.sunsea@gmail.com
 
@@ -651,5 +651,33 @@ Scan supplier business cards → auto-fill contact details via AI vision → tag
 - New CRM tab: **Client Platform** (`src/ClientPlatformAdminScreen.jsx`) — Clients / New Signups / Associates (approve applicants) / Kitty Interest / Rate Subscribers & Alerts.
 - `api/cron.js` gained step 0c: checks active `bullion_price_alerts` every tick against live rates, fires a one-time WA message on cross.
 - **Before fully live**: review the associate-recruitment WA nurture copy (migration `0095`, currently `active: false`) and flip it on; decide on the daily-rate Google Sheet integration (currently CRM-tag-only); everything else is functional as shipped. Full "needs your review" list is in ssj-website's `SSJ_WEBSITE_FEATURES.md`.
+
+---
+
+## 28. HOLIDAY CALENDAR + LEAVE-AWARE CHECKLIST REMINDERS (2026-09-03)
+
+**Status: built and deployed. `holidays` table migration lives in the `ssj-hr` repo, applied live via `supabase db query` (CLI `db push` is blocked repo-wide by an out-of-sync migration history — see note below).**
+
+- `api/_lib/holidays.js`: `isHolidayToday()` (checks the `holidays` table, owned/managed from `ssj-hr`'s Holidays panel) and `staffOnLeaveToday()` (checks `leaves.status='Approved'` rows covering today, same table ssj-hr's Leave Management screen already writes).
+- Wired into all three staff checklist/task reminder crons — `morning-due-today-push.js`, `evening-completion-reminder.js`, `staff-task-reminders.js` — each now skips the whole run on a declared holiday, and skips individual staff who are on approved leave that day.
+- `holidays` table (defined + applied from the `ssj-hr` repo's migrations, not this one — see that repo's `SSJ_STABLE_FEATURES.md` §Holidays) has a one-click "Add yearly calendar" seeding Republic Day/Independence Day/Gandhi Jayanti (fixed) + Holi/Raksha Bandhan/Dussehra/Diwali (looked-up actual dates, 2026–2030) from the Holidays panel.
+- **Migration tooling note**: `supabase db push` fails across this project with "Remote migration versions not found in local migrations directory" — the tracked migration history and the actual DB have drifted out of sync (long predates today's work). Rather than run the suggested `migration repair` across 90+ versions blind, new one-off SQL is now applied directly with `supabase db query --linked --file <path>` (or `--linked "<sql>"` for one-liners), bypassing the migration-history table entirely. Keep doing this until the drift is deliberately investigated and fixed — do not attempt a blind `db push --include-all`.
+
+## 29. KITTY — BULK MONTHLY RATE BACKFILL FOR RATE-LOCK SCHEMES (2026-09-03)
+
+- Kitty Admin → Enrollments tab → pick a scheme → a "Rate month" field (independent of the Export-month picker, any past month works) + **"💰 Set [month] rate for this kitty"** button. Applies one ₹/g rate to every already-`paid` installment of that scheme in the chosen month in one shot — built for Golden Sparkle (rate-lock-day scheme) where staff were re-typing the same day's booked rate per person per payment.
+- Backend: `api/kitty.js` `action=set-monthly-rate` (POST, `x-crm-secret`). Individual per-installment correction still goes through the existing `update-installment` action, unchanged.
+
+## 30. SWARN SURAKSHA — ONLINE GOLD-SAVINGS SCHEME VIA RAZORPAY (2026-09-03, migrations 0110–0111)
+
+**Status: DB + backend + ssj.in client page all built and deployed. Not yet usable for real money — blocked on the Razorpay merchant account (proprietor confirmed, no company-entity deposit-rule blocker, but Prize Chits Act / SEBI / hallmarking / GST still apply regardless — see conversation history / memory, not re-litigated here). Set `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` in Vercel env once the account exists — every payment action fails cleanly with `razorpay_not_configured` until then, nothing here can move real money yet.**
+
+- New scheme row in `kitty_schemes` (slug `swarn-suraksha`, grams-based, `perks.daily_gram_cap_g=10`, `perks.max_duration_months=11`, `perks.redemption="in_store_only"`). Reuses the existing `kitty_enrollments`/`kitty_installments` tables generically — no new tables, only new columns.
+- Clients (logged into `ssj.in` via WA-OTP) buy gold at that day's live rate anytime, one-time via Razorpay Checkout — server-enforced 10g/client/day cap (checked at quote time AND again server-side before the order is created; a webhook-side race guard also flags same-day double-booking over the cap to `OWNER_ALERT_PHONE` for manual review since a captured payment can't be un-charged).
+- Auto-debit subscription: client picks **daily, weekly, every 15 days, or monthly**, and their own amount (min ₹100, no forced ₹5,000-multiple like the older fixed-monthly schemes) — one active mandate at a time, cancel anytime. Razorpay has no native fortnightly period; that cadence is built as `period=daily, interval=15`.
+- 11-month RBI-style freeze: `api/kitty-cron.js` daily sweep proactively freezes (`frozen_at` set, `status='completed'`, `claim_status='unclaimed'`) any enrollment past its 11-month window and WA-nudges the client to redeem **in-store only** — no online redemption flow exists or is planned. Any payment (top-up or subscription charge) that still lands after freeze auto-opens a fresh enrollment cycle for the same client (`api/_lib/swarnSuraksha.js`'s `ensureUnfrozenEnrollment()`), so a stray late charge never gets stranded on a dead enrollment.
+- New files: `api/_lib/razorpay.js` (thin REST wrapper, no SDK — orders/customers/plans/subscriptions/webhook-signature-verify), `api/_lib/swarnSuraksha.js` (shared daily-cap + freeze/rollover logic, used identically by both the client API and the webhook so they can't drift), `api/kitty-payment.js` (client-session-gated: enroll/quote/create-topup-order/create-subscription/cancel-subscription — every amount re-derived server-side, never trusted from the client), `api/razorpay-webhook.js` (HMAC-verified `payment.captured` / `subscription.charged` handling, idempotent via a unique index on `razorpay_payment_id`, `bodyParser` disabled to verify against the exact raw bytes Razorpay signed).
+- `ssj-website` repo: new `/swarn-suraksha` page (self-serve buy/subscribe UI, login-gated) — see that repo's `SSJ_WEBSITE_FEATURES.md` for detail, not duplicated here.
+- **Before this is usable**: (1) Razorpay merchant account + the 3 env vars above; (2) confirm Bliss/Bloom's separate lucky-draw legal exposure with a CA/lawyer is out of scope for this entry but was flagged in conversation the same day.
 
 ---
