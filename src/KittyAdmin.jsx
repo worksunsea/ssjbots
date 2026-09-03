@@ -552,6 +552,7 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
   const [schemes, setSchemes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
+  const [rateMonth, setRateMonth] = useState(new Date().toISOString().slice(0, 7)); // separate from Export month — used to backfill any past month's rate
   const [changingSchemeFor, setChangingSchemeFor] = useState(null); // enrollment id, or null
   const [pickedSchemeId, setPickedSchemeId] = useState("");
   const [goldRate, setGoldRate] = useState(null); // today's live 995/24kt rate — reference only, for gullak rate-cut entries
@@ -854,9 +855,12 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
         <label>Export month: <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} /></label>
         <button onClick={() => exportMonthlyExcel(filteredEnrollments, month)}>⬇ Download {month} Excel</button>
         {schemeFilter && (
-          <button onClick={() => setMonthlyRate(schemeFilter, month)} title="Applies one ₹/g rate to everyone who already paid this scheme this month — correct any individual entry later as usual">
-            💰 Set {month} rate for this kitty
-          </button>
+          <span style={{ display: "flex", gap: 6, alignItems: "center", border: "1px solid #ddd", borderRadius: 6, padding: "2px 8px" }}>
+            <label>Rate month: <input type="month" value={rateMonth} onChange={(e) => setRateMonth(e.target.value)} /></label>
+            <button onClick={() => setMonthlyRate(schemeFilter, rateMonth)} title="Applies one ₹/g rate to everyone who already paid this scheme in the selected month — any past month works, not just current. Correct any individual entry later as usual">
+              💰 Set {rateMonth} rate for this kitty
+            </button>
+          </span>
         )}
       </div>
 
