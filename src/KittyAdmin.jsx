@@ -81,8 +81,8 @@ export default function KittyAdminScreen({ sb, tenantId, crmSecret, staffName })
       {tab === "schemes" && <SchemesTab sb={sb} tenantId={tenantId} crmSecret={crmSecret} actor={actor} />}
       {tab === "enroll" && <EnrollNewMemberTab crmSecret={crmSecret} actor={actor} />}
       {tab === "enrollments" && <EnrollmentsTab crmSecret={crmSecret} actor={actor} onNewEnroll={() => setTab("enroll")} />}
-      {tab === "gullak" && <SchemeMembersTab crmSecret={crmSecret} schemeSlug="gullak-gold-savings" />}
-      {tab === "swarn" && <SchemeMembersTab crmSecret={crmSecret} schemeSlug="swarn-suraksha" />}
+      {tab === "gullak" && <SchemeMembersTab crmSecret={crmSecret} schemeSlug="gullak-gold-savings" actor={actor} />}
+      {tab === "swarn" && <SchemeMembersTab crmSecret={crmSecret} schemeSlug="swarn-suraksha" actor={actor} />}
       {tab === "mission100" && <Mission100Admin crmSecret={crmSecret} actor={actor} />}
       {tab === "goldtally" && <GoldTallyTab crmSecret={crmSecret} />}
       {tab === "legacy" && <LegacyTab crmSecret={crmSecret} actor={actor} />}

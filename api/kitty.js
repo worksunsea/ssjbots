@@ -28,6 +28,9 @@
 //      Corrects a wrongly-picked scheme; blocked once any installment is paid.
 // POST /api/kitty?action=delete-enrollment      — staff. Body: { id }.
 //      Hard-deletes a genuine duplicate entry; blocked once any installment is paid.
+// POST /api/kitty?action=merge-enrollments       — staff. Body: { keepEnrollmentId, mergeEnrollmentId, actor }
+//      Moves every installment from mergeEnrollmentId onto keepEnrollmentId
+//      (renumbered), marks mergeEnrollmentId cancelled. Same scheme required.
 // GET  /api/kitty?action=mission100-list-groups  — staff. Query: status?, schemeId?
 // POST /api/kitty?action=mission100-create-group — staff. Body: { label, size (10|20), formedBy, createdBy }
 // POST /api/kitty?action=mission100-assign-member — staff. Body: { groupId, enrollmentId, joinedVia?, referredByMemberId? }
@@ -523,6 +526,16 @@ export default async function handler(req, res) {
     // here so a stray extra-precision entry doesn't silently drift the
     // derived rate.
     const grams = body.gramsPurchased != null ? Math.round(Number(body.gramsPurchased) * 1000) / 1000 : null;
+    // Only Swarn Suraksha allows buying any rupee amount / any fractional
+    // weight of gold — every other gram-based scheme (Gullak, Mission 100)
+    // sells discrete MMTC coins, so a logged purchase must be a whole
+    // number of grams (1g, 2g, 5g, 10g...), never e.g. 1.942g.
+    if (grams != null && !Number.isInteger(grams)) {
+      const { data: enrollmentScheme } = await sb.from("kitty_enrollments").select("scheme:kitty_schemes(slug)").eq("id", body.enrollmentId).maybeSingle();
+      if (enrollmentScheme?.scheme?.slug !== "swarn-suraksha") {
+        return res.status(400).json({ ok: false, error: `This scheme only sells whole-gram coins (1g, 2g, 5g, 10g...) — ${grams}g isn't a whole number. Only Swarn Suraksha allows fractional/any-amount purchases.` });
+      }
+    }
     let rateLocked = null;
     if (grams) {
       rateLocked = amount / grams; // derived, not staff-typed — naturally fractional, not subject to the whole-number rule
@@ -550,6 +563,43 @@ export default async function handler(req, res) {
     if (error) return res.status(500).json({ ok: false, error: error.message });
     await logAudit(sb, { entityType: "installment", entityId: data.id, action: "create", actor: body.actor || body.recordedBy, details: { enrollmentId: body.enrollmentId, amount, grams, status } });
     return res.status(200).json({ ok: true, installment: data });
+  }
+
+  // POST ?action=merge-enrollments — staff. Body: { keepEnrollmentId, mergeEnrollmentId, actor }.
+  // Two separate kitty_enrollments for the same person on the same scheme
+  // (duplicate signup, or a walk-in who forgot they already had one) — folds
+  // ALL of mergeEnrollmentId's installment history onto keepEnrollmentId
+  // (renumbered to avoid a month_number collision, keeping every real
+  // purchase/grams entry intact) and marks the merged-away enrollment
+  // cancelled rather than deleting it, so its own history/audit trail still
+  // exists if anyone needs to trace it later.
+  if (req.method === "POST" && action === "merge-enrollments") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    if (!body.keepEnrollmentId || !body.mergeEnrollmentId) return res.status(400).json({ ok: false, error: "keepEnrollmentId_mergeEnrollmentId_required" });
+    if (body.keepEnrollmentId === body.mergeEnrollmentId) return res.status(400).json({ ok: false, error: "cannot_merge_enrollment_into_itself" });
+
+    const { data: keep } = await sb.from("kitty_enrollments").select("id,scheme_id,lead_id,status").eq("tenant_id", TENANT_ID).eq("id", body.keepEnrollmentId).maybeSingle();
+    const { data: merge } = await sb.from("kitty_enrollments").select("id,scheme_id,lead_id,status").eq("tenant_id", TENANT_ID).eq("id", body.mergeEnrollmentId).maybeSingle();
+    if (!keep || !merge) return res.status(404).json({ ok: false, error: "enrollment_not_found" });
+    if (keep.scheme_id !== merge.scheme_id) return res.status(400).json({ ok: false, error: "can_only_merge_enrollments_on_the_same_scheme" });
+
+    const { data: keepMonths } = await sb.from("kitty_installments").select("month_number").eq("enrollment_id", keep.id).order("month_number", { ascending: false }).limit(1);
+    let nextMonth = (keepMonths?.[0]?.month_number || 0) + 1;
+
+    const { data: mergeInstallments } = await sb.from("kitty_installments").select("id").eq("enrollment_id", merge.id).order("month_number", { ascending: true });
+    for (const row of mergeInstallments || []) {
+      await sb.from("kitty_installments").update({ enrollment_id: keep.id, month_number: nextMonth }).eq("id", row.id);
+      nextMonth++;
+    }
+
+    await sb.from("kitty_enrollments").update({ status: "cancelled", notes: `Merged into enrollment ${keep.id} by ${body.actor || "staff"} on ${new Date().toISOString().slice(0, 10)}` }).eq("id", merge.id);
+
+    await logAudit(sb, { entityType: "enrollment", entityId: keep.id, action: "merge_in", actor: body.actor, details: { mergedFrom: merge.id, installmentsMoved: mergeInstallments?.length || 0 } });
+    await logAudit(sb, { entityType: "enrollment", entityId: merge.id, action: "merged_away", actor: body.actor, details: { mergedInto: keep.id } });
+
+    return res.status(200).json({ ok: true, installmentsMoved: mergeInstallments?.length || 0 });
   }
 
   if (req.method === "POST" && action === "cancel-enrollment") {
@@ -985,6 +1035,12 @@ export default async function handler(req, res) {
       // rate that doesn't apply here.
       const grams = Number(body.gramsPurchased);
       if (!grams || !Number.isFinite(grams)) return res.status(400).json({ ok: false, error: "invalid_gramsPurchased" });
+      if (!Number.isInteger(grams)) {
+        const { data: enrollmentScheme } = await sb.from("kitty_enrollments").select("scheme:kitty_schemes(slug)").eq("id", before.enrollment_id).maybeSingle();
+        if (enrollmentScheme?.scheme?.slug !== "swarn-suraksha") {
+          return res.status(400).json({ ok: false, error: `This scheme only sells whole-gram coins (1g, 2g, 5g, 10g...) — ${grams}g isn't a whole number. Only Swarn Suraksha allows fractional/any-amount purchases.` });
+        }
+      }
       const amountForRate = body.amount != null ? Number(body.amount) : Number(before.amount);
       patch.rate_locked = amountForRate / grams;
     } else if (body.rateLocked != null) {

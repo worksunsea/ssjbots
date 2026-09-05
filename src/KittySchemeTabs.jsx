@@ -30,9 +30,10 @@ function gramsFor(installments, possessionFilter) {
 // One self-contained member-list view for a single gram-based scheme,
 // identified by slug — reused for Gullak and Swarn Suraksha (structurally
 // identical: enrollments + installments + grams + possession split).
-export function SchemeMembersTab({ crmSecret, schemeSlug }) {
+export function SchemeMembersTab({ crmSecret, schemeSlug, actor }) {
   const [scheme, setScheme] = useState(null);
   const [enrollments, setEnrollments] = useState(null);
+  const [selected, setSelected] = useState([]); // up to 2 enrollment ids, for merge
 
   const load = useCallback(async () => {
     const s = await call("admin-list-schemes", { crmSecret });
@@ -44,6 +45,25 @@ export function SchemeMembersTab({ crmSecret, schemeSlug }) {
   }, [crmSecret, schemeSlug]);
 
   useEffect(() => { load(); }, [load]);
+
+  const toggleSelect = (id) => {
+    setSelected((prev) => {
+      if (prev.includes(id)) return prev.filter((x) => x !== id);
+      if (prev.length >= 2) return [prev[1], id]; // keep it to the last 2 clicked
+      return [...prev, id];
+    });
+  };
+
+  const mergeSelected = async (rows) => {
+    if (selected.length !== 2) return;
+    const [a, b] = selected.map((id) => rows.find((r) => r.e.id === id));
+    if (!a || !b) return;
+    // Default: keep whichever has more history (more grams), merge the other in.
+    const [keep, merge] = a.total >= b.total ? [a, b] : [b, a];
+    if (!confirm(`Merge "${merge.e.lead?.name || merge.e.id}" (${merge.total.toFixed(3)}g) into "${keep.e.lead?.name || keep.e.id}" (${keep.total.toFixed(3)}g)?\n\nAll of ${merge.e.lead?.name || "the merged member"}'s installment history moves onto ${keep.e.lead?.name || "the kept member"}. The merged-away enrollment is cancelled, not deleted.`)) return;
+    const d = await call("merge-enrollments", { method: "POST", crmSecret, body: { keepEnrollmentId: keep.e.id, mergeEnrollmentId: merge.e.id, actor } });
+    if (d.ok) { setSelected([]); load(); } else alert(d.error);
+  };
 
   if (enrollments === null) return <div style={{ padding: 20 }}>Loading…</div>;
   if (!scheme) return <div style={{ padding: 20 }}>Scheme not found — has the seed migration run?</div>;
@@ -63,21 +83,24 @@ export function SchemeMembersTab({ crmSecret, schemeSlug }) {
       <h3 style={{ marginBottom: 4 }}>{scheme.name}</h3>
       <p style={{ color: "#666", fontSize: 13, maxWidth: 700, marginBottom: 16 }}>{scheme.description}</p>
 
-      <div style={{ display: "flex", gap: 20, marginBottom: 16, fontSize: 13 }}>
+      <div style={{ display: "flex", gap: 20, marginBottom: 16, fontSize: 13, alignItems: "center" }}>
         <div><b>{rows.length}</b> live members</div>
         <div><b>{totals.total.toFixed(3)} g</b> total held</div>
         <div style={{ color: "#92400e" }}>🏬 <b>{totals.withCompany.toFixed(3)} g</b> with company</div>
         <div style={{ color: "#065f46" }}>🤝 <b>{totals.withClient.toFixed(3)} g</b> with client</div>
+        {selected.length === 2 && <button onClick={() => mergeSelected(rows)} style={{ fontWeight: 700 }}>Merge Selected Two →</button>}
       </div>
+      {selected.length > 0 && selected.length < 2 && <p style={{ fontSize: 12, color: "#666" }}>Pick one more member to merge with.</p>}
 
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
         <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
-          <th>Name</th><th>Phone</th><th>Status</th><th>Total g</th><th>🏬 With company</th><th>🤝 With client</th>
+          <th></th><th>Name</th><th>Phone</th><th>Status</th><th>Total g</th><th>🏬 With company</th><th>🤝 With client</th>
           {schemeSlug === "swarn-suraksha" && <th>Auto-debit</th>}
         </tr></thead>
         <tbody>
           {rows.map(({ e, total, withCompany, withClient }) => (
-            <tr key={e.id} style={{ borderBottom: "1px solid #eee" }}>
+            <tr key={e.id} style={{ borderBottom: "1px solid #eee", background: selected.includes(e.id) ? "#fffaf0" : "transparent" }}>
+              <td><input type="checkbox" checked={selected.includes(e.id)} onChange={() => toggleSelect(e.id)} /></td>
               <td>{e.lead?.name || "—"}</td><td>{e.lead?.phone || "—"}</td><td>{e.status}</td>
               <td>{total.toFixed(3)}</td><td>{withCompany.toFixed(3)}</td><td>{withClient.toFixed(3)}</td>
               {schemeSlug === "swarn-suraksha" && (
@@ -85,7 +108,7 @@ export function SchemeMembersTab({ crmSecret, schemeSlug }) {
               )}
             </tr>
           ))}
-          {!rows.length && <tr><td colSpan={schemeSlug === "swarn-suraksha" ? 7 : 6}>No live members yet.</td></tr>}
+          {!rows.length && <tr><td colSpan={schemeSlug === "swarn-suraksha" ? 8 : 7}>No live members yet.</td></tr>}
         </tbody>
       </table>
     </div>

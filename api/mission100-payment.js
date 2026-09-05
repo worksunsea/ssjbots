@@ -64,6 +64,9 @@ export default async function handler(req, res) {
     const body = req.body || {};
     const grams = Number(body.grams);
     if (!body.enrollmentId || !grams || grams <= 0) return res.status(400).json({ ok: false, error: "enrollmentId_grams_required" });
+    // Mission 100 sells whole-gram coins only (1g/2g/5g/10g) — never a
+    // fractional amount. Only Swarn Suraksha allows any weight.
+    if (!Number.isInteger(grams)) return res.status(400).json({ ok: false, error: "mission100_only_sells_whole_gram_coins" });
 
     const { data: enrollment } = await sb.from("kitty_enrollments")
       .select("*, scheme:kitty_schemes(perks)").eq("tenant_id", TENANT_ID).eq("id", body.enrollmentId).eq("lead_id", session.leadId).maybeSingle();
