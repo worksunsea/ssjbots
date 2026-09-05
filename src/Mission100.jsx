@@ -9,6 +9,7 @@ import { useState, useEffect, useCallback } from "react";
 const API = "/api/mission100";
 const PAYMENT_API = "/api/mission100-payment";
 const AUTH_API = "/api/client-auth";
+const CLIENT_API = "/api/kitty-client";
 
 async function call(base, action, { method = "GET", body, token, params } = {}) {
   const qs = new URLSearchParams({ action, ...(params || {}) }).toString();
@@ -34,8 +35,8 @@ function saveClientToken(token) {
   try { localStorage.setItem("mission100_client_token", token); } catch {}
 }
 
-function ProgressBar({ grams }) {
-  const pct = Math.min(100, (grams / 100) * 100);
+function ProgressBar({ grams, max = 100 }) {
+  const pct = Math.min(100, (grams / max) * 100);
   return (
     <div style={{ background: "#eee", borderRadius: 6, height: 10, overflow: "hidden", width: "100%" }}>
       <div style={{ width: `${pct}%`, background: "linear-gradient(90deg,#d4af37,#9C6B1F)", height: "100%" }} />
@@ -243,21 +244,144 @@ function Leaderboard({ inviteCode, refMemberId }) {
   );
 }
 
+function waNudgeLink(phone, name, totalGrams) {
+  const digits = String(phone || "").replace(/\D/g, "");
+  const remaining = Math.max(0, 25 - totalGrams);
+  const msg = `Hey${name && name !== "—" ? " " + name.split(" ")[0] : ""}! Just ${remaining.toFixed(1)}g away from your Mission 100 checkpoint bonus — a couple more coins and you're there 🏆`;
+  return `https://wa.me/${digits}?text=${encodeURIComponent(msg)}`;
+}
+
+// The client's own investment/P&L dashboard — total invested + gold held
+// across EVERY kitty scheme they're in (reuses the existing api/kitty-client
+// "My Kitty" endpoint, which already returns exactly this) plus a
+// Mission-100-specific section: their standing in each group they're
+// racing in, and their referral network (who's qualified past 25g, who's
+// still short so they can personally nudge them, and how much referral
+// bonus gold they've earned).
+function MyDashboard() {
+  const [needsLogin, setNeedsLogin] = useState(!getClientToken());
+  const [kitty, setKitty] = useState(null);
+  const [dash, setDash] = useState(null);
+
+  const load = useCallback(async () => {
+    const token = getClientToken();
+    if (!token) return;
+    const [k, d] = await Promise.all([
+      call(CLIENT_API, "list", { token }),
+      call(PAYMENT_API, "dashboard", { token }),
+    ]);
+    setKitty(k.ok ? k : null);
+    setDash(d.ok ? d : null);
+  }, []);
+
+  useEffect(() => { if (!needsLogin) load(); }, [needsLogin, load]);
+
+  if (needsLogin) return <OtpLogin onLoggedIn={() => setNeedsLogin(false)} onCancel={() => setNeedsLogin(true)} />;
+  if (kitty === null || dash === null) return <div>Loading your dashboard…</div>;
+
+  const totalGrams = kitty.summary?.totalGramsAllSchemes || 0;
+  const totalPaid = kitty.summary?.totalPaidAllSchemes || 0;
+  const rate = kitty.todaysGoldRate || 0;
+  const currentValue = totalGrams * rate;
+  const pnl = currentValue - totalPaid;
+  const pnlPct = totalPaid > 0 ? (pnl / totalPaid) * 100 : 0;
+
+  return (
+    <div style={{ maxWidth: 700 }}>
+      <h2>Your Investment Dashboard</h2>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 12, margin: "16px 0" }}>
+        <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12 }}>
+          <div style={{ fontSize: 11, color: "#666" }}>TOTAL INVESTED</div>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>₹{totalPaid.toLocaleString("en-IN")}</div>
+        </div>
+        <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12 }}>
+          <div style={{ fontSize: 11, color: "#666" }}>TOTAL GOLD HELD</div>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>{totalGrams.toFixed(3)}g</div>
+        </div>
+        <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12 }}>
+          <div style={{ fontSize: 11, color: "#666" }}>VALUE TODAY (₹{Math.round(rate).toLocaleString("en-IN")}/g)</div>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>₹{Math.round(currentValue).toLocaleString("en-IN")}</div>
+        </div>
+        <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12, background: pnl >= 0 ? "#ecfdf5" : "#fef2f2" }}>
+          <div style={{ fontSize: 11, color: "#666" }}>PROFIT / LOSS</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: pnl >= 0 ? "#065f46" : "#991b1b" }}>
+            {pnl >= 0 ? "+" : ""}₹{Math.round(pnl).toLocaleString("en-IN")} ({pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(1)}%)
+          </div>
+        </div>
+      </div>
+
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginBottom: 24 }}>
+        <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}><th>Scheme</th><th>Status</th><th>Grams</th><th>Invested</th></tr></thead>
+        <tbody>
+          {(kitty.enrollments || []).filter((e) => e.totalGrams > 0 || e.totalPaid > 0).map((e) => (
+            <tr key={e.id} style={{ borderBottom: "1px solid #eee" }}>
+              <td>{e.is_legacy ? e.legacy_scheme_name : e.scheme?.name}</td><td>{e.status}</td>
+              <td>{e.totalGrams.toFixed(3)}g</td><td>₹{e.totalPaid.toLocaleString("en-IN")}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {dash.missions?.length > 0 && (
+        <>
+          <h3>Your Mission 100 Groups</h3>
+          {dash.missions.map((m) => (
+            <div key={m.memberId} style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12, marginBottom: 8 }}>
+              <b>{m.groupLabel}</b> — {m.status} {m.isWinner && "🏆 Trip winner!"}
+              <div style={{ fontSize: 12.5, color: "#666" }}>{m.totalGrams.toFixed(3)}g / 100g — checkpoints reached: {m.checkpointsReached.join(", ") || "none yet"}</div>
+              <ProgressBar grams={m.totalGrams} />
+            </div>
+          ))}
+
+          <h3 style={{ marginTop: 20 }}>Your Referrals</h3>
+          <p style={{ fontSize: 13, color: "#666" }}>
+            {dash.referrals.length} referred · {dash.referralsQualified} qualified (25g+) · <b>{dash.referralBonusGrams}g</b> earned so far
+          </p>
+          {dash.referralsBehind?.length > 0 && (
+            <>
+              <p style={{ fontSize: 13, fontWeight: 700, marginTop: 8 }}>Push these friends toward 25g — you'll earn a bonus coin every 5:</p>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}><th>Name</th><th>Progress</th><th></th></tr></thead>
+                <tbody>
+                  {dash.referralsBehind.map((r, i) => (
+                    <tr key={i} style={{ borderBottom: "1px solid #eee" }}>
+                      <td>{r.name}</td>
+                      <td style={{ width: 140 }}>{r.totalGrams.toFixed(1)}g / 25g<ProgressBar grams={r.totalGrams} max={25} /></td>
+                      <td>{r.phone && <a href={waNudgeLink(r.phone, r.name, r.totalGrams)} target="_blank" rel="noreferrer">Nudge on WhatsApp</a>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function Mission100Screen() {
   const params = new URLSearchParams(window.location.search);
   const inviteCode = params.get("g");
   const refMemberId = params.get("ref");
+  const showDashboard = params.has("dashboard");
   const [mode, setMode] = useState(null); // null | 'start' | 'join'
 
   return (
     <div style={{ maxWidth: 700, margin: "0 auto", padding: 24, fontFamily: "sans-serif" }}>
-      <h1 style={{ marginBottom: 4 }}>🏆 Mission 100</h1>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <h1 style={{ marginBottom: 4 }}>🏆 Mission 100</h1>
+        <a href={window.location.pathname + "?dashboard=1"} style={{ fontSize: 13 }}>My Dashboard →</a>
+      </div>
       <p style={{ color: "#666", marginBottom: 20 }}>
         Race your friend group (10 or 20) to 100 grams of gold. Checkpoints every 25g win bonus coins — first to 100g
         wins a couple's trip. Everyone who finishes gets a bonus coin, no matter their rank.
       </p>
 
-      {inviteCode ? (
+      {showDashboard ? (
+        <MyDashboard />
+      ) : inviteCode ? (
         <Leaderboard inviteCode={inviteCode} refMemberId={refMemberId} />
       ) : mode ? (
         <StartOrJoinForm mode={mode} onSuccess={(code) => { window.location.search = `?g=${code}`; }} />
