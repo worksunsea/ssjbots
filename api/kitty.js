@@ -605,8 +605,8 @@ export default async function handler(req, res) {
     if (!body.keepEnrollmentId || !body.mergeEnrollmentId) return res.status(400).json({ ok: false, error: "keepEnrollmentId_mergeEnrollmentId_required" });
     if (body.keepEnrollmentId === body.mergeEnrollmentId) return res.status(400).json({ ok: false, error: "cannot_merge_enrollment_into_itself" });
 
-    const { data: keep } = await sb.from("kitty_enrollments").select("id,scheme_id,lead_id,status").eq("tenant_id", TENANT_ID).eq("id", body.keepEnrollmentId).maybeSingle();
-    const { data: merge } = await sb.from("kitty_enrollments").select("id,scheme_id,lead_id,status").eq("tenant_id", TENANT_ID).eq("id", body.mergeEnrollmentId).maybeSingle();
+    const { data: keep } = await sb.from("kitty_enrollments").select("id,scheme_id,lead_id,status,member_number").eq("tenant_id", TENANT_ID).eq("id", body.keepEnrollmentId).maybeSingle();
+    const { data: merge } = await sb.from("kitty_enrollments").select("id,scheme_id,lead_id,status,member_number").eq("tenant_id", TENANT_ID).eq("id", body.mergeEnrollmentId).maybeSingle();
     if (!keep || !merge) return res.status(404).json({ ok: false, error: "enrollment_not_found" });
     if (keep.scheme_id !== merge.scheme_id) return res.status(400).json({ ok: false, error: "can_only_merge_enrollments_on_the_same_scheme" });
 
@@ -619,7 +619,11 @@ export default async function handler(req, res) {
       nextMonth++;
     }
 
-    await sb.from("kitty_enrollments").update({ status: "cancelled", notes: `Merged into enrollment ${keep.id} by ${body.actor || "staff"} on ${new Date().toISOString().slice(0, 10)}` }).eq("id", merge.id);
+    // notes references the KEPT member's human-readable # (not its UUID) so
+    // staff scanning the list see "merged with #20", not a bare "cancelled"
+    // that gives no clue where the history actually went.
+    const keepLabel = keep.member_number != null ? `#${keep.member_number}` : keep.id;
+    await sb.from("kitty_enrollments").update({ status: "cancelled", notes: `Merged with ${keepLabel} by ${body.actor || "staff"} on ${new Date().toISOString().slice(0, 10)}` }).eq("id", merge.id);
 
     await logAudit(sb, { entityType: "enrollment", entityId: keep.id, action: "merge_in", actor: body.actor, details: { mergedFrom: merge.id, installmentsMoved: mergeInstallments?.length || 0 } });
     await logAudit(sb, { entityType: "enrollment", entityId: merge.id, action: "merged_away", actor: body.actor, details: { mergedInto: keep.id } });

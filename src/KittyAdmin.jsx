@@ -995,7 +995,7 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
                     {lockedSchemeSlug && <td style={{ fontWeight: 700 }}>{e.member_number ?? "—"}</td>}
                     <td>{e.lead?.name || "—"}</td><td>{e.lead?.phone || "—"}</td>
                     {!lockedSchemeSlug && <td>{e.is_legacy ? e.legacy_scheme_name : e.scheme?.name}</td>}
-                    <td>{e.status}</td>
+                    <td>{e.status === "cancelled" && e.notes?.startsWith("Merged with ") ? `merged (${e.notes.match(/Merged with (\S+)/)?.[1] || "?"})` : e.status}</td>
                     <td>{grams ? enrollmentGrams(e).toFixed(3) : "—"}</td>
                     <td>{grams ? enrollmentGramsByPossession(e, "with_company").toFixed(3) : "—"}</td>
                     <td>{grams ? enrollmentGramsByPossession(e, "with_client").toFixed(3) : "—"}</td>
