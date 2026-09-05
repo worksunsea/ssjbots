@@ -28,6 +28,13 @@
 //      Corrects a wrongly-picked scheme; blocked once any installment is paid.
 // POST /api/kitty?action=delete-enrollment      — staff. Body: { id }.
 //      Hard-deletes a genuine duplicate entry; blocked once any installment is paid.
+// GET  /api/kitty?action=mission100-list-groups  — staff. Query: status?, schemeId?
+// POST /api/kitty?action=mission100-create-group — staff. Body: { label, size (10|20), formedBy, createdBy }
+// POST /api/kitty?action=mission100-assign-member — staff. Body: { groupId, enrollmentId, joinedVia?, referredByMemberId? }
+// POST /api/kitty?action=mission100-start-group  — staff. Body: { groupId }
+// POST /api/kitty?action=mission100-declare-winner — staff. Body: { groupId, enrollmentId, checkpointGrams, recordedBy }
+// POST /api/kitty?action=mission100-set-prize-status — staff. Body: { groupId, prizeStatus }
+// POST /api/kitty?action=mission100-award-bonus  — staff. Body: { enrollmentId, reason, recordedBy }
 
 import crypto from "crypto";
 import { supa } from "./_lib/supabase.js";
@@ -35,6 +42,8 @@ import { TENANT_ID, checkCrmSecret, normalizePhone, KITTY_WA_CLIENT_ID } from ".
 import { enrollLeadInDrip } from "./_lib/drip.js";
 import { logKittyAudit } from "./_lib/kittyAudit.js";
 import { sendWhatsApp } from "./_lib/wa.js";
+import { gramsForInstallments } from "./_lib/kittyGrams.js";
+import { generateInviteCode, awardBonusCoin, CHECKPOINTS_G } from "./_lib/mission100.js";
 
 const REDEMPTION_CODE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 function hashCode(code) {
@@ -525,15 +534,21 @@ export default async function handler(req, res) {
     const { data: existingCount } = await sb.from("kitty_installments")
       .select("month_number", { count: "exact", head: false }).eq("enrollment_id", body.enrollmentId).order("month_number", { ascending: false }).limit(1);
     const nextMonth = body.monthNumber != null ? Number(body.monthNumber) : ((existingCount?.[0]?.month_number || 0) + 1);
+    // status defaults to "paid" (a real purchase); pass "free" for a comped
+    // bonus coin (Mission 100 checkpoint/completion/referral bonuses) so it
+    // reads correctly everywhere without inventing a separate grams field —
+    // gramsFor()/gramsForInstallments() already count "free" rows the same
+    // way as "paid" ones.
+    const status = body.status === "free" ? "free" : "paid";
     const { data, error } = await sb.from("kitty_installments").insert({
       tenant_id: TENANT_ID, enrollment_id: body.enrollmentId, month_number: nextMonth,
       due_date: body.dueDate || new Date().toISOString().slice(0, 10),
-      amount, status: "paid", paid_amount: amount, paid_at: new Date().toISOString(),
+      amount, status, paid_amount: amount, paid_at: new Date().toISOString(),
       rate_locked: rateLocked, recorded_by: body.recordedBy || null,
       payment_method: body.paymentMethod || null, payment_remarks: body.paymentRemarks || null,
     }).select().single();
     if (error) return res.status(500).json({ ok: false, error: error.message });
-    await logAudit(sb, { entityType: "installment", entityId: data.id, action: "create", actor: body.actor || body.recordedBy, details: { enrollmentId: body.enrollmentId, amount, grams } });
+    await logAudit(sb, { entityType: "installment", entityId: data.id, action: "create", actor: body.actor || body.recordedBy, details: { enrollmentId: body.enrollmentId, amount, grams, status } });
     return res.status(200).json({ ok: true, installment: data });
   }
 
@@ -1036,6 +1051,165 @@ export default async function handler(req, res) {
     const { data, error } = await q;
     if (error) return res.status(500).json({ ok: false, error: error.message });
     return res.status(200).json({ ok: true, log: data || [] });
+  }
+
+  // ── Mission 100 — staff admin actions ──────────────────────────────────
+
+  // GET ?action=mission100-list-groups — staff. Query: status?, schemeId?
+  // Returns each group with its members (enrollment/lead joined) + computed
+  // grams (via the shared helper) + checkpoint-win rows, so the admin card
+  // grid can render rank/progress without a second round-trip.
+  if (req.method === "GET" && action === "mission100-list-groups") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    let q = sb.from("mission100_groups")
+      .select("*, members:mission100_group_members(*, enrollment:kitty_enrollments(id,lead_id,status,lead:bullion_leads(name,phone),installments:kitty_installments(status,paid_amount,amount,rate_locked,paid_at))), checkpointWins:mission100_checkpoint_wins(*)")
+      .eq("tenant_id", TENANT_ID).order("created_at", { ascending: false });
+    if (req.query.status) q = q.eq("status", req.query.status);
+    if (req.query.schemeId) q = q.eq("scheme_id", req.query.schemeId);
+    const { data, error } = await q;
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+
+    const groups = (data || []).map((g) => {
+      const members = (g.members || [])
+        .map((m) => ({ ...m, ...gramsForInstallments(m.enrollment?.installments) }))
+        .sort((a, b) => b.totalGrams - a.totalGrams);
+      return { ...g, members };
+    });
+    return res.status(200).json({ ok: true, groups });
+  }
+
+  // POST ?action=mission100-create-group — staff. Body: { label, size (10|20), formedBy, createdBy }.
+  if (req.method === "POST" && action === "mission100-create-group") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    const size = Number(body.size);
+    if (!body.label || (size !== 10 && size !== 20)) return res.status(400).json({ ok: false, error: "label_required_and_size_must_be_10_or_20" });
+
+    const { data: scheme } = await sb.from("kitty_schemes").select("id").eq("tenant_id", TENANT_ID).eq("slug", "mission-100").maybeSingle();
+    if (!scheme) return res.status(500).json({ ok: false, error: "mission100_scheme_not_found" });
+
+    let inviteCode, insertErr, data;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      inviteCode = generateInviteCode();
+      ({ data, error: insertErr } = await sb.from("mission100_groups").insert({
+        tenant_id: TENANT_ID, scheme_id: scheme.id, group_label: body.label, invite_code: inviteCode, size,
+        formed_by: body.formedBy === "self_signup" ? "self_signup" : "staff", created_by: body.createdBy || null,
+      }).select().single());
+      if (!insertErr) break;
+      if (!String(insertErr.message || "").includes("duplicate")) return res.status(500).json({ ok: false, error: insertErr.message });
+    }
+    if (insertErr) return res.status(500).json({ ok: false, error: "could_not_generate_unique_invite_code" });
+
+    await logAudit(sb, { entityType: "mission100_group", entityId: data.id, action: "create", actor: body.actor || body.createdBy, details: { label: body.label, size } });
+    return res.status(200).json({ ok: true, group: data });
+  }
+
+  // POST ?action=mission100-assign-member — staff. Body: { groupId, enrollmentId, joinedVia?, referredByMemberId? }.
+  if (req.method === "POST" && action === "mission100-assign-member") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    if (!body.groupId || !body.enrollmentId) return res.status(400).json({ ok: false, error: "groupId_enrollmentId_required" });
+
+    const { data: group } = await sb.from("mission100_groups").select("*").eq("tenant_id", TENANT_ID).eq("id", body.groupId).maybeSingle();
+    if (!group) return res.status(404).json({ ok: false, error: "group_not_found" });
+    const { count: memberCount } = await sb.from("mission100_group_members").select("*", { count: "exact", head: true }).eq("group_id", group.id);
+    if ((memberCount || 0) >= group.size) return res.status(409).json({ ok: false, error: "group_full" });
+
+    const { data: member, error } = await sb.from("mission100_group_members").insert({
+      tenant_id: TENANT_ID, group_id: group.id, enrollment_id: body.enrollmentId,
+      joined_via: body.joinedVia === "invite_link" ? "invite_link" : "staff_assigned",
+      referred_by_member_id: body.referredByMemberId || null,
+    }).select().single();
+    if (error) {
+      if (String(error.message || "").includes("duplicate")) return res.status(409).json({ ok: false, error: "enrollment_already_in_a_group" });
+      return res.status(500).json({ ok: false, error: error.message });
+    }
+
+    const newCount = (memberCount || 0) + 1;
+    if (newCount >= group.size && group.status === "forming") {
+      await sb.from("mission100_groups").update({ status: "racing", started_at: new Date().toISOString() }).eq("id", group.id);
+    }
+
+    await logAudit(sb, { entityType: "mission100_group", entityId: group.id, action: "assign_member", actor: body.actor, details: { enrollmentId: body.enrollmentId } });
+    return res.status(200).json({ ok: true, member });
+  }
+
+  // POST ?action=mission100-start-group — staff. Body: { groupId }. Manual
+  // forming→racing override (e.g. staff decides to start a not-yet-full
+  // self-signup group early).
+  if (req.method === "POST" && action === "mission100-start-group") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    if (!body.groupId) return res.status(400).json({ ok: false, error: "groupId_required" });
+    const { data, error } = await sb.from("mission100_groups").update({ status: "racing", started_at: new Date().toISOString() })
+      .eq("tenant_id", TENANT_ID).eq("id", body.groupId).eq("status", "forming").select().single();
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    if (!data) return res.status(400).json({ ok: false, error: "group_not_in_forming_status" });
+    await logAudit(sb, { entityType: "mission100_group", entityId: data.id, action: "start", actor: body.actor });
+    return res.status(200).json({ ok: true, group: data });
+  }
+
+  // POST ?action=mission100-declare-winner — staff. Body: { groupId, enrollmentId, checkpointGrams, recordedBy }.
+  // Manual override/confirmation of a checkpoint win (25/50/75/100) — used
+  // to correct what cron auto-detects, or hand-declare before cron runs.
+  if (req.method === "POST" && action === "mission100-declare-winner") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    const checkpointGrams = Number(body.checkpointGrams);
+    if (!body.groupId || !body.enrollmentId || !CHECKPOINTS_G.includes(checkpointGrams)) {
+      return res.status(400).json({ ok: false, error: "groupId_enrollmentId_and_valid_checkpointGrams_required" });
+    }
+    const { data: member } = await sb.from("mission100_group_members").select("id").eq("group_id", body.groupId).eq("enrollment_id", body.enrollmentId).maybeSingle();
+    if (!member) return res.status(404).json({ ok: false, error: "member_not_found_in_group" });
+
+    const { data, error } = await sb.from("mission100_checkpoint_wins")
+      .upsert({ tenant_id: TENANT_ID, group_id: body.groupId, checkpoint_grams: checkpointGrams, winner_member_id: member.id }, { onConflict: "group_id,checkpoint_grams" })
+      .select().single();
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+
+    if (checkpointGrams === 100) {
+      await sb.from("mission100_groups").update({ winner_enrollment_id: body.enrollmentId, winner_declared_at: new Date().toISOString(), status: "completed" }).eq("id", body.groupId);
+    }
+    await logAudit(sb, { entityType: "mission100_group", entityId: body.groupId, action: "declare_winner", actor: body.actor || body.recordedBy, details: { enrollmentId: body.enrollmentId, checkpointGrams } });
+    return res.status(200).json({ ok: true, checkpointWin: data });
+  }
+
+  // POST ?action=mission100-set-prize-status — staff. Body: { groupId, prizeStatus }.
+  if (req.method === "POST" && action === "mission100-set-prize-status") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    if (!body.groupId || !["not_applicable", "pending", "booked", "fulfilled"].includes(body.prizeStatus)) {
+      return res.status(400).json({ ok: false, error: "groupId_and_valid_prizeStatus_required" });
+    }
+    const { data, error } = await sb.from("mission100_groups").update({ prize_status: body.prizeStatus }).eq("tenant_id", TENANT_ID).eq("id", body.groupId).select().single();
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    await logAudit(sb, { entityType: "mission100_group", entityId: body.groupId, action: "set_prize_status", actor: body.actor, details: { prizeStatus: body.prizeStatus } });
+    return res.status(200).json({ ok: true, group: data });
+  }
+
+  // POST ?action=mission100-award-bonus — staff. Body: { enrollmentId, reason: 'checkpoint'|'referral'|'completion', recordedBy }.
+  // One-click manual bonus coin — thin wrapper around the same insert shape
+  // add-installment uses, also called internally (as a function, not HTTP)
+  // by the cron sweep.
+  if (req.method === "POST" && action === "mission100-award-bonus") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    if (!body.enrollmentId || !["checkpoint", "referral", "completion"].includes(body.reason)) {
+      return res.status(400).json({ ok: false, error: "enrollmentId_and_valid_reason_required" });
+    }
+    try {
+      const installment = await awardBonusCoin(sb, { enrollmentId: body.enrollmentId, reason: body.reason, recordedBy: body.actor || body.recordedBy || "staff" });
+      return res.status(200).json({ ok: true, installment });
+    } catch (e) {
+      return res.status(502).json({ ok: false, error: e.message });
+    }
   }
 
   return res.status(400).json({ ok: false, error: "unknown_action" });

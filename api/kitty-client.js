@@ -8,6 +8,7 @@ import { supa } from "./_lib/supabase.js";
 import { requireClientSession } from "./_lib/clientAuth.js";
 import { TENANT_ID } from "./_lib/config.js";
 import { getRates } from "./_lib/rates.js";
+import { gramsForInstallments } from "./_lib/kittyGrams.js";
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -33,10 +34,8 @@ export default async function handler(req, res) {
     // gram purchases) — how many grams that adds up to, so the client can
     // see real accumulated gold, not just rupees paid.
     const enrollments = (data || []).map((e) => {
-      const paid = (e.installments || []).filter((i) => i.status === "paid" || i.status === "free");
-      const totalPaid = paid.reduce((sum, i) => sum + Number(i.paid_amount ?? i.amount ?? 0), 0);
-      const totalGrams = paid.reduce((sum, i) => (i.rate_locked ? sum + Number(i.paid_amount ?? i.amount ?? 0) / Number(i.rate_locked) : sum), 0);
-      return { ...e, totalPaid, totalGrams: totalGrams > 0 ? Number(totalGrams.toFixed(3)) : 0 };
+      const { totalGrams, totalPaid } = gramsForInstallments(e.installments);
+      return { ...e, totalPaid, totalGrams };
     });
 
     const summary = {

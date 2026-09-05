@@ -1,0 +1,142 @@
+<title>Mission 100 — Race to 100 Grams of Gold</title>
+<style>
+  :root {
+    --bg: #F6F1E7;
+    --bg-raised: #FFFFFF;
+    --ink: #2A2118;
+    --ink-soft: #6B5E4F;
+    --rule: #E4D9C4;
+    --gold: #9C6B1F;
+    --gold-soft: #F0E2C4;
+    --maroon: #7A2A32;
+    --maroon-soft: #F3E1E1;
+    --red: #C0392B;    --red-bg: #FBEAE7;
+    --orange: #C77A1E; --orange-bg: #FBEEDA;
+    --green: #2F7A4F;  --green-bg: #E6F1EA;
+    --blue: #3A6EA5;   --blue-bg: #E7EEF5;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Noto Serif", serif;
+    --sans: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1B1712; --bg-raised: #241F18; --ink: #EEE6D6; --ink-soft: #B3A791; --rule: #3A3226;
+      --gold: #D9A94C; --gold-soft: #3C3018; --maroon: #D98A93; --maroon-soft: #3A2226;
+      --red: #E28579; --red-bg: #3A2420; --orange: #E0A15C; --orange-bg: #3A2E1C;
+      --green: #7CBE97; --green-bg: #1F3327; --blue: #8FB3D9; --blue-bg: #202B38;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1B1712; --bg-raised: #241F18; --ink: #EEE6D6; --ink-soft: #B3A791; --rule: #3A3226;
+    --gold: #D9A94C; --gold-soft: #3C3018; --maroon: #D98A93; --maroon-soft: #3A2226;
+    --red: #E28579; --red-bg: #3A2420; --orange: #E0A15C; --orange-bg: #3A2E1C;
+    --green: #7CBE97; --green-bg: #1F3327; --blue: #8FB3D9; --blue-bg: #202B38;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 0 24px 60px; }
+
+  .print-bar { position: sticky; top: 0; z-index: 40; display: flex; justify-content: flex-end; padding: 10px 24px; background: var(--bg); border-bottom: 1px solid var(--rule); }
+  .print-btn { font-family: var(--sans); font-size: 12.5px; font-weight: 700; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--gold); background: var(--gold); color: #fff; cursor: pointer; }
+  .print-btn:hover { opacity: 0.9; }
+  @media print { .print-bar { display: none; } body { background: #fff; } .wrap { max-width: 100%; } }
+
+  .hero { background: linear-gradient(160deg, var(--maroon) 0%, #5c1f26 100%); color: #fff; margin: 0 -24px 28px; padding: 40px 24px 32px; border-radius: 0 0 18px 18px; }
+  @media print { .hero { margin: 0 0 24px; border-radius: 10px; } }
+  .kicker { font-size: 11px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: #E9C989; margin: 0 0 10px; }
+  h1.title { font-family: var(--serif); font-size: clamp(1.9rem, 1.5rem + 1.6vw, 2.6rem); line-height: 1.12; font-weight: 600; margin: 0 0 12px; text-wrap: balance; }
+  .dek { font-size: 15.5px; line-height: 1.6; color: #F0DFC8; max-width: 56ch; margin: 0; }
+
+  h2 { font-family: var(--serif); font-size: 20px; font-weight: 650; color: var(--maroon); margin: 0 0 12px; text-wrap: balance; }
+  h2 .num { font-size: 13px; color: var(--gold); margin-right: 8px; }
+  section { margin-bottom: 30px; page-break-inside: avoid; }
+
+  .steps { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+  .steps li { counter-increment: step; display: flex; gap: 14px; padding: 10px 0; border-bottom: 1px dashed var(--rule); font-size: 14px; line-height: 1.55; }
+  .steps li:last-child { border-bottom: none; }
+  .steps li::before { content: counter(step); flex-shrink: 0; width: 26px; height: 26px; border-radius: 50%; background: var(--gold); color: #fff; font-weight: 700; font-size: 13px; display: flex; align-items: center; justify-content: center; }
+
+  table.rewards { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  table.rewards th { text-align: left; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-soft); padding: 0 10px 8px 0; border-bottom: 1px solid var(--rule); }
+  table.rewards td { padding: 11px 10px 11px 0; border-bottom: 1px solid var(--rule); vertical-align: top; line-height: 1.5; }
+  table.rewards tr:last-child td { border-bottom: none; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 10px; white-space: nowrap; }
+  .badge.gold { background: var(--gold-soft); color: var(--gold); }
+  .badge.trip { background: var(--maroon-soft); color: var(--maroon); }
+  .badge.green { background: var(--green-bg); color: var(--green); }
+
+  .callout { background: var(--gold-soft); border: 1px solid var(--gold); border-radius: 6px; padding: 14px 18px; margin: 4px 0 0; font-size: 13.5px; line-height: 1.55; }
+  .callout strong { color: var(--gold); }
+
+  .rules-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 22px; }
+  @media print { .rules-grid { grid-template-columns: 1fr 1fr; } }
+  .rule-item { font-size: 13.5px; line-height: 1.5; padding: 8px 0; border-bottom: 1px solid var(--rule); }
+  .rule-item b { display: block; color: var(--maroon); font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 2px; }
+
+  .faq { margin-bottom: 14px; page-break-inside: avoid; }
+  .faq .q { font-weight: 700; font-size: 13.5px; color: var(--ink); margin-bottom: 3px; }
+  .faq .a { font-size: 13px; color: var(--ink-soft); line-height: 1.55; margin: 0; }
+
+  .footer { text-align: center; font-size: 12px; color: var(--ink-soft); border-top: 1px solid var(--rule); padding-top: 16px; margin-top: 10px; }
+  .footer b { color: var(--gold); }
+</style>
+
+<div class="print-bar"><button class="print-btn" onclick="window.print()">🖨 Print / Save as PDF</button></div>
+
+<div class="wrap">
+  <div class="hero">
+    <p class="kicker">Sun Sea Jewellers · New Gold Scheme</p>
+    <h1 class="title">Mission 100 — Race to 100 Grams of Gold</h1>
+    <p class="dek">Gather your squad. Race to 100 grams. Fastest wins a couple's trip. Everyone who finishes walks away with bonus gold — no one who plays it through goes home empty-handed.</p>
+  </div>
+
+  <section>
+    <h2>How It Works</h2>
+    <ol class="steps">
+      <li><b>Form your group</b> — 10 or 20 friends. Don't have a full crew? We'll group you with fellow members chasing the same goal.</li>
+      <li><b>Buy MMTC gold coins</b> toward your own 100g goal, at your own pace — 1g coin, or go bigger with 2g / 5g / 10g coins. Same gold rate either way, no premium for bigger coins.</li>
+      <li><b>Minimum 1 coin (1g) every month</b> to stay active in the race — just a friendly reminder if you fall behind, never a penalty.</li>
+      <li><b>Race checkpoints at 25g, 50g, 75g and 100g</b> — whoever in your group reaches each mark FIRST wins a bonus. Four mini-races, not one long wait.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>What You Can Win</h2>
+    <table class="rewards">
+      <thead><tr><th>Milestone</th><th>Reward</th></tr></thead>
+      <tbody>
+        <tr><td><span class="badge gold">🥇 First to 25g / 50g / 75g</span><br>in your group</td><td><b>+1g free gold coin</b>, instantly</td></tr>
+        <tr><td><span class="badge trip">🏁 First to 100g</span><br>in your group</td><td><b>Couple's 2 Night / 3 Day trip</b> at a 5-star property</td></tr>
+        <tr><td><span class="badge green">🎯 Anyone who completes 100g</span><br>even if not first</td><td><b>+1g free gold coin</b> — 101g in hand</td></tr>
+        <tr><td><span class="badge gold">🤝 Refer 5 friends</span><br>who each reach their own 25g</td><td><b>+1g free gold coin</b>, every 5</td></tr>
+      </tbody>
+    </table>
+    <p class="callout"><strong>Your prize is always yours alone.</strong> Checkpoint wins, the trip, and your completion bonus never depend on what anyone else in your group does — race at your own pace, on your own merit.</p>
+  </section>
+
+  <section>
+    <h2>Rules at a Glance</h2>
+    <div class="rules-grid">
+      <div class="rule-item"><b>Group size</b>10 or 20 members</div>
+      <div class="rule-item"><b>Minimum purchase</b>1 coin (1g) per month — reminder, not a penalty</div>
+      <div class="rule-item"><b>Coin sizes</b>1g / 2g / 5g / 10g — same price per gram</div>
+      <div class="rule-item"><b>Dropouts</b>No lock-in — pause and resume anytime, no impact on anyone</div>
+      <div class="rule-item"><b>Coin purity</b>MMTC 999.9 pure gold, Swiss PAMP Suisse partnership</div>
+      <div class="rule-item"><b>Leaderboard privacy</b>Others see only an initial + rank — never your name or number</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Frequently Asked Questions</h2>
+    <div class="faq"><p class="q">What if I miss a month?</p><p class="a">No penalty. You'll get a friendly reminder — resume whenever you're ready. It never affects your checkpoint eligibility or your own finish.</p></div>
+    <div class="faq"><p class="q">What if a friend in my group stops buying?</p><p class="a">Doesn't touch you at all. Every prize — checkpoints, the trip, your completion bonus — is earned individually. Their pace is their business.</p></div>
+    <div class="faq"><p class="q">Can I buy more than 1 coin a month?</p><p class="a">Yes — buy as often and as much as you like. Choose 1g, 2g, 5g or 10g coins any time, always priced per gram, no denomination premium.</p></div>
+    <div class="faq"><p class="q">What if two people finish 100g in the same week?</p><p class="a">We track the exact purchase date behind every gram, so the true first-to-finish wins — not just whoever we process first.</p></div>
+    <div class="faq"><p class="q">I don't have 10 or 20 friends ready to join — can I still play?</p><p class="a">Yes. Tell us and we'll group you with other Mission 100 members chasing the same goal.</p></div>
+    <div class="faq"><p class="q">How do I start a group or invite friends?</p><p class="a">Start your group on the Mission 100 page, get a shareable link, and send it on WhatsApp. Every member also gets their own personal referral link.</p></div>
+    <div class="faq"><p class="q">Is my information visible to my group?</p><p class="a">Only your first name's initial and your rank are shown to others — your name, phone number, and exact grams stay private, visible only to you.</p></div>
+    <div class="faq"><p class="q">How is the trip prize confirmed?</p><p class="a">Once our system detects a group's first 100g finisher, our team personally verifies and confirms the winner before booking.</p></div>
+    <div class="faq"><p class="q">Can I exit or sell back my gold?</p><p class="a">Yes — same buy-back terms as our regular Gullak scheme, sell back to us or anywhere at the live market rate, any time.</p></div>
+  </section>
+
+  <div class="footer">Sun Sea Jewellers — Karol Bagh · <b>MMTC Authorised Dealer</b> · 46+ years of trust</div>
+</div>
