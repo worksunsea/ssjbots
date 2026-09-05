@@ -1,10 +1,10 @@
-// Per-scheme admin views — Gullak, Swarn Suraksha (and any other gram-based
-// kitty scheme) each get their own self-contained tab: own member list, own
-// total-grams-per-member, own with-company/with-client split — plus a
-// cross-scheme Gold Tally tab so all schemes can be consolidated and
-// checked against physical stock on a daily basis. Mission 100 has its own
-// richer admin (groups/leaderboard, not a flat member list) in
-// src/Mission100Admin.jsx — not duplicated here.
+// Cross-scheme Gold Tally — every gram-based kitty scheme's holdings
+// consolidated in one place for daily physical-stock reconciliation.
+// Per-scheme management (Gullak, Swarn Suraksha, Golden Sparkle) lives
+// directly in KittyAdmin.jsx's EnrollmentsTab via its lockedSchemeSlug
+// prop, not here — that reuses its full existing toolkit (confirm, mark
+// paid, add/edit installment, redeem, cancel, merge, deliver coins)
+// instead of a thinner parallel view.
 
 import { useState, useEffect, useCallback } from "react";
 
@@ -25,107 +25,6 @@ async function call(action, { method = "GET", body, crmSecret, params } = {}) {
 function gramsFor(installments, possessionFilter) {
   const settled = (installments || []).filter((i) => (i.status === "paid" || i.status === "free") && (!possessionFilter || (i.possession || "with_company") === possessionFilter));
   return settled.reduce((sum, i) => (i.rate_locked ? sum + Number(i.paid_amount ?? i.amount ?? 0) / Number(i.rate_locked) : sum), 0);
-}
-
-// One self-contained member-list view for a single gram-based scheme,
-// identified by slug — reused for Gullak and Swarn Suraksha (structurally
-// identical: enrollments + installments + grams + possession split).
-export function SchemeMembersTab({ crmSecret, schemeSlug, actor }) {
-  const [scheme, setScheme] = useState(null);
-  const [enrollments, setEnrollments] = useState(null);
-  const [selected, setSelected] = useState([]); // up to 2 enrollment ids, for merge
-
-  const load = useCallback(async () => {
-    const s = await call("admin-list-schemes", { crmSecret });
-    const found = (s.ok ? s.schemes : []).find((sc) => sc.slug === schemeSlug);
-    setScheme(found || null);
-    if (!found) { setEnrollments([]); return; }
-    const e = await call("admin-list-enrollments", { crmSecret, params: { schemeId: found.id } });
-    setEnrollments(e.ok ? e.enrollments : []);
-  }, [crmSecret, schemeSlug]);
-
-  useEffect(() => { load(); }, [load]);
-
-  const toggleSelect = (id) => {
-    setSelected((prev) => {
-      if (prev.includes(id)) return prev.filter((x) => x !== id);
-      if (prev.length >= 2) return [prev[1], id]; // keep it to the last 2 clicked
-      return [...prev, id];
-    });
-  };
-
-  const mergeSelected = async (rows) => {
-    if (selected.length !== 2) return;
-    const [a, b] = selected.map((id) => rows.find((r) => r.e.id === id));
-    if (!a || !b) return;
-    // Default: keep whichever has more history (more grams), merge the other in.
-    const [keep, merge] = a.total >= b.total ? [a, b] : [b, a];
-    if (!confirm(`Merge "${merge.e.lead?.name || merge.e.id}" (${merge.total.toFixed(3)}g) into "${keep.e.lead?.name || keep.e.id}" (${keep.total.toFixed(3)}g)?\n\nAll of ${merge.e.lead?.name || "the merged member"}'s installment history moves onto ${keep.e.lead?.name || "the kept member"}. The merged-away enrollment is cancelled, not deleted.`)) return;
-    const d = await call("merge-enrollments", { method: "POST", crmSecret, body: { keepEnrollmentId: keep.e.id, mergeEnrollmentId: merge.e.id, actor } });
-    if (d.ok) { setSelected([]); load(); } else alert(d.error);
-  };
-
-  const deliverCoins = async (row) => {
-    const grams = prompt(`How many grams to deliver to ${row.e.lead?.name || "this member"}? (${row.withCompany.toFixed(3)}g with company)`, row.withCompany.toFixed(3));
-    if (!grams) return;
-    const d = await call("deliver-coins", { method: "POST", crmSecret, body: { enrollmentId: row.e.id, grams: Number(grams), actor, recordedBy: actor } });
-    if (d.ok) { alert(`Delivered ${d.deliveredGrams}g.`); load(); } else alert(d.error);
-  };
-
-  if (enrollments === null) return <div style={{ padding: 20 }}>Loading…</div>;
-  if (!scheme) return <div style={{ padding: 20 }}>Scheme not found — has the seed migration run?</div>;
-
-  const live = enrollments.filter((e) => ["active", "completed", "redeemed"].includes(e.status));
-  const rows = live.map((e) => ({
-    e,
-    total: gramsFor(e.installments),
-    withCompany: gramsFor(e.installments, "with_company"),
-    withClient: gramsFor(e.installments, "with_client"),
-  })).sort((a, b) => b.total - a.total);
-
-  const totals = rows.reduce((acc, r) => ({ total: acc.total + r.total, withCompany: acc.withCompany + r.withCompany, withClient: acc.withClient + r.withClient }), { total: 0, withCompany: 0, withClient: 0 });
-
-  return (
-    <div style={{ padding: 20 }}>
-      <h3 style={{ marginBottom: 4 }}>{scheme.name}</h3>
-      <p style={{ color: "#666", fontSize: 13, maxWidth: 700, marginBottom: 16 }}>{scheme.description}</p>
-
-      <div style={{ display: "flex", gap: 20, marginBottom: 16, fontSize: 13, alignItems: "center" }}>
-        <div><b>{rows.length}</b> live members</div>
-        <div><b>{totals.total.toFixed(3)} g</b> total held</div>
-        <div style={{ color: "#92400e" }}>🏬 <b>{totals.withCompany.toFixed(3)} g</b> with company</div>
-        <div style={{ color: "#065f46" }}>🤝 <b>{totals.withClient.toFixed(3)} g</b> with client</div>
-        {selected.length === 2 && <button onClick={() => mergeSelected(rows)} style={{ fontWeight: 700 }}>Merge Selected Two →</button>}
-      </div>
-      {selected.length > 0 && selected.length < 2 && <p style={{ fontSize: 12, color: "#666" }}>Pick one more member to merge with.</p>}
-
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
-        <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
-          <th></th>{schemeSlug === "gullak-gold-savings" && <th>#</th>}<th>Name</th><th>Phone</th><th>Status</th><th>Total g</th><th>🏬 With company</th><th>🤝 With client</th>
-          {schemeSlug === "swarn-suraksha" && <th>Auto-debit</th>}
-          <th></th>
-        </tr></thead>
-        <tbody>
-          {rows.map((row) => {
-            const { e, total, withCompany, withClient } = row;
-            return (
-              <tr key={e.id} style={{ borderBottom: "1px solid #eee", background: selected.includes(e.id) ? "#fffaf0" : "transparent" }}>
-                <td><input type="checkbox" checked={selected.includes(e.id)} onChange={() => toggleSelect(e.id)} /></td>
-                {schemeSlug === "gullak-gold-savings" && <td style={{ fontWeight: 700 }}>{e.member_number ?? "—"}</td>}
-                <td>{e.lead?.name || "—"}</td><td>{e.lead?.phone || "—"}</td><td>{e.status}</td>
-                <td>{total.toFixed(3)}</td><td>{withCompany.toFixed(3)}</td><td>{withClient.toFixed(3)}</td>
-                {schemeSlug === "swarn-suraksha" && (
-                  <td>{e.razorpay_subscription_id ? `${e.swarn_frequency || "monthly"} — ₹${e.monthly_amount_override || "—"}` : "—"}{e.frozen_at ? " (frozen)" : ""}</td>
-                )}
-                <td>{withCompany > 0.0005 && <button onClick={() => deliverCoins(row)}>Deliver coins…</button>}</td>
-              </tr>
-            );
-          })}
-          {!rows.length && <tr><td colSpan={schemeSlug === "swarn-suraksha" ? 9 : (schemeSlug === "gullak-gold-savings" ? 9 : 8)}>No live members yet.</td></tr>}
-        </tbody>
-      </table>
-    </div>
-  );
 }
 
 // Cross-scheme consolidated gold tally — every gram-based kitty scheme,

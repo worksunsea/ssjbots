@@ -8,7 +8,7 @@
 import { useState, useEffect, useCallback } from "react";
 import * as XLSX from "xlsx";
 import Mission100Admin from "./Mission100Admin";
-import { SchemeMembersTab, GoldTallyTab } from "./KittySchemeTabs";
+import { GoldTallyTab } from "./KittySchemeTabs";
 
 const API = "/api/kitty";
 
@@ -68,7 +68,7 @@ export default function KittyAdminScreen({ sb, tenantId, crmSecret, staffName })
     <div style={{ padding: 20 }}>
       <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
         {[["overview", "Overview"], ["schemes", "Schemes"], ["enroll", "Enroll New Member"], ["enrollments", "Enrollments"],
-          ["gullak", "Gullak"], ["swarn", "Swarn Suraksha"], ["mission100", "Mission 100"], ["goldtally", "Gold Tally"],
+          ["gullak", "Gullak"], ["swarn", "Swarn Suraksha"], ["goldensparkle", "Golden Sparkle"], ["mission100", "Mission 100"], ["goldtally", "Gold Tally"],
           ["legacy", "Add Legacy Member"], ["activity", "Activity Log"]].map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)}
             style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid #d4af37",
@@ -81,8 +81,9 @@ export default function KittyAdminScreen({ sb, tenantId, crmSecret, staffName })
       {tab === "schemes" && <SchemesTab sb={sb} tenantId={tenantId} crmSecret={crmSecret} actor={actor} />}
       {tab === "enroll" && <EnrollNewMemberTab crmSecret={crmSecret} actor={actor} />}
       {tab === "enrollments" && <EnrollmentsTab crmSecret={crmSecret} actor={actor} onNewEnroll={() => setTab("enroll")} />}
-      {tab === "gullak" && <SchemeMembersTab crmSecret={crmSecret} schemeSlug="gullak-gold-savings" actor={actor} />}
-      {tab === "swarn" && <SchemeMembersTab crmSecret={crmSecret} schemeSlug="swarn-suraksha" actor={actor} />}
+      {tab === "gullak" && <EnrollmentsTab crmSecret={crmSecret} actor={actor} lockedSchemeSlug="gullak-gold-savings" onNewEnroll={() => setTab("enroll")} />}
+      {tab === "swarn" && <EnrollmentsTab crmSecret={crmSecret} actor={actor} lockedSchemeSlug="swarn-suraksha" onNewEnroll={() => setTab("enroll")} />}
+      {tab === "goldensparkle" && <EnrollmentsTab crmSecret={crmSecret} actor={actor} lockedSchemeSlug="golden-sparkle" onNewEnroll={() => setTab("enroll")} />}
       {tab === "mission100" && <Mission100Admin crmSecret={crmSecret} actor={actor} />}
       {tab === "goldtally" && <GoldTallyTab crmSecret={crmSecret} />}
       {tab === "legacy" && <LegacyTab crmSecret={crmSecret} actor={actor} />}
@@ -560,7 +561,15 @@ function exportMonthlyExcel(enrollments, month) {
   XLSX.writeFile(wb, `kitty-installments-${month}.xlsx`);
 }
 
-function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
+// lockedSchemeSlug: when set, this tab IS that scheme's own management
+// surface (Gullak/Swarn Suraksha/Golden Sparkle tabs) — the scheme filter
+// is pre-locked and hidden instead of shown as a dropdown, and a
+// possession-split summary + merge/deliver controls specific to that
+// scheme's members are shown up top. Everything else (confirm, mark paid,
+// add/edit installment, redeem, cancel, delete, change scheme) is the same
+// full toolkit the generic "Enrollments" tab already has — no separate,
+// thinner per-scheme view needed.
+function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
   const [status, setStatus] = useState("");
   const [schemeFilter, setSchemeFilter] = useState("");
   const [batchFilter, setBatchFilter] = useState("");
@@ -574,10 +583,19 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
   const [changingSchemeFor, setChangingSchemeFor] = useState(null); // enrollment id, or null
   const [pickedSchemeId, setPickedSchemeId] = useState("");
   const [goldRate, setGoldRate] = useState(null); // today's live 995/24kt rate — reference only, for gullak rate-cut entries
+  const [mergeSelected, setMergeSelected] = useState([]); // up to 2 enrollment ids
 
   useEffect(() => {
     fetch("/api/rates").then((r) => r.json()).then((d) => { if (d.ok) setGoldRate(d.rates?.spot?.gold24kt || null); }).catch(() => {});
   }, []);
+
+  // Lock the scheme filter to lockedSchemeSlug once schemes have loaded —
+  // can't do this at initial state since we don't have the scheme's id
+  // (only its slug) until the schemes list comes back.
+  const lockedScheme = lockedSchemeSlug ? schemes.find((s) => s.slug === lockedSchemeSlug) : null;
+  useEffect(() => {
+    if (lockedScheme && schemeFilter !== lockedScheme.id) setSchemeFilter(lockedScheme.id);
+  }, [lockedScheme?.id]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -835,14 +853,52 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
     if (d2.ok) { alert("Redeemed — thank-you message sent."); load(); } else alert(d2.error);
   };
 
+  const toggleMergeSelect = (id) => {
+    setMergeSelected((prev) => {
+      if (prev.includes(id)) return prev.filter((x) => x !== id);
+      if (prev.length >= 2) return [prev[1], id];
+      return [...prev, id];
+    });
+  };
+  const mergeSelectedEnrollments = async () => {
+    if (mergeSelected.length !== 2) return;
+    const [a, b] = mergeSelected.map((id) => enrollments.find((x) => x.id === id));
+    if (!a || !b) return;
+    const [keep, merge] = enrollmentGrams(a) >= enrollmentGrams(b) ? [a, b] : [b, a];
+    if (!confirm(`Merge "${merge.lead?.name || merge.id}" (${enrollmentGrams(merge).toFixed(3)}g) into "${keep.lead?.name || keep.id}" (${enrollmentGrams(keep).toFixed(3)}g)?\n\nAll of ${merge.lead?.name || "the merged member"}'s installment history moves onto ${keep.lead?.name || "the kept member"}. The merged-away enrollment is cancelled, not deleted.`)) return;
+    const d = await call("merge-enrollments", { method: "POST", crmSecret, body: { keepEnrollmentId: keep.id, mergeEnrollmentId: merge.id, actor } });
+    if (d.ok) { setMergeSelected([]); load(); } else alert(d.error);
+  };
+  const deliverCoins = async (e) => {
+    const withCompany = enrollmentGramsByPossession(e, "with_company");
+    const grams = prompt(`How many grams to deliver to ${e.lead?.name || "this member"}? (${withCompany.toFixed(3)}g with company)`, withCompany.toFixed(3));
+    if (!grams) return;
+    const d = await call("deliver-coins", { method: "POST", crmSecret, body: { enrollmentId: e.id, grams: Number(grams), actor, recordedBy: actor } });
+    if (d.ok) { alert(`Delivered ${d.deliveredGrams}g.`); load(); } else alert(d.error);
+  };
+
   return (
     <div>
+      {lockedScheme && (
+        <div style={{ marginBottom: 16 }}>
+          <h3 style={{ marginBottom: 4 }}>{lockedScheme.name}</h3>
+          <p style={{ color: "#666", fontSize: 13, maxWidth: 700, marginBottom: 10 }}>{lockedScheme.description}</p>
+          <div style={{ display: "flex", gap: 20, fontSize: 13, alignItems: "center", flexWrap: "wrap" }}>
+            <div><b>{filteredEnrollments.filter((e) => ["active", "completed", "redeemed"].includes(e.status)).length}</b> live members</div>
+            <div><b>{filteredEnrollments.reduce((s, e) => s + enrollmentGrams(e), 0).toFixed(3)} g</b> total held</div>
+            <div style={{ color: "#92400e" }}>🏬 <b>{filteredEnrollments.reduce((s, e) => s + enrollmentGramsByPossession(e, "with_company"), 0).toFixed(3)} g</b> with company</div>
+            <div style={{ color: "#065f46" }}>🤝 <b>{filteredEnrollments.reduce((s, e) => s + enrollmentGramsByPossession(e, "with_client"), 0).toFixed(3)} g</b> with client</div>
+            {mergeSelected.length === 2 && <button onClick={mergeSelectedEnrollments} style={{ fontWeight: 700 }}>Merge Selected Two →</button>}
+            {mergeSelected.length === 1 && <span style={{ fontSize: 12, color: "#666" }}>Pick one more member (checkbox on their card) to merge with.</span>}
+          </div>
+        </div>
+      )}
       {goldRate && (
         <div style={{ marginBottom: 12, fontSize: 13, color: "#92400e", fontWeight: 600 }}>
           🪙 Today's live 24KT (995) rate: ₹{Math.round(goldRate).toLocaleString("en-IN")}/g — reference only, enter the actual rate you're cutting when logging a purchase.
         </div>
       )}
-      {gullakHoldings.length > 0 && (
+      {!lockedScheme && gullakHoldings.length > 0 && (
         <details style={{ marginBottom: 16, border: "1px solid #f0d9a0", borderRadius: 8, padding: "8px 12px", background: "#fffaf0" }}>
           <summary style={{ cursor: "pointer", fontWeight: 600, color: "#92400e" }}>Gullak Gold Holdings by Client ({gullakHoldings.length})</summary>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, marginTop: 8 }}>
@@ -867,10 +923,12 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
           <option value="completed">Completed</option>
           <option value="cancelled">Cancelled</option>
         </select>
-        <select value={schemeFilter} onChange={(e) => { setSchemeFilter(e.target.value); setBatchFilter(""); }}>
-          <option value="">All kitties</option>
-          {schemes.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-        </select>
+        {!lockedSchemeSlug && (
+          <select value={schemeFilter} onChange={(e) => { setSchemeFilter(e.target.value); setBatchFilter(""); }}>
+            <option value="">All kitties</option>
+            {schemes.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        )}
         {visibleBatches.length > 0 && (
           <select value={batchFilter} onChange={(e) => setBatchFilter(e.target.value)}>
             <option value="">All batches</option>
@@ -914,7 +972,8 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
       {loading ? <div>Loading…</div> : (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {filteredEnrollments.map((e) => (
-            <div key={e.id} style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12 }}>
+            <div key={e.id} style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12, background: mergeSelected.includes(e.id) ? "#fffaf0" : "transparent" }}>
+              {lockedSchemeSlug && <input type="checkbox" checked={mergeSelected.includes(e.id)} onChange={() => toggleMergeSelect(e.id)} style={{ marginRight: 8 }} title="Select to merge with another member" />}
               <b>{e.lead?.name || "—"}</b> ({e.lead?.phone}) — {e.is_legacy ? e.legacy_scheme_name : e.scheme?.name}{e.member_number ? ` #${e.member_number}` : ""} — <i>{e.status}</i>
               {e.start_date && <span style={{ marginLeft: 8, fontSize: 11.5, color: "#666" }}>started {e.start_date}</span>}
               {isGramScheme(e) && (
@@ -923,6 +982,9 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
                   <span style={{ fontWeight: 400, marginLeft: 6, fontSize: 11.5 }}>
                     (🏬 with company: {enrollmentGramsByPossession(e, "with_company").toFixed(3)}g · 🤝 with client: {enrollmentGramsByPossession(e, "with_client").toFixed(3)}g)
                   </span>
+                  {enrollmentGramsByPossession(e, "with_company") > 0.0005 && (
+                    <button onClick={() => deliverCoins(e)} style={{ marginLeft: 8, fontSize: 11 }}>Deliver coins…</button>
+                  )}
                 </div>
               )}
               {!e.is_legacy && <button onClick={() => editEnrollment(e)} style={{ marginLeft: 8 }}>Edit Start Date</button>}
