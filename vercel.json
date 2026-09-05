@@ -7,6 +7,7 @@
     { "source": "/api/(.*)", "destination": "/api/$1" },
     { "source": "/diamondmenu", "destination": "/diamondmenu.html" },
     { "source": "/goldmenu", "destination": "/goldmenu.html" },
+    { "source": "/Mission100-Presentation.pdf", "destination": "/Mission100-Presentation.pdf" },
     { "source": "/(.*)", "destination": "/" }
   ],
   "headers": [
