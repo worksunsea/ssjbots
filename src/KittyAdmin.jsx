@@ -5,7 +5,7 @@
 // monthly lucky draw), Legacy Members (hand-enter old paid-up-unclaimed
 // members so kitty-cron.js starts reminding them to claim).
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, Fragment } from "react";
 import * as XLSX from "xlsx";
 import Mission100Admin from "./Mission100Admin";
 import { GoldTallyTab } from "./KittySchemeTabs";
@@ -584,6 +584,7 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
   const [pickedSchemeId, setPickedSchemeId] = useState("");
   const [goldRate, setGoldRate] = useState(null); // today's live 995/24kt rate — reference only, for gullak rate-cut entries
   const [mergeSelected, setMergeSelected] = useState([]); // up to 2 enrollment ids
+  const [expandedId, setExpandedId] = useState(null); // enrollment id whose full management panel is open
 
   useEffect(() => {
     fetch("/api/rates").then((r) => r.json()).then((d) => { if (d.ok) setGoldRate(d.rates?.spot?.gold24kt || null); }).catch(() => {});
@@ -970,84 +971,111 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
         </div>
       )}
       {loading ? <div>Loading…</div> : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          {filteredEnrollments.map((e) => (
-            <div key={e.id} style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12, background: mergeSelected.includes(e.id) ? "#fffaf0" : "transparent" }}>
-              {lockedSchemeSlug && <input type="checkbox" checked={mergeSelected.includes(e.id)} onChange={() => toggleMergeSelect(e.id)} style={{ marginRight: 8 }} title="Select to merge with another member" />}
-              <b>{e.lead?.name || "—"}</b> ({e.lead?.phone}) — {e.is_legacy ? e.legacy_scheme_name : e.scheme?.name}{e.member_number ? ` #${e.member_number}` : ""} — <i>{e.status}</i>
-              {e.start_date && <span style={{ marginLeft: 8, fontSize: 11.5, color: "#666" }}>started {e.start_date}</span>}
-              {isGramScheme(e) && (
-                <div style={{ marginTop: 4, fontSize: 13, fontWeight: 600, color: "#92400e" }}>
-                  Gold held: {enrollmentGrams(e).toFixed(3)} g
-                  <span style={{ fontWeight: 400, marginLeft: 6, fontSize: 11.5 }}>
-                    (🏬 with company: {enrollmentGramsByPossession(e, "with_company").toFixed(3)}g · 🤝 with client: {enrollmentGramsByPossession(e, "with_client").toFixed(3)}g)
-                  </span>
-                  {enrollmentGramsByPossession(e, "with_company") > 0.0005 && (
-                    <button onClick={() => deliverCoins(e)} style={{ marginLeft: 8, fontSize: 11 }}>Deliver coins…</button>
-                  )}
-                </div>
-              )}
-              {!e.is_legacy && <button onClick={() => editEnrollment(e)} style={{ marginLeft: 8 }}>Edit Start Date</button>}
-              {!e.is_legacy && (e.status === "pending_confirmation" || e.status === "active") && (
-                changingSchemeFor === e.id ? (
-                  <span style={{ marginLeft: 8 }}>
-                    <select value={pickedSchemeId} onChange={(ev) => setPickedSchemeId(ev.target.value)} autoFocus>
-                      <option value="">Pick scheme…</option>
-                      {schemes.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                    </select>
-                    <button onClick={() => applyChangeScheme(e)} style={{ marginLeft: 4 }}>Apply</button>
-                    <button onClick={() => setChangingSchemeFor(null)} style={{ marginLeft: 4 }}>Cancel</button>
-                  </span>
-                ) : (
-                  <button onClick={() => { setChangingSchemeFor(e.id); setPickedSchemeId(e.scheme_id || ""); }} style={{ marginLeft: 8 }}>Change Scheme</button>
-                )
-              )}
-              {e.status === "pending_confirmation" && <button onClick={() => confirm_(e.id)} style={{ marginLeft: 8 }}>Confirm & Start</button>}
-              {(e.status === "pending_confirmation" || e.status === "active") && <button onClick={() => cancel_(e.id)} style={{ marginLeft: 8 }}>Cancel</button>}
-              <button onClick={() => deleteEnrollment_(e)} style={{ marginLeft: 8, color: "#b91c1c" }}>Delete (duplicate)</button>
-              {e.status === "active" && <button onClick={() => addInstallment(e.id)} style={{ marginLeft: 8 }}>+ Add Purchase/Installment</button>}
-              {(e.status === "active" || e.status === "completed") && (
-                <button onClick={() => redeem(e)} style={{ marginLeft: 8, fontWeight: 600 }}>
-                  {e.status === "active" ? "Redeem Now (early)" : "Redeem"}
-                </button>
-              )}
-              {e.claim_status && e.claim_status !== "not_applicable" && <span style={{ marginLeft: 8 }}>claim: {e.claim_status}</span>}
-              {e.redemptions?.length > 0 && (
-                <div style={{ marginTop: 6, fontSize: 12, color: "#555" }}>
-                  Redeemed: {e.redemptions.map((r) => `${r.redemption_type}${r.item_description ? ` — ${r.item_description}` : ""}${r.value ? ` (₹${r.value})` : ""}`).join("; ")}
-                </div>
-              )}
-              {e.installments?.length > 0 && (
-                <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  {e.installments.sort((a, b) => a.month_number - b.month_number).map((i) => {
-                    const g = gramsFor(i);
-                    const rateTxt = i.rate_locked ? ` — rate ₹${Number(i.rate_locked).toLocaleString("en-IN")}/g` : "";
-                    const gramsTxt = g ? ` — ${g.toFixed(3)}g` : "";
-                    const payTxt = i.payment_method ? ` — paid via ${i.payment_method}${i.payment_remarks ? ` (${i.payment_remarks})` : ""}` : "";
-                    const settled = i.status === "paid" || i.status === "free";
-                    const withClient = (i.possession || "with_company") === "with_client";
-                    return (
-                      <span key={i.month_number} title={`Due ${i.due_date}${rateTxt}${gramsTxt}${payTxt} — click to mark paid, shift+click to edit`}
-                        onClick={(ev) => { if (ev.shiftKey) editInstallment(i); else if (i.status === "due") markPaid(i.id); else editInstallment(i); }}
-                        style={{ padding: "2px 8px", borderRadius: 4, fontSize: 12, cursor: "pointer",
-                          background: i.status === "paid" ? "#d1fae5" : i.status === "due" ? "#fef3c7" : "#e5e7eb" }}>
-                        #{i.month_number} {i.status}{i.rate_locked ? ` · ₹${Number(i.rate_locked).toLocaleString("en-IN")}/g` : ""}{g ? ` · ${g.toFixed(3)}g` : ""}
-                        {settled && (
-                          <button onClick={(ev) => { ev.stopPropagation(); togglePossession(i); }}
-                            title={`Gold currently ${withClient ? "with client" : "with company"} — click to toggle`}
-                            style={{ marginLeft: 4, fontSize: 11, cursor: "pointer", border: "none", background: "transparent" }}>
-                            {withClient ? "🤝" : "🏬"}
-                          </button>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
+            {lockedSchemeSlug && <th></th>}
+            {lockedSchemeSlug && <th>#</th>}
+            <th>Name</th><th>Phone</th>
+            {!lockedSchemeSlug && <th>Scheme</th>}
+            <th>Status</th><th>Total g</th><th>🏬 With company</th><th>🤝 With client</th><th></th>
+          </tr></thead>
+          <tbody>
+            {filteredEnrollments.map((e) => {
+              const isOpen = expandedId === e.id;
+              const grams = isGramScheme(e);
+              return (
+                <Fragment key={e.id}>
+                  <tr onClick={() => setExpandedId(isOpen ? null : e.id)}
+                    style={{ borderBottom: "1px solid #eee", cursor: "pointer", background: isOpen ? "#fffaf0" : mergeSelected.includes(e.id) ? "#fef9e7" : "transparent" }}>
+                    {lockedSchemeSlug && (
+                      <td onClick={(ev) => ev.stopPropagation()}>
+                        <input type="checkbox" checked={mergeSelected.includes(e.id)} onChange={() => toggleMergeSelect(e.id)} title="Select to merge with another member" />
+                      </td>
+                    )}
+                    {lockedSchemeSlug && <td style={{ fontWeight: 700 }}>{e.member_number ?? "—"}</td>}
+                    <td>{e.lead?.name || "—"}</td><td>{e.lead?.phone || "—"}</td>
+                    {!lockedSchemeSlug && <td>{e.is_legacy ? e.legacy_scheme_name : e.scheme?.name}</td>}
+                    <td>{e.status}</td>
+                    <td>{grams ? enrollmentGrams(e).toFixed(3) : "—"}</td>
+                    <td>{grams ? enrollmentGramsByPossession(e, "with_company").toFixed(3) : "—"}</td>
+                    <td>{grams ? enrollmentGramsByPossession(e, "with_client").toFixed(3) : "—"}</td>
+                    <td style={{ color: "#d4af37" }}>{isOpen ? "▲" : "▼"}</td>
+                  </tr>
+                  {isOpen && (
+                    <tr>
+                      <td colSpan={lockedSchemeSlug ? 9 : 8} style={{ padding: 12, background: "#fafafa", borderBottom: "2px solid #ddd" }}>
+                        {e.start_date && <span style={{ fontSize: 11.5, color: "#666" }}>started {e.start_date}</span>}
+                        {grams && enrollmentGramsByPossession(e, "with_company") > 0.0005 && (
+                          <button onClick={() => deliverCoins(e)} style={{ marginLeft: 8, fontSize: 11 }}>Deliver coins…</button>
                         )}
-                      </span>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          ))}
-          {!filteredEnrollments.length && <div>No enrollments match.</div>}
-        </div>
+                        <div style={{ marginTop: 6 }}>
+                          {!e.is_legacy && <button onClick={() => editEnrollment(e)} style={{ marginRight: 8 }}>Edit Start Date</button>}
+                          {!e.is_legacy && (e.status === "pending_confirmation" || e.status === "active") && (
+                            changingSchemeFor === e.id ? (
+                              <span style={{ marginRight: 8 }}>
+                                <select value={pickedSchemeId} onChange={(ev) => setPickedSchemeId(ev.target.value)} autoFocus>
+                                  <option value="">Pick scheme…</option>
+                                  {schemes.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                                </select>
+                                <button onClick={() => applyChangeScheme(e)} style={{ marginLeft: 4 }}>Apply</button>
+                                <button onClick={() => setChangingSchemeFor(null)} style={{ marginLeft: 4 }}>Cancel</button>
+                              </span>
+                            ) : (
+                              <button onClick={() => { setChangingSchemeFor(e.id); setPickedSchemeId(e.scheme_id || ""); }} style={{ marginRight: 8 }}>Change Scheme</button>
+                            )
+                          )}
+                          {e.status === "pending_confirmation" && <button onClick={() => confirm_(e.id)} style={{ marginRight: 8 }}>Confirm & Start</button>}
+                          {(e.status === "pending_confirmation" || e.status === "active") && <button onClick={() => cancel_(e.id)} style={{ marginRight: 8 }}>Cancel</button>}
+                          <button onClick={() => deleteEnrollment_(e)} style={{ marginRight: 8, color: "#b91c1c" }}>Delete (duplicate)</button>
+                          {e.status === "active" && <button onClick={() => addInstallment(e.id)} style={{ marginRight: 8 }}>+ Add Purchase/Installment</button>}
+                          {(e.status === "active" || e.status === "completed") && (
+                            <button onClick={() => redeem(e)} style={{ marginRight: 8, fontWeight: 600 }}>
+                              {e.status === "active" ? "Redeem Now (early)" : "Redeem"}
+                            </button>
+                          )}
+                          {e.claim_status && e.claim_status !== "not_applicable" && <span style={{ marginRight: 8 }}>claim: {e.claim_status}</span>}
+                        </div>
+                        {e.redemptions?.length > 0 && (
+                          <div style={{ marginTop: 6, fontSize: 12, color: "#555" }}>
+                            Redeemed: {e.redemptions.map((r) => `${r.redemption_type}${r.item_description ? ` — ${r.item_description}` : ""}${r.value ? ` (₹${r.value})` : ""}`).join("; ")}
+                          </div>
+                        )}
+                        {e.installments?.length > 0 && (
+                          <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                            {e.installments.sort((a, b) => a.month_number - b.month_number).map((i) => {
+                              const g = gramsFor(i);
+                              const rateTxt = i.rate_locked ? ` — rate ₹${Number(i.rate_locked).toLocaleString("en-IN")}/g` : "";
+                              const gramsTxt = g ? ` — ${g.toFixed(3)}g` : "";
+                              const payTxt = i.payment_method ? ` — paid via ${i.payment_method}${i.payment_remarks ? ` (${i.payment_remarks})` : ""}` : "";
+                              const settled = i.status === "paid" || i.status === "free";
+                              const withClient = (i.possession || "with_company") === "with_client";
+                              return (
+                                <span key={i.month_number} title={`Due ${i.due_date}${rateTxt}${gramsTxt}${payTxt} — click to mark paid, shift+click to edit`}
+                                  onClick={(ev) => { if (ev.shiftKey) editInstallment(i); else if (i.status === "due") markPaid(i.id); else editInstallment(i); }}
+                                  style={{ padding: "2px 8px", borderRadius: 4, fontSize: 12, cursor: "pointer",
+                                    background: i.status === "paid" ? "#d1fae5" : i.status === "due" ? "#fef3c7" : "#e5e7eb" }}>
+                                  #{i.month_number} {i.status}{i.rate_locked ? ` · ₹${Number(i.rate_locked).toLocaleString("en-IN")}/g` : ""}{g ? ` · ${g.toFixed(3)}g` : ""}
+                                  {settled && (
+                                    <button onClick={(ev) => { ev.stopPropagation(); togglePossession(i); }}
+                                      title={`Gold currently ${withClient ? "with client" : "with company"} — click to toggle`}
+                                      style={{ marginLeft: 4, fontSize: 11, cursor: "pointer", border: "none", background: "transparent" }}>
+                                      {withClient ? "🤝" : "🏬"}
+                                    </button>
+                                  )}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+            {!filteredEnrollments.length && <tr><td colSpan={lockedSchemeSlug ? 9 : 8}>No enrollments match.</td></tr>}
+          </tbody>
+        </table>
       )}
     </div>
   );
