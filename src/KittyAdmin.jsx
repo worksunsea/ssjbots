@@ -939,10 +939,18 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
         <input placeholder="Search name or mobile…" value={search} onChange={(e) => setSearch(e.target.value)} style={{ width: 180 }} />
         <label>Export month: <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} /></label>
         <button onClick={() => exportMonthlyExcel(filteredEnrollments, month)}>⬇ Download {month} Excel</button>
-        {schemeFilter && (
+        {/* Bulk monthly rate only makes sense for schemes where staff BOOK a
+            rate after the fact (Gullak, Golden Sparkle) — Swarn Suraksha and
+            Mission 100 already capture the true live rate at the exact
+            moment of each payment (online checkout or staff entry), so
+            overwriting them all to one bulk rate would corrupt correct
+            per-transaction data. Each such scheme gets its OWN rate here —
+            this never applies one rate across different kitties, only
+            within whichever single scheme is currently selected. */}
+        {schemeFilter && !schemes.find((s) => s.id === schemeFilter)?.perks?.online_purchase && !schemes.find((s) => s.id === schemeFilter)?.perks?.mission100 && (
           <span style={{ display: "flex", gap: 6, alignItems: "center", border: "1px solid #ddd", borderRadius: 6, padding: "2px 8px" }}>
             <label>Rate month: <input type="month" value={rateMonth} onChange={(e) => setRateMonth(e.target.value)} /></label>
-            <button onClick={() => setMonthlyRate(schemeFilter, rateMonth)} title="Applies one ₹/g rate to everyone who already paid this scheme in the selected month — any past month works, not just current. Correct any individual entry later as usual">
+            <button onClick={() => setMonthlyRate(schemeFilter, rateMonth)} title="Applies one ₹/g rate to everyone who already paid THIS scheme in the selected month — any past month works, not just current. Correct any individual entry later as usual">
               💰 Set {rateMonth} rate for this kitty
             </button>
           </span>

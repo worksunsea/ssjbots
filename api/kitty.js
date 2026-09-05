@@ -1172,6 +1172,15 @@ export default async function handler(req, res) {
     if (!rateCheck.ok) return res.status(400).json({ ok: false, error: rateCheck.error });
     if (rateCheck.value == null) return res.status(400).json({ ok: false, error: "ratePerGram_required" });
 
+    // Refuse for schemes that already capture the true live rate at the
+    // exact moment of each payment (Swarn Suraksha online checkout, Mission
+    // 100 online/staff purchases) — a bulk overwrite there would corrupt
+    // correct per-transaction data, not fix a booking gap.
+    const { data: targetScheme } = await sb.from("kitty_schemes").select("perks").eq("tenant_id", TENANT_ID).eq("id", body.schemeId).maybeSingle();
+    if (targetScheme?.perks?.online_purchase || targetScheme?.perks?.mission100) {
+      return res.status(400).json({ ok: false, error: "bulk_monthly_rate_not_applicable_this_scheme_already_captures_live_rate_per_purchase" });
+    }
+
     const { data: enrollmentRows } = await sb.from("kitty_enrollments")
       .select("id").eq("tenant_id", TENANT_ID).eq("scheme_id", body.schemeId);
     const enrollmentIds = (enrollmentRows || []).map((e) => e.id);
