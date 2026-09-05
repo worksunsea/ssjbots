@@ -7,6 +7,8 @@
 
 import { useState, useEffect, useCallback } from "react";
 import * as XLSX from "xlsx";
+import Mission100Admin from "./Mission100Admin";
+import { SchemeMembersTab, GoldTallyTab } from "./KittySchemeTabs";
 
 const API = "/api/kitty";
 
@@ -65,7 +67,9 @@ export default function KittyAdminScreen({ sb, tenantId, crmSecret, staffName })
   return (
     <div style={{ padding: 20 }}>
       <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
-        {[["overview", "Overview"], ["schemes", "Schemes"], ["enroll", "Enroll New Member"], ["enrollments", "Enrollments"], ["legacy", "Add Legacy Member"], ["activity", "Activity Log"]].map(([k, l]) => (
+        {[["overview", "Overview"], ["schemes", "Schemes"], ["enroll", "Enroll New Member"], ["enrollments", "Enrollments"],
+          ["gullak", "Gullak"], ["swarn", "Swarn Suraksha"], ["mission100", "Mission 100"], ["goldtally", "Gold Tally"],
+          ["legacy", "Add Legacy Member"], ["activity", "Activity Log"]].map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)}
             style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid #d4af37",
               background: tab === k ? "#d4af37" : "transparent", color: tab === k ? "#fff" : "#d4af37", cursor: "pointer" }}>
@@ -77,6 +81,10 @@ export default function KittyAdminScreen({ sb, tenantId, crmSecret, staffName })
       {tab === "schemes" && <SchemesTab sb={sb} tenantId={tenantId} crmSecret={crmSecret} actor={actor} />}
       {tab === "enroll" && <EnrollNewMemberTab crmSecret={crmSecret} actor={actor} />}
       {tab === "enrollments" && <EnrollmentsTab crmSecret={crmSecret} actor={actor} onNewEnroll={() => setTab("enroll")} />}
+      {tab === "gullak" && <SchemeMembersTab crmSecret={crmSecret} schemeSlug="gullak-gold-savings" />}
+      {tab === "swarn" && <SchemeMembersTab crmSecret={crmSecret} schemeSlug="swarn-suraksha" />}
+      {tab === "mission100" && <Mission100Admin crmSecret={crmSecret} actor={actor} />}
+      {tab === "goldtally" && <GoldTallyTab crmSecret={crmSecret} />}
       {tab === "legacy" && <LegacyTab crmSecret={crmSecret} actor={actor} />}
       {tab === "activity" && <ActivityLogTab crmSecret={crmSecret} />}
     </div>

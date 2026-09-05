@@ -9,6 +9,7 @@ import { SolitaireJewelleryScreen, SolitaireAdminGenerator } from "./SolitaireJe
 import ClientPlatformAdminScreen from "./ClientPlatformAdminScreen";
 import BlogAdminScreen from "./BlogAdmin";
 import KittyAdminScreen from "./KittyAdmin";
+import Mission100Screen from "./Mission100";
 
 // ── SUPABASE (shared Sun Sea project — same as ssj-hr / fms-tracker) ──
 const SUPABASE_URL = "https://uppyxzellmuissdlxsmy.supabase.co";
@@ -11280,6 +11281,8 @@ export default function App() {
   if (isCorpGiftingPage) return <CorporateGiftingScreen />;
   const isSolitairePage = typeof window !== "undefined" && window.location.pathname === "/solitairejewellery";
   if (isSolitairePage) return <SolitaireJewelleryScreen />;
+  const isMission100Page = typeof window !== "undefined" && window.location.pathname === "/mission100";
+  if (isMission100Page) return <Mission100Screen />;
 
   const [user, setUser] = useState(() => {
     const u = loadUser();
