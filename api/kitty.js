@@ -114,6 +114,23 @@ function addMonths(dateStr, n) {
   return d.toISOString().slice(0, 10);
 }
 
+// Gullak members are commonly walk-ins with very ordinary names — staff
+// have had real name-confusion mixups between two members. Reuses the
+// existing member_number column (already used for lucky-draw slot picks)
+// but scoped per-scheme instead of per-batch (Gullak has no batches) via
+// the migration's separate partial unique index. Only assigns for
+// gullak_option schemes so Swarn Suraksha/Mission 100 (which already have
+// their own identity/grouping) aren't affected. Idempotent — a no-op if
+// this enrollment already has a number.
+async function assignMemberNumberIfNeeded(sb, scheme, enrollmentId, existingNumber) {
+  if (!scheme?.perks?.gullak_option || existingNumber != null) return existingNumber ?? null;
+  const { data: maxRow } = await sb.from("kitty_enrollments").select("member_number")
+    .eq("scheme_id", scheme.id).not("member_number", "is", null).order("member_number", { ascending: false }).limit(1);
+  const next = (maxRow?.[0]?.member_number || 0) + 1;
+  await sb.from("kitty_enrollments").update({ member_number: next }).eq("id", enrollmentId);
+  return next;
+}
+
 // Every mutating action logs who did what, when — a real footprint, not
 // just the mutation itself. sb param kept for call-site consistency with
 // the rest of this file even though the shared writer opens its own client.
@@ -329,6 +346,8 @@ export default async function handler(req, res) {
       monthlyAmountOverride = resolved.amount;
     }
 
+    await assignMemberNumberIfNeeded(sb, enrollment.scheme, enrollment.id, enrollment.member_number);
+
     const { error: updErr } = await sb.from("kitty_enrollments").update({
       status: "active", start_date: scheduleStart, batch_id: batchId, monthly_amount_override: monthlyAmountOverride,
       confirmed_by: body.confirmedBy || null, confirmed_at: new Date().toISOString(),
@@ -403,6 +422,8 @@ export default async function handler(req, res) {
       status: "active", start_date: scheduleStart, confirmed_by: body.confirmedBy || "staff", confirmed_at: new Date().toISOString(),
     }).select().single();
     if (enrollErr) return res.status(500).json({ ok: false, error: enrollErr.message });
+
+    enrollment.member_number = await assignMemberNumberIfNeeded(sb, scheme, enrollment.id, enrollment.member_number);
 
     // Attach to the scheme's WA funnel, same as an online enrolment would.
     if (scheme.funnel_id) {

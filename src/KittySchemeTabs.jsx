@@ -94,13 +94,14 @@ export function SchemeMembersTab({ crmSecret, schemeSlug, actor }) {
 
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
         <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
-          <th></th><th>Name</th><th>Phone</th><th>Status</th><th>Total g</th><th>🏬 With company</th><th>🤝 With client</th>
+          <th></th>{schemeSlug === "gullak-gold-savings" && <th>#</th>}<th>Name</th><th>Phone</th><th>Status</th><th>Total g</th><th>🏬 With company</th><th>🤝 With client</th>
           {schemeSlug === "swarn-suraksha" && <th>Auto-debit</th>}
         </tr></thead>
         <tbody>
           {rows.map(({ e, total, withCompany, withClient }) => (
             <tr key={e.id} style={{ borderBottom: "1px solid #eee", background: selected.includes(e.id) ? "#fffaf0" : "transparent" }}>
               <td><input type="checkbox" checked={selected.includes(e.id)} onChange={() => toggleSelect(e.id)} /></td>
+              {schemeSlug === "gullak-gold-savings" && <td style={{ fontWeight: 700 }}>{e.member_number ?? "—"}</td>}
               <td>{e.lead?.name || "—"}</td><td>{e.lead?.phone || "—"}</td><td>{e.status}</td>
               <td>{total.toFixed(3)}</td><td>{withCompany.toFixed(3)}</td><td>{withClient.toFixed(3)}</td>
               {schemeSlug === "swarn-suraksha" && (
@@ -108,7 +109,7 @@ export function SchemeMembersTab({ crmSecret, schemeSlug, actor }) {
               )}
             </tr>
           ))}
-          {!rows.length && <tr><td colSpan={schemeSlug === "swarn-suraksha" ? 8 : 7}>No live members yet.</td></tr>}
+          {!rows.length && <tr><td colSpan={schemeSlug === "swarn-suraksha" ? 8 : (schemeSlug === "gullak-gold-savings" ? 8 : 7)}>No live members yet.</td></tr>}
         </tbody>
       </table>
     </div>
