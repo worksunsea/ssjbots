@@ -51,6 +51,13 @@ function enrollmentGrams(e) {
   const paid = (e.installments || []).filter((i) => i.status === "paid" || i.status === "free");
   return paid.reduce((sum, i) => (i.rate_locked ? sum + Number(i.paid_amount ?? i.amount ?? 0) / Number(i.rate_locked) : sum), 0);
 }
+// Split of the above by physical possession — a settled installment defaults
+// to "with_company" (bought/logged, not yet handed over) until staff toggles
+// it to "with_client" (coin/jewellery actually collected).
+function enrollmentGramsByPossession(e, possession) {
+  const paid = (e.installments || []).filter((i) => (i.status === "paid" || i.status === "free") && (i.possession || "with_company") === possession);
+  return paid.reduce((sum, i) => (i.rate_locked ? sum + Number(i.paid_amount ?? i.amount ?? 0) / Number(i.rate_locked) : sum), 0);
+}
 
 export default function KittyAdminScreen({ sb, tenantId, crmSecret, staffName }) {
   const [tab, setTab] = useState("enrollments");
@@ -106,10 +113,12 @@ function OverviewTab({ crmSecret, actor }) {
       // status:"paid". The paid/unpaid/overdue framing below is meaningless
       // for these (unpaid would always show 0) — track separately instead.
       const key = e.scheme?.name || "—";
-      if (!gullakStats.has(key)) gullakStats.set(key, { members: 0, totalGrams: 0, stale: [] });
+      if (!gullakStats.has(key)) gullakStats.set(key, { members: 0, totalGrams: 0, companyGrams: 0, clientGrams: 0, stale: [] });
       const s = gullakStats.get(key);
       s.members++;
       s.totalGrams += enrollmentGrams(e);
+      s.companyGrams += enrollmentGramsByPossession(e, "with_company");
+      s.clientGrams += enrollmentGramsByPossession(e, "with_client");
       const paidDates = (e.installments || []).filter((i) => i.status === "paid" && i.paid_at).map((i) => i.paid_at.slice(0, 10));
       const lastPurchase = paidDates.sort().pop() || null;
       const daysSince = lastPurchase ? Math.floor((Date.now() - new Date(lastPurchase).getTime()) / 86400000) : null;
@@ -175,12 +184,13 @@ function OverviewTab({ crmSecret, actor }) {
           <h4>Gullak (Gram-Based) Holdings</h4>
           <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 28, fontSize: 12.5 }}>
             <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
-              <th>Scheme</th><th>Members</th><th>Total grams held</th>
+              <th>Scheme</th><th>Members</th><th>Total grams held</th><th>🏬 With company</th><th>🤝 With client</th>
             </tr></thead>
             <tbody>
               {[...gullakStats.entries()].map(([name, s]) => (
                 <tr key={name} style={{ borderBottom: "1px solid #eee" }}>
                   <td>{name}</td><td>{s.members}</td><td>{s.totalGrams.toFixed(3)} g</td>
+                  <td>{s.companyGrams.toFixed(3)} g</td><td>{s.clientGrams.toFixed(3)} g</td>
                 </tr>
               ))}
             </tbody>
@@ -585,9 +595,11 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
   for (const e of enrollments) {
     if (!isGramScheme(e) || !["active", "completed", "redeemed"].includes(e.status)) continue;
     const key = e.lead?.phone || "—";
-    if (!gullakByPhone.has(key)) gullakByPhone.set(key, { name: e.lead?.name, phone: key, grams: 0, count: 0 });
+    if (!gullakByPhone.has(key)) gullakByPhone.set(key, { name: e.lead?.name, phone: key, grams: 0, companyGrams: 0, clientGrams: 0, count: 0 });
     const rec = gullakByPhone.get(key);
     rec.grams += enrollmentGrams(e);
+    rec.companyGrams += enrollmentGramsByPossession(e, "with_company");
+    rec.clientGrams += enrollmentGramsByPossession(e, "with_client");
     rec.count++;
   }
   const gullakHoldings = [...gullakByPhone.values()].sort((a, b) => b.grams - a.grams);
@@ -734,6 +746,11 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
     const d = await call("mark-installment-paid", { method: "POST", crmSecret, body: { installmentId, paidAmount, paymentMethod, paymentRemarks, rateLocked, recordedBy: actor, actor } });
     if (d.ok) load(); else alert(d.error);
   };
+  const togglePossession = async (i) => {
+    const next = (i.possession || "with_company") === "with_company" ? "with_client" : "with_company";
+    const d = await call("toggle-installment-possession", { method: "POST", crmSecret, body: { installmentId: i.id, possession: next, actor } });
+    if (d.ok) load(); else alert(d.error);
+  };
   const editInstallment = async (i) => {
     const amount = prompt("Amount (₹)?", i.amount) ?? i.amount;
     const dueDate = prompt("Due date (YYYY-MM-DD)?", i.due_date) ?? i.due_date;
@@ -821,11 +838,12 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
         <details style={{ marginBottom: 16, border: "1px solid #f0d9a0", borderRadius: 8, padding: "8px 12px", background: "#fffaf0" }}>
           <summary style={{ cursor: "pointer", fontWeight: 600, color: "#92400e" }}>Gullak Gold Holdings by Client ({gullakHoldings.length})</summary>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, marginTop: 8 }}>
-            <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}><th>Name</th><th>Phone</th><th>Enrollments</th><th>Total grams</th></tr></thead>
+            <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}><th>Name</th><th>Phone</th><th>Enrollments</th><th>Total grams</th><th>🏬 With company</th><th>🤝 With client</th></tr></thead>
             <tbody>
               {gullakHoldings.map((h) => (
                 <tr key={h.phone} style={{ borderBottom: "1px solid #eee" }}>
                   <td>{h.name || "—"}</td><td>{h.phone}</td><td>{h.count}</td><td>{h.grams.toFixed(3)} g</td>
+                  <td>{h.companyGrams.toFixed(3)} g</td><td>{h.clientGrams.toFixed(3)} g</td>
                 </tr>
               ))}
             </tbody>
@@ -894,6 +912,9 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
               {isGramScheme(e) && (
                 <div style={{ marginTop: 4, fontSize: 13, fontWeight: 600, color: "#92400e" }}>
                   Gold held: {enrollmentGrams(e).toFixed(3)} g
+                  <span style={{ fontWeight: 400, marginLeft: 6, fontSize: 11.5 }}>
+                    (🏬 with company: {enrollmentGramsByPossession(e, "with_company").toFixed(3)}g · 🤝 with client: {enrollmentGramsByPossession(e, "with_client").toFixed(3)}g)
+                  </span>
                 </div>
               )}
               {!e.is_legacy && <button onClick={() => editEnrollment(e)} style={{ marginLeft: 8 }}>Edit Start Date</button>}
@@ -933,12 +954,21 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll }) {
                     const rateTxt = i.rate_locked ? ` — rate ₹${Number(i.rate_locked).toLocaleString("en-IN")}/g` : "";
                     const gramsTxt = g ? ` — ${g.toFixed(3)}g` : "";
                     const payTxt = i.payment_method ? ` — paid via ${i.payment_method}${i.payment_remarks ? ` (${i.payment_remarks})` : ""}` : "";
+                    const settled = i.status === "paid" || i.status === "free";
+                    const withClient = (i.possession || "with_company") === "with_client";
                     return (
                       <span key={i.month_number} title={`Due ${i.due_date}${rateTxt}${gramsTxt}${payTxt} — click to mark paid, shift+click to edit`}
                         onClick={(ev) => { if (ev.shiftKey) editInstallment(i); else if (i.status === "due") markPaid(i.id); else editInstallment(i); }}
                         style={{ padding: "2px 8px", borderRadius: 4, fontSize: 12, cursor: "pointer",
                           background: i.status === "paid" ? "#d1fae5" : i.status === "due" ? "#fef3c7" : "#e5e7eb" }}>
                         #{i.month_number} {i.status}{i.rate_locked ? ` · ₹${Number(i.rate_locked).toLocaleString("en-IN")}/g` : ""}{g ? ` · ${g.toFixed(3)}g` : ""}
+                        {settled && (
+                          <button onClick={(ev) => { ev.stopPropagation(); togglePossession(i); }}
+                            title={`Gold currently ${withClient ? "with client" : "with company"} — click to toggle`}
+                            style={{ marginLeft: 4, fontSize: 11, cursor: "pointer", border: "none", background: "transparent" }}>
+                            {withClient ? "🤝" : "🏬"}
+                          </button>
+                        )}
                       </span>
                     );
                   })}

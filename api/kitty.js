@@ -9,6 +9,9 @@
 //      one per calendar month from startDate) and sets status=active.
 // POST /api/kitty?action=cancel-enrollment     — staff. Body: { id }.
 // POST /api/kitty?action=mark-installment-paid — staff. Body: { installmentId, paidAmount, rateLocked?, recordedBy }
+// POST /api/kitty?action=toggle-installment-possession — staff. Body: { installmentId, possession: "with_company"|"with_client" }
+//      Tracks whether this month's gold is still with the store or already
+//      handed to the client — separate from paid/due status.
 // POST /api/kitty?action=record-draw           — staff. Body: { schemeId, drawMonth, winnerEnrollmentId?,
 //      goldCoinWinnerEnrollmentId?, nonWinnerBenefitAmount?, recordedBy }
 //      Waives all remaining unpaid installments for the winner (card rule:
@@ -572,6 +575,24 @@ export default async function handler(req, res) {
       await sb.from("kitty_enrollments").update({ status: "completed", claim_status: "unclaimed" }).eq("id", data.enrollment_id);
     }
     await logAudit(sb, { entityType: "installment", entityId: data.id, action: "paid", actor: body.actor || body.recordedBy, details: { paidAmount: data.paid_amount, rateLocked: data.rate_locked } });
+    return res.status(200).json({ ok: true, installment: data });
+  }
+
+  // POST ?action=toggle-installment-possession — staff. Body: { installmentId, possession }.
+  // Flips whether this settled installment's gold is still with the store
+  // ("with_company") or has been physically handed to the client
+  // ("with_client"). Independent of paid status — a month can be paid for
+  // years before the coin/jewellery is actually collected.
+  if (req.method === "POST" && action === "toggle-installment-possession") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    if (!body.installmentId) return res.status(400).json({ ok: false, error: "installmentId_required" });
+    if (!["with_company", "with_client"].includes(body.possession)) return res.status(400).json({ ok: false, error: "invalid_possession" });
+    const { data, error } = await sb.from("kitty_installments").update({ possession: body.possession })
+      .eq("tenant_id", TENANT_ID).eq("id", body.installmentId).select().single();
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    await logAudit(sb, { entityType: "installment", entityId: data.id, action: "possession-changed", actor: body.actor, details: { possession: data.possession } });
     return res.status(200).json({ ok: true, installment: data });
   }
 
