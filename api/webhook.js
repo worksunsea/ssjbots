@@ -87,6 +87,35 @@ export default async function handler(req, res) {
 
   if (!phone || !msg) return res.status(200).json({ ok: false, reason: "no_phone_or_msg" });
 
+  // ── Hiring candidate-interview relay (ssj-hr) — 2026-09-05 ──────────────────
+  // wa-service has one global webhook target (VERCEL_WEBHOOK_URL, this
+  // endpoint) — there's no per-client webhook config, so the "hr-ea" session
+  // (9811751932, ssj-hr's candidate-interview number, see HIRING.md in
+  // ssj-hr) lands here too. Its inbound traffic belongs to ssj-hr's own
+  // api/hiring-webhook.js (candidate confirm/decline/on-the-way handling),
+  // not this bot's FAQ/lead/owner-command logic below. Purely additive: if
+  // this isn't an hr-ea message, nothing below changes at all.
+  const isHrEaSession = waClient === "hr-ea" || normalizePhone(String(body.session_phone || "").replace(/[:@].*/, "")) === "9811751932";
+  if (isHrEaSession) {
+    const relayUrl = process.env.SSJHR_HIRING_WEBHOOK_URL || "";
+    const relaySecret = process.env.HIRING_WEBHOOK_SECRET || "";
+    if (relayUrl && relaySecret) {
+      try {
+        const sep = relayUrl.includes("?") ? "&" : "?";
+        await fetch(`${relayUrl}${sep}secret=${encodeURIComponent(relaySecret)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      } catch (err) {
+        console.error("webhook: hr-ea relay to ssj-hr failed", err);
+      }
+    } else {
+      console.warn("webhook: hr-ea inbound received but SSJHR_HIRING_WEBHOOK_URL/HIRING_WEBHOOK_SECRET not configured — dropped");
+    }
+    return res.status(200).json({ ok: true, handled: "relayed_hr_ea" });
+  }
+
   // ── Owner WhatsApp commands: task assignment, on-demand report, resource search ──
   // Only the 3 trusted SA numbers (OWNER_PHONES) reach this branch, AND only
   // when the message arrived on the 8860866000 (BOT_NUMBERS) session — every

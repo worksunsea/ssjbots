@@ -19,6 +19,7 @@ Two completely separate send systems:
 | **9899226225** | Birthday/anniversary + other general client communications (policy) | **owner decision 2026-08-25: leave birthday/anniversary/after-marriage funnels on 8860866000 for now — do not move to 9899226225.** Revisit only if explicitly asked again. |
 | **9953229430** | Admin bot: internal documentation + owner bot replies only, never client-facing | not currently in `BOT_NUMBERS` |
 | **9205065375** | **Kitty Schemes — ALL communication**: payment reminders, unclaimed-benefit nudges, batch-rollover nudges, redemption codes/confirmations, any future kitty send. New connection (owner instruction, 2026-08-25). | `KITTY_WA_CLIENT_ID` — wired into every `sendWhatsApp()` call in `api/kitty.js` and `api/kitty-cron.js`. **Falls back to Reception (8860866000) until this number is paired in wa-service and `KITTY_WA_CLIENT_ID` env var is set — pair it and set the env var, or kitty messages keep going out from the chatbot number.** |
+| **9811751932** | **ssj-hr Hiring — candidate-interview reminders only** (a separate app/repo, `C:\projects\ssj-hr`, NOT this repo). Confirmed paired, `client_id`="hr-ea". Owns no funnel/lead logic here — see §9 for the inbound relay that keeps its traffic out of this bot's FAQ/lead/owner-command flow. | client_id `hr-ea` — ssj-hr's own `HIRING_WA_CLIENT_ID`, sent via ssj-hr's `api/hiring-send-interview-reminder.js` calling THIS repo's `api/wa-proxy.js` (ssj-hr has no wa-service credentials of its own). |
 
 **2026-08-25 fix:** `api/staff-otp-send.js`, `api/send-profile-link.js`, and `api/staff-profile-reminders.js` were hardcoded to `WA_SESSION_CLIENT_ID` (the client-facing Reception number) instead of `TASKS_WA_CLIENT_ID` — confirmed by the owner receiving a staff OTP from 8860866000 instead of 8448271248. All three switched to `TASKS_WA_CLIENT_ID`, matching every other internal staff-facing sender in the table below.
 
@@ -47,6 +48,7 @@ Two completely separate send systems:
 | Generic CRM send (`/api/send`, `/api/send-media`) | `api/send.js`, `api/send-media.js` | Baileys | caller-supplied or default |
 | Missed-call / job-enquiry auto-reply | `api/webhook.js` | Baileys | inbound session |
 | Staff OTP / profile link | `api/staff-otp-send.js`, `api/send-profile-link.js` | Baileys | `TASKS_WA_CLIENT_ID` |
+| Hiring candidate-interview inbound (relayed, not answered here) | `api/webhook.js` (relay branch, before Gate 1) | Baileys | `hr-ea` session only — forwarded to ssj-hr's `api/hiring-webhook.js`, see §9 |
 
 No WA sender found for corporate-gifting or calculator-estimate flows in this repo — confirm whether those are handled elsewhere or genuinely don't send WA.
 
@@ -153,6 +155,8 @@ No DB override exists for `BOT_NUMBERS` — hardcoded intentionally after incide
 
 **Adding 9953229430 as the admin bot's reply number means adding it to `BOT_NUMBERS` — a real behavior change, that number starts auto-replying to inbound messages. Do not do this without confirming wa-service has a paired session for it first.**
 
+**`hr-ea` (9811751932) bypasses Gate 1 entirely, on purpose** — it's relayed to ssj-hr before Gate 1 ever runs (see §9), not evaluated against `BOT_NUMBERS` at all. It is not, and should not become, a `BOT_NUMBERS` entry — this bot never replies to it; ssj-hr's own `api/hiring-webhook.js` does.
+
 ## 8. Known incidents that shaped these rules
 
 1. **Duplicate birthday send** (Meena Mehta, 2026-07-11, 2m24s apart, two message IDs) — race condition, fixed by atomic claim-before-send.
@@ -168,6 +172,21 @@ No DB override exists for `BOT_NUMBERS` — hardcoded intentionally after incide
 11. **WhatsApp link-preview caching stale content** — digest-ping's reporting link now has a cache-busting query param since WA kept showing the first-ever scraped preview for that URL.
 12. **`bot_paused` vs `status:"handoff"` confusion** — marking a lead "handoff" in the CRM UI is only a label; it does NOT stop the bot on its own. `bot_paused` is the real gate.
 
+## 9. Hiring candidate-interview relay (ssj-hr) — added 2026-09-05
+
+wa-service supports only **one global inbound webhook target** (`VERCEL_WEBHOOK_URL` in `wa-service/.env`, currently `https://ssjbots.vercel.app/api/webhook`) — there's no per-client/per-session webhook config. This means every paired session's inbound traffic, including `hr-ea` (9811751932, ssj-hr's candidate-interview number — a separate app/repo, `C:\projects\ssj-hr`, not this one), lands on THIS repo's `api/webhook.js`.
+
+**The problem this caused**: before this fix, `hr-ea`'s inbound messages hit Gate 1 (§7), failed the `BOT_NUMBERS` check (`hr-ea` was never meant to be a bot-reply number here), and were silently dropped (`{ok:true, skipped:"non_bot_session"}`) — a candidate could reply to an interview reminder and nothing would ever process it, anywhere.
+
+**The fix**: `api/webhook.js` now has an early, additive relay branch — placed immediately after the `!phone || !msg` check, **before** the missed-call/owner-command/Gate-1/lead logic that follows it. When the inbound message's `waClient` is `"hr-ea"` (or, as a fallback, `session_phone` normalizes to `9811751932`), the raw webhook payload is forwarded as-is to ssj-hr's own inbound handler and this function returns immediately — `hr-ea` traffic never reaches Gate 1, the lead/funnel logic, or the AI FAQ responder in this repo at all.
+
+- **Target**: `${SSJHR_HIRING_WEBHOOK_URL}?secret=${HIRING_WEBHOOK_SECRET}` — both new env vars on **this repo's** Vercel project.
+  - `SSJHR_HIRING_WEBHOOK_URL` = `https://hr.gemtre.in/api/hiring-webhook`
+  - `HIRING_WEBHOOK_SECRET` = same secret value already set on ssj-hr's `ssjhr` Vercel project (duplicated across both projects' env vars — same pattern as `WA_SERVICE_SECRET` living in both `wa-service/.env` and this repo's Vercel env).
+- **Why a relay instead of a wa-service change**: fully reversible from this repo alone, doesn't touch the shared `wa-service` NAS process that every other number depends on, and needed no deploy/restart of that service.
+- **Failure mode if the env vars are ever unset**: the branch still short-circuits (returns `{ok:true, handled:"relayed_hr_ea"}` without actually forwarding) and logs a warning — `hr-ea` traffic is dropped silently again in that case, same as before this fix, rather than throwing or falling through into this bot's own logic. Verify both env vars are set on this repo's Vercel project if ssj-hr reports replies aren't arriving.
+- **Not verified with a real live inbound message this session** — verified structurally only (`node --check`, `npx vitest run` — 51 tests, unrelated to this file but confirms nothing else broke). Send a real WhatsApp reply to `hr-ea` (9811751932) after both env vars are set and confirm it shows up as a new row in ssj-hr's `hiring_wa_messages` table.
+
 ## Maintenance
 
 Update this file whenever: a number's purpose changes, a new WA-send code path is added, an approval/gating rule changes, or a new incident forces a fix. Treat any point-in-time counts in this file as snapshots, not live state — re-verify before quoting them.
@@ -177,4 +196,5 @@ Update this file whenever: a number's purpose changes, a new WA-send code path i
 - `KITTY_WA_CLIENT_ID` (9205065375) — code is wired (2026-08-25), but the number itself isn't confirmed paired in wa-service yet, and the `KITTY_WA_CLIENT_ID` Vercel env var isn't confirmed set. Until both are done, kitty messages keep going out from Reception (8860866000) via the fallback. **Verify both directly, then confirm a real kitty message arrives from 9205065375.**
 - 8588867820 as backup for 8448271248 — no failover logic exists in code.
 - 9953229430 as admin-bot reply number — would require adding it to `BOT_NUMBERS`, a real behavior change (starts auto-replying). Confirm a wa-service session is paired first.
+- `hr-ea` relay (§9) — `SSJHR_HIRING_WEBHOOK_URL`/`HIRING_WEBHOOK_SECRET` env vars not confirmed set on THIS repo's Vercel project as of this writing (they were set on ssj-hr's project directly by the coordinator; whether they were also added here needs a direct check). Not verified with a real inbound message either. If ssj-hr reports candidate replies aren't arriving, check these two env vars first.
 - Kitty sends still use Baileys while other lead-facing sends use WbizTool — inconsistent but not confirmed broken; left as-is.
