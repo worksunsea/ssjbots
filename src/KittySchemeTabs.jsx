@@ -65,6 +65,13 @@ export function SchemeMembersTab({ crmSecret, schemeSlug, actor }) {
     if (d.ok) { setSelected([]); load(); } else alert(d.error);
   };
 
+  const deliverCoins = async (row) => {
+    const grams = prompt(`How many grams to deliver to ${row.e.lead?.name || "this member"}? (${row.withCompany.toFixed(3)}g with company)`, row.withCompany.toFixed(3));
+    if (!grams) return;
+    const d = await call("deliver-coins", { method: "POST", crmSecret, body: { enrollmentId: row.e.id, grams: Number(grams), actor, recordedBy: actor } });
+    if (d.ok) { alert(`Delivered ${d.deliveredGrams}g.`); load(); } else alert(d.error);
+  };
+
   if (enrollments === null) return <div style={{ padding: 20 }}>Loading…</div>;
   if (!scheme) return <div style={{ padding: 20 }}>Scheme not found — has the seed migration run?</div>;
 
@@ -96,20 +103,25 @@ export function SchemeMembersTab({ crmSecret, schemeSlug, actor }) {
         <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
           <th></th>{schemeSlug === "gullak-gold-savings" && <th>#</th>}<th>Name</th><th>Phone</th><th>Status</th><th>Total g</th><th>🏬 With company</th><th>🤝 With client</th>
           {schemeSlug === "swarn-suraksha" && <th>Auto-debit</th>}
+          <th></th>
         </tr></thead>
         <tbody>
-          {rows.map(({ e, total, withCompany, withClient }) => (
-            <tr key={e.id} style={{ borderBottom: "1px solid #eee", background: selected.includes(e.id) ? "#fffaf0" : "transparent" }}>
-              <td><input type="checkbox" checked={selected.includes(e.id)} onChange={() => toggleSelect(e.id)} /></td>
-              {schemeSlug === "gullak-gold-savings" && <td style={{ fontWeight: 700 }}>{e.member_number ?? "—"}</td>}
-              <td>{e.lead?.name || "—"}</td><td>{e.lead?.phone || "—"}</td><td>{e.status}</td>
-              <td>{total.toFixed(3)}</td><td>{withCompany.toFixed(3)}</td><td>{withClient.toFixed(3)}</td>
-              {schemeSlug === "swarn-suraksha" && (
-                <td>{e.razorpay_subscription_id ? `${e.swarn_frequency || "monthly"} — ₹${e.monthly_amount_override || "—"}` : "—"}{e.frozen_at ? " (frozen)" : ""}</td>
-              )}
-            </tr>
-          ))}
-          {!rows.length && <tr><td colSpan={schemeSlug === "swarn-suraksha" ? 8 : (schemeSlug === "gullak-gold-savings" ? 8 : 7)}>No live members yet.</td></tr>}
+          {rows.map((row) => {
+            const { e, total, withCompany, withClient } = row;
+            return (
+              <tr key={e.id} style={{ borderBottom: "1px solid #eee", background: selected.includes(e.id) ? "#fffaf0" : "transparent" }}>
+                <td><input type="checkbox" checked={selected.includes(e.id)} onChange={() => toggleSelect(e.id)} /></td>
+                {schemeSlug === "gullak-gold-savings" && <td style={{ fontWeight: 700 }}>{e.member_number ?? "—"}</td>}
+                <td>{e.lead?.name || "—"}</td><td>{e.lead?.phone || "—"}</td><td>{e.status}</td>
+                <td>{total.toFixed(3)}</td><td>{withCompany.toFixed(3)}</td><td>{withClient.toFixed(3)}</td>
+                {schemeSlug === "swarn-suraksha" && (
+                  <td>{e.razorpay_subscription_id ? `${e.swarn_frequency || "monthly"} — ₹${e.monthly_amount_override || "—"}` : "—"}{e.frozen_at ? " (frozen)" : ""}</td>
+                )}
+                <td>{withCompany > 0.0005 && <button onClick={() => deliverCoins(row)}>Deliver coins…</button>}</td>
+              </tr>
+            );
+          })}
+          {!rows.length && <tr><td colSpan={schemeSlug === "swarn-suraksha" ? 9 : (schemeSlug === "gullak-gold-savings" ? 9 : 8)}>No live members yet.</td></tr>}
         </tbody>
       </table>
     </div>

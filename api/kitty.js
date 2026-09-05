@@ -12,6 +12,10 @@
 // POST /api/kitty?action=toggle-installment-possession — staff. Body: { installmentId, possession: "with_company"|"with_client" }
 //      Tracks whether this month's gold is still with the store or already
 //      handed to the client — separate from paid/due status.
+// POST /api/kitty?action=deliver-coins — staff. Body: { enrollmentId, grams, actor, recordedBy }
+//      Delivers some or all of a member's with_company gold — FIFO across
+//      installments, splitting one if the requested grams lands partway
+//      through it (e.g. deliver 5g out of a single 10g purchase).
 // POST /api/kitty?action=record-draw           — staff. Body: { schemeId, drawMonth, winnerEnrollmentId?,
 //      goldCoinWinnerEnrollmentId?, nonWinnerBenefitAmount?, recordedBy }
 //      Waives all remaining unpaid installments for the winner (card rule:
@@ -680,6 +684,75 @@ export default async function handler(req, res) {
     if (error) return res.status(500).json({ ok: false, error: error.message });
     await logAudit(sb, { entityType: "installment", entityId: data.id, action: "possession-changed", actor: body.actor, details: { possession: data.possession } });
     return res.status(200).json({ ok: true, installment: data });
+  }
+
+  // POST ?action=deliver-coins — staff. Body: { enrollmentId, grams, actor, recordedBy }.
+  // Physical delivery of some or all of a member's with_company gold —
+  // e.g. they hold 10g, come in and take 5g today, leave the rest for
+  // later. Walks that enrollment's with_company installments oldest-first
+  // (FIFO) and flips each to with_client; if the requested grams lands
+  // partway through a row (e.g. one 10g single purchase, deliver 5g), that
+  // row is SPLIT into a kept with_company remainder and a new with_client
+  // row for the delivered portion, at the same locked rate, so
+  // toggle-installment-possession's existing whole-row model still works
+  // for everything downstream (gramsFor, the Gullak/Gold Tally tabs, etc).
+  if (req.method === "POST" && action === "deliver-coins") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    const requestedGrams = Number(body.grams);
+    if (!body.enrollmentId || !requestedGrams || requestedGrams <= 0) return res.status(400).json({ ok: false, error: "enrollmentId_grams_required" });
+
+    const { data: rows, error: rowsErr } = await sb.from("kitty_installments")
+      .select("*").eq("tenant_id", TENANT_ID).eq("enrollment_id", body.enrollmentId)
+      .in("status", ["paid", "free"]).eq("possession", "with_company").not("rate_locked", "is", null)
+      .order("paid_at", { ascending: true });
+    if (rowsErr) return res.status(500).json({ ok: false, error: rowsErr.message });
+
+    // Validate availability BEFORE touching anything, so a shortfall never
+    // leaves a partial delivery behind.
+    const totalAvailable = (rows || []).reduce((sum, row) => sum + Number(row.paid_amount ?? row.amount ?? 0) / Number(row.rate_locked), 0);
+    if (requestedGrams > totalAvailable + 0.0005) {
+      return res.status(400).json({ ok: false, error: `Only ${totalAvailable.toFixed(3)}g is with the company for this member — can't deliver ${requestedGrams}g.` });
+    }
+
+    const { data: maxMonthRow } = await sb.from("kitty_installments").select("month_number")
+      .eq("enrollment_id", body.enrollmentId).order("month_number", { ascending: false }).limit(1);
+    let nextMonth = (maxMonthRow?.[0]?.month_number || 0) + 1;
+
+    let remaining = Math.round(requestedGrams * 1000) / 1000;
+    let delivered = 0;
+    const touchedIds = [];
+    for (const row of rows || []) {
+      if (remaining <= 0) break;
+      const rowGrams = Number(row.paid_amount ?? row.amount ?? 0) / Number(row.rate_locked);
+      if (rowGrams <= remaining + 0.0005) {
+        // Whole row delivered.
+        await sb.from("kitty_installments").update({ possession: "with_client" }).eq("id", row.id);
+        touchedIds.push(row.id);
+        delivered += rowGrams;
+        remaining -= rowGrams;
+      } else {
+        // Split: deliver `remaining` grams out of this row, keep the rest with the company.
+        const deliverAmount = Math.round(remaining * Number(row.rate_locked) * 100) / 100;
+        const keepAmount = Math.round((Number(row.paid_amount ?? row.amount ?? 0) - deliverAmount) * 100) / 100;
+        await sb.from("kitty_installments").update({ amount: keepAmount, paid_amount: keepAmount }).eq("id", row.id);
+        const { data: split, error: splitErr } = await sb.from("kitty_installments").insert({
+          tenant_id: TENANT_ID, enrollment_id: body.enrollmentId, month_number: nextMonth++,
+          due_date: row.due_date, amount: deliverAmount, status: row.status, paid_amount: deliverAmount,
+          paid_at: row.paid_at, rate_locked: row.rate_locked, recorded_by: body.recordedBy || body.actor || null,
+          payment_method: row.payment_method, payment_remarks: `Split from installment ${row.id} for partial delivery`,
+          possession: "with_client",
+        }).select().single();
+        if (splitErr) return res.status(500).json({ ok: false, error: splitErr.message });
+        touchedIds.push(row.id, split.id);
+        delivered += remaining;
+        remaining = 0;
+      }
+    }
+
+    await logAudit(sb, { entityType: "enrollment", entityId: body.enrollmentId, action: "deliver_coins", actor: body.actor || body.recordedBy, details: { requestedGrams, deliveredGrams: Number(delivered.toFixed(3)), installmentsTouched: touchedIds } });
+    return res.status(200).json({ ok: true, deliveredGrams: Number(delivered.toFixed(3)) });
   }
 
   // POST ?action=send-installment-reminder — staff. Body: { installmentId }.

@@ -73,6 +73,14 @@ export default function Mission100Admin({ crmSecret, actor }) {
     if (d.ok) { alert("+1g bonus coin awarded"); load(); } else alert(d.error);
   };
 
+  const deliverCoins = async (member) => {
+    const withCompany = gramsFor(member.enrollment?.installments, "with_company");
+    const grams = prompt(`How many grams to deliver to ${member.enrollment?.lead?.name || "this member"}? (${withCompany.toFixed(3)}g with company)`, withCompany.toFixed(3));
+    if (!grams) return;
+    const d = await call("deliver-coins", { method: "POST", crmSecret, body: { enrollmentId: member.enrollment.id, grams: Number(grams), actor, recordedBy: actor } });
+    if (d.ok) { alert(`Delivered ${d.deliveredGrams}g.`); load(); } else alert(d.error);
+  };
+
   if (groups === null) return <div style={{ padding: 20 }}>Loading…</div>;
 
   return (
@@ -162,7 +170,8 @@ export default function Mission100Admin({ crmSecret, actor }) {
                           <td>{m.finished_at ? "✅" : "—"}</td>
                           <td>
                             <button onClick={() => awardBonus(m)} style={{ marginRight: 4 }}>+1g bonus</button>
-                            <button onClick={() => declareWinner(g.id, m)}>Declare checkpoint</button>
+                            <button onClick={() => declareWinner(g.id, m)} style={{ marginRight: 4 }}>Declare checkpoint</button>
+                            <button onClick={() => deliverCoins(m)}>Deliver coins…</button>
                           </td>
                         </tr>
                       );
