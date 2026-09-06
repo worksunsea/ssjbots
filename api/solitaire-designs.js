@@ -208,21 +208,21 @@ export default async function handler(req, res) {
     let leadId = existing?.id;
     if (existing) {
       await sb.from("bullion_leads").update({
-        name, email: email || undefined, source: "solitaire_jewellery", funnel_id: "solitaire_jewellery",
+        name, email: email || undefined, source: "solitaire_jewellery", funnel_id: "solitaire",
         updated_at: new Date().toISOString(),
       }).eq("id", existing.id);
     } else {
       const { data: newLead, error: insErr } = await sb.from("bullion_leads").insert({
         tenant_id: TENANT_ID, phone, name, email,
-        status: "new", source: "solitaire_jewellery", funnel_id: "solitaire_jewellery",
+        status: "new", source: "solitaire_jewellery", funnel_id: "solitaire",
       }).select("id").single();
       if (insErr) return res.status(500).json({ ok: false, error: insErr.message });
       leadId = newLead.id;
     }
 
-    const { data: funnel } = await sb.from("funnels").select("*").eq("id", "solitaire_jewellery").maybeSingle();
+    const { data: funnel } = await sb.from("funnels").select("*").eq("id", "solitaire").maybeSingle();
     if (funnel?.active) {
-      await enrollLeadInDrip({ lead: { id: leadId, name, phone, funnel_id: "solitaire_jewellery" }, funnel });
+      await enrollLeadInDrip({ lead: { id: leadId, name, phone, funnel_id: "solitaire" }, funnel });
     }
     await attributeReferral({ refCode: body.ref_code, leadId, orderReference: "solitaire jewellery enquiry" }).catch(() => {});
     return res.status(200).json({ ok: true, leadId });
