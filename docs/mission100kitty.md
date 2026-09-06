@@ -9,7 +9,7 @@ Sun Sea Jewellers' newest gold-savings scheme turns saving into a game — buy 1
 ## How It Works
 
 1. **Form your group** — 10 or 20 friends. Don't have a full crew? Tell us and we'll group you with fellow members chasing the same goal.
-2. **Buy MMTC gold coins toward your own 100g goal**, at your own pace — 1g coin, or go bigger with 2g / 5g / 10g coins. Same gold rate either way, no premium for bigger coins. Always whole-gram coins, never a fractional amount.
+2. **Buy 1g MMTC 24kt gold coins toward your own 100g goal**, at your own pace — 1 unit = 1 coin = 1g, priced at that day's live rate the moment you pay. Buy as many units as you like in one go; there's no bigger single-coin denomination.
 3. **Buy in-store or online** — visit us and pay any way you like, or buy anytime from your phone (quick one-time verification, then UPI/card checkout).
 4. **Minimum: 1 coin (1g) every month** to stay active in the race — a friendly reminder if you fall behind, never a penalty.
 5. **Race checkpoints at 25g, 50g, 75g and 100g** — whoever in your group reaches each mark FIRST wins a bonus. Four mini-races, not one long wait.
@@ -35,7 +35,7 @@ Sun Sea Jewellers' newest gold-savings scheme turns saving into a game — buy 1
 
 - **Group size:** 10 or 20 members
 - **Minimum purchase:** 1 coin (1g) per calendar month — a friendly reminder if you fall behind, never a penalty
-- **Coin sizes:** 1g, 2g, 5g, or 10g coins — same price per gram, buy however suits you, always whole grams
+- **Coin denomination:** 1g MMTC 24kt coins only — 1 unit = 1 coin = 1g, priced at that day's live rate the moment you pay; buy any quantity you like
 - **How to buy:** in-store (any payment method) or online (quick phone verification, then UPI/card)
 - **No lock-in on dropouts:** miss a few months, come back anytime — it never affects your own progress or anyone else's prize
 - **Coin purity:** MMTC 999.9 pure gold, in partnership with Swiss PAMP Suisse
@@ -56,7 +56,7 @@ No penalty. You'll get a friendly reminder — resume whenever you're ready. It 
 Doesn't touch you at all. Every prize — checkpoints, the trip, your completion bonus — is earned individually. Their pace is their business.
 
 **Can I buy more than 1 coin a month?**
-Yes — buy as often and as much as you like. Choose 1g, 2g, 5g or 10g coins any time, always priced per gram, no denomination premium.
+Yes — buy as many 1g coins as you like, any time. Every unit is priced individually at that day's live rate the moment you pay — no bigger coin denomination, no premium either way.
 
 **Can I buy online, or do I have to visit the store?**
 Both. Visit us and pay any way you like, or buy anytime from your phone — a quick one-time verification, then UPI or card checkout.
