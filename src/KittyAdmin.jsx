@@ -631,6 +631,30 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
   }
   const gullakHoldings = [...gullakByPhone.values()].sort((a, b) => b.grams - a.grams);
 
+  // Monthly rates already punched for the currently-selected scheme, one
+  // place, before the client list — grouped by due_date's month (same
+  // matching set-monthly-rate itself uses), not paid_at, so backfilled/late
+  // entries still show under the right month. "NOT SET" in a month means
+  // those payments never got a rate applied and their gold weight is wrong
+  // until you click "Set/fix" for that month.
+  const monthlyRateSummary = (() => {
+    if (!schemeFilter) return [];
+    const byMonth = new Map();
+    for (const e of enrollments) {
+      if (e.scheme_id !== schemeFilter) continue;
+      for (const i of e.installments || []) {
+        if (i.status !== "paid" && i.status !== "free") continue;
+        if (!i.due_date) continue;
+        const mk = i.due_date.slice(0, 7);
+        if (!byMonth.has(mk)) byMonth.set(mk, new Map());
+        const rates = byMonth.get(mk);
+        const key = i.rate_locked ? Number(i.rate_locked).toLocaleString("en-IN") : "NOT SET";
+        rates.set(key, (rates.get(key) || 0) + 1);
+      }
+    }
+    return [...byMonth.entries()].sort((a, b) => b[0].localeCompare(a[0]));
+  })();
+
   const searchNorm = search.trim().toLowerCase();
   const searchDigits = search.replace(/\D/g, "");
   const filteredEnrollments = enrollments.filter((e) => {
@@ -975,6 +999,38 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
           </span>
         )}
       </div>
+
+      {/* Monthly rates already punched, one place, before the client list —
+          so staff can see which months are done, which are still "NOT SET"
+          (gold weight wrong for those payments until fixed), and jump
+          straight to fixing a specific month instead of hunting per member. */}
+      {monthlyRateSummary.length > 0 && (
+        <details style={{ marginBottom: 16 }} open>
+          <summary style={{ cursor: "pointer", fontWeight: 600 }}>Monthly rates already punched for this kitty</summary>
+          <table style={{ marginTop: 8, fontSize: 12.5, borderCollapse: "collapse" }}>
+            <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
+              <th style={{ paddingRight: 16 }}>Month</th><th style={{ paddingRight: 16 }}>Rate(s) punched</th><th></th>
+            </tr></thead>
+            <tbody>
+              {monthlyRateSummary.map(([mk, rates]) => (
+                <tr key={mk} style={{ borderBottom: "1px solid #f0f0f0" }}>
+                  <td style={{ paddingRight: 16, paddingTop: 4 }}>{mk}</td>
+                  <td style={{ paddingRight: 16, paddingTop: 4 }}>
+                    {[...rates.entries()].map(([rate, count]) => (
+                      <span key={rate} style={{ marginRight: 10, color: rate === "NOT SET" ? "#b91c1c" : "inherit" }}>
+                        {rate === "NOT SET" ? "⚠ not set" : `₹${rate}/g`} × {count}
+                      </span>
+                    ))}
+                  </td>
+                  <td style={{ paddingTop: 4 }}>
+                    <button style={{ fontSize: 11.5 }} onClick={() => { setRateMonth(mk); setMonthlyRate(schemeFilter, mk); }}>Set/fix this month</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
+      )}
 
       {visibleBatches.length > 0 && (
         <div style={{ marginBottom: 20 }}>
