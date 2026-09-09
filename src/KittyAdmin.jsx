@@ -826,26 +826,20 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
     const paymentRemarks = prompt("Remarks (UPI ref no. / transfer ref no. / cash given to whom)?", i.payment_remarks || "") ?? i.payment_remarks;
 
     // Gold weight is stored as rate_locked (₹/g) — paid_amount / rate_locked
-    // gives the grams. Wrong weight at entry couldn't be fixed before this,
-    // since neither grams nor rate_locked were editable here at all. Sent as
-    // gramsPurchased (not a pre-computed rateLocked) so the server derives
-    // rate_locked the same way add-installment does — naturally fractional,
-    // not subject to the whole-number typed-rate validation.
-    const currentGrams = i.rate_locked ? Number(amount) / Number(i.rate_locked) : null;
-    const gramsRaw = prompt(
-      `Grams purchased (for gold-weight calc)? Leave blank to keep unchanged.${currentGrams ? ` Currently ~${currentGrams.toFixed(3)}g.` : ""}`,
-      ""
-    );
-    let gramsPurchased;
-    if (gramsRaw) {
-      const grams = Math.round(Number(gramsRaw) * 1000) / 1000;
-      if (!validateGramsInput(grams)) alert("Invalid grams value — must be max 3 digits before the decimal, up to 3 decimals (0.001-999.999g). Gold weight left unchanged.");
-      else gramsPurchased = grams;
+    // gives the grams. Edit this person's rate directly (not grams) — same
+    // 5-digit-whole-number prompt/validation as the monthly bulk-set, so a
+    // single person's rate can be corrected without having to back-compute
+    // grams by hand.
+    if (confirm(`Change this payment's locked rate?${i.rate_locked ? ` Currently ₹${Number(i.rate_locked).toLocaleString("en-IN")}/g.` : " Currently not set."}`)) {
+      const rateLocked = promptRate("New locked gold rate (₹/g)? Leave blank to keep unchanged.");
+      if (rateLocked != null) {
+        const d = await call("update-installment", { method: "POST", crmSecret, body: { id: i.id, amount, dueDate, status, paymentMethod, paymentRemarks, rateLocked, actor } });
+        if (d.ok) load(); else alert(d.error);
+        return;
+      }
     }
 
-    const body = { id: i.id, amount, dueDate, status, paymentMethod, paymentRemarks, actor };
-    if (gramsPurchased != null) body.gramsPurchased = gramsPurchased;
-    const d = await call("update-installment", { method: "POST", crmSecret, body });
+    const d = await call("update-installment", { method: "POST", crmSecret, body: { id: i.id, amount, dueDate, status, paymentMethod, paymentRemarks, actor } });
     if (d.ok) load(); else alert(d.error);
   };
   const editEnrollment = async (e) => {
