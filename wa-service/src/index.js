@@ -30,6 +30,24 @@ const SERVICE_SECRET = process.env.SERVICE_SECRET || "";
 const VERCEL_WEBHOOK_URL = process.env.VERCEL_WEBHOOK_URL || "";
 const VERCEL_WEBHOOK_SECRET = process.env.VERCEL_WEBHOOK_SECRET || "";
 
+// Baileys throws some errors deep inside its own internals (e.g. sending an
+// ack for a backlog "offline node" after the socket already closed) that
+// never pass through any of our own try/catch blocks. Without a process-level
+// handler, ONE such rejection crashes this whole Node process — which kills
+// EVERY session at once (all 7 clients share this one process), even though
+// only one client's connection actually had the problem. Real incident,
+// 2026-09-09: repeated "Connection Closed" / "Bad MAC" decrypt errors from a
+// single stale Signal session took down all 7 WA sessions in a crash loop.
+// Log-and-continue here so a single client's transient socket/decrypt error
+// can't cascade into a full-service outage; connectClient()'s own reconnect
+// timer (baileys.js) already handles that one client recovering on its own.
+process.on("unhandledRejection", (err) => {
+  console.error("[wa-service] unhandledRejection (ignored, process kept alive):", err);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[wa-service] uncaughtException (ignored, process kept alive):", err);
+});
+
 const app = Fastify({ logger: { level: "info" } });
 
 // Allow CRM (ssjbots.vercel.app) to iframe/fetch us

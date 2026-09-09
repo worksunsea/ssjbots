@@ -4156,6 +4156,7 @@ function QrPairingModal({ clientId, onClose }) {
 // ──────────────────────────────────────────────────────────
 function ConnectionsScreen() {
   const [clients, setClients] = useState([]);
+  const [fetchError, setFetchError] = useState(false);
   const [funnels, setFunnels] = useState([]);
   const [loading, setLoading] = useState(false);
   const [pairing, setPairing] = useState(null); // client_id being paired, null | string
@@ -4170,9 +4171,19 @@ function ConnectionsScreen() {
     try {
       const r = await fetch(`${WA_SERVICE_URL}/clients`);
       const data = await r.json();
-      setClients(data?.clients || []);
+      // A response landed but wasn't the expected shape — treat as a real
+      // failure too, not "zero sessions".
+      if (!data || !Array.isArray(data.clients)) throw new Error("bad_response");
+      setClients(data.clients);
+      setFetchError(false);
     } catch {
-      setClients([]);
+      // Don't wipe the list on a failed fetch (timeout/unreachable wa-service
+      // — this NAS-hosted service is known to be flaky under load, see
+      // SSJ_STABLE_FEATURES.md). A blank "No sessions yet, pair new" screen
+      // after a failed fetch looked identical to "everything's gone" and
+      // pushed staff to re-pair sessions that were actually still fine —
+      // keep showing the last known list and flag that the fetch itself failed.
+      setFetchError(true);
     }
     const { data: fdata } = await sb.from("funnels").select("id,name,wbiztool_client,active").eq("tenant_id", getTenantId());
     setFunnels(fdata || []);
@@ -4301,6 +4312,12 @@ function ConnectionsScreen() {
         </div>
       </div>
 
+      {fetchError && (
+        <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 8, padding: "10px 14px", marginBottom: 12, fontSize: 13, color: "#991b1b" }}>
+          ⚠️ <strong>Couldn't reach the WA service just now</strong> — it's known to drop under load. Showing the last known list below (not necessarily current). Click ↻ to retry — sessions are almost always still fine, don't re-pair based on this alone.
+        </div>
+      )}
+
       {/* Warn if two sessions share the same phone number */}
       {(() => {
         const meMap = {};
@@ -4382,7 +4399,10 @@ function ConnectionsScreen() {
           </Card>
           );
         })}
-        {!clients.length && !loading && (
+        {!clients.length && !loading && fetchError && (
+          <div style={{ color: "#991b1b", fontSize: 13 }}>Couldn't reach the WA service and there's no cached list yet — this is NOT the same as "no sessions exist". Click ↻ to retry before assuming anything needs re-pairing.</div>
+        )}
+        {!clients.length && !loading && !fetchError && (
           <div style={{ color: "#aaa", fontSize: 13 }}>No sessions yet. Click "+ Add connection" to pair a WhatsApp number.</div>
         )}
       </div>
