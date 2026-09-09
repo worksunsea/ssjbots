@@ -631,31 +631,6 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
   }
   const gullakHoldings = [...gullakByPhone.values()].sort((a, b) => b.grams - a.grams);
 
-  // "Already-punched rates" summary for the currently-selected scheme — staff
-  // had no way to see what rate (if any) was already bulk-set for a given
-  // month without expanding every member row one by one. Grouped by
-  // due_date's month (matches the set-monthly-rate matching logic above),
-  // not paid_at, for the same backfill-drift reason. Shows every distinct
-  // rate found per month (should normally be one) plus how many paid rows
-  // still have no rate at all, which is the visible symptom of the bug.
-  const monthlyRateSummary = (() => {
-    if (!schemeFilter) return [];
-    const byMonth = new Map();
-    for (const e of enrollments) {
-      if (e.scheme_id !== schemeFilter) continue;
-      for (const i of e.installments || []) {
-        if (i.status !== "paid" && i.status !== "free") continue;
-        if (!i.due_date) continue;
-        const mk = i.due_date.slice(0, 7);
-        if (!byMonth.has(mk)) byMonth.set(mk, new Map());
-        const rates = byMonth.get(mk);
-        const key = i.rate_locked ? Number(i.rate_locked).toLocaleString("en-IN") : "NOT SET";
-        rates.set(key, (rates.get(key) || 0) + 1);
-      }
-    }
-    return [...byMonth.entries()].sort((a, b) => b[0].localeCompare(a[0]));
-  })();
-
   const searchNorm = search.trim().toLowerCase();
   const searchDigits = search.replace(/\D/g, "");
   const filteredEnrollments = enrollments.filter((e) => {
@@ -964,55 +939,23 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
         <input placeholder="Search name or mobile…" value={search} onChange={(e) => setSearch(e.target.value)} style={{ width: 180 }} />
         <label>Export month: <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} /></label>
         <button onClick={() => exportMonthlyExcel(filteredEnrollments, month)}>⬇ Download {month} Excel</button>
-      </div>
-
-      {/* Bulk monthly rate only makes sense for schemes where staff BOOK a
-          rate after the fact (Gullak, Golden Sparkle) — Swarn Suraksha and
-          Mission 100 already capture the true live rate at the exact
-          moment of each payment (online checkout or staff entry), so
-          overwriting them all to one bulk rate would corrupt correct
-          per-transaction data. Each such scheme gets its OWN rate here —
-          this never applies one rate across different kitties, only
-          within whichever single scheme is currently selected. Pulled out
-          of the crowded top toolbar into its own block (it was a tiny pill
-          easy to miss) and paired with a table of what's already been
-          punched, since staff had no way to see that before. */}
-      {schemeFilter && !schemes.find((s) => s.id === schemeFilter)?.perks?.online_purchase && !schemes.find((s) => s.id === schemeFilter)?.perks?.mission100 && (
-        <div style={{ border: "2px solid #d4af37", borderRadius: 8, padding: 12, marginBottom: 16, background: "#fffdf5" }}>
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <b style={{ fontSize: 14 }}>💰 Monthly gold rate</b>
-            <label>Month: <input type="month" value={rateMonth} onChange={(e) => setRateMonth(e.target.value)} /></label>
-            <button onClick={() => setMonthlyRate(schemeFilter, rateMonth)} style={{ fontWeight: 600, padding: "6px 12px" }}
-              title="Applies one ₹/g rate to everyone who already paid THIS scheme in the selected month — any past month works. Running this again for the same month OVERWRITES the rate already set (this is how you edit a whole month's rate). To fix just ONE person, use that member's row instead (shift+click their month chip).">
-              Set {rateMonth} rate for this kitty
+        {/* Bulk monthly rate only makes sense for schemes where staff BOOK a
+            rate after the fact (Gullak, Golden Sparkle) — Swarn Suraksha and
+            Mission 100 already capture the true live rate at the exact
+            moment of each payment (online checkout or staff entry), so
+            overwriting them all to one bulk rate would corrupt correct
+            per-transaction data. Each such scheme gets its OWN rate here —
+            this never applies one rate across different kitties, only
+            within whichever single scheme is currently selected. */}
+        {schemeFilter && !schemes.find((s) => s.id === schemeFilter)?.perks?.online_purchase && !schemes.find((s) => s.id === schemeFilter)?.perks?.mission100 && (
+          <span style={{ display: "flex", gap: 6, alignItems: "center", border: "1px solid #ddd", borderRadius: 6, padding: "2px 8px" }}>
+            <label>Rate month: <input type="month" value={rateMonth} onChange={(e) => setRateMonth(e.target.value)} /></label>
+            <button onClick={() => setMonthlyRate(schemeFilter, rateMonth)} title="Applies one ₹/g rate to everyone who already paid THIS scheme in the selected month — any past month works, not just current. Correct any individual entry later as usual">
+              💰 Set {rateMonth} rate for this kitty
             </button>
-          </div>
-          {monthlyRateSummary.length > 0 && (
-            <table style={{ marginTop: 10, fontSize: 12.5, borderCollapse: "collapse" }}>
-              <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
-                <th style={{ paddingRight: 16 }}>Month</th><th style={{ paddingRight: 16 }}>Rate(s) already punched</th><th></th>
-              </tr></thead>
-              <tbody>
-                {monthlyRateSummary.map(([mk, rates]) => (
-                  <tr key={mk} style={{ borderBottom: "1px solid #f0f0f0" }}>
-                    <td style={{ paddingRight: 16, paddingTop: 4 }}>{mk}</td>
-                    <td style={{ paddingRight: 16, paddingTop: 4 }}>
-                      {[...rates.entries()].map(([rate, count]) => (
-                        <span key={rate} style={{ marginRight: 8, color: rate === "NOT SET" ? "#b91c1c" : "inherit" }}>
-                          {rate === "NOT SET" ? "⚠ not set" : `₹${rate}/g`} × {count}
-                        </span>
-                      ))}
-                    </td>
-                    <td style={{ paddingTop: 4 }}>
-                      <button style={{ fontSize: 11.5 }} onClick={() => { setRateMonth(mk); setMonthlyRate(schemeFilter, mk); }}>Set/edit this month's rate</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      )}
+          </span>
+        )}
+      </div>
 
       {visibleBatches.length > 0 && (
         <div style={{ marginBottom: 20 }}>
