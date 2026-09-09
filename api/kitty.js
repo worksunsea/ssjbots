@@ -1158,9 +1158,16 @@ export default async function handler(req, res) {
   // Sparkle) book the same day's gold rate for every member who pays that
   // month, but staff were re-typing that identical rate per person per
   // payment. This sets rate_locked once for every ALREADY-PAID installment
-  // of the given scheme whose paid_at falls in the given month — any date
-  // within the month, matching how the scheme actually works. A later
-  // per-person correction still goes through update-installment as before.
+  // of the given scheme whose due_date falls in the given month — matched by
+  // due_date (the installment's fixed schedule slot, set once at enrollment),
+  // NOT paid_at. paid_at is the server timestamp of when staff clicked
+  // "mark paid" / "add installment", which for backfilled/late-entered
+  // payments can land in a different calendar month than the one the
+  // payment was actually for — that mismatch silently skipped rows here and
+  // left them with the wrong/no rate, so gold weight looked wrong. due_date
+  // is deterministic (scheduleStart + month_number - 1) and doesn't drift
+  // with entry timing. A later per-person correction still goes through
+  // update-installment as before.
   // Body: { schemeId, month ("YYYY-MM"), ratePerGram, actor }.
   if (req.method === "POST" && action === "set-monthly-rate") {
     const authFail = checkCrmSecret(req, res);
@@ -1195,8 +1202,8 @@ export default async function handler(req, res) {
       .eq("tenant_id", TENANT_ID)
       .in("enrollment_id", enrollmentIds)
       .eq("status", "paid")
-      .gte("paid_at", monthStart)
-      .lt("paid_at", monthEnd)
+      .gte("due_date", monthStart)
+      .lt("due_date", monthEnd)
       .select("id");
     if (error) return res.status(500).json({ ok: false, error: error.message });
 
