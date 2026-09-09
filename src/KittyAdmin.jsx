@@ -319,7 +319,7 @@ function PaidMonthsEditor({ paidMonths, setPaidMonths, isGramBased }) {
           <input type="date" placeholder="Paid on" value={m.paidAt} onChange={(e) => setPaidMonth(i, "paidAt", e.target.value)} />
           <input type="number" placeholder="Amount ₹" value={m.amount} onChange={(e) => setPaidMonth(i, "amount", e.target.value)} style={{ width: 100 }} />
           {isGramBased && (
-            <input type="number" placeholder="Grams purchased" value={m.gramsPurchased} onChange={(e) => setPaidMonth(i, "gramsPurchased", e.target.value)} style={{ width: 130 }} />
+            <input type="number" placeholder="Grams purchased" value={m.gramsPurchased} onChange={(e) => setPaidMonth(i, "gramsPurchased", e.target.value)} min="0.001" max="999.999" step="0.001" style={{ width: 130 }} />
           )}
           <select value={m.paymentMethod} onChange={(e) => setPaidMonth(i, "paymentMethod", e.target.value)}>
             {PAID_MONTH_PAYMENT_METHODS.map((pm) => <option key={pm} value={pm}>{pm}</option>)}
@@ -712,13 +712,16 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
       const raw = prompt(`${label}${goldRate ? ` [today's live 995 rate: ₹${Math.round(goldRate)}/g]` : ""}`);
       if (raw == null || raw.trim() === "") return null;
       const n = Number(raw);
-      if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1000) {
-        alert("Gold rate must be a whole number, ₹/g (e.g. 152900) — no decimals, and not a small number (that looks like a grams value). Try again.");
+      if (!Number.isFinite(n) || !Number.isInteger(n) || n < 10000 || n > 99999) {
+        alert("Gold rate must be a whole number, exactly 5 digits, ₹/g (e.g. 15290) — no decimals, nothing shorter or longer than 5 digits. Try again.");
         continue;
       }
       return n;
     }
   };
+  // Weight/grams: max 3 digits before the decimal, up to 3 decimals
+  // (0.001g - 999.999g). Anything outside that is almost certainly a typo.
+  const validateGramsInput = (grams) => Number.isFinite(grams) && grams > 0 && grams < 1000;
 
   // Bulk-sets one gold rate for every ALREADY-PAID installment of the
   // selected kitty in the selected month — for rate-lock schemes like
@@ -812,7 +815,7 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
     let gramsPurchased;
     if (gramsRaw) {
       const grams = Math.round(Number(gramsRaw) * 1000) / 1000;
-      if (!grams || !Number.isFinite(grams)) alert("Invalid grams value — gold weight left unchanged.");
+      if (!validateGramsInput(grams)) alert("Invalid grams value — must be max 3 digits before the decimal, up to 3 decimals (0.001-999.999g). Gold weight left unchanged.");
       else gramsPurchased = grams;
     }
 
@@ -838,6 +841,9 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
     // here so the derived rate (amount / grams) doesn't drift on a stray
     // extra-precision entry.
     const gramsRaw = prompt("Grams purchased (leave blank if not gram-based / no rate lock)?");
+    if (gramsRaw && !validateGramsInput(Math.round(Number(gramsRaw) * 1000) / 1000)) {
+      return alert("Invalid grams value — must be max 3 digits before the decimal, up to 3 decimals (0.001-999.999g).");
+    }
     const gramsPurchased = gramsRaw ? (Math.round(Number(gramsRaw) * 1000) / 1000).toFixed(3) : null;
     const paymentMethod = promptPaymentMethod();
     if (paymentMethod == null) return;

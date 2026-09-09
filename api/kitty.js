@@ -81,8 +81,14 @@ function validateRateLocked(raw) {
   const n = Number(raw);
   if (!Number.isFinite(n)) return { ok: false, error: "rate_locked must be a number" };
   if (!Number.isInteger(n)) return { ok: false, error: "rate_locked must be a whole number (₹/g) — no decimals. Looks like a grams value was entered instead of a rate." };
-  if (n < 1000) return { ok: false, error: "rate_locked looks too small to be a real ₹/g gold rate" };
+  if (n < 10000 || n > 99999) return { ok: false, error: "rate_locked must be exactly 5 digits (10000-99999 ₹/g)" };
   return { ok: true, value: n };
+}
+// Grams/weight is always max 3 digits before the decimal, up to 3 decimals
+// (0.001g - 999.999g) — anything bigger is almost certainly a data-entry
+// mistake (extra zero, rupee amount typed into the grams field, etc).
+function validateGrams(n) {
+  return Number.isFinite(n) && n > 0 && n < 1000;
 }
 // Resolves the monthly amount to actually use for a flexible-amount
 // enrollment, validating it's a ₹5,000 multiple in range. Returns
@@ -448,6 +454,11 @@ export default async function handler(req, res) {
       // nor the client's My Kitty page ever showed it.
       let installmentsCreated = 0;
       if (Array.isArray(body.paidMonths) && body.paidMonths.length) {
+        for (const m of body.paidMonths) {
+          if (m.gramsPurchased != null && !validateGrams(Math.round(Number(m.gramsPurchased) * 1000) / 1000)) {
+            return res.status(400).json({ ok: false, error: "gramsPurchased must be max 3 digits before the decimal, up to 3 decimals (0.001-999.999g)" });
+          }
+        }
         const rows = body.paidMonths.map((m, idx) => {
           const amount = Number(m.amount);
           const grams = m.gramsPurchased != null ? (Math.round(Number(m.gramsPurchased) * 1000) / 1000) : null;
@@ -551,6 +562,7 @@ export default async function handler(req, res) {
     // here so a stray extra-precision entry doesn't silently drift the
     // derived rate.
     const grams = body.gramsPurchased != null ? Math.round(Number(body.gramsPurchased) * 1000) / 1000 : null;
+    if (grams != null && !validateGrams(grams)) return res.status(400).json({ ok: false, error: "gramsPurchased must be max 3 digits before the decimal, up to 3 decimals (0.001-999.999g)" });
     // Only Swarn Suraksha allows buying any rupee amount / any fractional
     // weight of gold — every other gram-based scheme (Gullak, Mission 100)
     // sells discrete MMTC coins, so a logged purchase must be a whole
@@ -838,6 +850,11 @@ export default async function handler(req, res) {
     // enrollment shows real history instead of just a "completed" label.
     // Body.paidMonths: [{ monthNumber, paidAt (date), amount }]
     if (Array.isArray(body.paidMonths) && body.paidMonths.length) {
+      for (const m of body.paidMonths) {
+        if (m.gramsPurchased != null && !validateGrams(Math.round(Number(m.gramsPurchased) * 1000) / 1000)) {
+          return res.status(400).json({ ok: false, error: "gramsPurchased must be max 3 digits before the decimal, up to 3 decimals (0.001-999.999g)" });
+        }
+      }
       const rows = body.paidMonths.map((m) => {
         const amount = m.amount != null ? Number(m.amount) : 0;
         const grams = m.gramsPurchased != null ? (Math.round(Number(m.gramsPurchased) * 1000) / 1000) : null;
@@ -1133,6 +1150,7 @@ export default async function handler(req, res) {
       // rate that doesn't apply here.
       const grams = Number(body.gramsPurchased);
       if (!grams || !Number.isFinite(grams)) return res.status(400).json({ ok: false, error: "invalid_gramsPurchased" });
+      if (!validateGrams(grams)) return res.status(400).json({ ok: false, error: "gramsPurchased must be max 3 digits before the decimal, up to 3 decimals (0.001-999.999g)" });
       if (!Number.isInteger(grams)) {
         const { data: enrollmentScheme } = await sb.from("kitty_enrollments").select("scheme:kitty_schemes(slug)").eq("id", before.enrollment_id).maybeSingle();
         if (enrollmentScheme?.scheme?.slug !== "swarn-suraksha") {
