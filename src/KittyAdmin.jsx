@@ -729,7 +729,20 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
     const scheme = schemes.find((s) => s.id === schemeId);
     const rate = promptRate(`Booked gold rate (₹/g) for "${scheme?.name}" — ${monthStr}, applied to everyone who paid this month?`);
     if (rate == null) return;
-    if (!confirm(`Apply ₹${rate.toLocaleString("en-IN")}/g to every payment already recorded for "${scheme?.name}" in ${monthStr}? This overwrites any rate already set on those installments.`)) return;
+
+    // Preview the resulting gold weight before applying — matches
+    // set-monthly-rate's own matching (due_date's month, status paid), so
+    // staff can catch a wrong rate before it's booked instead of after.
+    const matching = enrollments
+      .filter((e) => e.scheme_id === schemeId)
+      .flatMap((e) => (e.installments || []).filter((i) => i.status === "paid" && i.due_date?.slice(0, 7) === monthStr));
+    const totalAmount = matching.reduce((sum, i) => sum + Number(i.paid_amount ?? i.amount ?? 0), 0);
+    const totalGrams = rate ? totalAmount / rate : 0;
+    if (!confirm(
+      `Apply ₹${rate.toLocaleString("en-IN")}/g to every payment already recorded for "${scheme?.name}" in ${monthStr}?\n\n` +
+      `${matching.length} payment${matching.length === 1 ? "" : "s"}, ₹${totalAmount.toLocaleString("en-IN")} total → ${totalGrams.toFixed(3)}g gold.\n\n` +
+      `Is this month's gold weight correct? This overwrites any rate already set on those installments.`
+    )) return;
     const d = await call("set-monthly-rate", { method: "POST", crmSecret, body: { schemeId, month: monthStr, ratePerGram: rate, actor } });
     if (d.ok) { alert(`Rate applied to ${d.updated} payment${d.updated === 1 ? "" : "s"}.`); load(); } else alert(d.error);
   };
