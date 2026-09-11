@@ -15339,6 +15339,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   const [tab, setTab] = useState("jewellery");
   const [rapData, setRapData] = useState(RAP_SEED);
   const [rapAge, setRapAge] = useState(null);
+  const [rapChanges, setRapChanges] = useState(null); // /api/rapaport-changes response, once loaded
   const [rapUploadOpen, setRapUploadOpen] = useState(false);
   const [rapUploadRounds, setRapUploadRounds] = useState(null); // { name } for display only
   const [rapUploadFancy, setRapUploadFancy] = useState(null);   // { name } for display only
@@ -15510,6 +15511,17 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
         } catch { /* use seed */ }
       }
     });
+    // Simple +/- flag: did Rapaport prices move since the last report? Dismissed
+    // per report-date (localStorage) so it doesn't nag every load once seen.
+    fetch("/api/rapaport-changes").then(r => r.json()).then(d => {
+      if (d?.ok && d.hasChanges) {
+        try {
+          const dismissedDate = localStorage.getItem("rap_changes_dismissed_date");
+          if (dismissedDate === d.currentDate) return;
+        } catch {}
+        setRapChanges(d);
+      }
+    }).catch(() => {});
     // Load live rates — retry on transient failure instead of silently staying blank forever
     loadLiveRatesWithRetry().then(parsed => {
       if (parsed) {
@@ -16536,6 +16548,27 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
           <div style={{ fontWeight: 700, fontSize: 18 }}>💎 Jewellery Calculator</div>
           {rapAge != null && rapAge > 7 && <div style={{ fontSize: 12, color: C.orange, marginTop: 2 }}>⚠️ Rapaport data {rapAge} days old — run sync to update</div>}
           {rapAge != null && rapAge <= 7 && <div style={{ fontSize: 11, color: C.green, marginTop: 2 }}>✓ Rapaport {rapData.date || ""}</div>}
+          {rapChanges && (
+            <div style={{ fontSize: 11, marginTop: 4, display: "flex", alignItems: "center", gap: 6, background: "#fff8e1", border: "1px solid #ffe082", borderRadius: 6, padding: "3px 8px" }}>
+              <span>
+                💎 Rapaport changed since {rapChanges.previousDate}:{" "}
+                {[
+                  rapChanges.rounds.overall !== "flat" && `Rounds ${rapChanges.rounds.overall === "up" ? "↑" : rapChanges.rounds.overall === "down" ? "↓" : "mixed"}`,
+                  rapChanges.fancy.overall !== "flat" && `Fancy ${rapChanges.fancy.overall === "up" ? "↑" : rapChanges.fancy.overall === "down" ? "↓" : "mixed"}`,
+                ].filter(Boolean).join(" · ")}
+                {" — "}
+                {[...rapChanges.rounds.brackets, ...rapChanges.fancy.brackets]
+                  .filter(b => b.direction !== "flat")
+                  .slice(0, 4)
+                  .map(b => `${b.bracket}ct ${b.pct > 0 ? "+" : ""}${b.pct}%`)
+                  .join(", ")}
+              </span>
+              <button onClick={() => {
+                try { localStorage.setItem("rap_changes_dismissed_date", rapChanges.currentDate); } catch {}
+                setRapChanges(null);
+              }} style={{ border: "none", background: "transparent", cursor: "pointer", color: "#996600", fontWeight: 700, padding: "0 2px" }} title="Dismiss until next report">✕</button>
+            </div>
+          )}
         </div>
         <div style={{ display: "flex", gap: 8 }} className="no-print">
           <Btn small color="#16a085" onClick={() => { setWalkinPrefill({ contact: saveContact, estimateSummary: null }); setWalkinOpen(true); }} style={{ color: "#fff" }}>🏪 Walk-in</Btn>

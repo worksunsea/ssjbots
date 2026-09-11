@@ -689,6 +689,26 @@ async function upsertRapaportData(payload) {
     Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
     "Content-Type": "application/json",
   };
+
+  // Snapshot the row being replaced into history BEFORE deleting it, so the
+  // Calculator can flag what changed on next load. Only when the report date
+  // actually moved forward — a sync that lands the same date shouldn't dupe.
+  try {
+    const existingRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/bullion_dropdowns?field=eq.rapaport_data&tenant_id=eq.${TENANT}&select=value`,
+      { headers }
+    );
+    const existingRows = await existingRes.json().catch(() => []);
+    const existing = existingRows?.[0]?.value ? JSON.parse(existingRows[0].value) : null;
+    if (existing?.date && existing.date !== payload.date) {
+      await fetch(`${SUPABASE_URL}/rest/v1/bullion_rapaport_history`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ tenant_id: TENANT, date: existing.date, rounds: existing.rounds, fancy: existing.fancy }),
+      });
+    }
+  } catch { /* history is best-effort — never block the actual price update */ }
+
   // Delete existing row first, then insert.
   // (unique index is on (tenant_id,field) only after migration 0052 — value column excluded
   // because large JSON exceeds btree 2704-byte limit)

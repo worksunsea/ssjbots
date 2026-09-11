@@ -716,6 +716,20 @@ export default async function handler(req, res) {
       "Content-Type": "application/json",
     };
 
+    // Snapshot the outgoing data into history BEFORE overwriting, so the
+    // Calculator can flag what changed on next load. Only when the report
+    // date actually moved forward — an upload that just preserves existing
+    // data (e.g. only rounds re-uploaded) shouldn't create a same-date dupe.
+    if (existing && existing.date && existing.date !== date) {
+      try {
+        await fetch(`${SUPABASE_URL}/rest/v1/bullion_rapaport_history`, {
+          method: "POST",
+          headers: sbHeaders,
+          body: JSON.stringify({ tenant_id: TENANT, date: existing.date, rounds: existing.rounds, fancy: existing.fancy }),
+        });
+      } catch { /* history is best-effort — never block the actual price update */ }
+    }
+
     const patchRes = await fetch(
       `${SUPABASE_URL}/rest/v1/bullion_dropdowns?field=eq.rapaport_data&tenant_id=eq.${TENANT}`,
       { method: "PATCH", headers: { ...sbHeaders, Prefer: "return=representation" }, body: JSON.stringify({ value: JSON.stringify(merged) }) }
