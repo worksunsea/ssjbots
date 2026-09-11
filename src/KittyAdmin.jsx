@@ -736,8 +736,8 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
       const raw = prompt(`${label}${goldRate ? ` [today's live 995 rate: ₹${Math.round(goldRate)}/g]` : ""}`);
       if (raw == null || raw.trim() === "") return null;
       const n = Number(raw);
-      if (!Number.isFinite(n) || !Number.isInteger(n) || n < 10000 || n > 99999) {
-        alert("Gold rate must be a whole number, exactly 5 digits, ₹/g (e.g. 15290) — no decimals, nothing shorter or longer than 5 digits. Try again.");
+      if (!Number.isFinite(n) || !Number.isInteger(n) || n < 5000 || n > 35000) {
+        alert("Gold rate must be a whole number, ₹/g, between 5000 and 35000 (e.g. 15290) — no decimals. Try again.");
         continue;
       }
       return n;

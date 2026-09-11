@@ -81,7 +81,7 @@ function validateRateLocked(raw) {
   const n = Number(raw);
   if (!Number.isFinite(n)) return { ok: false, error: "rate_locked must be a number" };
   if (!Number.isInteger(n)) return { ok: false, error: "rate_locked must be a whole number (₹/g) — no decimals. Looks like a grams value was entered instead of a rate." };
-  if (n < 10000 || n > 99999) return { ok: false, error: "rate_locked must be exactly 5 digits (10000-99999 ₹/g)" };
+  if (n < 5000 || n > 35000) return { ok: false, error: "rate_locked must be between 5000 and 35000 ₹/g" };
   return { ok: true, value: n };
 }
 // Grams/weight is always max 3 digits before the decimal, up to 3 decimals
