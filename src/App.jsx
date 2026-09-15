@@ -5478,7 +5478,7 @@ function ContactEditModal({ contact, allTags = [], customFields = [], onClose, o
   // Load existing family members for this contact
   useEffect(() => {
     if (!contact.id) return;
-    sb.from("family_members").select("id,relationship,name,dob,mobile").eq("lead_id", contact.id).order("created_at", { ascending: true })
+    sb.from("bullion_family_members").select("id,relationship,name,dob,mobile").eq("lead_id", contact.id).order("created_at", { ascending: true })
       .then(({ data }) => setFamily(data || []));
   }, [contact.id]);
 
@@ -5590,11 +5590,11 @@ function ContactEditModal({ contact, allTags = [], customFields = [], onClose, o
           dob: m.dob ? String(m.dob).slice(0, 20) : null,
           mobile: m.mobile ? String(m.mobile).slice(0, 20) : null,
         };
-        if (m.id) await sb.from("family_members").update(row).eq("id", m.id).eq("lead_id", savedId);
-        else await sb.from("family_members").insert(row);
+        if (m.id) await sb.from("bullion_family_members").update(row).eq("id", m.id).eq("lead_id", savedId);
+        else await sb.from("bullion_family_members").insert(row);
       }
       if (deletedFamilyIds.length) {
-        await sb.from("family_members").delete().in("id", deletedFamilyIds).eq("lead_id", savedId);
+        await sb.from("bullion_family_members").delete().in("id", deletedFamilyIds).eq("lead_id", savedId);
       }
     }
     setSaving(false);
@@ -6902,7 +6902,7 @@ function UpcomingEventsScreen() {
     try {
       const [{ data, error }, { data: scheduled }, { data: familyRows }] = await Promise.all([
         sb.from("bullion_leads")
-          .select("id,name,phone,city,bday,anniversary,spouse_name,spouse_dob,wedding_date,wedding_family_member,address_house,address_locality,address_pincode")
+          .select("id,name,phone,city,bday,anniversary,spouse_name,spouse_dob,wedding_date,wedding_family_member,address_house,address_locality,address_pincode,tags")
           .eq("tenant_id", getTenantId())
           .or("bday.not.is.null,anniversary.not.is.null,spouse_dob.not.is.null"),
         sb.from("bullion_scheduled_messages")
@@ -6914,7 +6914,7 @@ function UpcomingEventsScreen() {
         // Family members added via the self-service /profile form (spouse,
         // kids, parents, etc. — richer than the legacy spouse_dob column,
         // and the only place child birthdays can be captured today).
-        sb.from("family_members")
+        sb.from("bullion_family_members")
           .select("id,lead_id,relationship,name,dob,mobile")
           .eq("tenant_id", getTenantId())
           .not("dob", "is", null),
@@ -6927,7 +6927,7 @@ function UpcomingEventsScreen() {
       const extraLeadIds = [...new Set((familyRows || []).map((f) => f.lead_id).filter((id) => !knownLeadIds.has(id)))];
       let extraLeads = [];
       if (extraLeadIds.length) {
-        const { data: el } = await sb.from("bullion_leads").select("id,name,phone,city").in("id", extraLeadIds);
+        const { data: el } = await sb.from("bullion_leads").select("id,name,phone,city,tags").in("id", extraLeadIds);
         extraLeads = el || [];
       }
       const leadById = new Map([...(data || []), ...extraLeads].map((c) => [c.id, c]));
@@ -6991,7 +6991,7 @@ function UpcomingEventsScreen() {
             contact: {
               id: c.id,
               name: msgType === "spouse_bday" ? c.spouse_name : c.name,
-              phone: c.phone, city: c.city,
+              phone: c.phone, city: c.city, tags: c.tags || [],
               hasSpouseDob: !!c.spouse_dob || familySpouseLeadIds.has(c.id), hasWeddingFamily: !!c.wedding_date,
               hasAddress: hasAddress(c),
             },
@@ -7021,7 +7021,7 @@ function UpcomingEventsScreen() {
         const years = parts.y == null ? null : (occurrence.getFullYear() - parts.y);
         rows.push({
           contact: {
-            id: lead.id, name: f.name, phone: f.mobile || lead.phone, city: lead.city,
+            id: lead.id, name: f.name, phone: f.mobile || lead.phone, city: lead.city, tags: lead.tags || [],
             hasSpouseDob: true, hasWeddingFamily: true, hasAddress: hasAddress(lead),
           },
           icon: RELATION_ICON[f.relationship] || "🎂👪",
@@ -7111,6 +7111,10 @@ function UpcomingEventsScreen() {
                 <div style={{ fontWeight: 600, fontSize: 14 }}>{ev.contact.name || ev.contact.phone}</div>
                 <div style={{ fontSize: 12, color: "#666" }}>{ev.contact.phone}{ev.contact.city ? ` · ${ev.contact.city}` : ""}</div>
                 <div style={{ marginTop: 3, display: "flex", gap: 5, flexWrap: "wrap" }}>
+                  {ev.contact.tags?.slice(0, 3).map((t) => (
+                    <span key={t} style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#fef3c7", color: "#92400e" }}>🏷 {t}</span>
+                  ))}
+                  {ev.contact.tags?.length > 3 && <span style={{ fontSize: 10, color: "#999" }}>+{ev.contact.tags.length - 3}</span>}
                   {ev.years != null && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#f3e8ff", color: "#6b21a8" }}>{ev.msgType === "anniv" ? `${ev.years} yrs married` : `turning ${ev.years}`}</span>}
                   {ev.noFunnel && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#e0e7ff", color: "#3730a3" }}>manual wish only</span>}
                   {!ev.noFunnel && ev.sentCount > 0 && <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#dcfce7", color: "#166534" }}>✅ {ev.sentCount} sent</span>}
@@ -10431,7 +10435,7 @@ function BroadcastCreateModal({ onClose, onSaved }) {
       </div>
 
       <Field label="Your message (the actual festival content)">
-        <div style={{ fontSize: 11, color: "#888", marginBottom: 6 }}>Use {"{{name}}"} for customer name, {"{{city}}"} for city.</div>
+        <div style={{ fontSize: 11, color: "#888", marginBottom: 6 }}>Use {"{{name}}"} for customer name, {"{{city}}"} for city, {"{{salutation}}"} for Mr./Mrs./Rtn./etc, {"{{company}}"} for company or club name.</div>
         <Textarea rows={4} value={form.message} onChange={(e) => set("message", e.target.value)} placeholder={"Happy Diwali! ✨ Visit us this festive season — exclusive jewellery, best rates, free gift on purchase.\n- Sun Sea Jewellers, Karol Bagh"} />
       </Field>
 
@@ -10440,7 +10444,7 @@ function BroadcastCreateModal({ onClose, onSaved }) {
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>📱 What the customer receives:</div>
           <div style={{ fontSize: 12, whiteSpace: "pre-wrap", lineHeight: 1.7, padding: "10px 14px", background: "#f0fdf4", borderRadius: 8, border: "1px solid #86efac", color: "#166534" }}>
-            {buildTemplate().replace(/\{\{name\}\}/g, "Ramesh").replace(/\{\{city\}\}/g, "Delhi")}
+            {buildTemplate().replace(/\{\{name\}\}/g, "Ramesh").replace(/\{\{city\}\}/g, "Delhi").replace(/\{\{salutation\}\}/g, "Rtn.").replace(/\{\{company\}\}/g, "Delhi City")}
           </div>
         </div>
       )}
@@ -10482,6 +10486,9 @@ function BroadcastSendModal({ broadcast, allTags, onClose, onSent }) {
   });
   const [preview, setPreview] = useState(null);
   const [previewing, setPreviewing] = useState(false);
+  const [matchList, setMatchList] = useState(null); // [{id,name,phone}] from last Preview — lets staff untick individuals
+  const [excludedIds, setExcludedIds] = useState(() => new Set());
+  const [showList, setShowList] = useState(false);
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(null);
   const [err, setErr] = useState("");
@@ -10512,35 +10519,42 @@ function BroadcastSendModal({ broadcast, allTags, onClose, onSent }) {
     }
   };
 
-  const setF = (k, v) => { setFilter((s) => ({ ...s, [k]: v })); setPreview(null); };
+  const setF = (k, v) => { setFilter((s) => ({ ...s, [k]: v })); setPreview(null); setMatchList(null); };
 
   const previewCount = async () => {
-    setPreviewing(true); setPreview(null); setErr("");
+    setPreviewing(true); setPreview(null); setMatchList(null); setExcludedIds(new Set()); setErr("");
     let q = sb.from("bullion_leads")
-      .select("id", { count: "exact", head: true })
+      .select("id, name, phone")
       .eq("tenant_id", getTenantId())
       .eq("dnd", false)
       .neq("status", "dead")
-      .not("phone", "is", null);
+      .not("phone", "is", null)
+      .limit(500); // matches api/broadcast-send.js's BATCH_SIZE — a checkbox list isn't practical past this anyway
     if (filter.tags.length) q = q.overlaps("tags", filter.tags);
     if (filter.city.trim()) q = q.ilike("city", `%${filter.city.trim()}%`);
     if (!includeAll && filter.statuses.length) q = q.in("status", filter.statuses);
     if (filter.productInterest.length) q = q.in("product_interest", filter.productInterest);
-    const { count, error } = await q;
+    const { data, error } = await q;
     if (error) { setErr(error.message); setPreviewing(false); return; }
-    setPreview(count);
+    setMatchList(data || []);
+    setPreview((data || []).length);
     setPreviewing(false);
   };
+
+  // Recipients actually going out = matched list minus whatever staff unticked.
+  const includedCount = matchList ? matchList.filter((m) => !excludedIds.has(m.id)).length : preview;
 
   const send = async () => {
     if (!sendAt) return setErr("Choose a send date and time");
     if (preview === null) return setErr("Click Preview first to count recipients");
     if (preview === 0) return setErr("No contacts match the selected filters");
+    if (includedCount === 0) return setErr("Everyone in the matched list is unticked — nothing to send");
     setSending(true); setErr("");
+    const includeIds = matchList ? matchList.filter((m) => !excludedIds.has(m.id)).map((m) => m.id) : null;
     const r = await fetch("/api/broadcast-send", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-crm-secret": window.__CRM_SECRET__ || "" },
-      body: JSON.stringify({ funnelId: broadcast.id, sendAt: new Date(sendAt).toISOString(), pace, includeAll, filter, mediaUrl: mediaUrl || null, mediaType: mediaUrl ? mediaType : null, createdBy: loadUser()?.name || null }),
+      body: JSON.stringify({ funnelId: broadcast.id, sendAt: new Date(sendAt).toISOString(), pace, includeAll, filter, includeIds, mediaUrl: mediaUrl || null, mediaType: mediaUrl ? mediaType : null, createdBy: loadUser()?.name || null }),
     });
     const data = await r.json();
     setSending(false);
@@ -10557,6 +10571,7 @@ function BroadcastSendModal({ broadcast, allTags, onClose, onSent }) {
         <div style={{ fontSize: 11, color: "#3b82f6", fontWeight: 600, marginBottom: 6 }}>MESSAGE PREVIEW</div>
         <div style={{ fontSize: 13, whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{step?.message_template || "(no message)"}</div>
         {step?.use_ai_message && <div style={{ fontSize: 11, color: "#888", marginTop: 6 }}>🤖 AI will personalise this for each recipient</div>}
+        <div style={{ fontSize: 11, color: "#888", marginTop: 6 }}>Fields available: {"{{name}}"}, {"{{phone}}"}, {"{{city}}"}, {"{{salutation}}"}, {"{{company}}"}, {"{{funnel_name}}"}</div>
       </div>
 
       {/* Audience filters */}
@@ -10628,7 +10643,7 @@ function BroadcastSendModal({ broadcast, allTags, onClose, onSent }) {
               <div>
                 <div style={{ fontSize: 13, fontWeight: pace === p.k ? 600 : 400 }}>{p.label}</div>
                 <div style={{ fontSize: 11, color: "#888" }}>{p.note}
-                  {preview > 0 && ` · ${Math.ceil(preview * p.intervalS / 60)} min total for ${preview} contacts`}
+                  {includedCount > 0 && ` · ${Math.ceil(includedCount * p.intervalS / 60)} min total for ${includedCount} contacts`}
                 </div>
               </div>
             </label>
@@ -10642,9 +10657,9 @@ function BroadcastSendModal({ broadcast, allTags, onClose, onSent }) {
       {/* Send date */}
       <Field label="First message sends at (IST)">
         <Input type="datetime-local" value={sendAt} onChange={(e) => setSendAt(e.target.value)} />
-        {preview > 0 && sendAt && (() => {
+        {includedCount > 0 && sendAt && (() => {
           const paceObj = PACE_OPTIONS.find((p) => p.k === pace);
-          const endMs = new Date(sendAt).getTime() + preview * paceObj.intervalS * 1000;
+          const endMs = new Date(sendAt).getTime() + includedCount * paceObj.intervalS * 1000;
           return <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>Last message ~{new Date(endMs).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" })}</div>;
         })()}
       </Field>
@@ -10660,21 +10675,51 @@ function BroadcastSendModal({ broadcast, allTags, onClose, onSent }) {
           <Btn color={C.blue} onClick={onSent} style={{ marginTop: 12 }}>Done</Btn>
         </div>
       ) : (
-        <div style={{ display: "flex", gap: 8, justifyContent: "space-between", alignItems: "center", marginTop: 14 }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <Btn ghost color={C.blue} onClick={previewCount} disabled={previewing}>{previewing ? "Counting…" : "👁 Preview audience"}</Btn>
-            {preview !== null && (
-              <span style={{ fontSize: 13, fontWeight: 600, color: preview > 0 ? C.green : C.red }}>
-                {preview > 0 ? `${preview} contacts will receive this` : "No contacts match"}
-              </span>
-            )}
+        <div>
+          <div style={{ display: "flex", gap: 8, justifyContent: "space-between", alignItems: "center", marginTop: 14, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <Btn ghost color={C.blue} onClick={previewCount} disabled={previewing}>{previewing ? "Counting…" : "👁 Preview audience"}</Btn>
+              {preview !== null && (
+                <span style={{ fontSize: 13, fontWeight: 600, color: preview > 0 ? C.green : C.red }}>
+                  {preview > 0 ? `${preview} match${excludedIds.size ? ` · ${includedCount} will receive it` : ""}` : "No contacts match"}
+                </span>
+              )}
+              {matchList?.length > 0 && (
+                <button onClick={() => setShowList((v) => !v)} style={{ fontSize: 12, color: C.blue, background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}>
+                  {showList ? "hide list" : "review / untick individuals"}
+                </button>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <Btn ghost color={C.gray} onClick={onClose}>Cancel</Btn>
+              <Btn color={C.blue} onClick={send} disabled={sending || preview === null || preview === 0 || includedCount === 0}>
+                {sending ? "Scheduling…" : `📤 Schedule${includedCount > 0 ? ` for ${includedCount}` : ""}`}
+              </Btn>
+            </div>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <Btn ghost color={C.gray} onClick={onClose}>Cancel</Btn>
-            <Btn color={C.blue} onClick={send} disabled={sending || preview === null || preview === 0}>
-              {sending ? "Scheduling…" : `📤 Schedule${preview !== null && preview > 0 ? ` for ${preview}` : ""}`}
-            </Btn>
-          </div>
+
+          {showList && matchList?.length > 0 && (
+            <div style={{ marginTop: 10, border: "1px solid #ddd", borderRadius: 8, maxHeight: 240, overflowY: "auto" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 10px", borderBottom: "1px solid #eee", background: "#fafafa", position: "sticky", top: 0 }}>
+                <span style={{ fontSize: 11, color: "#888" }}>Untick anyone who shouldn't get this ({matchList.length} matched)</span>
+                <span style={{ display: "flex", gap: 10 }}>
+                  <button onClick={() => setExcludedIds(new Set())} style={{ fontSize: 11, color: C.blue, background: "none", border: "none", cursor: "pointer" }}>select all</button>
+                  <button onClick={() => setExcludedIds(new Set(matchList.map((m) => m.id)))} style={{ fontSize: 11, color: C.red, background: "none", border: "none", cursor: "pointer" }}>none</button>
+                </span>
+              </div>
+              {matchList.map((m) => (
+                <label key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 10px", fontSize: 13, borderBottom: "1px solid #f5f5f5", cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={!excludedIds.has(m.id)}
+                    onChange={() => setExcludedIds((prev) => { const n = new Set(prev); n.has(m.id) ? n.delete(m.id) : n.add(m.id); return n; })}
+                  />
+                  <span>{m.name || "—"}</span>
+                  <span style={{ color: "#999", fontSize: 12 }}>{m.phone}</span>
+                </label>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </Modal>

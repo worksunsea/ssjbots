@@ -16,7 +16,15 @@
 //     city,            // string — partial match
 //     statuses,        // string[] — e.g. ["active","handoff","converted"]
 //     productInterest, // string[] — e.g. ["24K","silver"]
-//   }
+//   },
+//   includeIds,        // string[] — optional. If given, restrict the send to
+//                      // exactly these lead ids (still within the filter
+//                      // above) — the per-contact checkbox list in
+//                      // BroadcastSendModal narrows the tag/city/status match
+//                      // down to whichever rows staff left ticked.
+//   dryRun,            // boolean — if true, don't enroll anything; return the
+//                      // matching {id,name,phone} list instead (for the
+//                      // checkbox list UI). funnelId/sendAt still required.
 // }
 
 import { supa } from "./_lib/supabase.js";
@@ -52,7 +60,7 @@ export default async function handler(req, res) {
   if (typeof body === "string") { try { body = JSON.parse(body); } catch { body = {}; } }
   body = body || {};
 
-  const { funnelId, sendAt, pace = "safe", filter = {}, includeAll = false, mediaUrl = null, mediaType = null, createdBy = null } = body;
+  const { funnelId, sendAt, pace = "safe", filter = {}, includeAll = false, mediaUrl = null, mediaType = null, createdBy = null, includeIds = null, dryRun = false } = body;
   if (!funnelId) return res.status(400).json({ ok: false, error: "funnelId required" });
   if (!sendAt) return res.status(400).json({ ok: false, error: "sendAt required" });
 
@@ -76,7 +84,7 @@ export default async function handler(req, res) {
     .order("step_order", { ascending: true })
     .limit(1)
     .maybeSingle();
-  if (!step) return res.status(400).json({ ok: false, error: "broadcast funnel has no active steps — add a message step first" });
+  if (!step && !dryRun) return res.status(400).json({ ok: false, error: "broadcast funnel has no active steps — add a message step first" });
 
   // 2. Load already-enrolled leads for idempotency
   const { data: alreadyEnrolled } = await sb.from("bullion_scheduled_messages")
@@ -87,7 +95,7 @@ export default async function handler(req, res) {
 
   // 3. Query matching leads
   let q = sb.from("bullion_leads")
-    .select("id, phone, name, city, tags, product_interest")
+    .select("id, phone, name, city, tags, product_interest, salutation, company")
     .eq("tenant_id", funnel.tenant_id)
     .eq("dnd", false)
     .neq("status", "dead")
@@ -99,9 +107,18 @@ export default async function handler(req, res) {
   // includeAll = true → send to every non-DND, non-dead contact regardless of status (cold contacts included)
   if (!includeAll && filter.statuses?.length) q = q.in("status", filter.statuses);
   if (filter.productInterest?.length) q = q.in("product_interest", filter.productInterest);
+  if (includeIds?.length) q = q.in("id", includeIds);
 
   const { data: leads } = await q;
-  if (!leads?.length) return res.status(200).json({ ok: true, created: 0, skipped: 0, reason: "no matching leads" });
+  if (!leads?.length) return res.status(200).json({ ok: true, created: 0, skipped: 0, matched: [], reason: "no matching leads" });
+
+  // Dry run — just report who matches (for the checkbox-list UI), enroll nothing.
+  if (dryRun) {
+    return res.status(200).json({
+      ok: true,
+      matched: leads.map((l) => ({ id: l.id, name: l.name || "", phone: l.phone || "" })),
+    });
+  }
 
   // 4. Build insert rows
   function render(tpl, ctx) {
@@ -114,7 +131,7 @@ export default async function handler(req, res) {
 
   for (const lead of leads) {
     if (enrolledSet.has(lead.id)) { skipped++; continue; }
-    const ctx = { name: lead.name || "", phone: lead.phone || "", city: lead.city || "", funnel_name: funnel.name || "" };
+    const ctx = { name: lead.name || "", phone: lead.phone || "", city: lead.city || "", funnel_name: funnel.name || "", salutation: lead.salutation || "", company: lead.company || "" };
 
     // Snap to IST business hours (9 AM–8 PM). If stagger pushes into night, jump to next morning.
     const slotClamped = clampToIST(slotMs);
