@@ -5,7 +5,7 @@
 // monthly lucky draw), Legacy Members (hand-enter old paid-up-unclaimed
 // members so kitty-cron.js starts reminding them to claim).
 
-import { useState, useEffect, useCallback, Fragment } from "react";
+import { useState, useEffect, useCallback, useRef, Fragment } from "react";
 import * as XLSX from "xlsx";
 import Mission100Admin from "./Mission100Admin";
 import { GoldTallyTab } from "./KittySchemeTabs";
@@ -69,7 +69,7 @@ export default function KittyAdminScreen({ sb, tenantId, crmSecret, staffName })
       <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
         {[["overview", "Overview"], ["schemes", "Schemes"], ["enroll", "Enroll New Member"], ["enrollments", "Enrollments"],
           ["gullak", "Gullak"], ["swarn", "Swarn Suraksha"], ["goldensparkle", "Golden Sparkle"], ["mission100", "Mission 100"], ["goldtally", "Gold Tally"],
-          ["legacy", "Add Legacy Member"], ["activity", "Activity Log"]].map(([k, l]) => (
+          ["legacy", "Add Legacy Member"], ["pending", "📨 Pending Messages"], ["activity", "Activity Log"]].map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)}
             style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid #d4af37",
               background: tab === k ? "#d4af37" : "transparent", color: tab === k ? "#fff" : "#d4af37", cursor: "pointer" }}>
@@ -87,6 +87,7 @@ export default function KittyAdminScreen({ sb, tenantId, crmSecret, staffName })
       {tab === "mission100" && <Mission100Admin crmSecret={crmSecret} actor={actor} />}
       {tab === "goldtally" && <GoldTallyTab crmSecret={crmSecret} />}
       {tab === "legacy" && <LegacyTab crmSecret={crmSecret} actor={actor} />}
+      {tab === "pending" && <PendingMessagesTab crmSecret={crmSecret} actor={actor} />}
       {tab === "activity" && <ActivityLogTab crmSecret={crmSecret} />}
     </div>
   );
@@ -248,6 +249,109 @@ function OverviewTab({ crmSecret, actor }) {
           {!pending.length && <tr><td colSpan={7}>No overdue payments — everyone's current.</td></tr>}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// Kitty WA messages that failed to send (session down, number issue,
+// whatever) and got queued instead of silently dropped — kitty-cron.js
+// nudges admins via a separate WhatsApp channel when this list is
+// non-empty. Staff retries here: one at a time, or "Send All" which paces
+// itself (fixed gap + jitter, same anti-ban reasoning as a broadcast) so it
+// doesn't fire a burst of messages at once.
+const SEND_ALL_INTERVAL_MS = 3000;
+
+function PendingMessagesTab({ crmSecret, actor }) {
+  const [messages, setMessages] = useState(null);
+  const [sendingId, setSendingId] = useState(null);
+  const [sendingAll, setSendingAll] = useState(false);
+  const [progress, setProgress] = useState({ done: 0, total: 0, sent: 0, failed: 0 });
+  const cancelRef = useRef(false);
+
+  const load = useCallback(async () => {
+    const d = await call("admin-list-pending-messages", { crmSecret });
+    setMessages(d.ok ? d.messages : []);
+  }, [crmSecret]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const sendOne = async (id) => {
+    setSendingId(id);
+    const d = await call("admin-send-pending-message", { method: "POST", crmSecret, body: { id, actor } });
+    setSendingId(null);
+    await load();
+    return d.ok && d.sent;
+  };
+
+  const sendAll = async () => {
+    if (!messages?.length) return;
+    setSendingAll(true);
+    cancelRef.current = false;
+    const ids = messages.map((m) => m.id);
+    const p = { done: 0, total: ids.length, sent: 0, failed: 0 };
+    setProgress(p);
+    for (let i = 0; i < ids.length; i++) {
+      if (cancelRef.current) break;
+      const ok = await sendOne(ids[i]);
+      p.done++; if (ok) p.sent++; else p.failed++;
+      setProgress({ ...p });
+      if (i < ids.length - 1 && !cancelRef.current) {
+        await new Promise((r) => setTimeout(r, SEND_ALL_INTERVAL_MS + Math.random() * 1000));
+      }
+    }
+    setSendingAll(false);
+  };
+
+  const typeLabel = (ctx) => ({
+    due_reminder: "Due reminder", unclaimed_reminder: "Unclaimed benefit", batch_rollover: "Round completed",
+    swarn_freeze: "Swarn 11mo freeze", rate_notify: "Monthly rate booked", redemption_thank_you: "Redemption thank-you",
+    mission100_completion: "Mission 100 finish", mission100_checkpoint: "Mission 100 checkpoint",
+    mission100_winner: "Mission 100 winner", mission100_referral: "Mission 100 referral",
+  }[ctx?.type] || ctx?.type || "Message");
+
+  return (
+    <div>
+      <p style={{ fontSize: 13, color: "#666" }}>
+        Kitty WhatsApp messages that failed to send — usually the WA session was down. Nothing here means everything's going out fine.
+        These stay queued until sent; staff can retry one at a time or all at once (paced ~{SEND_ALL_INTERVAL_MS / 1000}s apart, same anti-ban spacing as broadcasts).
+      </p>
+      {messages === null ? <div>Loading…</div> : (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+            <button onClick={load} disabled={sendingAll} style={{ padding: "6px 12px" }}>↻ Refresh</button>
+            <button onClick={sendAll} disabled={sendingAll || !messages.length}
+              style={{ padding: "6px 14px", background: "#d4af37", color: "#fff", border: "none", borderRadius: 6, cursor: messages.length ? "pointer" : "not-allowed" }}>
+              {sendingAll ? `Sending… ${progress.done}/${progress.total} (✓${progress.sent} ✗${progress.failed})` : `📤 Send All (${messages.length})`}
+            </button>
+            {sendingAll && <button onClick={() => { cancelRef.current = true; }} style={{ padding: "6px 12px" }}>Cancel after current</button>}
+          </div>
+          {!messages.length && <div style={{ color: "#888" }}>No pending messages.</div>}
+          {messages.length > 0 && (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+              <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
+                <th>Queued</th><th>Type</th><th>To</th><th>Message</th><th>Last error</th><th>Attempts</th><th></th>
+              </tr></thead>
+              <tbody>
+                {messages.map((m) => (
+                  <tr key={m.id} style={{ borderBottom: "1px solid #eee" }}>
+                    <td style={{ whiteSpace: "nowrap" }}>{new Date(m.created_at).toLocaleString("en-IN")}</td>
+                    <td>{typeLabel(m.context)}</td>
+                    <td>{m.lead?.name || "—"}<br /><span style={{ color: "#888" }}>{m.phone}</span></td>
+                    <td style={{ maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.message}>{m.message}</td>
+                    <td style={{ color: "#b91c1c", fontSize: 11 }}>{m.last_error || ""}</td>
+                    <td>{m.attempts}</td>
+                    <td>
+                      <button onClick={() => sendOne(m.id)} disabled={sendingAll || sendingId === m.id} style={{ padding: "3px 10px" }}>
+                        {sendingId === m.id ? "Sending…" : "Send"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </>
+      )}
     </div>
   );
 }

@@ -21,8 +21,9 @@
 // ?secret= for manual/legacy triggering.
 
 import { supa } from "./_lib/supabase.js";
-import { sendWhatsApp } from "./_lib/wa.js";
-import { TENANT_ID, DIGEST_CRON_SECRET, CRON_SECRET, KITTY_WA_CLIENT_ID } from "./_lib/config.js";
+import { sendWhatsAppWbiz } from "./_lib/wa.js";
+import { sendKittyWA } from "./_lib/kittyMessageQueue.js";
+import { TENANT_ID, DIGEST_CRON_SECRET, CRON_SECRET, OWNER_PHONE, DIGEST_EXTRA_RECIPIENTS } from "./_lib/config.js";
 import { logKittyAudit } from "./_lib/kittyAudit.js";
 import { getSwarnScheme } from "./_lib/swarnSuraksha.js";
 import { gramsForInstallments } from "./_lib/kittyGrams.js";
@@ -58,7 +59,7 @@ export default async function handler(req, res) {
   const today = todayIST();
   const windowEnd = new Date(Date.now() + 5.5 * 3600000 + REMINDER_DAYS_BEFORE * 86400000).toISOString().slice(0, 10);
   const stats = {
-    dueReminders: 0, claimReminders: 0, batchesRolledOver: 0, rolloverNudges: 0, swarnFrozen: 0, failed: 0,
+    dueReminders: 0, claimReminders: 0, batchesRolledOver: 0, rolloverNudges: 0, swarnFrozen: 0, failed: 0, queued: 0,
     mission100Finishers: 0, mission100CompletionBonuses: 0, mission100CheckpointWins: 0, mission100Winners: 0,
     mission100Announcements: 0, mission100ReferralBonuses: 0,
   };
@@ -76,8 +77,8 @@ export default async function handler(req, res) {
       if (!lead?.phone || lead.dnd) continue;
       const schemeName = row.enrollment.scheme?.name || "your Kitty scheme";
       const msg = `🪙 Reminder: your ${schemeName} installment #${row.month_number} of ₹${row.amount} is due on ${row.due_date}.\n- Sun Sea Jewellers, Karol Bagh`;
-      const wa = await sendWhatsApp({ phone: lead.phone, msg, client: KITTY_WA_CLIENT_ID }).catch(() => ({ status: 0 }));
-      if (wa.status !== 1) { stats.failed++; continue; }
+      const { sent, queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: row.enrollment.lead_id, phone: lead.phone, msg, context: { type: "due_reminder", installmentId: row.id } });
+      if (!sent) { if (queued) stats.queued++; continue; }
       await sb.from("kitty_installments").update({ reminded_at: new Date().toISOString() }).eq("id", row.id);
       stats.dueReminders++;
     }
@@ -94,8 +95,8 @@ export default async function handler(req, res) {
       if (!lead?.phone || lead.dnd) continue;
       const schemeName = row.legacy_scheme_name || row.scheme?.name || "your Kitty scheme";
       const msg = `🎁 Your ${schemeName} is complete and waiting to be claimed! Visit Sun Sea Jewellers, Karol Bagh to pick your jewellery/benefit whenever convenient.\n- Sun Sea Jewellers`;
-      const wa = await sendWhatsApp({ phone: lead.phone, msg, client: KITTY_WA_CLIENT_ID }).catch(() => ({ status: 0 }));
-      if (wa.status !== 1) { stats.failed++; continue; }
+      const { sent, queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: row.lead_id, phone: lead.phone, msg, context: { type: "unclaimed_reminder", enrollmentId: row.id } });
+      if (!sent) { if (queued) stats.queued++; continue; }
       await sb.from("kitty_enrollments").update({ claim_status: "reminded", last_claim_reminded_at: new Date().toISOString() }).eq("id", row.id);
       stats.claimReminders++;
     }
@@ -120,8 +121,8 @@ export default async function handler(req, res) {
         const { data: lead } = await sb.from("bullion_leads").select("phone,dnd").eq("id", m.lead_id).maybeSingle();
         if (!lead?.phone || lead.dnd) continue;
         const msg = `🪙 Your ${batch.scheme.name} (${batch.batch_label}) round has completed! Enroll for the next round anytime — visit https://ssj.in/kitty-schemes or reply here.\n- Sun Sea Jewellers, Karol Bagh`;
-        const wa = await sendWhatsApp({ phone: lead.phone, msg, client: KITTY_WA_CLIENT_ID }).catch(() => ({ status: 0 }));
-        if (wa.status === 1) stats.rolloverNudges++; else stats.failed++;
+        const { sent, queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: m.lead_id, phone: lead.phone, msg, context: { type: "batch_rollover", batchId: batch.id } });
+        if (sent) stats.rolloverNudges++; else if (queued) stats.queued++;
       }
     }
 
@@ -144,8 +145,8 @@ export default async function handler(req, res) {
         const { data: lead } = await sb.from("bullion_leads").select("phone,dnd").eq("id", e.lead_id).maybeSingle();
         if (!lead?.phone || lead.dnd) continue;
         const msg = `🪙 Your ${swarnScheme.name} scheme has completed its 11-month term and is now ready to redeem — visit Sun Sea Jewellers, Karol Bagh to collect (redemption is in-store only). Want to keep saving? Start a fresh Swarn Suraksha anytime.\n- Sun Sea Jewellers`;
-        const wa = await sendWhatsApp({ phone: lead.phone, msg, client: KITTY_WA_CLIENT_ID }).catch(() => ({ status: 0 }));
-        if (wa.status !== 1) stats.failed++;
+        const { queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: e.lead_id, phone: lead.phone, msg, context: { type: "swarn_freeze", enrollmentId: e.id } });
+        if (queued) stats.queued++;
       }
     }
 
@@ -188,8 +189,8 @@ export default async function handler(req, res) {
             const { data: lead } = await sb.from("bullion_leads").select("phone,dnd").eq("id", m.enrollment.lead_id).maybeSingle();
             if (lead?.phone && !lead.dnd) {
               const msg = `🎉 You've completed all 100 coins in Mission 100 — +1g free bonus added, 101g total in hand!\n- Sun Sea Jewellers, Karol Bagh`;
-              const wa = await sendWhatsApp({ phone: lead.phone, msg, client: KITTY_WA_CLIENT_ID }).catch(() => ({ status: 0 }));
-              if (wa.status !== 1) stats.failed++;
+              const { queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: m.enrollment.lead_id, phone: lead.phone, msg, context: { type: "mission100_completion", enrollmentId: m.enrollment.id } });
+              if (queued) stats.queued++;
             }
           } catch { stats.failed++; }
         }
@@ -227,7 +228,8 @@ export default async function handler(req, res) {
             const { data: lead } = await sb.from("bullion_leads").select("phone,dnd").eq("id", winner.leadId).maybeSingle();
             if (lead?.phone && !lead.dnd) {
               const msg = `🥇 You're first in your Mission 100 group to reach ${cp}g! +1g free bonus coin added.\n- Sun Sea Jewellers, Karol Bagh`;
-              await sendWhatsApp({ phone: lead.phone, msg, client: KITTY_WA_CLIENT_ID }).catch(() => ({ status: 0 }));
+              const { queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: winner.leadId, phone: lead.phone, msg, context: { type: "mission100_checkpoint", enrollmentId: winner.enrollmentId, checkpoint: cp } });
+              if (queued) stats.queued++;
             }
           } catch { stats.failed++; }
         } else {
@@ -241,8 +243,8 @@ export default async function handler(req, res) {
             const msg = isWinner
               ? `🏆 Congratulations — you're first in "${group.group_label}" to complete Mission 100! You've won ${tripDesc} (pending confirmation). Our team will be in touch.\n- Sun Sea Jewellers, Karol Bagh`
               : `🏆 Mission 100 winner declared in "${group.group_label}"! One of your group finished first and won ${tripDesc}. Keep going — your own checkpoints and completion bonus are still yours to win.\n- Sun Sea Jewellers, Karol Bagh`;
-            const wa = await sendWhatsApp({ phone: lead.phone, msg, client: KITTY_WA_CLIENT_ID }).catch(() => ({ status: 0 }));
-            if (wa.status === 1) stats.mission100Announcements++; else stats.failed++;
+            const { sent, queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: m.enrollment?.lead_id, phone: lead.phone, msg, context: { type: "mission100_winner", groupId: group.id } });
+            if (sent) stats.mission100Announcements++; else if (queued) stats.queued++;
           }
         }
       }
@@ -265,12 +267,34 @@ export default async function handler(req, res) {
         const { data: lead } = await sb.from("bullion_leads").select("phone,dnd").eq("id", m.enrollment?.lead_id).maybeSingle();
         if (lead?.phone && !lead.dnd) {
           const msg = `🎁 You've referred ${qualifyingCount} friends into Mission 100 who've each hit their first checkpoint — +${diff}g free bonus coin${diff > 1 ? "s" : ""} added!\n- Sun Sea Jewellers, Karol Bagh`;
-          await sendWhatsApp({ phone: lead.phone, msg, client: KITTY_WA_CLIENT_ID }).catch(() => ({ status: 0 }));
+          const { queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: m.enrollment?.lead_id, phone: lead.phone, msg, context: { type: "mission100_referral", enrollmentId: m.enrollment_id } });
+          if (queued) stats.queued++;
         }
       } catch { stats.failed++; }
     }
 
-    return res.status(200).json({ ok: true, ts: new Date().toISOString(), stats });
+    // ── 6. Nudge admins if any Kitty messages are stuck pending ─────────
+    // Every failed send above got queued instead of dropped (kitty_message_queue).
+    // Tell admins once per cron run so they know to go hit "Send Now" in Kitty
+    // Admin — sent via WbizTool (sendWhatsAppWbiz), deliberately NOT the same
+    // Baileys channel (KITTY_WA_CLIENT_ID) that's usually why these are stuck
+    // in the first place.
+    const { count: pendingCount } = await sb.from("kitty_message_queue")
+      .select("*", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).eq("status", "pending");
+    if (pendingCount > 0) {
+      try {
+        const { data: adminStaff } = await sb.from("staff").select("phone,role")
+          .eq("tenant_id", TENANT_ID).eq("active", true).in("role", ["superadmin", "admin"]);
+        const recipients = [...new Set(
+          [OWNER_PHONE, ...DIGEST_EXTRA_RECIPIENTS.split(","), ...(adminStaff || []).map((s) => s.phone)]
+            .map((p) => (p || "").trim()).filter(Boolean)
+        )];
+        const msg = `🔔 ${pendingCount} Kitty message${pendingCount === 1 ? "" : "s"} pending (couldn't send — WA session down or number issue). Open Kitty Admin → Pending Messages → Send Now to retry.`;
+        await Promise.all(recipients.map((phone) => sendWhatsAppWbiz({ phone, msg, whatsappClient: null }).catch(() => {})));
+      } catch { /* nudge is best-effort, never fail the cron over it */ }
+    }
+
+    return res.status(200).json({ ok: true, ts: new Date().toISOString(), stats, pendingMessages: pendingCount || 0 });
   } catch (err) {
     return res.status(500).json({ ok: false, error: String(err.message || err) });
   }

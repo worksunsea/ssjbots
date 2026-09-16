@@ -49,8 +49,13 @@ import { TENANT_ID, checkCrmSecret, normalizePhone, KITTY_WA_CLIENT_ID } from ".
 import { enrollLeadInDrip } from "./_lib/drip.js";
 import { logKittyAudit } from "./_lib/kittyAudit.js";
 import { sendWhatsApp } from "./_lib/wa.js";
+import { sendKittyWA } from "./_lib/kittyMessageQueue.js";
 import { gramsForInstallments } from "./_lib/kittyGrams.js";
 import { generateInviteCode, awardBonusCoin, CHECKPOINTS_G } from "./_lib/mission100.js";
+
+// set-monthly-rate paces WA sends across a whole scheme's members within
+// this one request (see below) — needs headroom beyond the default limit.
+export const config = { maxDuration: 120 };
 
 const REDEMPTION_CODE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 function hashCode(code) {
@@ -790,11 +795,11 @@ export default async function handler(req, res) {
     if (lead.dnd) return res.status(400).json({ ok: false, error: "member_opted_out_dnd" });
     const schemeName = row.enrollment?.is_legacy ? row.enrollment.legacy_scheme_name : (row.enrollment?.scheme?.name || "your Kitty scheme");
     const msg = `🪙 Reminder: your ${schemeName} installment #${row.month_number} of ₹${row.amount} is due on ${row.due_date}.\n- Sun Sea Jewellers, Karol Bagh`;
-    const wa = await sendWhatsApp({ phone: lead.phone, msg, client: KITTY_WA_CLIENT_ID }).catch(() => ({ status: 0 }));
-    if (wa.status !== 1) return res.status(500).json({ ok: false, error: "whatsapp_send_failed" });
-    await sb.from("kitty_installments").update({ reminded_at: new Date().toISOString() }).eq("id", body.installmentId);
-    await logAudit(sb, { entityType: "installment", entityId: body.installmentId, action: "reminder-sent", actor: body.actor });
-    return res.status(200).json({ ok: true });
+    const { sent, queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: row.enrollment?.lead_id, phone: lead.phone, msg, context: { type: "due_reminder", installmentId: body.installmentId } });
+    if (!sent && !queued) return res.status(500).json({ ok: false, error: "whatsapp_send_failed" });
+    if (sent) await sb.from("kitty_installments").update({ reminded_at: new Date().toISOString() }).eq("id", body.installmentId);
+    await logAudit(sb, { entityType: "installment", entityId: body.installmentId, action: sent ? "reminder-sent" : "reminder-queued", actor: body.actor });
+    return res.status(200).json({ ok: true, sent, queued });
   }
 
   if (req.method === "POST" && action === "record-draw") {
@@ -986,7 +991,7 @@ export default async function handler(req, res) {
     const { data: lead } = await sb.from("bullion_leads").select("phone").eq("id", enrollment?.lead_id).maybeSingle();
     if (lead?.phone) {
       const schemeName = enrollment.is_legacy ? enrollment.legacy_scheme_name : (enrollment.scheme?.name || "your Kitty");
-      await sendWhatsApp({ phone: lead.phone, msg: `🙏 Thank you! Your ${schemeName} has been redeemed successfully.\n- Sun Sea Jewellers, Karol Bagh`, client: KITTY_WA_CLIENT_ID }).catch(() => {});
+      await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: enrollment.lead_id, phone: lead.phone, msg: `🙏 Thank you! Your ${schemeName} has been redeemed successfully.\n- Sun Sea Jewellers, Karol Bagh`, context: { type: "redemption_thank_you", enrollmentId: body.id } });
     }
 
     await logAudit(sb, { entityType: "enrollment", entityId: body.id, action: "redeem-confirmed", actor: body.actor || body.redeemedBy });
@@ -1249,16 +1254,62 @@ export default async function handler(req, res) {
       const { data: leadRows } = await sb.from("bullion_leads").select("id, phone, dnd").in("id", leadIds);
       const schemeName = targetScheme?.name || "your Kitty scheme";
       const monthLabel = new Date(`${body.month}-01T00:00:00Z`).toLocaleDateString("en-IN", { month: "long", year: "numeric", timeZone: "UTC" });
+      let first = true;
       for (const lead of leadRows || []) {
         if (!lead.phone || lead.dnd) continue;
+        // Space sends out (~2s + jitter) so a rate-cut to a big group doesn't
+        // fire as a burst — same anti-ban concern as broadcast-send.js's pacing.
+        if (!first) await new Promise((r) => setTimeout(r, 1800 + Math.random() * 700));
+        first = false;
         const { amount, grams } = byLead.get(lead.id);
         const msg = `🪙 ${schemeName} — ${monthLabel} rate booked: ₹${rateCheck.value.toLocaleString("en-IN")}/g\nYour ₹${Math.round(amount).toLocaleString("en-IN")} this month = ${grams.toFixed(3)}g added.\n- Sun Sea Jewellers, Karol Bagh`;
-        const wa = await sendWhatsApp({ phone: lead.phone, msg, client: KITTY_WA_CLIENT_ID }).catch(() => ({ status: 0 }));
-        if (wa.status === 1) notified++;
+        const { sent } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: lead.id, phone: lead.phone, msg, context: { type: "rate_notify", schemeId: body.schemeId, month: body.month } });
+        if (sent) notified++;
       }
     }
 
     return res.status(200).json({ ok: true, updated: updated?.length || 0, notified });
+  }
+
+  // GET ?action=admin-list-pending-messages — staff. Kitty WA sends that
+  // failed and got queued (kitty_message_queue) instead of silently dropped.
+  if (req.method === "GET" && action === "admin-list-pending-messages") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const { data, error } = await sb.from("kitty_message_queue")
+      .select("id, phone, message, context, status, attempts, last_error, created_at, sent_at, lead:bullion_leads(name)")
+      .eq("tenant_id", TENANT_ID).eq("status", "pending").order("created_at", { ascending: true });
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.status(200).json({ ok: true, messages: data || [] });
+  }
+
+  // POST ?action=admin-send-pending-message — staff. Body: { id, actor }.
+  // Retries one queued message. Frontend calls this in a loop with a delay
+  // between calls for "send all" — kept per-message here (not a bulk
+  // endpoint) so the pacing lives client-side where it's visible/cancellable,
+  // same reasoning as broadcast sends but simpler (no scheduling needed,
+  // these are already overdue).
+  if (req.method === "POST" && action === "admin-send-pending-message") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    if (!body.id) return res.status(400).json({ ok: false, error: "id_required" });
+    const { data: row } = await sb.from("kitty_message_queue").select("*").eq("tenant_id", TENANT_ID).eq("id", body.id).maybeSingle();
+    if (!row) return res.status(404).json({ ok: false, error: "not_found" });
+    if (row.status !== "pending") return res.status(200).json({ ok: true, alreadyHandled: true, status: row.status });
+    let sent = false, errMsg = null;
+    try {
+      const wa = await sendWhatsApp({ phone: row.phone, msg: row.message, client: KITTY_WA_CLIENT_ID });
+      sent = wa?.status === 1;
+      if (!sent) errMsg = `send_status_${wa?.status ?? "unknown"}`;
+    } catch (err) { errMsg = String(err?.message || err); }
+    if (sent) {
+      await sb.from("kitty_message_queue").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", row.id);
+      await logAudit(sb, { entityType: "kitty_message_queue", entityId: row.id, action: "retry-sent", actor: body.actor });
+    } else {
+      await sb.from("kitty_message_queue").update({ attempts: (row.attempts || 1) + 1, last_error: errMsg }).eq("id", row.id);
+    }
+    return res.status(200).json({ ok: true, sent });
   }
 
   // GET ?action=admin-list-audit-log — staff. Query: entityType?, entityId?, limit? (default 200)
