@@ -108,6 +108,14 @@ export default async function handler(req, res) {
       { table: "bullion_scheduled_messages", col: "lead_id" },
       { table: "bullion_call_logs", col: "lead_id" },
       { table: "bullion_funnel_history", col: "lead_id" },
+      // Without this, merging two duplicate contacts left the secondary's
+      // Kitty enrollment(s) still pointing at the now-dead/soft-deleted
+      // record — the member's gold scheme effectively vanished from view
+      // even though the DB rows were intact. If both records happen to have
+      // an active enrollment in the same scheme, staff already has a
+      // separate "merge duplicate member" action in Kitty Admin to combine
+      // those two enrollments into one.
+      { table: "kitty_enrollments", col: "lead_id" },
     ]) {
       const { error } = await sb.from(table).update({ [col]: primaryLeadId }).eq(col, secondaryLeadId);
       if (error && !error.message.includes("does not exist")) console.error(`merge: reassign ${table}`, error.message);

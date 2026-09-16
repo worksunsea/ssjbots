@@ -1201,7 +1201,7 @@ export default async function handler(req, res) {
     // exact moment of each payment (Swarn Suraksha online checkout, Mission
     // 100 online/staff purchases) — a bulk overwrite there would corrupt
     // correct per-transaction data, not fix a booking gap.
-    const { data: targetScheme } = await sb.from("kitty_schemes").select("perks").eq("tenant_id", TENANT_ID).eq("id", body.schemeId).maybeSingle();
+    const { data: targetScheme } = await sb.from("kitty_schemes").select("name,perks").eq("tenant_id", TENANT_ID).eq("id", body.schemeId).maybeSingle();
     if (targetScheme?.perks?.online_purchase || targetScheme?.perks?.mission100) {
       return res.status(400).json({ ok: false, error: "bulk_monthly_rate_not_applicable_this_scheme_already_captures_live_rate_per_purchase" });
     }
@@ -1222,11 +1222,43 @@ export default async function handler(req, res) {
       .eq("status", "paid")
       .gte("due_date", monthStart)
       .lt("due_date", monthEnd)
-      .select("id");
+      .select("id, amount, paid_amount, enrollment_id");
     if (error) return res.status(500).json({ ok: false, error: error.message });
 
     await logAudit(sb, { entityType: "kitty_monthly_rate", entityId: body.schemeId, action: "bulk_set_rate", actor: body.actor, details: { schemeId: body.schemeId, month: body.month, ratePerGram: rateCheck.value, updated: updated?.length || 0 } });
-    return res.status(200).json({ ok: true, updated: updated?.length || 0 });
+
+    // WA notify every member whose installment(s) just got this rate — was
+    // previously silent, members only found out by checking the app. Grouped
+    // by lead so someone with 2 rows this month (e.g. base + top-up) gets one
+    // message with their combined total, not two separate ones.
+    let notified = 0;
+    if (updated?.length) {
+      const { data: enrollLeadRows } = await sb.from("kitty_enrollments").select("id, lead_id").in("id", [...new Set(updated.map((u) => u.enrollment_id))]);
+      const leadIdByEnrollment = new Map((enrollLeadRows || []).map((e) => [e.id, e.lead_id]));
+      const byLead = new Map(); // lead_id -> { amount, grams }
+      for (const u of updated) {
+        const leadId = leadIdByEnrollment.get(u.enrollment_id);
+        if (!leadId) continue;
+        const amount = Number(u.paid_amount ?? u.amount ?? 0);
+        const grams = amount / rateCheck.value;
+        const acc = byLead.get(leadId) || { amount: 0, grams: 0 };
+        acc.amount += amount; acc.grams += grams;
+        byLead.set(leadId, acc);
+      }
+      const leadIds = [...byLead.keys()];
+      const { data: leadRows } = await sb.from("bullion_leads").select("id, phone, dnd").in("id", leadIds);
+      const schemeName = targetScheme?.name || "your Kitty scheme";
+      const monthLabel = new Date(`${body.month}-01T00:00:00Z`).toLocaleDateString("en-IN", { month: "long", year: "numeric", timeZone: "UTC" });
+      for (const lead of leadRows || []) {
+        if (!lead.phone || lead.dnd) continue;
+        const { amount, grams } = byLead.get(lead.id);
+        const msg = `🪙 ${schemeName} — ${monthLabel} rate booked: ₹${rateCheck.value.toLocaleString("en-IN")}/g\nYour ₹${Math.round(amount).toLocaleString("en-IN")} this month = ${grams.toFixed(3)}g added.\n- Sun Sea Jewellers, Karol Bagh`;
+        const wa = await sendWhatsApp({ phone: lead.phone, msg, client: KITTY_WA_CLIENT_ID }).catch(() => ({ status: 0 }));
+        if (wa.status === 1) notified++;
+      }
+    }
+
+    return res.status(200).json({ ok: true, updated: updated?.length || 0, notified });
   }
 
   // GET ?action=admin-list-audit-log — staff. Query: entityType?, entityId?, limit? (default 200)
