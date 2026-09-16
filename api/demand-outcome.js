@@ -90,18 +90,67 @@ export default async function handler(req, res) {
   if (typeof body === "string") { try { body = JSON.parse(body); } catch { body = {}; } }
   body = body || {};
 
-  // ── Merge leads action (previously api/merge-leads.js, consolidated to save a function slot) ──
+  // ── Merge leads: manager+ requests, superadmin approves ─────────────────
+  // Merge re-points a lot of data and soft-deletes a record — previously
+  // executed the instant a manager confirmed the modal, no second set of
+  // eyes on it. Now `action: "merge"` only queues a request
+  // (bullion_lead_merge_requests); the actual reassignment happens in
+  // `action: "approve-merge"`, superadmin only.
+  const MANAGER_PLUS = ["superadmin", "admin", "manager"];
+
   if (body.action === "merge") {
-    const { primaryLeadId, secondaryLeadId } = body;
+    const { primaryLeadId, secondaryLeadId, actor, actorRole } = body;
     if (!primaryLeadId || !secondaryLeadId || primaryLeadId === secondaryLeadId)
       return res.status(400).json({ ok: false, error: "primaryLeadId and secondaryLeadId required and must differ" });
+    if (!MANAGER_PLUS.includes(actorRole)) return res.status(403).json({ ok: false, error: "manager_or_above_required" });
     const sb = supa();
+    const { data: primary } = await sb.from("bullion_leads").select("id,tenant_id").eq("id", primaryLeadId).single();
+    if (!primary) return res.status(404).json({ ok: false, error: "primary_not_found" });
+    const { data: reqRow, error } = await sb.from("bullion_lead_merge_requests")
+      .insert({ tenant_id: primary.tenant_id, primary_lead_id: primaryLeadId, secondary_lead_id: secondaryLeadId, requested_by: actor || null })
+      .select().single();
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.status(200).json({ ok: true, pending: true, requestId: reqRow.id });
+  }
+
+  // GET-style via POST (consistent with rest of this file) — list pending merge requests, superadmin only.
+  if (body.action === "list-pending-merges") {
+    if (body.actorRole !== "superadmin") return res.status(403).json({ ok: false, error: "superadmin_required" });
+    const sb = supa();
+    const { data, error } = await sb.from("bullion_lead_merge_requests")
+      .select("id, requested_by, requested_at, primary:bullion_leads!bullion_lead_merge_requests_primary_lead_id_fkey(id,name,phone), secondary:bullion_leads!bullion_lead_merge_requests_secondary_lead_id_fkey(id,name,phone)")
+      .eq("status", "pending").order("requested_at", { ascending: true });
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.status(200).json({ ok: true, requests: data || [] });
+  }
+
+  if (body.action === "reject-merge") {
+    if (body.actorRole !== "superadmin") return res.status(403).json({ ok: false, error: "superadmin_required" });
+    if (!body.requestId) return res.status(400).json({ ok: false, error: "requestId_required" });
+    const sb = supa();
+    const { error } = await sb.from("bullion_lead_merge_requests")
+      .update({ status: "rejected", decided_by: body.actor || null, decided_at: new Date().toISOString() })
+      .eq("id", body.requestId).eq("status", "pending");
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.status(200).json({ ok: true });
+  }
+
+  if (body.action === "approve-merge") {
+    if (body.actorRole !== "superadmin") return res.status(403).json({ ok: false, error: "superadmin_required" });
+    if (!body.requestId) return res.status(400).json({ ok: false, error: "requestId_required" });
+    const sb = supa();
+    const { data: reqRow } = await sb.from("bullion_lead_merge_requests").select("*").eq("id", body.requestId).eq("status", "pending").maybeSingle();
+    if (!reqRow) return res.status(404).json({ ok: false, error: "request_not_found_or_already_decided" });
+    const { primary_lead_id: primaryLeadId, secondary_lead_id: secondaryLeadId } = reqRow;
+
     const [{ data: primary }, { data: secondary }] = await Promise.all([
       sb.from("bullion_leads").select("*").eq("id", primaryLeadId).single(),
       sb.from("bullion_leads").select("*").eq("id", secondaryLeadId).single(),
     ]);
-    if (!primary) return res.status(404).json({ ok: false, error: "primary_not_found" });
-    if (!secondary) return res.status(404).json({ ok: false, error: "secondary_not_found" });
+    if (!primary || !secondary) {
+      await sb.from("bullion_lead_merge_requests").update({ status: "rejected", decided_by: body.actor || null, decided_at: new Date().toISOString() }).eq("id", body.requestId);
+      return res.status(404).json({ ok: false, error: "primary_or_secondary_no_longer_exists" });
+    }
     for (const { table, col } of [
       { table: "bullion_demands", col: "lead_id" },
       { table: "bullion_messages", col: "lead_id" },
@@ -130,6 +179,7 @@ export default async function handler(req, res) {
       await sb.from("bullion_lead_aliases").insert({ tenant_id: secondary.tenant_id, alias_phone: secondary.phone, lead_id: primaryLeadId, created_by: "merge_leads" }).then(() => {}, () => {});
     }
     await sb.from("bullion_leads").update({ status: "dead", bot_paused: true, name: `[MERGED] ${secondary.name || secondary.phone}` }).eq("id", secondaryLeadId);
+    await sb.from("bullion_lead_merge_requests").update({ status: "approved", decided_by: body.actor || null, decided_at: new Date().toISOString() }).eq("id", body.requestId);
     return res.status(200).json({ ok: true, primaryLeadId, secondaryLeadId, filledFields: Object.keys(fillPatch) });
   }
 

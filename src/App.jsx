@@ -4875,6 +4875,30 @@ function ContactsScreen({ funnels }) {
   const [filterTags, setFilterTags] = useState([]);
   const [tagLogic, setTagLogic] = useState("AND"); // AND = must have all, OR = any
   const isSA = loadUser()?.role === "superadmin";
+  const isManagerPlus = ["superadmin", "admin", "manager"].includes(loadUser()?.role);
+  const [mergeModal, setMergeModal] = useState(null); // { primaryId, secondaryId } | null
+  const [pendingMerges, setPendingMerges] = useState(null);
+  const [pendingMergesOpen, setPendingMergesOpen] = useState(false);
+  const loadPendingMerges = useCallback(async () => {
+    if (!isSA) return;
+    const r = await fetch("/api/demand-outcome", {
+      method: "POST", headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
+      body: JSON.stringify({ action: "list-pending-merges", actorRole: loadUser()?.role }),
+    });
+    const d = await r.json().catch(() => ({}));
+    setPendingMerges(d.ok ? d.requests : []);
+  }, [isSA]);
+  useEffect(() => { loadPendingMerges(); }, [loadPendingMerges]);
+  const decideMerge = async (requestId, decision) => {
+    const r = await fetch("/api/demand-outcome", {
+      method: "POST", headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
+      body: JSON.stringify({ action: decision === "approve" ? "approve-merge" : "reject-merge", requestId, actor: loadUser()?.name, actorRole: loadUser()?.role }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!d.ok) { alert(d.error || "Failed"); return; }
+    await loadPendingMerges();
+    if (decision === "approve") load();
+  };
   const [bulkMode, setBulkMode] = useState(false);
   const [selected, setSelected] = useState(new Set());
   const [bulkTagAdd, setBulkTagAdd] = useState("");
@@ -5022,6 +5046,30 @@ function ContactsScreen({ funnels }) {
         <span style={{ fontSize: 11, color: "#888" }}>{loading ? "Loading…" : `${total.toLocaleString()} contacts`}</span>
       </div>
 
+      {isSA && pendingMerges?.length > 0 && (
+        <div style={{ background: "#f5f0ff", border: "1px solid #c4b5fd", borderRadius: 10, padding: "10px 14px", marginBottom: 12 }}>
+          <p onClick={() => setPendingMergesOpen((v) => !v)} style={{ margin: pendingMergesOpen ? "0 0 8px" : 0, cursor: "pointer", fontSize: 13, fontWeight: 600, color: C.purple, display: "flex", alignItems: "center", gap: 6 }}>
+            {pendingMergesOpen ? "▾" : "▸"} 🔗 Pending Merge Approvals ({pendingMerges.length})
+          </p>
+          {pendingMergesOpen && pendingMerges.map((r) => (
+            <div key={r.id} style={{ background: "#fff", border: "1px solid #eee", borderRadius: 8, padding: "8px 12px", marginBottom: 6, fontSize: 12.5 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                <div>
+                  <b>Keep:</b> {r.primary?.name || "—"} ({r.primary?.phone}) &nbsp;·&nbsp; <b>Discard into it:</b> {r.secondary?.name || "—"} ({r.secondary?.phone})
+                  <div style={{ fontSize: 11, color: "#888" }}>Requested by {r.requested_by || "?"} · {new Date(r.requested_at).toLocaleString("en-IN")}
+                    {r.primary?.phone && r.secondary?.phone && r.primary.phone !== r.secondary.phone && <span style={{ color: "#b91c1c", fontWeight: 600 }}> · ⚠ different phone numbers</span>}
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <Btn small color={C.green} onClick={() => decideMerge(r.id, "approve")}>Approve</Btn>
+                  <Btn small ghost color={C.red} onClick={() => decideMerge(r.id, "reject")}>Reject</Btn>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {showFieldMgr && <CustomFieldsManager fields={customFields} />}
 
       {bulkMode && (
@@ -5063,6 +5111,16 @@ function ContactsScreen({ funnels }) {
               setBulkTagRemove(""); clearSel(); setBulkWorking(false);
               load(search, filterTags, tagLogic, page);
             }}>{bulkWorking ? "…" : "Remove"}</Btn>
+            {/* Merge — manager+, exactly 2 selected. Opens the merge modal to
+                pick primary/secondary; submitting only queues a request —
+                a superadmin approves before anything actually merges. */}
+            {isManagerPlus && (
+              <Btn small ghost color={C.purple} disabled={selected.size !== 2}
+                title={selected.size !== 2 ? "Select exactly 2 contacts to merge" : "Merge these two"}
+                onClick={() => { const [a, b] = [...selected]; setMergeModal({ primaryId: a, secondaryId: b }); }}>
+                🔗 Merge {selected.size === 2 ? "" : "(pick 2)"}
+              </Btn>
+            )}
             {/* Bulk delete — SA only */}
             {isSA && selected.size > 0 && (
               <Btn small color={C.red} disabled={bulkWorking} onClick={async () => {
@@ -5281,6 +5339,14 @@ function ContactsScreen({ funnels }) {
           contact={sending}
           waNumbers={waNumbers}
           onClose={() => setSending(null)}
+        />
+      )}
+      {mergeModal && (
+        <MergeLeadsModal
+          primaryId={mergeModal.primaryId}
+          secondaryId={mergeModal.secondaryId}
+          onClose={() => setMergeModal(null)}
+          onMerged={() => { setMergeModal(null); exitBulk(); alert("Merge requested — pending superadmin approval."); }}
         />
       )}
     </div>
@@ -8567,10 +8633,10 @@ function MergeLeadsModal({ primaryId, secondaryId, onClose, onMerged }) {
       const r = await fetch("/api/demand-outcome", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
-        body: JSON.stringify({ action: "merge", primaryLeadId: pid, secondaryLeadId: sid }),
+        body: JSON.stringify({ action: "merge", primaryLeadId: pid, secondaryLeadId: sid, actor: loadUser()?.name, actorRole: loadUser()?.role }),
       });
       const data = await r.json();
-      if (!data.ok) { setErr(data.error || "Merge failed"); setBusy(false); return; }
+      if (!data.ok) { setErr(data.error || "Merge request failed"); setBusy(false); return; }
       onMerged && onMerged(pid);
     } catch (e) { setErr(String(e)); setBusy(false); }
   };
@@ -8608,11 +8674,18 @@ function MergeLeadsModal({ primaryId, secondaryId, onClose, onMerged }) {
   const pd = swapped ? secondaryDemands : primaryDemands;
   const sd = swapped ? primaryDemands : secondaryDemands;
 
+  const phonesDiffer = p?.phone && s?.phone && p.phone !== s.phone;
+
   return (
     <Modal title="Merge Leads — same person, two records" onClose={onClose} width={680}>
       <div style={{ fontSize: 13, color: "#555", marginBottom: 14 }}>
-        All demands, messages and call history from the <strong>secondary</strong> will move to the <strong>primary</strong>. Secondary is then archived. This cannot be undone.
+        All demands, messages and call history from the <strong>secondary</strong> will move to the <strong>primary</strong>. Secondary is then archived. This is not immediate — it queues for a superadmin to approve.
       </div>
+      {phonesDiffer && (
+        <div style={{ background: "#fff5f5", border: "1px solid #fca5a5", borderRadius: 8, padding: "8px 12px", marginBottom: 12, fontSize: 12.5, color: "#991b1b" }}>
+          ⚠️ <strong>These two records have different phone numbers.</strong> Same name doesn't always mean the same person — double-check before requesting this merge. Only proceed if you're sure they're really one person (e.g. old number vs new number), not two different clients who happen to share a name.
+        </div>
+      )}
       <div style={{ display: "flex", gap: 12, marginBottom: 12 }}>
         <LeadCard lead={p} demands={pd} label="primary" isPrimary={true} />
         <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", gap: 8 }}>
@@ -8628,7 +8701,7 @@ function MergeLeadsModal({ primaryId, secondaryId, onClose, onMerged }) {
       {err && <div style={{ color: C.red, fontSize: 12, marginBottom: 8 }}>{err}</div>}
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
         <Btn ghost color={C.gray} onClick={onClose}>Cancel</Btn>
-        <Btn color={C.red} onClick={doMerge} disabled={busy}>{busy ? "Merging…" : "✓ Merge — keep primary"}</Btn>
+        <Btn color={C.red} onClick={doMerge} disabled={busy}>{busy ? "Requesting…" : "✓ Request Merge (needs SA approval)"}</Btn>
       </div>
     </Modal>
   );
