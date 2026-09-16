@@ -174,6 +174,30 @@ export default async function handler(req, res) {
     for (const f of fillFields) { if (!primary[f] && secondary[f]) fillPatch[f] = secondary[f]; }
     const mergedTags = Array.from(new Set([...(primary.tags || []), ...(secondary.tags || [])]));
     if (mergedTags.length > (primary.tags || []).length) fillPatch.tags = mergedTags;
+
+    // Secondary's phone would otherwise just vanish into a search-only alias
+    // row — give it a real, visible home too when primary's Mobile 2 is free.
+    if (secondary.phone && secondary.phone !== primary.phone && !primary.mobile2) {
+      fillPatch.mobile2 = secondary.phone;
+    }
+    // Any other field where BOTH records have a real, different value: keep
+    // primary's (never silently overwrite), but don't just drop secondary's —
+    // stash it on extra_fields.merge_conflicts (the same JSONB column the
+    // contact editor already reads/writes as its custom-field bag) so staff
+    // can reconcile later (surfaced as a warning banner on the merged contact).
+    const conflictFields = ["salutation","email","city","address_house","address_locality","address_state","address_pincode","bday","anniversary","spouse_name","spouse_dob","spouse_mobile","profession","company","client_code"];
+    const conflicts = {};
+    for (const f of conflictFields) {
+      if (primary[f] && secondary[f] && String(primary[f]).trim().toLowerCase() !== String(secondary[f]).trim().toLowerCase()) {
+        conflicts[f] = secondary[f];
+      }
+    }
+    if (Object.keys(conflicts).length > 0) {
+      fillPatch.extra_fields = {
+        ...(primary.extra_fields || {}),
+        merge_conflicts: { ...conflicts, _from: secondary.name || secondary.phone, _at: new Date().toISOString() },
+      };
+    }
     if (Object.keys(fillPatch).length > 0) await sb.from("bullion_leads").update(fillPatch).eq("id", primaryLeadId);
     if (secondary.phone) {
       await sb.from("bullion_lead_aliases").insert({ tenant_id: secondary.tenant_id, alias_phone: secondary.phone, lead_id: primaryLeadId, created_by: "merge_leads" }).then(() => {}, () => {});

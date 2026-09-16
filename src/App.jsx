@@ -4889,16 +4889,6 @@ function ContactsScreen({ funnels }) {
     setPendingMerges(d.ok ? d.requests : []);
   }, [isSA]);
   useEffect(() => { loadPendingMerges(); }, [loadPendingMerges]);
-  const decideMerge = async (requestId, decision) => {
-    const r = await fetch("/api/demand-outcome", {
-      method: "POST", headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
-      body: JSON.stringify({ action: decision === "approve" ? "approve-merge" : "reject-merge", requestId, actor: loadUser()?.name, actorRole: loadUser()?.role }),
-    });
-    const d = await r.json().catch(() => ({}));
-    if (!d.ok) { alert(d.error || "Failed"); return; }
-    await loadPendingMerges();
-    if (decision === "approve") load();
-  };
   const [bulkMode, setBulkMode] = useState(false);
   const [selected, setSelected] = useState(new Set());
   const [bulkTagAdd, setBulkTagAdd] = useState("");
@@ -5061,8 +5051,7 @@ function ContactsScreen({ funnels }) {
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
-                  <Btn small color={C.green} onClick={() => decideMerge(r.id, "approve")}>Approve</Btn>
-                  <Btn small ghost color={C.red} onClick={() => decideMerge(r.id, "reject")}>Reject</Btn>
+                  <Btn small color={C.purple} onClick={() => setMergeModal({ primaryId: r.primary?.id, secondaryId: r.secondary?.id, approveMode: true, requestId: r.id })}>🔍 Review & Decide</Btn>
                 </div>
               </div>
             </div>
@@ -5345,8 +5334,14 @@ function ContactsScreen({ funnels }) {
         <MergeLeadsModal
           primaryId={mergeModal.primaryId}
           secondaryId={mergeModal.secondaryId}
+          approveMode={mergeModal.approveMode}
+          requestId={mergeModal.requestId}
           onClose={() => setMergeModal(null)}
-          onMerged={() => { setMergeModal(null); exitBulk(); alert("Merge requested — pending superadmin approval."); }}
+          onMerged={() => {
+            setMergeModal(null);
+            if (mergeModal.approveMode) { loadPendingMerges(); load(); }
+            else { exitBulk(); alert("Merge requested — pending superadmin approval."); }
+          }}
         />
       )}
     </div>
@@ -5700,8 +5695,31 @@ function ContactEditModal({ contact, allTags = [], customFields = [], onClose, o
     );
   };
 
+  const mergeConflicts = contact.extra_fields?.merge_conflicts;
+  const dismissMergeConflicts = async () => {
+    const { merge_conflicts, ...rest } = form.extra_fields || {};
+    await sb.from("bullion_leads").update({ extra_fields: rest }).eq("id", contact.id);
+    setForm((p) => ({ ...p, extra_fields: rest }));
+  };
+
   return (
     <Modal title={isNew ? "Add Contact" : `Edit — ${contact.name || contact.phone}`} onClose={onClose} width={540}>
+      {mergeConflicts && (
+        <div style={{ background: "#fff5f0", border: "1px solid #fdba74", borderRadius: 8, padding: "8px 12px", marginBottom: 12, fontSize: 12.5 }}>
+          <div style={{ fontWeight: 700, color: "#9a3412", marginBottom: 4 }}>⚠️ Merge conflict — differing details weren't overwritten</div>
+          <div style={{ color: "#7c2d12" }}>
+            When this contact was merged with <b>{mergeConflicts._from}</b>, these fields differed. The value below was kept from the other record — check if it should be copied in:
+          </div>
+          <table style={{ width: "100%", marginTop: 6, fontSize: 12 }}>
+            <tbody>
+              {Object.entries(mergeConflicts).filter(([k]) => k !== "_from" && k !== "_at").map(([k, v]) => (
+                <tr key={k}><td style={{ color: "#9a3412", paddingRight: 8 }}>{k}:</td><td>{String(v)}</td></tr>
+              ))}
+            </tbody>
+          </table>
+          <Btn small ghost color={C.orange} onClick={dismissMergeConflicts} style={{ marginTop: 6 }}>Reviewed — dismiss</Btn>
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
         {orderedFields.map(f => renderFormField(f))}
       </div>
@@ -8603,7 +8621,18 @@ function ConfigRow({ row, saving, onSave }) {
 // ──────────────────────────────────────────────────────────────────────────
 // MERGE LEADS MODAL — combine two records for the same person
 // ──────────────────────────────────────────────────────────────────────────
-function MergeLeadsModal({ primaryId, secondaryId, onClose, onMerged }) {
+// Fields worth showing in the merge diff table — anything a merge could
+// silently overwrite or drop. Excludes bookkeeping columns (id, tenant_id,
+// timestamps, funnel state, etc).
+const MERGE_DIFF_FIELDS = [
+  ["name", "Name"], ["salutation", "Salutation"], ["phone", "Phone"], ["mobile2", "Mobile 2"],
+  ["email", "Email"], ["city", "City"], ["address_house", "Address (house)"], ["address_locality", "Address (locality)"],
+  ["address_state", "State"], ["address_pincode", "Pincode"], ["bday", "Birthday"], ["anniversary", "Anniversary"],
+  ["spouse_name", "Spouse name"], ["spouse_dob", "Spouse DOB"], ["spouse_mobile", "Spouse mobile"],
+  ["profession", "Profession"], ["company", "Company"], ["client_code", "Client code"], ["source", "Source"],
+];
+
+function MergeLeadsModal({ primaryId, secondaryId, onClose, onMerged, approveMode, requestId }) {
   const [primary, setPrimary] = useState(null);
   const [secondary, setSecondary] = useState(null);
   const [primaryDemands, setPrimaryDemands] = useState([]);
@@ -8611,14 +8640,15 @@ function MergeLeadsModal({ primaryId, secondaryId, onClose, onMerged }) {
   const [swapped, setSwapped] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [viewFull, setViewFull] = useState(null); // lead object being viewed in full, or null
 
   const pid = swapped ? secondaryId : primaryId;
   const sid = swapped ? primaryId : secondaryId;
 
   useEffect(() => {
     Promise.all([
-      sb.from("bullion_leads").select("id,name,phone,city,source,tags,created_at,last_msg_at").eq("id", primaryId).single(),
-      sb.from("bullion_leads").select("id,name,phone,city,source,tags,created_at,last_msg_at").eq("id", secondaryId).single(),
+      sb.from("bullion_leads").select("*").eq("id", primaryId).single(),
+      sb.from("bullion_leads").select("*").eq("id", secondaryId).single(),
       sb.from("bullion_demands").select("id,product_category,description,created_at,outcome").eq("lead_id", primaryId).limit(5),
       sb.from("bullion_demands").select("id,product_category,description,created_at,outcome").eq("lead_id", secondaryId).limit(5),
     ]).then(([p, s, pd, sd]) => {
@@ -8641,13 +8671,30 @@ function MergeLeadsModal({ primaryId, secondaryId, onClose, onMerged }) {
     } catch (e) { setErr(String(e)); setBusy(false); }
   };
 
+  const decideThisMerge = async (decision) => {
+    setBusy(true); setErr("");
+    try {
+      const r = await fetch("/api/demand-outcome", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
+        body: JSON.stringify({ action: decision === "approve" ? "approve-merge" : "reject-merge", requestId, actor: loadUser()?.name, actorRole: loadUser()?.role }),
+      });
+      const data = await r.json();
+      if (!data.ok) { setErr(data.error || `${decision === "approve" ? "Approve" : "Reject"} failed`); setBusy(false); return; }
+      onMerged && onMerged();
+    } catch (e) { setErr(String(e)); setBusy(false); }
+  };
+
   const LeadCard = ({ lead, demands, label, isPrimary }) => (
     <div style={{ flex: 1, border: `2px solid ${isPrimary ? C.green : "#ddd"}`, borderRadius: 10, padding: 14, minWidth: 0 }}>
-      <div style={{ fontSize: 11, fontWeight: 700, color: isPrimary ? C.green : "#888", marginBottom: 6, textTransform: "uppercase" }}>
-        {isPrimary ? "✓ PRIMARY (keep)" : "Secondary (merge in)"}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: isPrimary ? C.green : "#888", marginBottom: 6, textTransform: "uppercase" }}>
+          {isPrimary ? "✓ PRIMARY (keep)" : "Secondary (merge in)"}
+        </div>
+        <button onClick={() => setViewFull(lead)} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", cursor: "pointer", whiteSpace: "nowrap" }}>🔍 View full</button>
       </div>
       <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 2 }}>{lead?.name || "(no name)"}</div>
-      <div style={{ fontSize: 12, color: "#555", fontFamily: "monospace" }}>📱 {lead?.phone}</div>
+      <div style={{ fontSize: 12, color: "#555", fontFamily: "monospace" }}>📱 {lead?.phone}{lead?.mobile2 ? ` / ${lead.mobile2}` : ""}</div>
       {lead?.city && <div style={{ fontSize: 12, color: "#888" }}>📍 {lead.city}</div>}
       {lead?.source && <div style={{ fontSize: 11, color: "#888" }}>Source: {lead.source}</div>}
       <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>Joined: {lead?.created_at ? new Date(lead.created_at).toLocaleDateString("en-IN") : "—"}</div>
@@ -8677,9 +8724,11 @@ function MergeLeadsModal({ primaryId, secondaryId, onClose, onMerged }) {
   const phonesDiffer = p?.phone && s?.phone && p.phone !== s.phone;
 
   return (
-    <Modal title="Merge Leads — same person, two records" onClose={onClose} width={680}>
+    <Modal title={approveMode ? "Approve Merge Request" : "Merge Leads — same person, two records"} onClose={onClose} width={680}>
       <div style={{ fontSize: 13, color: "#555", marginBottom: 14 }}>
-        All demands, messages and call history from the <strong>secondary</strong> will move to the <strong>primary</strong>. Secondary is then archived. This is not immediate — it queues for a superadmin to approve.
+        {approveMode
+          ? <>Review both full records below before deciding. Approving will move all demands, messages and call history from the <strong>secondary</strong> onto the <strong>primary</strong>, then archive the secondary.</>
+          : <>All demands, messages and call history from the <strong>secondary</strong> will move to the <strong>primary</strong>. Secondary is then archived. This is not immediate — it queues for a superadmin to approve.</>}
       </div>
       {phonesDiffer && (
         <div style={{ background: "#fff5f5", border: "1px solid #fca5a5", borderRadius: 8, padding: "8px 12px", marginBottom: 12, fontSize: 12.5, color: "#991b1b" }}>
@@ -8689,19 +8738,79 @@ function MergeLeadsModal({ primaryId, secondaryId, onClose, onMerged }) {
       <div style={{ display: "flex", gap: 12, marginBottom: 12 }}>
         <LeadCard lead={p} demands={pd} label="primary" isPrimary={true} />
         <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", gap: 8 }}>
-          <button onClick={() => setSwapped((v) => !v)}
-            style={{ padding: "6px 10px", background: "#f0f0f0", border: "1px solid #ddd", borderRadius: 8, cursor: "pointer", fontSize: 13 }}
-            title="Swap which is primary">⇄</button>
+          {!approveMode && (
+            <button onClick={() => setSwapped((v) => !v)}
+              style={{ padding: "6px 10px", background: "#f0f0f0", border: "1px solid #ddd", borderRadius: 8, cursor: "pointer", fontSize: 13 }}
+              title="Swap which is primary">⇄</button>
+          )}
         </div>
         <LeadCard lead={s} demands={sd} label="secondary" isPrimary={false} />
       </div>
       <div style={{ fontSize: 12, color: "#888", marginBottom: 12 }}>
-        ↑ Use ⇄ to swap which record becomes the primary (kept) one. Choose the one with the real phone number you want to keep.
+        {approveMode
+          ? <>Primary/secondary was fixed by the manager who requested this merge. Click "View full" to open either record's complete profile before deciding.</>
+          : <>↑ Use ⇄ to swap which record becomes the primary (kept) one. Choose the one with the real phone number you want to keep. Click "View full" to open either record's complete profile before deciding.</>}
       </div>
+
+      {/* Field-by-field diff — every field that could get silently overwritten
+          or dropped. Nothing is actually lost on merge: where both sides have
+          a DIFFERENT value, primary's is kept but secondary's is saved into
+          custom_fields.merge_conflicts for staff to reconcile afterward
+          (shown as a warning banner on the merged contact). Phone specifically
+          also gets a dedicated slot: secondary's phone becomes primary's
+          Mobile 2 if that's free, on top of the always-created search alias. */}
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: "#555", marginBottom: 4 }}>What will merge</div>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+          <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
+            <th style={{ padding: "3px 6px" }}>Field</th><th style={{ padding: "3px 6px" }}>Primary (kept)</th><th style={{ padding: "3px 6px" }}>Secondary</th><th style={{ padding: "3px 6px" }}>Result</th>
+          </tr></thead>
+          <tbody>
+            {MERGE_DIFF_FIELDS.map(([key, label]) => {
+              const pv = p?.[key], sv = s?.[key];
+              if (!pv && !sv) return null;
+              const same = pv && sv && String(pv).trim().toLowerCase() === String(sv).trim().toLowerCase();
+              const willFill = !pv && sv;
+              const conflict = pv && sv && !same;
+              return (
+                <tr key={key} style={{ borderBottom: "1px solid #f5f5f5", background: conflict ? "#fffaf0" : "transparent" }}>
+                  <td style={{ padding: "3px 6px", color: "#888" }}>{label}</td>
+                  <td style={{ padding: "3px 6px" }}>{pv || <span style={{ color: "#ccc" }}>—</span>}</td>
+                  <td style={{ padding: "3px 6px" }}>{sv || <span style={{ color: "#ccc" }}>—</span>}</td>
+                  <td style={{ padding: "3px 6px", fontSize: 11 }}>
+                    {same && <span style={{ color: "#888" }}>same, no change</span>}
+                    {willFill && <span style={{ color: C.green }}>fills blank primary field</span>}
+                    {conflict && (key === "phone" ? <span style={{ color: C.orange }}>kept as alias + Mobile 2 if free</span> : <span style={{ color: C.orange }}>primary kept — secondary's saved as a conflict note, not lost</span>)}
+                    {!pv && !sv && ""}
+                    {pv && !sv && <span style={{ color: "#888" }}>only primary has this</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
       {err && <div style={{ color: C.red, fontSize: 12, marginBottom: 8 }}>{err}</div>}
+      {viewFull && (
+        <ContactEditModal
+          contact={viewFull}
+          allTags={[]}
+          customFields={[]}
+          onClose={() => setViewFull(null)}
+          onSaved={() => setViewFull(null)}
+        />
+      )}
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
         <Btn ghost color={C.gray} onClick={onClose}>Cancel</Btn>
-        <Btn color={C.red} onClick={doMerge} disabled={busy}>{busy ? "Requesting…" : "✓ Request Merge (needs SA approval)"}</Btn>
+        {approveMode ? (
+          <>
+            <Btn color={C.gray} onClick={() => decideThisMerge("reject")} disabled={busy}>{busy ? "…" : "✗ Reject"}</Btn>
+            <Btn color={C.green} onClick={() => decideThisMerge("approve")} disabled={busy}>{busy ? "Approving…" : "✓ Approve Merge"}</Btn>
+          </>
+        ) : (
+          <Btn color={C.red} onClick={doMerge} disabled={busy}>{busy ? "Requesting…" : "✓ Request Merge (needs SA approval)"}</Btn>
+        )}
       </div>
     </Modal>
   );
