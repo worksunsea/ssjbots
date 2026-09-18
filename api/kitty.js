@@ -1220,11 +1220,18 @@ export default async function handler(req, res) {
     const [y, m] = body.month.split("-").map(Number);
     const monthEnd = new Date(Date.UTC(m === 12 ? y + 1 : y, m === 12 ? 0 : m, 1)).toISOString().slice(0, 10);
 
+    // Only fills installments with NO rate yet. If staff already punched a
+    // rate for a client at booking/payment time (mark-installment-paid with
+    // rateLocked), that's a deliberate per-client entry and must not get
+    // silently clobbered by the bulk monthly rate — only members whose
+    // installment was paid with amount only (no rate typed) pick up the
+    // monthly rate here.
     const { data: updated, error } = await sb.from("kitty_installments")
       .update({ rate_locked: rateCheck.value })
       .eq("tenant_id", TENANT_ID)
       .in("enrollment_id", enrollmentIds)
       .eq("status", "paid")
+      .is("rate_locked", null)
       .gte("due_date", monthStart)
       .lt("due_date", monthEnd)
       .select("id, amount, paid_amount, enrollment_id");
