@@ -239,12 +239,19 @@ export async function sendMediaForClient(clientIdRaw, { target, mediaUrl, mediaT
 
 export function getClients() {
   const out = [];
-  // Include all live sessions
+  // Include all live sessions — except ones explicitly deleted. logoutClient()
+  // removes the session and its auth dir, but if that dir removal ever fails
+  // (or a stale dir lingers for any other reason), it would otherwise keep
+  // showing up here as "disconnected" instead of actually disappearing.
+  // deniedIds is the source of truth for "this id was deleted" regardless of
+  // what's left on disk.
   for (const [id, s] of sessions.entries()) {
+    if (deniedIds.has(id)) continue;
     out.push({ client_id: id, connected: s.connected, has_qr: Boolean(s.qrDataUrl), me: s.me });
   }
   // Also include dirs that exist but haven't booted yet
   for (const id of listClientDirs()) {
+    if (deniedIds.has(id)) continue;
     if (!sessions.has(id)) {
       out.push({ client_id: id, connected: false, has_qr: false, me: null });
     }
