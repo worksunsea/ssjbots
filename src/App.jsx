@@ -6962,6 +6962,111 @@ function upcomingCallScript(ev) {
   return lines.join("\n\n");
 }
 
+// Staff-configurable footer + salutation, picked by tag combination, used
+// by the AI when writing birthday/anniversary messages (api/cron.js
+// resolveBdayFooter). Lets staff add new tag combos and wording from the UI
+// instead of a developer hardcoding names — combos are expected to grow.
+function BdayFooterRulesPanel() {
+  const isManagerPlus = ["superadmin", "admin", "manager"].includes(loadUser()?.role);
+  const [open, setOpen] = useState(false);
+  const [rules, setRules] = useState([]);
+  const [allTags, setAllTags] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [form, setForm] = useState({ tags: [], salutation: "", footer_text: "", priority: 0 });
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const [{ data: r }, { data: t }] = await Promise.all([
+      sb.from("bday_footer_rules").select("*").eq("tenant_id", getTenantId()).order("priority", { ascending: false }),
+      sb.from("bullion_tags").select("name,category,color").eq("tenant_id", getTenantId()).order("sort_order"),
+    ]);
+    setRules(r || []); setAllTags(t || []);
+    setLoading(false);
+  }, []);
+  useEffect(() => { if (open && isManagerPlus) load(); }, [open, load, isManagerPlus]);
+
+  if (!isManagerPlus) return null;
+
+  const toggleTag = (name) => setForm((f) => ({ ...f, tags: f.tags.includes(name) ? f.tags.filter((x) => x !== name) : [...f.tags, name] }));
+
+  const save = async () => {
+    if (!form.tags.length || !form.footer_text.trim()) { alert("Pick at least one tag and enter footer text."); return; }
+    setSaving(true);
+    const { error } = await sb.from("bday_footer_rules").insert({
+      tenant_id: getTenantId(), tags: form.tags, salutation: form.salutation.trim() || null,
+      footer_text: form.footer_text.trim(), priority: Number(form.priority) || 0, active: true,
+    });
+    setSaving(false);
+    if (error) { alert(error.message); return; }
+    setForm({ tags: [], salutation: "", footer_text: "", priority: 0 });
+    load();
+  };
+
+  const toggleActive = async (rule) => { await sb.from("bday_footer_rules").update({ active: !rule.active }).eq("id", rule.id); load(); };
+  const removeRule = async (id) => { if (!window.confirm("Delete this footer rule?")) return; await sb.from("bday_footer_rules").delete().eq("id", id); load(); };
+
+  return (
+    <div style={{ background: "#f5f0ff", border: "1px solid #c4b5fd", borderRadius: 10, padding: "10px 14px", marginBottom: 16 }}>
+      <p onClick={() => setOpen((v) => !v)} style={{ margin: open ? "0 0 8px" : 0, cursor: "pointer", fontSize: 13, fontWeight: 600, color: C.purple, display: "flex", alignItems: "center", gap: 6 }}>
+        {open ? "▾" : "▸"} 🏷️ Birthday/Anniversary Footer & Salutation Rules {rules.length ? `(${rules.length})` : ""}
+      </p>
+      {open && (
+        <>
+          <div style={{ fontSize: 11.5, color: "#666", marginBottom: 10 }}>
+            When a contact's tags match ALL tags in a rule, their AI-written birthday/anniversary message ends with that rule's footer (and uses its salutation before their name) instead of the default sign-off. If more than one rule matches, the highest-priority (then most-specific) one wins.
+          </div>
+          {loading ? <div style={{ color: "#888", fontSize: 12 }}>Loading…</div> : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+              {rules.map((r) => (
+                <div key={r.id} style={{ background: "#fff", border: "1px solid #eee", borderRadius: 8, padding: "8px 12px", fontSize: 12.5, opacity: r.active ? 1 : 0.5 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                    <div>
+                      <div>{(r.tags || []).map((t) => <span key={t} style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#ede9fe", color: "#5b21b6", marginRight: 4 }}>🏷 {t}</span>)}</div>
+                      {r.salutation && <div style={{ marginTop: 4, color: "#555" }}>Salutation: <b>{r.salutation}</b></div>}
+                      <div style={{ marginTop: 4, color: "#333", whiteSpace: "pre-wrap" }}>{r.footer_text}</div>
+                      <div style={{ marginTop: 2, fontSize: 10.5, color: "#999" }}>priority {r.priority} · {r.active ? "active" : "inactive"}</div>
+                    </div>
+                    <div style={{ display: "flex", gap: 6, alignItems: "flex-start" }}>
+                      <Btn small ghost color={r.active ? C.gray : C.green} onClick={() => toggleActive(r)}>{r.active ? "Disable" : "Enable"}</Btn>
+                      <Btn small ghost color={C.red} onClick={() => removeRule(r.id)}>Delete</Btn>
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {!rules.length && <div style={{ color: "#999", fontSize: 12 }}>No rules yet — everyone gets the default sign-off.</div>}
+            </div>
+          )}
+
+          <div style={{ borderTop: "1px dashed #c4b5fd", paddingTop: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>+ New rule</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 8 }}>
+              {allTags.map((t) => {
+                const active = form.tags.includes(t.name);
+                return (
+                  <button key={t.name} onClick={() => toggleTag(t.name)}
+                    style={{ fontSize: 11, padding: "3px 9px", borderRadius: 20, cursor: "pointer", border: `1px solid ${active ? C.purple : "#ddd"}`, background: active ? C.purple + "22" : "#fff", color: active ? C.purple : "#666" }}>
+                    {t.name}
+                  </button>
+                );
+              })}
+              {!allTags.length && <span style={{ fontSize: 11, color: "#999" }}>No tags found.</span>}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 140px", gap: 8, marginBottom: 8 }}>
+              <Input placeholder="Salutation (optional) e.g. Rtn." value={form.salutation} onChange={(e) => setForm((f) => ({ ...f, salutation: e.target.value }))} />
+              <Input placeholder="Priority" type="number" value={form.priority} onChange={(e) => setForm((f) => ({ ...f, priority: e.target.value }))} />
+            </div>
+            <Textarea rows={2} placeholder='Footer text, e.g. "- Sanjeev Sir & Rotary Club of Karol Bagh, Sun Sea Jewellers"'
+              value={form.footer_text} onChange={(e) => setForm((f) => ({ ...f, footer_text: e.target.value }))}
+              style={{ width: "100%", marginBottom: 8 }} />
+            <Btn small color={C.purple} disabled={saving} onClick={save}>{saving ? "Saving…" : "+ Add Rule"}</Btn>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function UpcomingEventsScreen() {
   const { customFields } = React.useContext(ContactFieldsContext);
   const [events, setEvents] = useState([]);
@@ -7179,6 +7284,8 @@ function UpcomingEventsScreen() {
         </select>
         <span style={{ fontSize: 13, color: "#888" }}>{events.length} events</span>
       </div>
+
+      <BdayFooterRulesPanel />
 
       {loading && <div style={{ color: "#888", padding: 32, textAlign: "center" }}>Loading…</div>}
       {err && <div style={{ color: "#dc2626", padding: 16, background: "#fef2f2", borderRadius: 8, fontSize: 13 }}>Error: {err}</div>}

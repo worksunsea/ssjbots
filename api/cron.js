@@ -23,8 +23,36 @@ const SEND_DELAY_MS = 4000; // 4s gap between sends (~15/min max)
 
 const PREVIEW_SELECT = `id, lead_id, funnel_id, body, tenant_id,
   step:bullion_funnel_steps(id,use_ai_message,link_type,link_url,link_label,name),
-  lead:bullion_leads(id,name,city),
+  lead:bullion_leads(id,name,city,tags),
   funnel:funnels(id,name,goal,kind)`;
+
+const DEFAULT_BDAY_FOOTER = "- Sun Sea Jewellers, Karol Bagh";
+
+// Staff-configurable closing line + salutation for birthday/anniversary
+// messages, picked by the contact's tags (bday_footer_rules table, managed
+// from the Upcoming Events admin panel). A contact tagged both "sanjeev_sir"
+// and "rotary" can get a different sign-off than one tagged "sanjeev_sir"
+// alone, etc. — combos are open-ended, not hardcoded here.
+async function resolveBdayFooter(sb, tenantId, tags) {
+  const leadTags = new Set((tags || []).map((t) => String(t).toLowerCase()));
+  if (!leadTags.size) return null;
+  const { data: rules } = await sb.from("bday_footer_rules")
+    .select("tags, salutation, footer_text, priority").eq("tenant_id", tenantId).eq("active", true);
+  const matches = (rules || []).filter((r) => (r.tags || []).length > 0 && r.tags.every((t) => leadTags.has(String(t).toLowerCase())));
+  if (!matches.length) return null;
+  matches.sort((a, b) => (b.priority - a.priority) || ((b.tags?.length || 0) - (a.tags?.length || 0)));
+  return matches[0];
+}
+
+function footerPromptLines(footerRule, leadName) {
+  const footerText = footerRule?.footer_text || DEFAULT_BDAY_FOOTER;
+  const lines = [`IMPORTANT: Always end the message with exactly this line on its own: "${footerText}"`];
+  if (footerRule?.salutation && leadName) {
+    const first = leadName.trim().split(/\s+/)[0];
+    lines.push(`Address the customer as "${footerRule.salutation} ${first}" (use this salutation before their name) instead of the plain first name.`);
+  }
+  return lines;
+}
 
 async function generatePreview(sb, row) {
   if (!row?.step?.use_ai_message || !row.lead || !row.funnel) return false;
@@ -46,12 +74,13 @@ async function generatePreview(sb, row) {
     .eq("lead_id", lead.id).eq("funnel_id", row.funnel_id).eq("status", "pending")
     .gt("send_at", row.send_at);
   const isLastStep = remainingAfterPreview === 0;
+  const footerRule = isBirthdayFunnel ? await resolveBdayFooter(sb, row.tenant_id, lead.tags) : null;
   const aiSystem = [
     "You are a warm WhatsApp assistant for Sun Sea Jewellers, Karol Bagh.",
     "Write a short, personalized WhatsApp message. 2–4 lines max. Warm and genuine. No markdown. Plain text only.",
     lead.name ? `Customer first name: ${lead.name.trim().split(/\s+/)[0]}` : "Name unknown — do NOT use Sir/Madam. Start naturally.",
     `City: ${lead.city || ""}`,
-    "Always end with '- Sun Sea Jewellers, Karol Bagh' on a new line.",
+    ...footerPromptLines(footerRule, lead.name),
     ...(isBirthdayFunnel ? [
       `Event type: ${eventLabel}`,
       `OFFER: ${funnel.goal || "Free gift on store visit + up to 70% off making charges for 25 days."}`,
@@ -664,7 +693,7 @@ export default async function handler(req, res) {
     .select(`
       id, lead_id, funnel_id, body, edited_body, send_at, tenant_id, is_reminder, reminder_phone,
       step:bullion_funnel_steps(id,use_ai_message,message_template,step_type,link_type,link_url,link_label,name),
-      lead:bullion_leads!inner(id,phone,name,status,bot_paused,dnd,last_msg_at,funnel_id,funnel_history,tenant_id,city),
+      lead:bullion_leads!inner(id,phone,name,status,bot_paused,dnd,last_msg_at,funnel_id,funnel_history,tenant_id,city,tags),
       funnel:funnels!inner(id,name,active,wbiztool_client,next_on_convert,next_on_exhaust,tenant_id,goal,kind)
     `)
     .eq("status", "pending")
@@ -778,6 +807,7 @@ export default async function handler(req, res) {
         const eventLabel = funnel.kind === "birthday" ? "birthday" : "anniversary";
         const stepName = (row.step?.name || "").toLowerCase();
         const isBirthdayWishStep = isBirthdayFunnel && stepName.includes("wish");
+        const footerRule = isBirthdayFunnel ? await resolveBdayFooter(sb, row.tenant_id, lead.tags) : null;
         const aiSystem = [
           "You are a warm WhatsApp assistant for Sun Sea Jewellers, Karol Bagh.",
           "Write a short, personalized WhatsApp message. 2–4 lines max.",
@@ -785,7 +815,7 @@ export default async function handler(req, res) {
           "Write in simple English. No markdown. No bullet points. Plain text only.",
           lead.name ? `Customer first name: ${lead.name.trim().split(/\s+/)[0]}` : "Customer name unknown — do NOT use Sir/Madam or any placeholder. Start naturally.",
           `City: ${lead.city || ""}`,
-          "IMPORTANT: Always end the message with '- Sun Sea Jewellers, Karol Bagh' on a new line so the customer knows who is messaging them.",
+          ...footerPromptLines(footerRule, lead.name),
           isFirstStep ? "This is the FIRST message to this customer from this campaign. At the end, naturally ask them to save this number as 'Sun Sea Jewellers' for future updates." : "",
           isLastStep ? "This is the LAST message in this sequence. End with: 'Reply STOP anytime if you prefer not to receive updates from us.'" : "",
           ...(isBirthdayFunnel ? [
