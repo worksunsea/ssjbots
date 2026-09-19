@@ -6840,76 +6840,12 @@ function parseCalendarDateParts(raw) {
 // neutral "years unknown" template when the stored date has no year
 // (common on bulk-imported contacts) — and nudges the telecaller to
 // capture the full DOB while on the call.
-function bracketFor(n, breaks) {
-  for (const [max, key] of breaks) if (n <= max) return key;
-  return breaks[breaks.length - 1][1];
-}
-
-const BDAY_BRACKETS = [[24, "young"], [35, "adult"], [50, "mid"], [65, "senior"], [999, "elder"]];
-const ANNIV_BRACKETS = [[1, "newlywed"], [10, "growing"], [20, "established"], [35, "milestone"], [999, "golden"]];
-
-const BDAY_SCRIPTS = {
-  young: ({ name, city }) => [
-    `Hi ${name}, Sun Sea Jewellers Karol Bagh se calling! Happy Birthday, bahut saara pyaar aur badhai aapko! 🎉`,
-    `Aapke liye ek chhota gift aur making charges pe 70% tak ki offer rakhi hai — showroom${city} aa jaiye, chill karte hain, offer bhi collect kar lijiye.`,
-  ],
-  adult: ({ name, city, years }) => [
-    `Hi ${name} ji, Sun Sea Jewellers se baat kar rahi hoon.`,
-    years != null ? `Aap ${years} ke ho gaye — Happy Birthday, bahut bahut badhai!` : `Happy Birthday, bahut bahut badhai aapko!`,
-    `Aapke liye ek chhota gift aur making charges pe 70% tak ki special offer hai — showroom${city} aa kar collect kar lijiye.`,
-  ],
-  mid: ({ name, city, years }) => [
-    `Namaste ${name} ji, Sun Sea Jewellers, Karol Bagh se bol rahi hoon.`,
-    years != null ? `${years}wein birthday ki dher saari shubhkamnayein!` : `Aapke birthday ki dher saari shubhkamnayein!`,
-    `Iss khushi ke mauke par ek gift aur making charges pe 70% tak off — showroom${city} zaroor padhariye.`,
-  ],
-  senior: ({ name, city, years }) => [
-    `Namaste ${name} ji, Sun Sea Jewellers se baat kar rahi hoon.`,
-    years != null ? `Aapke ${years}wein janamdin ki hardik shubhkamnayein!` : `Aapke janamdin ki hardik shubhkamnayein!`,
-    `Aap hamare bahut samman-yogya purane customer hain — ek gift aur making charges pe 70% tak ki offer aapke liye rakhi hai, showroom${city} padhariye.`,
-  ],
-  elder: ({ name, city, years }) => [
-    `Namaste ${name} ji, Sun Sea Jewellers ki taraf se pranam.`,
-    years != null ? `Aapke ${years}wein janamdin par hardik badhai aur shubhkamnayein!` : `Aapke shubh janamdin par hardik badhai!`,
-    `Humari puri team ki taraf se ek gift aur making charges pe 70% tak ki offer aapke liye — jab suvidha ho showroom${city} zaroor padhariye.`,
-  ],
-};
-
-const ANNIV_SCRIPTS = {
-  newlywed: ({ name, city, years }) => [
-    `Hi ${name} ji, Sun Sea Jewellers se baat kar rahi hoon.`,
-    years != null ? `Aapki shaadi ki ${years === 0 ? "pehli" : years + " saal ki"} anniversary — dher saari mubarakbaad!` : `Aapki anniversary ki dher saari mubarakbaad!`,
-    `Iss naye safar ki khushi mein ek gift aur making charges pe 70% tak off rakha hai humne — showroom${city} zaroor aaiye.`,
-  ],
-  growing: ({ name, city, years }) => [
-    `Namaste ${name} ji, Sun Sea Jewellers, Karol Bagh se bol rahi hoon.`,
-    years != null ? `Aapki shaadi ko ${years} saal ho gaye — Happy Anniversary, bahut bahut badhai!` : `Happy Anniversary, bahut bahut badhai aapko!`,
-    `Iss khaas mauke par ek gift aur making charges pe 70% tak off — showroom${city} aa kar collect kar lijiye.`,
-  ],
-  established: ({ name, city, years }) => [
-    `Hi ${name} ji, Sun Sea Jewellers se calling kar rahi hoon.`,
-    years != null ? `${years} saal ka khoobsurat safar — Happy Anniversary, dil se badhai!` : `Happy Anniversary, dil se badhai!`,
-    `Aapke liye special gift aur making charges pe 70% tak ki offer hai — showroom${city} zaroor padhariye.`,
-  ],
-  milestone: ({ name, city, years }) => [
-    `Namaste ${name} ji, Sun Sea Jewellers ki taraf se.`,
-    years != null ? `${years} saal ki shaadi — ye ek bahut bada milestone hai, dil se Happy Anniversary!` : `Happy Anniversary — bahut khaas mauka hai ye!`,
-    `Humari taraf se ek special gift aur making charges pe 70% tak off rakha hai, showroom${city} zaroor padhariye.`,
-  ],
-  golden: ({ name, city, years }) => [
-    `Namaste ${name} ji, Sun Sea Jewellers ki taraf se pranam.`,
-    years != null ? `${years} saal ki shaadi — golden milestone hai ye, hardik badhai!` : `Aapki anniversary par hardik badhai!`,
-    `Humari puri team ki taraf se ek khaas gift aur making charges pe 70% tak ki offer — showroom${city} zaroor padhariye.`,
-  ],
-};
-
-const SPOUSE_BDAY_SCRIPTS = {
-  young: ({ name, spouseFirst, city }) => [`Hi ${name} ji, Sun Sea Jewellers se baat kar rahi hoon — ${spouseFirst} ka birthday hai aaj/is hafte, Happy Birthday unko! 🎉`, `Ek chhota gift aur making charges pe 70% tak off rakha hai — dono showroom${city} aa jaiye.`],
-  adult: ({ name, spouseFirst, city, years }) => [`Hi ${name} ji, Sun Sea Jewellers se baat kar rahi hoon.`, years != null ? `${spouseFirst} ${years} ke ho rahe hain — unhe Happy Birthday!` : `${spouseFirst} ka birthday hai — unhe Happy Birthday!`, `Gift aur making charges pe 70% tak ki offer rakhi hai, showroom${city} aa kar collect kar lijiye.`],
-  mid: ({ name, spouseFirst, city, years }) => [`Namaste ${name} ji, Sun Sea Jewellers se bol rahi hoon.`, years != null ? `${spouseFirst} ke ${years}wein birthday ki shubhkamnayein!` : `${spouseFirst} ke birthday ki shubhkamnayein!`, `Gift aur making charges pe 70% tak off — showroom${city} zaroor padhariye.`],
-  senior: ({ name, spouseFirst, city, years }) => [`Namaste ${name} ji, Sun Sea Jewellers se baat kar rahi hoon.`, years != null ? `${spouseFirst} ke ${years}wein janamdin ki hardik shubhkamnayein!` : `${spouseFirst} ke janamdin ki hardik shubhkamnayein!`, `Gift aur making charges pe 70% tak ki offer aapke liye rakhi hai, showroom${city} padhariye.`],
-  elder: ({ name, spouseFirst, city, years }) => [`Namaste ${name} ji, Sun Sea Jewellers ki taraf se pranam.`, years != null ? `${spouseFirst} ke ${years}wein janamdin par hardik badhai!` : `${spouseFirst} ke shubh janamdin par hardik badhai!`, `Ek gift aur making charges pe 70% tak ki offer — jab suvidha ho showroom${city} zaroor padhariye.`],
-};
+// ── Birthday & Anniversary Client Calling SOP ("Sun Sea Special Moments") ──
+// Rewritten 2026-09 from Saurav's SOP doc. Old version led with the "70% off
+// making charges" offer in the same breath as the wish, which read as a
+// sales pitch, not a wish — the whole point of this SOP is NOT to sell on
+// the call: wish → connect → create curiosity → get a visit → hand over to
+// sales. Offer/surprise is deliberately never detailed on the phone.
 
 // Spoken-to-customer lines for the points still missing on this contact —
 // folded directly into the script (not a separate list) so the telecaller
@@ -6926,40 +6862,119 @@ function callAskLines(ev) {
   if (!ev.contact.hasAddress) {
     lines.push(`Tyohaar aane wale hain, toh apna current address ek baar confirm kar dijiye — taaki gift seedha aapke ghar tak pahunch sake.`);
   }
-  lines.push(`Aur ye bataiye, agli baar showroom kab aane ka plan hai, aur kuch specific piece hai jo aap dekhna ya lena chahte hain? Main abhi note kar leti hoon, taaki jab aap aayein toh wo hamare paas ready rahe.`);
   return lines;
 }
 
-// Telecaller call script for a birthday/anniversary/spouse-birthday
-// courtesy call — wish them, invite to the showroom, ask what's missing
-// on their profile, and close warmly. Picked by computed age /
-// years-married bracket (not AI, not random) — same contact+event always
-// shows the same script. Longer/fuller by design so it reads like a real
-// call, not a one-line greeting.
 function upcomingCallScript(ev) {
-  const name = (ev.contact.name || "").trim().split(/\s+/)[0] || "Sir/Ma'am";
-  const city = ev.contact.city ? ` (${ev.contact.city} wale)` : "";
+  const name = (ev.contact.name || "").trim().split(/\s+/)[0] || "";
+  const spouseFirst = (ev.contact.spouse_name || "").trim().split(/\s+/)[0] || "";
   const years = ev.years;
-  const eventWord = ev.msgType === "anniv" ? "anniversary" : "birthday";
+  const isAnniv = ev.msgType === "anniv";
+  const isSpouseBday = ev.msgType === "spouse_bday";
+  const eventWord = isAnniv ? "anniversary" : "birthday";
+  const eventWordCap = isAnniv ? "Anniversary" : "Birthday";
 
-  let opening;
-  if (ev.msgType === "anniv") {
-    const bracket = bracketFor(years == null ? 10 : years, ANNIV_BRACKETS);
-    opening = ANNIV_SCRIPTS[bracket]({ name, city, years });
-  } else if (ev.msgType === "spouse_bday") {
-    const bracket = bracketFor(years == null ? 30 : years, BDAY_BRACKETS);
-    opening = SPOUSE_BDAY_SCRIPTS[bracket]({ name, spouseFirst: name, city, years });
+  const opening = `Hello Sir/Ma'am, namaste! Main Sun Sea Jewellers, Karol Bagh se bol rahi hoon. Kya main ${name ? name + " ji" : "aap"} se baat kar rahi hoon?`;
+
+  let wish;
+  if (isAnniv) {
+    wish = spouseFirst
+      ? `Sir/Ma'am, sabse pehle toh Sun Sea Jewellers ki taraf se aapko aur ${spouseFirst} ji ko bahut-bahut Happy Anniversary! ❤️ Aap dono ko bahut saari happiness, love aur beautiful memories ki wishes.`
+      : `Sir/Ma'am, sabse pehle toh Sun Sea Jewellers ki taraf se aapko bahut-bahut Happy Anniversary! ❤️ Aapko bahut saari happiness aur beautiful memories ki wishes.`;
+  } else if (isSpouseBday) {
+    wish = `Sir/Ma'am, Sun Sea Jewellers se baat kar rahi hoon — aaj/is hafte ${spouseFirst || "inka"} birthday hai na? Sun Sea Jewellers ki poori team ki taraf se unhe bahut-bahut Happy Birthday! 🎂`;
   } else {
-    const bracket = bracketFor(years == null ? 30 : years, BDAY_BRACKETS);
-    opening = BDAY_SCRIPTS[bracket]({ name, city, years });
+    wish = `Sir/Ma'am, sabse pehle toh Sun Sea Jewellers ki taraf se aapko bahut-bahut Happy Birthday! 🎂✨ Aapka aane wala saal bahut happiness, good health aur prosperity se bhara rahe.`;
   }
 
-  const trustLine = `Aap jaise apne customers ke bharose se hi Sun Sea Jewellers, Karol Bagh, itne saalon se trusted naam bana hua hai — aapka support hamare liye bahut maayne rakhta hai.`;
+  const relationship = `Actually Sir/Ma'am, humare liye aap sirf ek customer nahi hain — aap humare valued clients ka part hain, isliye socha WhatsApp message ke bajaye personally call karke wish karna chahiye.`;
 
-  const closing = `Bahut bahut shukriya aapka time dene ke liye, aur ek baar phir Happy ${eventWord}! Hum Sun Sea Jewellers mein aapka intezaar karenge.`;
+  const engagement = isAnniv && years != null
+    ? `Waise, aapki anniversary ko kitne saal ho gaye — ${years} saal, sahi? Itne saalon ki journey definitely celebrate karne layak hai. ❤️`
+    : null;
 
-  const lines = [...opening, trustLine, ...callAskLines(ev), closing];
+  const hook = [
+    `Waise Sir/Ma'am, ${eventWord} ke occasion par humne apne selected clients ke liye showroom mein ek chhota sa special ${eventWord} surprise rakha hai.`,
+    `Main phone par poora surprise spoil nahi karungi 😊 — bas agar aap upcoming week mein ek baar showroom visit kar paayein, toh hum iss ${eventWord} ko thoda aur special banana chahenge.`,
+  ];
+
+  const jewelleryQ = isAnniv
+    ? `Waise aap dono mein jewellery zyada kaun choose karta hai — Sir ya Ma'am? 😊`
+    : `Waise Sir/Ma'am, aapko jewellery mein zyada pasand kya hai — gold ya diamond?`;
+  const jewelleryFollow = `Wonderful. Jab aap visit karein toh main team ko accordingly inform kar dungi, taaki aapke liye kuch interesting options pehle se ready rakhein.`;
+
+  const dayDrill = `Sir/Ma'am, upcoming week mein aapke liye kaunsa day convenient rahega — weekday ya weekend? (Weekend bole toh: "Saturday ya Sunday?" → phir "Morning convenient rahega ya evening?" — Maybe se Week se Day se Time tak le jaana hai.)`;
+
+  const golden = `Sir/Ma'am, aap bas ek baar visit kijiye — baaki aapko special feel karwana humari responsibility hai.`;
+  const closing = `Once again, Sun Sea Jewellers ki poori team ki taraf se Happy ${eventWordCap}! Aap jab bhi upcoming week mein Karol Bagh side aayein, please Sun Sea Jewellers zaroor visit kijiye. Aur aane se pehle ek call kar dijiyega — main personally ensure karungi ki aapke liye surprise ready ho.`;
+
+  const lines = [opening, wish, relationship, engagement, ...hook, jewelleryQ, jewelleryFollow, ...callAskLines(ev), dayDrill, golden, closing].filter(Boolean);
   return lines.join("\n\n");
+}
+
+// Objection-handling cheat sheet + call-outcome legend from the SOP —
+// static reference, not per-contact, shown collapsed so the receptionist
+// can glance at it mid-call without it cluttering the per-event list.
+const CALL_SOP_OBJECTIONS = [
+  ["“What is the surprise?”", `"Sir/Ma'am, agar main abhi bata dungi toh surprise kaisa rahega? 😊 Bas itna samajh lijiye ki selected clients ke liye specially rakha gaya hai, aur showroom visit par hi reveal hoga." Agar insist karein: "Main bas itna hint de sakti hoon ki it is something connected with your special occasion. Aap showroom aaiye, personally welcome bhi milega aur surprise bhi."`],
+  ["“Is there any discount?”", `"Sir/Ma'am, is call ka main purpose aapko personally wish karna hai. Jo special birthday/anniversary benefit hai woh showroom visit par hi properly explain kar paayenge. Aap ek baar visit kijiye — aapko personally attend karenge." Never quote a discount unless an approved campaign specifically exists.`],
+  ["“I am busy”", `"No problem at all Sir/Ma'am, I completely understand. Main bas personally wish karna chahti thi. Happy Birthday/Anniversary once again! Aap convenient time par showroom visit karein, aur agar chahein toh main WhatsApp par bhi details share kar deti hoon."`],
+  ["“WhatsApp me”", `"Absolutely Sir/Ma'am. Main abhi WhatsApp par short message send kar deti hoon. Jab plan bane, bas message kar dijiyega — main personally coordinate kar dungi." → CRM: WhatsApp Sent → Follow-up Required.`],
+  ["“I will come later”", `"Absolutely Sir/Ma'am, koi problem nahi. Aap jab convenient ho tab aaiye. Bas ek request — jab aane ka plan bane toh mujhe ek call kar dijiyega, taaki main special arrangement ready rakh sakun." → CRM: Interested — No Date. Follow-up after 3–5 days.`],
+  ["“I'm not interested”", `"Of course Sir/Ma'am, absolutely no problem. Humara call mainly aapko personally wish karne ke liye tha. Once again, Happy Birthday/Anniversary from the entire Sun Sea Jewellers family. Have a wonderful day!" → CRM: Not Interested — No Further Sales Push. Do NOT try to sell after this.`],
+  ["“I don't need anything”", `"Bilkul Sir/Ma'am, koi problem nahi. Aapko kuch purchase karna zaroori bhi nahi hai. Aap bas couple of minutes ke liye showroom visit kijiye, humari taraf se occasion celebrate karne ka gesture samajh lijiye. 😊"`],
+  ["“I'm out of Delhi”", `"No problem at all Sir/Ma'am. Aap jab Delhi aayein tab zaroor visit kijiye. Aur once again, Sun Sea Jewellers ki taraf se Happy Birthday/Anniversary!" → CRM: Outstation — Follow-up Later.`],
+  ["“I already bought jewellery recently”", `"That's wonderful, Sir/Ma'am! 😊 Phir toh humari taraf se aapko personally wish karna aur bhi important ho gaya. Aapko abhi kuch lena zaroori nahi hai. Aap jab bhi convenient ho, bas visit karke humse milne aa jaiye."`],
+  ["“What do you have?” (very interested)", `"Sir/Ma'am, aap mujhe bata dijiye ki aapko kis type ki jewellery pasand hai — daily wear, diamond, gold, anniversary special, ya kuch unique. Main aapki requirement sales team ko personally share kar dungi, aur jab aap aayein toh relevant pieces pehle se shortlist karke rakhwa denge." Then ask the day/time drill-down.`],
+];
+const CALL_SOP_OUTCOMES = [
+  ["🎯 Visit Confirmed", "Client gave day/date"],
+  ["⭐ Strong Interest", "Wants to visit but no date"],
+  ["📅 Follow-up Required", "Asked to call later"],
+  ["💬 WhatsApp Requested", "Wants details on WhatsApp"],
+  ["🎁 Surprise Query", "Interested in birthday/anniversary benefit"],
+  ["🕐 Busy", "Could not talk"],
+  ["🚫 Not Interested", "No sales follow-up"],
+  ["✈️ Outstation", "Client currently away"],
+  ["❌ No Response", "Call unanswered"],
+];
+
+function CallingSopReferencePanel() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ background: "#fff7ed", border: "1px solid #fdba74", borderRadius: 10, padding: "10px 14px", marginBottom: 16 }}>
+      <p onClick={() => setOpen((v) => !v)} style={{ margin: open ? "0 0 8px" : 0, cursor: "pointer", fontSize: 13, fontWeight: 600, color: "#c2410c", display: "flex", alignItems: "center", gap: 6 }}>
+        {open ? "▾" : "▸"} 📋 Calling SOP — objection handling & outcomes ("Sun Sea Special Moments")
+      </p>
+      {open && (
+        <div style={{ fontSize: 12.5, color: "#333" }}>
+          <div style={{ marginBottom: 10, padding: "8px 10px", background: "#fff", borderRadius: 8, border: "1px solid #fed7aa" }}>
+            <b>Golden rule:</b> the call is NOT to sell. Wish → connect → create curiosity → get a visit → hand over to sales. Never lead with the offer, never ask "aapko jewellery leni hai?", never explain price/making-charges/discounts on this call. 70% relationship, 20% occasion, 10% sales opportunity — not the other way around.
+          </div>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>If the client says…</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
+            {CALL_SOP_OBJECTIONS.map(([q, a]) => (
+              <div key={q} style={{ background: "#fff", border: "1px solid #fed7aa", borderRadius: 8, padding: "6px 10px" }}>
+                <div style={{ fontWeight: 600, color: "#9a3412" }}>{q}</div>
+                <div style={{ color: "#555", marginTop: 2 }}>{a}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>Call outcome codes</div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <tbody>
+              {CALL_SOP_OUTCOMES.map(([label, meaning]) => (
+                <tr key={label} style={{ borderBottom: "1px solid #fed7aa" }}>
+                  <td style={{ padding: "3px 6px", fontWeight: 600, whiteSpace: "nowrap" }}>{label}</td>
+                  <td style={{ padding: "3px 6px", color: "#666" }}>{meaning}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // Staff-configurable footer + salutation, picked by tag combination, used
@@ -7286,6 +7301,7 @@ function UpcomingEventsScreen() {
       </div>
 
       <BdayFooterRulesPanel />
+      <CallingSopReferencePanel />
 
       {loading && <div style={{ color: "#888", padding: 32, textAlign: "center" }}>Loading…</div>}
       {err && <div style={{ color: "#dc2626", padding: 16, background: "#fef2f2", borderRadius: 8, fontSize: 13 }}>Error: {err}</div>}
