@@ -6988,6 +6988,7 @@ function BdayFooterRulesPanel() {
   const [allTags, setAllTags] = useState([]);
   const [loading, setLoading] = useState(false);
   const [form, setForm] = useState({ tags: [], salutation: "", footer_text: "", priority: 0 });
+  const [editingId, setEditingId] = useState(null); // rule id being edited, or null = new rule
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
@@ -7005,21 +7006,36 @@ function BdayFooterRulesPanel() {
 
   const toggleTag = (name) => setForm((f) => ({ ...f, tags: f.tags.includes(name) ? f.tags.filter((x) => x !== name) : [...f.tags, name] }));
 
+  const resetForm = () => { setForm({ tags: [], salutation: "", footer_text: "", priority: 0 }); setEditingId(null); };
+
   const save = async () => {
     if (!form.tags.length || !form.footer_text.trim()) { alert("Pick at least one tag and enter footer text."); return; }
     setSaving(true);
-    const { error } = await sb.from("bday_footer_rules").insert({
-      tenant_id: getTenantId(), tags: form.tags, salutation: form.salutation.trim() || null,
-      footer_text: form.footer_text.trim(), priority: Number(form.priority) || 0, active: true,
-    });
+    const payload = {
+      tags: form.tags, salutation: form.salutation.trim() || null,
+      footer_text: form.footer_text.trim(), priority: Number(form.priority) || 0,
+    };
+    const { error } = editingId
+      ? await sb.from("bday_footer_rules").update(payload).eq("id", editingId)
+      : await sb.from("bday_footer_rules").insert({ tenant_id: getTenantId(), active: true, ...payload });
     setSaving(false);
     if (error) { alert(error.message); return; }
-    setForm({ tags: [], salutation: "", footer_text: "", priority: 0 });
+    resetForm();
     load();
   };
 
+  const startEdit = (rule) => {
+    setEditingId(rule.id);
+    setForm({ tags: [...(rule.tags || [])], salutation: rule.salutation || "", footer_text: rule.footer_text || "", priority: rule.priority || 0 });
+  };
+
   const toggleActive = async (rule) => { await sb.from("bday_footer_rules").update({ active: !rule.active }).eq("id", rule.id); load(); };
-  const removeRule = async (id) => { if (!window.confirm("Delete this footer rule?")) return; await sb.from("bday_footer_rules").delete().eq("id", id); load(); };
+  const removeRule = async (id) => {
+    if (!window.confirm("Delete this footer rule?")) return;
+    await sb.from("bday_footer_rules").delete().eq("id", id);
+    if (editingId === id) resetForm();
+    load();
+  };
 
   return (
     <div style={{ background: "#f5f0ff", border: "1px solid #c4b5fd", borderRadius: 10, padding: "10px 14px", marginBottom: 16 }}>
@@ -7034,7 +7050,7 @@ function BdayFooterRulesPanel() {
           {loading ? <div style={{ color: "#888", fontSize: 12 }}>Loading…</div> : (
             <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
               {rules.map((r) => (
-                <div key={r.id} style={{ background: "#fff", border: "1px solid #eee", borderRadius: 8, padding: "8px 12px", fontSize: 12.5, opacity: r.active ? 1 : 0.5 }}>
+                <div key={r.id} style={{ background: "#fff", border: `1px solid ${editingId === r.id ? C.purple : "#eee"}`, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, opacity: r.active ? 1 : 0.5 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
                     <div>
                       <div>{(r.tags || []).map((t) => <span key={t} style={{ fontSize: 10, padding: "1px 6px", borderRadius: 8, background: "#ede9fe", color: "#5b21b6", marginRight: 4 }}>🏷 {t}</span>)}</div>
@@ -7043,6 +7059,7 @@ function BdayFooterRulesPanel() {
                       <div style={{ marginTop: 2, fontSize: 10.5, color: "#999" }}>priority {r.priority} · {r.active ? "active" : "inactive"}</div>
                     </div>
                     <div style={{ display: "flex", gap: 6, alignItems: "flex-start" }}>
+                      <Btn small ghost color={C.purple} onClick={() => startEdit(r)}>Edit</Btn>
                       <Btn small ghost color={r.active ? C.gray : C.green} onClick={() => toggleActive(r)}>{r.active ? "Disable" : "Enable"}</Btn>
                       <Btn small ghost color={C.red} onClick={() => removeRule(r.id)}>Delete</Btn>
                     </div>
@@ -7054,7 +7071,7 @@ function BdayFooterRulesPanel() {
           )}
 
           <div style={{ borderTop: "1px dashed #c4b5fd", paddingTop: 10 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>+ New rule</div>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>{editingId ? "✏️ Editing rule" : "+ New rule"}</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 8 }}>
               {allTags.map((t) => {
                 const active = form.tags.includes(t.name);
@@ -7074,7 +7091,10 @@ function BdayFooterRulesPanel() {
             <Textarea rows={2} placeholder='Footer text, e.g. "- Sanjeev Sir & Rotary Club of Karol Bagh, Sun Sea Jewellers"'
               value={form.footer_text} onChange={(e) => setForm((f) => ({ ...f, footer_text: e.target.value }))}
               style={{ width: "100%", marginBottom: 8 }} />
-            <Btn small color={C.purple} disabled={saving} onClick={save}>{saving ? "Saving…" : "+ Add Rule"}</Btn>
+            <div style={{ display: "flex", gap: 8 }}>
+              <Btn small color={C.purple} disabled={saving} onClick={save}>{saving ? "Saving…" : editingId ? "Update Rule" : "+ Add Rule"}</Btn>
+              {editingId && <Btn small ghost color={C.gray} onClick={resetForm}>Cancel edit</Btn>}
+            </div>
           </div>
         </>
       )}
