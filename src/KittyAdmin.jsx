@@ -879,10 +879,10 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
       `Apply ₹${rate.toLocaleString("en-IN")}/g to payments for "${scheme?.name}" in ${monthStr} that don't have a rate yet?\n\n` +
       `${matching.length} payment${matching.length === 1 ? "" : "s"} will get this rate — ₹${totalAmount.toLocaleString("en-IN")} total → ${totalGrams.toFixed(3)}g gold.\n\n` +
       (alreadySet ? `${alreadySet} other payment${alreadySet === 1 ? "" : "s"} this month already ${alreadySet === 1 ? "has" : "have"} a rate individually punched — those are protected and will NOT change.\n\n` : "") +
-      `Every notified member will get a WhatsApp with their rate + gold added.`
+      `Every affected member gets a WhatsApp with their rate + gold added. Anyone who hasn't paid this month yet also gets a reminder to pay today to lock this rate.`
     )) return;
     const d = await call("set-monthly-rate", { method: "POST", crmSecret, body: { schemeId, month: monthStr, ratePerGram: rate, actor } });
-    if (d.ok) { alert(`Rate applied to ${d.updated} payment${d.updated === 1 ? "" : "s"} · ${d.notified || 0} member${d.notified === 1 ? "" : "s"} notified on WhatsApp.`); load(); } else alert(d.error);
+    if (d.ok) { alert(`Rate applied to ${d.updated} payment${d.updated === 1 ? "" : "s"} · ${d.notified || 0} member${d.notified === 1 ? "" : "s"} notified · ${d.reminded || 0} unpaid member${d.reminded === 1 ? "" : "s"} reminded on WhatsApp.`); load(); } else alert(d.error);
   };
 
   const PAYMENT_METHODS = ["cash", "upi", "bank_transfer", "card", "cheque", "other"];

@@ -1244,6 +1244,9 @@ export default async function handler(req, res) {
     // by lead so someone with 2 rows this month (e.g. base + top-up) gets one
     // message with their combined total, not two separate ones.
     let notified = 0;
+    const notifiedLeadIds = new Set();
+    const schemeName = targetScheme?.name || "your Kitty scheme";
+    const monthLabel = new Date(`${body.month}-01T00:00:00Z`).toLocaleDateString("en-IN", { month: "long", year: "numeric", timeZone: "UTC" });
     if (updated?.length) {
       const { data: enrollLeadRows } = await sb.from("kitty_enrollments").select("id, lead_id").in("id", [...new Set(updated.map((u) => u.enrollment_id))]);
       const leadIdByEnrollment = new Map((enrollLeadRows || []).map((e) => [e.id, e.lead_id]));
@@ -1259,10 +1262,9 @@ export default async function handler(req, res) {
       }
       const leadIds = [...byLead.keys()];
       const { data: leadRows } = await sb.from("bullion_leads").select("id, phone, dnd").in("id", leadIds);
-      const schemeName = targetScheme?.name || "your Kitty scheme";
-      const monthLabel = new Date(`${body.month}-01T00:00:00Z`).toLocaleDateString("en-IN", { month: "long", year: "numeric", timeZone: "UTC" });
       let first = true;
       for (const lead of leadRows || []) {
+        notifiedLeadIds.add(lead.id);
         if (!lead.phone || lead.dnd) continue;
         // Space sends out (~2s + jitter) so a rate-cut to a big group doesn't
         // fire as a burst — same anti-ban concern as broadcast-send.js's pacing.
@@ -1275,7 +1277,35 @@ export default async function handler(req, res) {
       }
     }
 
-    return res.status(200).json({ ok: true, updated: updated?.length || 0, notified });
+    // Nudge everyone who hasn't paid this month yet — before this they had
+    // no way to know a rate had just been booked unless they asked. Warm
+    // reminder with a real (not fake) deadline: gold weight is derived from
+    // whichever rate is set for whatever they actually pay against, so
+    // paying today genuinely locks in today's number.
+    let reminded = 0;
+    const { data: dueRows } = await sb.from("kitty_installments")
+      .select("enrollment_id")
+      .in("enrollment_id", enrollmentIds)
+      .eq("status", "due")
+      .gte("due_date", monthStart).lt("due_date", monthEnd);
+    if (dueRows?.length) {
+      const { data: dueEnrollRows } = await sb.from("kitty_enrollments").select("id, lead_id").in("id", [...new Set(dueRows.map((d) => d.enrollment_id))]);
+      const dueLeadIds = [...new Set((dueEnrollRows || []).map((e) => e.lead_id))].filter((id) => !notifiedLeadIds.has(id));
+      if (dueLeadIds.length) {
+        const { data: dueLeadRows } = await sb.from("bullion_leads").select("id, phone, dnd").in("id", dueLeadIds);
+        let first = true;
+        for (const lead of dueLeadRows || []) {
+          if (!lead.phone || lead.dnd) continue;
+          if (!first) await new Promise((r) => setTimeout(r, 1800 + Math.random() * 700));
+          first = false;
+          const msg = `🪙 ${schemeName} — ${monthLabel} rate has just been booked at ₹${rateCheck.value.toLocaleString("en-IN")}/g for members who've already paid this month.\n\nAlready paid but it's not showing? Please message or call us right away, we'll sort it out immediately.\n\nHaven't paid yet? Please complete your ${monthLabel} Kitty payment today to lock in this rate — once today closes, this rate won't apply anymore, and whichever rate is live when you do pay will be used instead.\n- Sun Sea Jewellers, Karol Bagh`;
+          const { sent } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: lead.id, phone: lead.phone, msg, context: { type: "rate_cut_payment_reminder", schemeId: body.schemeId, month: body.month } });
+          if (sent) reminded++;
+        }
+      }
+    }
+
+    return res.status(200).json({ ok: true, updated: updated?.length || 0, notified, reminded });
   }
 
   // GET ?action=admin-list-pending-messages — staff. Kitty WA sends that
