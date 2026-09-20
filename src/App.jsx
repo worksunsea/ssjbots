@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 import QRCode from "qrcode";
+import VersionChecker from "./VersionChecker.jsx";
 import { jsPDF } from "jspdf";
 import { secureImageUpload, secureNonImageUpload, compressImageOnly } from "./utils/imageUpload";
 import { shouldForceLogout, SESSION_POLL_MS } from "./utils/session-security";
@@ -1433,8 +1434,11 @@ function DemandsScreen({ funnels, allTags, adOnly = false }) {
   const myId = loadUser()?.id;
   const isManagerPlus = ["superadmin", "admin", "manager"].includes(myRole);
   useEffect(() => {
-    sb.from("staff").select("id,name,username,role,app_permissions").eq("tenant_id", getTenantId()).neq("type", "artisan").order("name")
+    const loadBulkStaff = () => sb.from("staff").select("id,name,username,role,app_permissions").eq("tenant_id", getTenantId()).neq("type", "artisan").order("name")
       .then(({ data }) => setBulkStaff(data || []));
+    loadBulkStaff();
+    window.addEventListener("ssjbots-staff-updated", loadBulkStaff);
+    return () => window.removeEventListener("ssjbots-staff-updated", loadBulkStaff);
   }, []);
 
   const load = useCallback(async () => {
@@ -8176,6 +8180,17 @@ function AnalyticsScreen({ funnels }) {
   const [lbExpanded, setLbExpanded] = useState(false);
   const [staffList, setStaffList] = useState([]);
 
+  // Keep the permission-editing staff list live — this is where roles/
+  // app_permissions get changed, so a stale copy in an open tab could
+  // silently overwrite another admin's edit (same bug class fixed in
+  // fms-tracker's Workflows editor).
+  useEffect(() => {
+    const reloadStaffList = () => sb.from("staff").select("id,name,username,role,app_permissions").eq("tenant_id", getTenantId()).neq("type", "artisan").order("name")
+      .then(({ data }) => { if (data) setStaffList(data); });
+    window.addEventListener("ssjbots-staff-updated", reloadStaffList);
+    return () => window.removeEventListener("ssjbots-staff-updated", reloadStaffList);
+  }, []);
+
   // Config editor
   const [configRows, setConfigRows] = useState([]);
   const [configSaving, setConfigSaving] = useState({});
@@ -11835,7 +11850,24 @@ export default function App() {
     loadTags();
   }, [user, loadFunnels, loadPersonas, loadTags]);
 
-  if (!user) return <LoginScreen onLogin={login} />;
+  // Live-notify open tabs when staff changes (renames, permission edits,
+  // deactivation) — staff is small/low-churn so a realtime subscription is
+  // safe (unlike bullion_leads: 11k+ rows, ~10MB — deliberately NOT
+  // subscribed here; see VersionChecker.jsx comment / commit message for why).
+  // Individual screens that keep their own local staff list opt in by
+  // listening for this event and reloading — not every staff-reading
+  // component does yet, only the ones editing permissions/reassigning work.
+  useEffect(() => {
+    if (!user) return;
+    const ch = sb.channel("staff_rt")
+      .on("postgres_changes", { event: "*", schema: "public", table: "staff", filter: `tenant_id=eq.${getTenantId()}` }, () => {
+        window.dispatchEvent(new Event("ssjbots-staff-updated"));
+      })
+      .subscribe();
+    return () => sb.removeChannel(ch);
+  }, [user]);
+
+  if (!user) return (<><VersionChecker /><LoginScreen onLogin={login} /></>);
 
   const header = (
     <>
@@ -11976,6 +12008,7 @@ export default function App() {
   return (
     <ContactFieldsContext.Provider value={cfCtx}>
     <div style={{ maxWidth: 1280, margin: "0 auto", padding: "1rem" }}>
+      <VersionChecker />
       {header}
       <div style={{ display: "flex", gap: 6, marginBottom: 16, borderBottom: "1px solid #eee", paddingBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
         {primaryTabs.map((t) => (
