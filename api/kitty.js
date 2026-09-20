@@ -690,6 +690,70 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, installment: data });
   }
 
+  // POST ?action=advance-pay-installments — staff. Body: { enrollmentId, months,
+  // ratePerGram, paymentMethod?, paymentRemarks?, actor, recordedBy }. Pays
+  // the next N still-`due` installments in one go, all at the SAME rate
+  // (today's), so the member is covered ahead of schedule. Due/due-today
+  // reminders only ever look at status='due', so this alone stops those
+  // reminders firing for the paid-ahead months — no separate suppression flag.
+  if (req.method === "POST" && action === "advance-pay-installments") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    if (!body.enrollmentId || !body.months) return res.status(400).json({ ok: false, error: "enrollmentId_months_required" });
+    const rateCheck = validateRateLocked(body.ratePerGram);
+    if (!rateCheck.ok) return res.status(400).json({ ok: false, error: rateCheck.error });
+    if (rateCheck.value == null) return res.status(400).json({ ok: false, error: "ratePerGram_required" });
+
+    const { data: enrollment } = await sb.from("kitty_enrollments")
+      .select("id, lead_id, status, scheme:kitty_schemes(name, perks)").eq("tenant_id", TENANT_ID).eq("id", body.enrollmentId).maybeSingle();
+    if (!enrollment) return res.status(404).json({ ok: false, error: "enrollment_not_found" });
+    if (enrollment.status !== "active") return res.status(400).json({ ok: false, error: "enrollment_not_active" });
+    if (enrollment.scheme?.perks?.unit === "grams") return res.status(400).json({ ok: false, error: "advance_pay_not_applicable_gram_based_scheme" });
+
+    const { data: dueRows } = await sb.from("kitty_installments")
+      .select("id, month_number, amount").eq("tenant_id", TENANT_ID).eq("enrollment_id", body.enrollmentId)
+      .eq("status", "due").order("month_number", { ascending: true }).limit(Number(body.months));
+    if (!dueRows?.length) return res.status(400).json({ ok: false, error: "no_due_installments" });
+
+    const nowIso = new Date().toISOString();
+    const paidIds = dueRows.map((r) => r.id);
+    const { error } = await sb.from("kitty_installments").update({
+      status: "paid", paid_at: nowIso, rate_locked: rateCheck.value,
+      recorded_by: body.recordedBy || null, payment_method: body.paymentMethod || null,
+      payment_remarks: body.paymentRemarks ? `${body.paymentRemarks} (advance payment)` : "Advance payment",
+    }).in("id", paidIds).select("id, amount, paid_amount");
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    // paid_amount wasn't set by the bulk update above (defaults to the
+    // existing scheduled `amount` per row) — set it explicitly per row so
+    // it matches amount exactly, same as a normal single payment.
+    await Promise.all(dueRows.map((r) => sb.from("kitty_installments").update({ paid_amount: r.amount }).eq("id", r.id)));
+
+    const totalAmount = dueRows.reduce((sum, r) => sum + Number(r.amount || 0), 0);
+    const totalGrams = totalAmount / rateCheck.value;
+    const lastMonth = dueRows[dueRows.length - 1].month_number;
+
+    const { count: remaining } = await sb.from("kitty_installments")
+      .select("*", { count: "exact", head: true }).eq("enrollment_id", body.enrollmentId).eq("status", "due");
+    if (!remaining) {
+      await sb.from("kitty_enrollments").update({ status: "completed", claim_status: "unclaimed" }).eq("id", body.enrollmentId);
+    }
+
+    await logAudit(sb, { entityType: "enrollment", entityId: body.enrollmentId, action: "advance_pay", actor: body.actor || body.recordedBy, details: { months: dueRows.length, ratePerGram: rateCheck.value, totalAmount, totalGrams } });
+
+    const { data: lead } = await sb.from("bullion_leads").select("phone, dnd").eq("id", enrollment.lead_id).maybeSingle();
+    if (lead?.phone && !lead.dnd) {
+      const msg = await getKittyMessage(sb, TENANT_ID, "advance_payment_confirmation", {
+        scheme_name: enrollment.scheme?.name || "your Kitty scheme", months: dueRows.length,
+        rate: rateCheck.value.toLocaleString("en-IN"), amount: totalAmount.toLocaleString("en-IN"),
+        grams: totalGrams.toFixed(3), last_month: lastMonth,
+      });
+      await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: enrollment.lead_id, phone: lead.phone, msg, context: { type: "advance_payment_confirmation", enrollmentId: body.enrollmentId } });
+    }
+
+    return res.status(200).json({ ok: true, paidCount: dueRows.length, totalAmount, totalGrams, lastMonth });
+  }
+
   // POST ?action=toggle-installment-possession — staff. Body: { installmentId, possession }.
   // Flips whether this settled installment's gold is still with the store
   // ("with_company") or has been physically handed to the client
@@ -702,9 +766,19 @@ export default async function handler(req, res) {
     if (!body.installmentId) return res.status(400).json({ ok: false, error: "installmentId_required" });
     if (!["with_company", "with_client"].includes(body.possession)) return res.status(400).json({ ok: false, error: "invalid_possession" });
     const { data, error } = await sb.from("kitty_installments").update({ possession: body.possession })
-      .eq("tenant_id", TENANT_ID).eq("id", body.installmentId).select().single();
+      .eq("tenant_id", TENANT_ID).eq("id", body.installmentId).select("*, enrollment:kitty_enrollments(lead_id, scheme:kitty_schemes(name))").single();
     if (error) return res.status(500).json({ ok: false, error: error.message });
     await logAudit(sb, { entityType: "installment", entityId: data.id, action: "possession-changed", actor: body.actor, details: { possession: data.possession } });
+    if (body.possession === "with_client" && data.rate_locked) {
+      const grams = Number(data.paid_amount ?? data.amount ?? 0) / Number(data.rate_locked);
+      const { data: lead } = await sb.from("bullion_leads").select("phone, dnd").eq("id", data.enrollment?.lead_id).maybeSingle();
+      if (lead?.phone && !lead.dnd) {
+        const msg = await getKittyMessage(sb, TENANT_ID, "delivery_confirmation", {
+          scheme_name: data.enrollment?.scheme?.name || "your Kitty scheme", grams: grams.toFixed(3),
+        });
+        await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: data.enrollment.lead_id, phone: lead.phone, msg, context: { type: "delivery_confirmation", installmentId: data.id } });
+      }
+    }
     return res.status(200).json({ ok: true, installment: data });
   }
 
@@ -774,6 +848,17 @@ export default async function handler(req, res) {
     }
 
     await logAudit(sb, { entityType: "enrollment", entityId: body.enrollmentId, action: "deliver_coins", actor: body.actor || body.recordedBy, details: { requestedGrams, deliveredGrams: Number(delivered.toFixed(3)), installmentsTouched: touchedIds } });
+
+    if (delivered > 0) {
+      const { data: enrollment } = await sb.from("kitty_enrollments").select("lead_id, scheme:kitty_schemes(name)").eq("id", body.enrollmentId).maybeSingle();
+      const { data: lead } = await sb.from("bullion_leads").select("phone, dnd").eq("id", enrollment?.lead_id).maybeSingle();
+      if (lead?.phone && !lead.dnd) {
+        const msg = await getKittyMessage(sb, TENANT_ID, "delivery_confirmation", {
+          scheme_name: enrollment?.scheme?.name || "your Kitty scheme", grams: delivered.toFixed(3),
+        });
+        await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: enrollment.lead_id, phone: lead.phone, msg, context: { type: "delivery_confirmation", enrollmentId: body.enrollmentId } });
+      }
+    }
     return res.status(200).json({ ok: true, deliveredGrams: Number(delivered.toFixed(3)) });
   }
 
@@ -992,7 +1077,8 @@ export default async function handler(req, res) {
     const { data: lead } = await sb.from("bullion_leads").select("phone").eq("id", enrollment?.lead_id).maybeSingle();
     if (lead?.phone) {
       const schemeName = enrollment.is_legacy ? enrollment.legacy_scheme_name : (enrollment.scheme?.name || "your Kitty");
-      await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: enrollment.lead_id, phone: lead.phone, msg: `🙏 Thank you! Your ${schemeName} has been redeemed successfully.\n- Sun Sea Jewellers, Karol Bagh`, context: { type: "redemption_thank_you", enrollmentId: body.id } });
+      const msg = await getKittyMessage(sb, TENANT_ID, "redemption_thank_you", { scheme_name: schemeName });
+      await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: enrollment.lead_id, phone: lead.phone, msg, context: { type: "redemption_thank_you", enrollmentId: body.id } });
     }
 
     await logAudit(sb, { entityType: "enrollment", entityId: body.id, action: "redeem-confirmed", actor: body.actor || body.redeemedBy });

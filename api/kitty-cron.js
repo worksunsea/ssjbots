@@ -36,7 +36,10 @@ import { gramsForInstallments } from "./_lib/kittyGrams.js";
 import { computeCheckpointCrossingTimes, awardBonusCoin, CHECKPOINTS_G } from "./_lib/mission100.js";
 import { getKittyMessage } from "./_lib/kittyTemplates.js";
 
-const REMINDER_DAYS_BEFORE = 3;
+// Bumped 3 -> 7 (owner instruction, 2026-09-20): staff want members to
+// hear about an upcoming installment a week out, not 3 days out, so
+// there's real time to pay before the due date's rate gets fixed.
+const REMINDER_DAYS_BEFORE = 7;
 const CLAIM_REMINDER_INTERVAL_DAYS = 14;
 
 function checkAuth(req) {

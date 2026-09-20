@@ -906,11 +906,14 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
   const [changingSchemeFor, setChangingSchemeFor] = useState(null); // enrollment id, or null
   const [pickedSchemeId, setPickedSchemeId] = useState("");
   const [goldRate, setGoldRate] = useState(null); // today's live 995/24kt rate — reference only, for gullak rate-cut entries
+  const [mmtcCoins, setMmtcCoins] = useState([]); // today's live MMTC 9999 coin prices, per weight tier — for the "fix today's rate" option on Gullak purchases
   const [mergeSelected, setMergeSelected] = useState([]); // up to 2 enrollment ids
   const [expandedId, setExpandedId] = useState(null); // enrollment id whose full management panel is open
 
   useEffect(() => {
-    fetch("/api/rates").then((r) => r.json()).then((d) => { if (d.ok) setGoldRate(d.rates?.spot?.gold24kt || null); }).catch(() => {});
+    fetch("/api/rates").then((r) => r.json()).then((d) => {
+      if (d.ok) { setGoldRate(d.rates?.spot?.gold24kt || null); setMmtcCoins(d.rates?.goldCoins || []); }
+    }).catch(() => {});
   }, []);
 
   // Lock the scheme filter to lockedSchemeSlug once schemes have loaded —
@@ -1183,8 +1186,6 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
     if (d.ok) load(); else alert(d.error);
   };
   const addInstallment = async (enrollmentId) => {
-    const amount = prompt(`Amount received (₹)?${goldRate ? ` [today's live 995 rate: ₹${Math.round(goldRate)}/g]` : ""}`);
-    if (!amount) return;
     // Grams are always entered/stored to 3 decimals (e.g. 1.635g) — round
     // here so the derived rate (amount / grams) doesn't drift on a stray
     // extra-precision entry.
@@ -1193,11 +1194,48 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
       return alert("Invalid grams value — must be max 3 digits before the decimal, up to 3 decimals (0.001-999.999g).");
     }
     const gramsPurchased = gramsRaw ? (Math.round(Number(gramsRaw) * 1000) / 1000).toFixed(3) : null;
+
+    // If this is a whole-gram MMTC coin (1g, 2g, 5g, 10g...) we have a live
+    // rate for, offer to auto-fill today's exact coin price instead of
+    // typing it — matches what the customer's actually being charged today.
+    // Declining leaves the amount to be entered manually as before; if
+    // staff also leaves grams blank the rate stays unset and gets filled
+    // whenever the monthly rate is next booked (~20th).
+    const gramsNum = gramsPurchased ? Number(gramsPurchased) : null;
+    const matchedCoin = gramsNum && Number.isInteger(gramsNum) ? mmtcCoins.find((c) => c.weight_g === gramsNum && c.mmtc9999) : null;
+    let amount;
+    if (matchedCoin && window.confirm(`Fix today's rate for this ${gramsNum}g coin — ₹${matchedCoin.mmtc9999.toLocaleString("en-IN")} (MMTC 9999)?\n\nOK = use this price now.\nCancel = enter the amount manually instead.`)) {
+      amount = String(matchedCoin.mmtc9999);
+    } else {
+      amount = prompt(`Amount received (₹)?${goldRate ? ` [today's live 995 rate: ₹${Math.round(goldRate)}/g]` : ""}`);
+      if (!amount) return;
+    }
     const paymentMethod = promptPaymentMethod();
     if (paymentMethod == null) return;
     const paymentRemarks = prompt("Remarks (UPI ref no. / transfer ref no. / cash given to whom)? Optional.") || null;
     const d = await call("add-installment", { method: "POST", crmSecret, body: { enrollmentId, amount, gramsPurchased, paymentMethod, paymentRemarks, recordedBy: actor, actor } });
     if (d.ok) load(); else alert(d.error);
+  };
+  // Pay several upcoming months in one go, all at the same today's rate —
+  // member is covered through those months immediately, so due/due-today
+  // reminders (which only look at status='due') simply stop firing for
+  // them until the advance runs out. No separate suppression needed.
+  const advancePay = async (e) => {
+    const dueCount = (e.installments || []).filter((i) => i.status === "due").length;
+    if (!dueCount) return alert("No due installments left to advance-pay.");
+    const monthsRaw = prompt(`Pay how many upcoming months in advance? (${dueCount} due)`, "1");
+    if (!monthsRaw) return;
+    const months = Math.max(1, Math.min(dueCount, parseInt(monthsRaw, 10) || 0));
+    if (!months) return;
+    const rate = promptRate(`Rate to lock for all ${months} month(s) (₹/g)?${goldRate ? ` [today's live 995 rate: ₹${Math.round(goldRate)}/g]` : ""}`);
+    if (rate == null) return;
+    const paymentMethod = promptPaymentMethod();
+    if (paymentMethod == null) return;
+    const paymentRemarks = prompt("Remarks? Optional.") || null;
+    const d = await call("advance-pay-installments", { method: "POST", crmSecret, body: { enrollmentId: e.id, months, ratePerGram: rate, paymentMethod, paymentRemarks, recordedBy: actor, actor } });
+    if (d.ok) alert(`Advance-paid ${d.paidCount} month(s) — ₹${d.totalAmount.toLocaleString("en-IN")} = ${d.totalGrams.toFixed(3)}g at ₹${rate}/g.`);
+    else alert(d.error);
+    load();
   };
   // Two-step: (1) initiate sends the member a WA code + what's being
   // redeemed, staff never sees the code; (2) staff asks the member to read
@@ -1435,6 +1473,7 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
                           {(e.status === "pending_confirmation" || e.status === "active") && <button onClick={() => cancel_(e.id)} style={{ marginRight: 8 }}>Cancel</button>}
                           <button onClick={() => deleteEnrollment_(e)} style={{ marginRight: 8, color: "#b91c1c" }}>Delete (duplicate)</button>
                           {e.status === "active" && <button onClick={() => addInstallment(e.id)} style={{ marginRight: 8 }}>+ Add Purchase/Installment</button>}
+                          {e.status === "active" && !grams && <button onClick={() => advancePay(e)} style={{ marginRight: 8 }}>⏩ Advance Pay Months</button>}
                           {(e.status === "active" || e.status === "completed") && (
                             <button onClick={() => redeem(e)} style={{ marginRight: 8, fontWeight: 600 }}>
                               {e.status === "active" ? "Redeem Now (early)" : "Redeem"}

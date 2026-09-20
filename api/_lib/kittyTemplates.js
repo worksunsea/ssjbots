@@ -16,9 +16,9 @@ export const KITTY_MESSAGE_TYPES = [
   {
     type: "due_reminder",
     label: "Upcoming installment reminder",
-    description: `Sent up to ${3} days before an installment's due date (once per installment).`,
+    description: "Sent once, 7 days before an installment's due date.",
     placeholders: ["scheme_name", "month_number", "amount", "due_date"],
-    default: `🪙 Reminder: your {{scheme_name}} installment #{{month_number}} of ₹{{amount}} is due on {{due_date}}.\n- Sun Sea Jewellers, Karol Bagh`,
+    default: `🪙 Heads up! Your upcoming {{scheme_name}} installment #{{month_number}} of ₹{{amount}} is coming up on {{due_date}}. Please pay by {{due_date}} to fix that date's gold rate on your investment.\n- Sun Sea Jewellers, Karol Bagh`,
   },
   {
     type: "due_today_reminder",
@@ -33,6 +33,27 @@ export const KITTY_MESSAGE_TYPES = [
     description: "Sent to everyone whose payment just got this month's rate applied, when staff book the monthly rate.",
     placeholders: ["scheme_name", "month_label", "amount", "grams", "rate"],
     default: `🪙 {{scheme_name}} — {{month_label}} rate booked: ₹{{rate}}/g\nYour ₹{{amount}} this month = {{grams}}g added.\n- Sun Sea Jewellers, Karol Bagh`,
+  },
+  {
+    type: "redemption_thank_you",
+    label: "Redemption thank-you",
+    description: "Sent when a member's Kitty scheme is fully redeemed (jewellery/gold/benefit handed over).",
+    placeholders: ["scheme_name"],
+    default: `🙏 Thank you! Your {{scheme_name}} has been redeemed successfully.\n\nDelivery status: ✅ COMPLETE — everything has been handed over to you.\n- Sun Sea Jewellers, Karol Bagh`,
+  },
+  {
+    type: "delivery_confirmation",
+    label: "Gold/coin delivered confirmation",
+    description: "Sent when staff mark a member's gold/coin as physically handed over (possession -> with_client).",
+    placeholders: ["scheme_name", "grams"],
+    default: `🪙 Delivered! {{grams}}g of gold from your {{scheme_name}} has been handed over to you today.\n\nDelivery status: ✅ WITH YOU (no longer held by the store).\nThank you for banking with Sun Sea Jewellers, Karol Bagh.`,
+  },
+  {
+    type: "advance_payment_confirmation",
+    label: "Advance payment confirmation",
+    description: "Sent when staff advance-pay several upcoming months at once, all at today's rate.",
+    placeholders: ["scheme_name", "months", "rate", "amount", "grams", "last_month"],
+    default: `🪙 Advance payment received! {{months}} upcoming month(s) of your {{scheme_name}} have been paid today at ₹{{rate}}/g — ₹{{amount}} total = {{grams}}g.\n\nYou're covered through installment #{{last_month}} — no more payment reminders until then.\n- Sun Sea Jewellers, Karol Bagh`,
   },
   {
     type: "rate_cut_payment_reminder",
