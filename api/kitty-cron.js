@@ -3,12 +3,15 @@
 // runs ONLY the due-today sweep below and skips everything else.
 // Five independent sweeps, all WhatsApp-only:
 //   1. Monthly due reminder — for each `due` installment whose due_date is
-//      within REMINDER_DAYS_BEFORE days, send once (reminded_at stamped so
-//      later ticks don't repeat) unless already overdue-reminded today.
-//   1b. Due-today urgent nudge (?only=due_today, 10am IST) — anyone whose
+//      within REMINDER_DAYS_BEFORE (7) days, send once (reminded_at
+//      stamped so later ticks don't repeat).
+//   1b. 3-day urgent reminder — same shape, REMINDER_DAYS_BEFORE_3DAY (3)
+//      days out, own stamp (reminded_3day_at) so it fires independently
+//      of 1. — both nudges go out, not one replacing the other.
+//   1c. Due-today urgent nudge (?only=due_today, 10am IST) — anyone whose
 //      installment is due TODAY and still unpaid, separate stamp
-//      (due_today_reminded_at) so it fires once more even if 1. already
-//      reminded them days earlier.
+//      (due_today_reminded_at) so it fires once more even if 1./1b.
+//      already reminded them days earlier.
 //   2. Legacy unclaimed-benefit reminder — for completed enrollments with
 //      claim_status in (unclaimed, reminded), re-nudge every
 //      CLAIM_REMINDER_INTERVAL_DAYS days until staff marks it claimed.
@@ -36,10 +39,11 @@ import { gramsForInstallments } from "./_lib/kittyGrams.js";
 import { computeCheckpointCrossingTimes, awardBonusCoin, CHECKPOINTS_G } from "./_lib/mission100.js";
 import { getKittyMessage } from "./_lib/kittyTemplates.js";
 
-// Bumped 3 -> 7 (owner instruction, 2026-09-20): staff want members to
-// hear about an upcoming installment a week out, not 3 days out, so
-// there's real time to pay before the due date's rate gets fixed.
+// Two separate advance reminders, not one replacing the other (owner
+// instruction, 2026-09-20): a 7-day heads-up AND a more urgent 3-day
+// nudge, each with its own stamp column so they fire independently.
 const REMINDER_DAYS_BEFORE = 7;
+const REMINDER_DAYS_BEFORE_3DAY = 3;
 const CLAIM_REMINDER_INTERVAL_DAYS = 14;
 
 function checkAuth(req) {
@@ -92,8 +96,9 @@ export default async function handler(req, res) {
   const sb = supa();
   const today = todayIST();
   const windowEnd = new Date(Date.now() + 5.5 * 3600000 + REMINDER_DAYS_BEFORE * 86400000).toISOString().slice(0, 10);
+  const windowEnd3day = new Date(Date.now() + 5.5 * 3600000 + REMINDER_DAYS_BEFORE_3DAY * 86400000).toISOString().slice(0, 10);
   const stats = {
-    dueReminders: 0, dueTodayReminders: 0, claimReminders: 0, batchesRolledOver: 0, rolloverNudges: 0, swarnFrozen: 0, failed: 0, queued: 0,
+    dueReminders: 0, dueReminders3day: 0, dueTodayReminders: 0, claimReminders: 0, batchesRolledOver: 0, rolloverNudges: 0, swarnFrozen: 0, failed: 0, queued: 0,
     mission100Finishers: 0, mission100CompletionBonuses: 0, mission100CheckpointWins: 0, mission100Winners: 0,
     mission100Announcements: 0, mission100ReferralBonuses: 0,
   };
@@ -131,6 +136,28 @@ export default async function handler(req, res) {
       if (!sent) { if (queued) stats.queued++; continue; }
       await sb.from("kitty_installments").update({ reminded_at: new Date().toISOString() }).eq("id", row.id);
       stats.dueReminders++;
+    }
+
+    // ── 1b. 3-day urgent reminder — separate from the 7-day one above,
+    //        fires independently even though both use the same `due` +
+    //        date-window shape, since each has its own stamp column.
+    const { data: due3day } = await sb.from("kitty_installments")
+      .select("id,due_date,amount,month_number,enrollment:kitty_enrollments!inner(id,lead_id,tenant_id,status,scheme:kitty_schemes(name))")
+      .eq("tenant_id", TENANT_ID).eq("status", "due").is("reminded_3day_at", null)
+      .lte("due_date", windowEnd3day).gte("due_date", today);
+
+    for (const row of due3day || []) {
+      if (row.enrollment?.status !== "active") continue;
+      const { data: lead } = await sb.from("bullion_leads").select("phone,name,dnd").eq("id", row.enrollment.lead_id).maybeSingle();
+      if (!lead?.phone || lead.dnd) continue;
+      const schemeName = row.enrollment.scheme?.name || "your Kitty scheme";
+      const msg = await getKittyMessage(sb, TENANT_ID, "due_reminder_3day", {
+        scheme_name: schemeName, month_number: row.month_number, amount: row.amount, due_date: row.due_date,
+      });
+      const { sent, queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: row.enrollment.lead_id, phone: lead.phone, msg, context: { type: "due_reminder_3day", installmentId: row.id } });
+      if (!sent) { if (queued) stats.queued++; continue; }
+      await sb.from("kitty_installments").update({ reminded_3day_at: new Date().toISOString() }).eq("id", row.id);
+      stats.dueReminders3day++;
     }
 
     // ── 2. Legacy unclaimed-benefit reminders ───────────────────────

@@ -24,7 +24,7 @@ async function call(action, { method = "GET", body, crmSecret, params } = {}) {
 }
 
 const KITTY_MSG_TYPE_LABELS = {
-  due_reminder: "Due reminder", due_today_reminder: "Due today (urgent)", unclaimed_reminder: "Unclaimed benefit",
+  due_reminder: "Due reminder (7-day)", due_reminder_3day: "Due reminder (3-day)", due_today_reminder: "Due today (urgent)", unclaimed_reminder: "Unclaimed benefit",
   batch_rollover: "Round completed", swarn_freeze: "Swarn 11mo freeze", rate_notify: "Monthly rate booked",
   rate_cut_payment_reminder: "Rate booked, unpaid nudge", redemption_thank_you: "Redemption thank-you",
   mission100_completion: "Mission 100 finish", mission100_checkpoint: "Mission 100 checkpoint",
@@ -1495,19 +1495,30 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
                               const payTxt = i.payment_method ? ` — paid via ${i.payment_method}${i.payment_remarks ? ` (${i.payment_remarks})` : ""}` : "";
                               const settled = i.status === "paid" || i.status === "free";
                               const withClient = (i.possession || "with_company") === "with_client";
+                              // Overdue (red) / due this calendar month (orange) / paid or
+                              // free (green) / due but further out — upcoming (yellow) /
+                              // anything else, e.g. waived (gray).
+                              const todayStr = new Date().toISOString().slice(0, 10);
+                              const isOverdue = i.status === "due" && i.due_date < todayStr;
+                              const isDueThisMonth = i.status === "due" && !isOverdue && i.due_date?.slice(0, 7) === todayStr.slice(0, 7);
+                              const bg = settled ? "#d1fae5" : isOverdue ? "#fecaca" : isDueThisMonth ? "#fed7aa" : i.status === "due" ? "#fef9c3" : "#e5e7eb";
+                              const monthLabel = i.due_date ? new Date(`${i.due_date}T00:00:00Z`).toLocaleDateString("en-IN", { month: "short", year: "numeric", timeZone: "UTC" }) : "";
                               return (
                                 <span key={i.month_number} title={`Due ${i.due_date}${rateTxt}${gramsTxt}${payTxt} — click to mark paid, shift+click to edit`}
                                   onClick={(ev) => { if (ev.shiftKey) editInstallment(i); else if (i.status === "due") markPaid(i.id); else editInstallment(i); }}
-                                  style={{ padding: "2px 8px", borderRadius: 4, fontSize: 12, cursor: "pointer",
-                                    background: i.status === "paid" ? "#d1fae5" : i.status === "due" ? "#fef3c7" : "#e5e7eb" }}>
-                                  #{i.month_number} {i.status}{i.rate_locked ? ` · ₹${Number(i.rate_locked).toLocaleString("en-IN")}/g` : ""}{g ? ` · ${g.toFixed(3)}g` : ""}
-                                  {settled && (
-                                    <button onClick={(ev) => { ev.stopPropagation(); togglePossession(i); }}
-                                      title={`Gold currently ${withClient ? "with client" : "with company"} — click to toggle`}
-                                      style={{ marginLeft: 4, fontSize: 11, cursor: "pointer", border: "none", background: "transparent" }}>
-                                      {withClient ? "🤝" : "🏬"}
-                                    </button>
-                                  )}
+                                  style={{ padding: "3px 8px", borderRadius: 4, fontSize: 12, cursor: "pointer", background: bg,
+                                    display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1.3 }}>
+                                  <span>
+                                    #{i.month_number} {isOverdue ? "overdue" : i.status}{i.rate_locked ? ` · ₹${Number(i.rate_locked).toLocaleString("en-IN")}/g` : ""}{g ? ` · ${g.toFixed(3)}g` : ""}
+                                    {settled && (
+                                      <button onClick={(ev) => { ev.stopPropagation(); togglePossession(i); }}
+                                        title={`Gold currently ${withClient ? "with client" : "with company"} — click to toggle`}
+                                        style={{ marginLeft: 4, fontSize: 11, cursor: "pointer", border: "none", background: "transparent" }}>
+                                        {withClient ? "🤝" : "🏬"}
+                                      </button>
+                                    )}
+                                  </span>
+                                  {monthLabel && <span style={{ fontSize: 10, color: "#666" }}>{monthLabel}</span>}
                                 </span>
                               );
                             })}

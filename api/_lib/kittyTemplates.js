@@ -15,10 +15,17 @@
 export const KITTY_MESSAGE_TYPES = [
   {
     type: "due_reminder",
-    label: "Upcoming installment reminder",
+    label: "Upcoming installment reminder (7-day)",
     description: "Sent once, 7 days before an installment's due date.",
     placeholders: ["scheme_name", "month_number", "amount", "due_date"],
     default: `🪙 Heads up! Your upcoming {{scheme_name}} installment #{{month_number}} of ₹{{amount}} is coming up on {{due_date}}. Please pay by {{due_date}} to fix that date's gold rate on your investment.\n- Sun Sea Jewellers, Karol Bagh`,
+  },
+  {
+    type: "due_reminder_3day",
+    label: "Upcoming installment reminder (3-day)",
+    description: "Sent once, 3 days before an installment's due date — separate from and in addition to the 7-day heads-up.",
+    placeholders: ["scheme_name", "month_number", "amount", "due_date"],
+    default: `🪙 Just 3 days left! Your {{scheme_name}} installment #{{month_number}} of ₹{{amount}} is due on {{due_date}}. Pay by then to fix that date's gold rate.\n- Sun Sea Jewellers, Karol Bagh`,
   },
   {
     type: "due_today_reminder",
