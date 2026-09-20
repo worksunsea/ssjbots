@@ -1,8 +1,14 @@
-// GET /api/kitty-cron — fired once daily by Vercel cron (see vercel.json).
+// GET /api/kitty-cron — fired once daily by Vercel cron (see vercel.json),
+// plus a second lighter daily hit at 10am IST with ?only=due_today that
+// runs ONLY the due-today sweep below and skips everything else.
 // Five independent sweeps, all WhatsApp-only:
 //   1. Monthly due reminder — for each `due` installment whose due_date is
 //      within REMINDER_DAYS_BEFORE days, send once (reminded_at stamped so
 //      later ticks don't repeat) unless already overdue-reminded today.
+//   1b. Due-today urgent nudge (?only=due_today, 10am IST) — anyone whose
+//      installment is due TODAY and still unpaid, separate stamp
+//      (due_today_reminded_at) so it fires once more even if 1. already
+//      reminded them days earlier.
 //   2. Legacy unclaimed-benefit reminder — for completed enrollments with
 //      claim_status in (unclaimed, reminded), re-nudge every
 //      CLAIM_REMINDER_INTERVAL_DAYS days until staff marks it claimed.
@@ -28,6 +34,7 @@ import { logKittyAudit } from "./_lib/kittyAudit.js";
 import { getSwarnScheme } from "./_lib/swarnSuraksha.js";
 import { gramsForInstallments } from "./_lib/kittyGrams.js";
 import { computeCheckpointCrossingTimes, awardBonusCoin, CHECKPOINTS_G } from "./_lib/mission100.js";
+import { getKittyMessage } from "./_lib/kittyTemplates.js";
 
 const REMINDER_DAYS_BEFORE = 3;
 const CLAIM_REMINDER_INTERVAL_DAYS = 14;
@@ -52,6 +59,30 @@ function addMonths(dateStr, n) {
   return d.toISOString().slice(0, 10);
 }
 
+// Same-day urgent nudge — anyone whose installment is due TODAY and still
+// unpaid, stamped so it only ever fires once per installment (unlike the
+// advance reminder above, which can fire days before the due date and
+// never again). Triggered by the separate 10am IST cron entry.
+async function sendDueTodayReminders(sb, today, stats) {
+  const { data: due } = await sb.from("kitty_installments")
+    .select("id,due_date,amount,month_number,enrollment:kitty_enrollments!inner(id,lead_id,tenant_id,status,scheme:kitty_schemes(name))")
+    .eq("tenant_id", TENANT_ID).eq("status", "due").is("due_today_reminded_at", null).eq("due_date", today);
+
+  for (const row of due || []) {
+    if (row.enrollment?.status !== "active") continue;
+    const { data: lead } = await sb.from("bullion_leads").select("phone,name,dnd").eq("id", row.enrollment.lead_id).maybeSingle();
+    if (!lead?.phone || lead.dnd) continue;
+    const schemeName = row.enrollment.scheme?.name || "your Kitty scheme";
+    const msg = await getKittyMessage(sb, TENANT_ID, "due_today_reminder", {
+      scheme_name: schemeName, month_number: row.month_number, amount: row.amount,
+    });
+    const { sent, queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: row.enrollment.lead_id, phone: lead.phone, msg, context: { type: "due_today_reminder", installmentId: row.id } });
+    if (!sent) { if (queued) stats.queued++; continue; }
+    await sb.from("kitty_installments").update({ due_today_reminded_at: new Date().toISOString() }).eq("id", row.id);
+    stats.dueTodayReminders++;
+  }
+}
+
 export default async function handler(req, res) {
   if (!checkAuth(req)) return res.status(401).json({ ok: false, error: "unauthorized" });
 
@@ -59,10 +90,24 @@ export default async function handler(req, res) {
   const today = todayIST();
   const windowEnd = new Date(Date.now() + 5.5 * 3600000 + REMINDER_DAYS_BEFORE * 86400000).toISOString().slice(0, 10);
   const stats = {
-    dueReminders: 0, claimReminders: 0, batchesRolledOver: 0, rolloverNudges: 0, swarnFrozen: 0, failed: 0, queued: 0,
+    dueReminders: 0, dueTodayReminders: 0, claimReminders: 0, batchesRolledOver: 0, rolloverNudges: 0, swarnFrozen: 0, failed: 0, queued: 0,
     mission100Finishers: 0, mission100CompletionBonuses: 0, mission100CheckpointWins: 0, mission100Winners: 0,
     mission100Announcements: 0, mission100ReferralBonuses: 0,
   };
+
+  // A second, lighter daily trigger (?only=due_today — see vercel.json,
+  // 10am IST) does ONLY the same-day urgent nudge below and skips
+  // everything else, so the 10am hit doesn't duplicate the other sweeps'
+  // work (they're all idempotent anyway, but there's no reason to re-run
+  // them twice a day).
+  if (req.query?.only === "due_today") {
+    try {
+      await sendDueTodayReminders(sb, today, stats);
+      return res.status(200).json({ ok: true, ...stats });
+    } catch (e) {
+      return res.status(200).json({ ok: false, error: e.message, ...stats });
+    }
+  }
 
   try {
     // ── 1. Monthly due reminders ──────────────────────────────────
@@ -76,7 +121,9 @@ export default async function handler(req, res) {
       const { data: lead } = await sb.from("bullion_leads").select("phone,name,dnd").eq("id", row.enrollment.lead_id).maybeSingle();
       if (!lead?.phone || lead.dnd) continue;
       const schemeName = row.enrollment.scheme?.name || "your Kitty scheme";
-      const msg = `🪙 Reminder: your ${schemeName} installment #${row.month_number} of ₹${row.amount} is due on ${row.due_date}.\n- Sun Sea Jewellers, Karol Bagh`;
+      const msg = await getKittyMessage(sb, TENANT_ID, "due_reminder", {
+        scheme_name: schemeName, month_number: row.month_number, amount: row.amount, due_date: row.due_date,
+      });
       const { sent, queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: row.enrollment.lead_id, phone: lead.phone, msg, context: { type: "due_reminder", installmentId: row.id } });
       if (!sent) { if (queued) stats.queued++; continue; }
       await sb.from("kitty_installments").update({ reminded_at: new Date().toISOString() }).eq("id", row.id);

@@ -68,6 +68,12 @@ export const TASKS_WA_CLIENT_ID = process.env.TASKS_WA_CLIENT_ID || WA_SESSION_C
 // Reception session — same pattern as TASKS_WA_CLIENT_ID above.
 export const KITTY_WA_CLIENT_ID = process.env.KITTY_WA_CLIENT_ID || WA_SESSION_CLIENT_ID;
 
+// Fallback session if the Kitty number's send fails (session logged out,
+// number banned/rate-limited, etc) — retried automatically on the general
+// client-messaging number before a message is queued as failed. Live
+// client id confirmed via GET /clients: "Clientmessage".
+export const KITTY_WA_FALLBACK_CLIENT_ID = process.env.KITTY_WA_FALLBACK_CLIENT_ID || "Clientmessage";
+
 // Only these WA numbers run the bot (reply to inbound messages).
 // Other numbers (birthday/anniversary) are send-only.
 // Hardcoded to 8860866000 only (2026-07-15) — 9312839912 was replying too, unwanted.

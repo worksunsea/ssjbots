@@ -45,11 +45,12 @@
 
 import crypto from "crypto";
 import { supa } from "./_lib/supabase.js";
-import { TENANT_ID, checkCrmSecret, normalizePhone, KITTY_WA_CLIENT_ID } from "./_lib/config.js";
+import { TENANT_ID, checkCrmSecret, normalizePhone, KITTY_WA_CLIENT_ID, KITTY_WA_FALLBACK_CLIENT_ID } from "./_lib/config.js";
 import { enrollLeadInDrip } from "./_lib/drip.js";
 import { logKittyAudit } from "./_lib/kittyAudit.js";
 import { sendWhatsApp } from "./_lib/wa.js";
 import { sendKittyWA } from "./_lib/kittyMessageQueue.js";
+import { KITTY_MESSAGE_TYPES, getKittyMessage } from "./_lib/kittyTemplates.js";
 import { gramsForInstallments } from "./_lib/kittyGrams.js";
 import { generateInviteCode, awardBonusCoin, CHECKPOINTS_G } from "./_lib/mission100.js";
 
@@ -1271,7 +1272,10 @@ export default async function handler(req, res) {
         if (!first) await new Promise((r) => setTimeout(r, 1800 + Math.random() * 700));
         first = false;
         const { amount, grams } = byLead.get(lead.id);
-        const msg = `🪙 ${schemeName} — ${monthLabel} rate booked: ₹${rateCheck.value.toLocaleString("en-IN")}/g\nYour ₹${Math.round(amount).toLocaleString("en-IN")} this month = ${grams.toFixed(3)}g added.\n- Sun Sea Jewellers, Karol Bagh`;
+        const msg = await getKittyMessage(sb, TENANT_ID, "rate_notify", {
+          scheme_name: schemeName, month_label: monthLabel, rate: rateCheck.value.toLocaleString("en-IN"),
+          amount: Math.round(amount).toLocaleString("en-IN"), grams: grams.toFixed(3),
+        });
         const { sent } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: lead.id, phone: lead.phone, msg, context: { type: "rate_notify", schemeId: body.schemeId, month: body.month } });
         if (sent) notified++;
       }
@@ -1298,7 +1302,9 @@ export default async function handler(req, res) {
           if (!lead.phone || lead.dnd) continue;
           if (!first) await new Promise((r) => setTimeout(r, 1800 + Math.random() * 700));
           first = false;
-          const msg = `🪙 ${schemeName} — ${monthLabel} rate has just been booked at ₹${rateCheck.value.toLocaleString("en-IN")}/g for members who've already paid this month.\n\nAlready paid but it's not showing? Please message or call us right away, we'll sort it out immediately.\n\nHaven't paid yet? Please complete your ${monthLabel} Kitty payment today to lock in this rate — once today closes, this rate won't apply anymore, and whichever rate is live when you do pay will be used instead.\n- Sun Sea Jewellers, Karol Bagh`;
+          const msg = await getKittyMessage(sb, TENANT_ID, "rate_cut_payment_reminder", {
+            scheme_name: schemeName, month_label: monthLabel, rate: rateCheck.value.toLocaleString("en-IN"),
+          });
           const { sent } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: lead.id, phone: lead.phone, msg, context: { type: "rate_cut_payment_reminder", schemeId: body.schemeId, month: body.month } });
           if (sent) reminded++;
         }
@@ -1334,19 +1340,100 @@ export default async function handler(req, res) {
     const { data: row } = await sb.from("kitty_message_queue").select("*").eq("tenant_id", TENANT_ID).eq("id", body.id).maybeSingle();
     if (!row) return res.status(404).json({ ok: false, error: "not_found" });
     if (row.status !== "pending") return res.status(200).json({ ok: true, alreadyHandled: true, status: row.status });
-    let sent = false, errMsg = null;
-    try {
-      const wa = await sendWhatsApp({ phone: row.phone, msg: row.message, client: KITTY_WA_CLIENT_ID });
-      sent = wa?.status === 1;
-      if (!sent) errMsg = `send_status_${wa?.status ?? "unknown"}`;
-    } catch (err) { errMsg = String(err?.message || err); }
+    let sent = false, errMsg = null, clientUsed = null;
+    for (const client of [KITTY_WA_CLIENT_ID, KITTY_WA_FALLBACK_CLIENT_ID].filter((c, i, arr) => c && arr.indexOf(c) === i)) {
+      try {
+        const wa = await sendWhatsApp({ phone: row.phone, msg: row.message, client });
+        if (wa?.status === 1) { sent = true; clientUsed = client; break; }
+        errMsg = `send_status_${wa?.status ?? "unknown"} via ${client}`;
+      } catch (err) { errMsg = `${String(err?.message || err)} via ${client}`; }
+    }
     if (sent) {
-      await sb.from("kitty_message_queue").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", row.id);
+      await sb.from("kitty_message_queue").update({ status: "sent", sent_at: new Date().toISOString(), client_used: clientUsed }).eq("id", row.id);
       await logAudit(sb, { entityType: "kitty_message_queue", entityId: row.id, action: "retry-sent", actor: body.actor });
     } else {
       await sb.from("kitty_message_queue").update({ attempts: (row.attempts || 1) + 1, last_error: errMsg }).eq("id", row.id);
     }
     return res.status(200).json({ ok: true, sent });
+  }
+
+  // GET ?action=admin-list-message-log — staff. Full send history (sent +
+  // still-pending), not just failures — Kitty Admin > Messages > Log.
+  if (req.method === "GET" && action === "admin-list-message-log") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    let q = sb.from("kitty_message_queue")
+      .select("id, phone, message, context, status, attempts, last_error, client_used, created_at, sent_at, lead:bullion_leads(name)")
+      .eq("tenant_id", TENANT_ID).order("created_at", { ascending: false }).limit(Number(req.query.limit) || 500);
+    if (req.query.status) q = q.eq("status", req.query.status);
+    const { data, error } = await q;
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.status(200).json({ ok: true, messages: data || [] });
+  }
+
+  // GET ?action=admin-list-message-templates — staff. Registry defaults
+  // merged with any saved override, for Kitty Admin > Messages > Templates.
+  if (req.method === "GET" && action === "admin-list-message-templates") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const { data: overrides } = await sb.from("kitty_message_templates").select("*").eq("tenant_id", TENANT_ID);
+    const byType = new Map((overrides || []).map((o) => [o.context_type, o]));
+    const templates = KITTY_MESSAGE_TYPES.map((t) => {
+      const o = byType.get(t.type);
+      return {
+        type: t.type, label: t.label, description: t.description, placeholders: t.placeholders,
+        defaultTemplate: t.default,
+        template: o?.active !== false && o?.template ? o.template : t.default,
+        customized: Boolean(o?.active !== false && o?.template),
+        updatedBy: o?.updated_by || null, updatedAt: o?.updated_at || null,
+      };
+    });
+    return res.status(200).json({ ok: true, templates });
+  }
+
+  // POST ?action=admin-save-message-template — staff. Body: { contextType, template, actor }.
+  if (req.method === "POST" && action === "admin-save-message-template") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    if (!body.contextType || !body.template?.trim()) return res.status(400).json({ ok: false, error: "contextType_and_template_required" });
+    const { error } = await sb.from("kitty_message_templates").upsert({
+      tenant_id: TENANT_ID, context_type: body.contextType, template: body.template.trim(),
+      active: true, updated_by: body.actor || null, updated_at: new Date().toISOString(),
+    }, { onConflict: "tenant_id,context_type" });
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    await logAudit(sb, { entityType: "kitty_message_template", entityId: body.contextType, action: "save", actor: body.actor });
+    return res.status(200).json({ ok: true });
+  }
+
+  // POST ?action=admin-reset-message-template — staff. Body: { contextType }. Reverts to built-in default.
+  if (req.method === "POST" && action === "admin-reset-message-template") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    if (!body.contextType) return res.status(400).json({ ok: false, error: "contextType_required" });
+    await sb.from("kitty_message_templates").delete().eq("tenant_id", TENANT_ID).eq("context_type", body.contextType);
+    await logAudit(sb, { entityType: "kitty_message_template", entityId: body.contextType, action: "reset", actor: body.actor });
+    return res.status(200).json({ ok: true });
+  }
+
+  // POST ?action=admin-send-adhoc-message — staff. Body: { leadId, message, actor }.
+  // One-off message to a specific member, outside any automated flow —
+  // Kitty Admin > Messages > Send Now.
+  if (req.method === "POST" && action === "admin-send-adhoc-message") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    if (!body.leadId || !body.message?.trim()) return res.status(400).json({ ok: false, error: "leadId_and_message_required" });
+    const { data: lead } = await sb.from("bullion_leads").select("id, phone, dnd").eq("id", body.leadId).maybeSingle();
+    if (!lead) return res.status(404).json({ ok: false, error: "lead_not_found" });
+    if (lead.dnd) return res.status(400).json({ ok: false, error: "lead_is_dnd" });
+    if (!lead.phone) return res.status(400).json({ ok: false, error: "lead_has_no_phone" });
+    const { sent, queued } = await sendKittyWA(sb, {
+      tenantId: TENANT_ID, leadId: lead.id, phone: lead.phone, msg: body.message.trim(),
+      context: { type: "adhoc", sentBy: body.actor || null },
+    });
+    return res.status(200).json({ ok: true, sent, queued });
   }
 
   // GET ?action=admin-list-audit-log — staff. Query: entityType?, entityId?, limit? (default 200)

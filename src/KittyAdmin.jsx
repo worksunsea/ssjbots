@@ -23,6 +23,15 @@ async function call(action, { method = "GET", body, crmSecret, params } = {}) {
   return res.json();
 }
 
+const KITTY_MSG_TYPE_LABELS = {
+  due_reminder: "Due reminder", due_today_reminder: "Due today (urgent)", unclaimed_reminder: "Unclaimed benefit",
+  batch_rollover: "Round completed", swarn_freeze: "Swarn 11mo freeze", rate_notify: "Monthly rate booked",
+  rate_cut_payment_reminder: "Rate booked, unpaid nudge", redemption_thank_you: "Redemption thank-you",
+  mission100_completion: "Mission 100 finish", mission100_checkpoint: "Mission 100 checkpoint",
+  mission100_winner: "Mission 100 winner", mission100_referral: "Mission 100 referral", adhoc: "Manual send",
+};
+const typeLabel = (ctx) => KITTY_MSG_TYPE_LABELS[ctx?.type] || ctx?.type || "Message";
+
 const emptyScheme = () => ({
   id: null, name: "", slug: "", monthlyAmount: "", durationMonths: 12, funnelId: "",
   perks: { lucky_draw: false, non_winner_benefit_amount: "", gold_coin_chance: false, gold_coin_weight_mg: "",
@@ -69,7 +78,7 @@ export default function KittyAdminScreen({ sb, tenantId, crmSecret, staffName })
       <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
         {[["overview", "Overview"], ["schemes", "Schemes"], ["enroll", "Enroll New Member"], ["enrollments", "Enrollments"],
           ["gullak", "Gullak"], ["swarn", "Swarn Suraksha"], ["goldensparkle", "Golden Sparkle"], ["mission100", "Mission 100"], ["goldtally", "Gold Tally"],
-          ["legacy", "Add Legacy Member"], ["pending", "📨 Pending Messages"], ["activity", "Activity Log"]].map(([k, l]) => (
+          ["legacy", "Add Legacy Member"], ["pending", "📨 Pending Messages"], ["messages", "✉️ Messages"], ["activity", "Activity Log"]].map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)}
             style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid #d4af37",
               background: tab === k ? "#d4af37" : "transparent", color: tab === k ? "#fff" : "#d4af37", cursor: "pointer" }}>
@@ -88,6 +97,7 @@ export default function KittyAdminScreen({ sb, tenantId, crmSecret, staffName })
       {tab === "goldtally" && <GoldTallyTab crmSecret={crmSecret} />}
       {tab === "legacy" && <LegacyTab crmSecret={crmSecret} actor={actor} />}
       {tab === "pending" && <PendingMessagesTab crmSecret={crmSecret} actor={actor} />}
+      {tab === "messages" && <MessagesTab sb={sb} crmSecret={crmSecret} actor={actor} />}
       {tab === "activity" && <ActivityLogTab crmSecret={crmSecret} />}
     </div>
   );
@@ -302,13 +312,6 @@ function PendingMessagesTab({ crmSecret, actor }) {
     setSendingAll(false);
   };
 
-  const typeLabel = (ctx) => ({
-    due_reminder: "Due reminder", unclaimed_reminder: "Unclaimed benefit", batch_rollover: "Round completed",
-    swarn_freeze: "Swarn 11mo freeze", rate_notify: "Monthly rate booked", redemption_thank_you: "Redemption thank-you",
-    mission100_completion: "Mission 100 finish", mission100_checkpoint: "Mission 100 checkpoint",
-    mission100_winner: "Mission 100 winner", mission100_referral: "Mission 100 referral",
-  }[ctx?.type] || ctx?.type || "Message");
-
   return (
     <div>
       <p style={{ fontSize: 13, color: "#666" }}>
@@ -352,6 +355,222 @@ function PendingMessagesTab({ crmSecret, actor }) {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+// ✉️ Messages — three sections: edit the templates every automated Kitty
+// message uses, see the full send log (what went out, to whom, for what,
+// via which WA number), and send a one-off message to a specific member.
+function MessagesTab({ sb, crmSecret, actor }) {
+  const [section, setSection] = useState("templates"); // templates | log | send
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        {[["templates", "📝 Templates"], ["log", "📜 Log"], ["send", "✉️ Send Now"]].map(([k, l]) => (
+          <button key={k} onClick={() => setSection(k)}
+            style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #d4af37",
+              background: section === k ? "#d4af37" : "transparent", color: section === k ? "#fff" : "#d4af37", cursor: "pointer", fontSize: 13 }}>
+            {l}
+          </button>
+        ))}
+      </div>
+      {section === "templates" && <MessageTemplatesSection crmSecret={crmSecret} actor={actor} />}
+      {section === "log" && <MessageLogSection crmSecret={crmSecret} actor={actor} />}
+      {section === "send" && <SendNowSection sb={sb} crmSecret={crmSecret} actor={actor} />}
+    </div>
+  );
+}
+
+function MessageTemplatesSection({ crmSecret, actor }) {
+  const [templates, setTemplates] = useState(null);
+  const [drafts, setDrafts] = useState({}); // type -> edited text
+  const [savingType, setSavingType] = useState(null);
+
+  const load = useCallback(async () => {
+    const d = await call("admin-list-message-templates", { crmSecret });
+    setTemplates(d.ok ? d.templates : []);
+    if (d.ok) setDrafts(Object.fromEntries(d.templates.map((t) => [t.type, t.template])));
+  }, [crmSecret]);
+  useEffect(() => { load(); }, [load]);
+
+  const save = async (type) => {
+    setSavingType(type);
+    await call("admin-save-message-template", { method: "POST", crmSecret, body: { contextType: type, template: drafts[type], actor } });
+    setSavingType(null);
+    await load();
+  };
+  const reset = async (type) => {
+    if (!window.confirm("Revert this message to its default text?")) return;
+    setSavingType(type);
+    await call("admin-reset-message-template", { method: "POST", crmSecret, body: { contextType: type, actor } });
+    setSavingType(null);
+    await load();
+  };
+
+  if (templates === null) return <div>Loading…</div>;
+
+  return (
+    <div>
+      <p style={{ fontSize: 13, color: "#666" }}>
+        Edit the wording every automated Kitty WhatsApp message uses. Use the <code>{"{{placeholder}}"}</code> tokens shown under each — they get filled in with the real values at send time.
+      </p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        {templates.map((t) => {
+          const dirty = drafts[t.type] !== t.template;
+          return (
+            <div key={t.type} style={{ border: "1px solid #eee", borderRadius: 10, padding: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+                <div style={{ fontWeight: 700 }}>{t.label} {t.customized && <span style={{ fontSize: 10.5, color: "#d4af37", fontWeight: 400 }}>(customized)</span>}</div>
+              </div>
+              <div style={{ fontSize: 12, color: "#888", marginBottom: 8 }}>{t.description}</div>
+              <textarea rows={4} value={drafts[t.type] ?? ""} onChange={(e) => setDrafts((d) => ({ ...d, [t.type]: e.target.value }))}
+                style={{ width: "100%", fontSize: 13, fontFamily: "inherit", padding: 8, borderRadius: 6, border: "1px solid #ccc", boxSizing: "border-box" }} />
+              <div style={{ fontSize: 11, color: "#999", marginTop: 4 }}>
+                Placeholders: {t.placeholders.map((p) => <code key={p} style={{ marginRight: 6 }}>{`{{${p}}}`}</code>)}
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <button onClick={() => save(t.type)} disabled={!dirty || savingType === t.type}
+                  style={{ padding: "5px 12px", background: dirty ? "#d4af37" : "#eee", color: dirty ? "#fff" : "#999", border: "none", borderRadius: 6, cursor: dirty ? "pointer" : "not-allowed" }}>
+                  {savingType === t.type ? "Saving…" : "Save"}
+                </button>
+                {t.customized && <button onClick={() => reset(t.type)} disabled={savingType === t.type} style={{ padding: "5px 12px" }}>Reset to default</button>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function MessageLogSection({ crmSecret, actor }) {
+  const [messages, setMessages] = useState(null);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [retryingId, setRetryingId] = useState(null);
+
+  const load = useCallback(async () => {
+    const d = await call("admin-list-message-log", { crmSecret, params: statusFilter ? { status: statusFilter } : {} });
+    setMessages(d.ok ? d.messages : []);
+  }, [crmSecret, statusFilter]);
+  useEffect(() => { load(); }, [load]);
+
+  const retry = async (id) => {
+    setRetryingId(id);
+    await call("admin-send-pending-message", { method: "POST", crmSecret, body: { id, actor } });
+    setRetryingId(null);
+    await load();
+  };
+
+  if (messages === null) return <div>Loading…</div>;
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={{ padding: "5px 8px" }}>
+          <option value="">All statuses</option>
+          <option value="sent">Sent</option>
+          <option value="pending">Pending (failed/queued)</option>
+        </select>
+        <button onClick={load} style={{ padding: "5px 12px" }}>↻ Refresh</button>
+        <span style={{ fontSize: 12, color: "#888" }}>{messages.length} shown (last 500)</span>
+      </div>
+      {!messages.length && <div style={{ color: "#888" }}>No messages logged yet.</div>}
+      {messages.length > 0 && (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+            <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
+              <th>When</th><th>Context</th><th>To</th><th>Status</th><th>Via</th><th>Message</th><th>Error</th><th></th>
+            </tr></thead>
+            <tbody>
+              {messages.map((m) => (
+                <tr key={m.id} style={{ borderBottom: "1px solid #eee" }}>
+                  <td style={{ whiteSpace: "nowrap" }}>{new Date(m.sent_at || m.created_at).toLocaleString("en-IN")}</td>
+                  <td>{typeLabel(m.context)}</td>
+                  <td>{m.lead?.name || "—"}<br /><span style={{ color: "#888" }}>{m.phone}</span></td>
+                  <td>
+                    {m.status === "sent"
+                      ? <span style={{ color: "#166534" }}>✅ Sent</span>
+                      : <span style={{ color: "#b91c1c" }}>⏳ Pending{m.attempts ? ` (${m.attempts}x)` : ""}</span>}
+                  </td>
+                  <td>{m.client_used || "—"}</td>
+                  <td style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.message}>{m.message}</td>
+                  <td style={{ color: "#b91c1c", fontSize: 11, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.last_error || ""}>{m.last_error || ""}</td>
+                  <td>
+                    {m.status !== "sent" && (
+                      <button onClick={() => retry(m.id)} disabled={retryingId === m.id} style={{ padding: "3px 10px" }}>
+                        {retryingId === m.id ? "…" : "Retry"}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SendNowSection({ sb, crmSecret, actor }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState([]);
+  const [selected, setSelected] = useState(null); // { id, name, phone }
+  const [message, setMessage] = useState("");
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState(null);
+
+  useEffect(() => {
+    if (!query || query.length < 2) { setResults([]); return; }
+    const t = setTimeout(async () => {
+      const isPhone = /^\d+$/.test(query);
+      const q = sb.from("bullion_leads").select("id,name,phone,city").limit(8);
+      const { data } = isPhone ? await q.ilike("phone", `%${query}%`) : await q.ilike("name", `%${query}%`);
+      setResults(data || []);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [query, sb]);
+
+  const send = async () => {
+    if (!selected || !message.trim()) return;
+    setSending(true); setResult(null);
+    const d = await call("admin-send-adhoc-message", { method: "POST", crmSecret, body: { leadId: selected.id, message: message.trim(), actor } });
+    setSending(false);
+    setResult(d.ok ? (d.sent ? "sent" : "queued") : (d.error || "failed"));
+    if (d.ok) setMessage("");
+  };
+
+  return (
+    <div style={{ maxWidth: 560 }}>
+      <p style={{ fontSize: 13, color: "#666" }}>Send a one-off WhatsApp to a specific member — outside any automated flow. Goes through the same Kitty number (with fallback), and shows up in the Log above.</p>
+      <div style={{ marginBottom: 10 }}>
+        <input placeholder="Search member by name or phone…" value={query} onChange={(e) => { setQuery(e.target.value); setSelected(null); }}
+          style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid #ccc", boxSizing: "border-box" }} />
+        {results.length > 0 && !selected && (
+          <div style={{ border: "1px solid #eee", borderRadius: 8, marginTop: 4 }}>
+            {results.map((r) => (
+              <div key={r.id} onClick={() => { setSelected(r); setQuery(`${r.name || r.phone}`); setResults([]); }}
+                style={{ padding: "6px 10px", cursor: "pointer", borderBottom: "1px solid #f5f5f5" }}>
+                <b>{r.name || "(no name)"}</b> <span style={{ color: "#888" }}>{r.phone}{r.city ? ` · ${r.city}` : ""}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      {selected && (
+        <div style={{ fontSize: 12.5, color: "#166534", marginBottom: 10 }}>Sending to: <b>{selected.name || selected.phone}</b> ({selected.phone})</div>
+      )}
+      <textarea rows={5} value={message} onChange={(e) => setMessage(e.target.value)} placeholder="Message text…"
+        style={{ width: "100%", fontSize: 13, fontFamily: "inherit", padding: 8, borderRadius: 6, border: "1px solid #ccc", boxSizing: "border-box", marginBottom: 8 }} />
+      <button onClick={send} disabled={!selected || !message.trim() || sending}
+        style={{ padding: "8px 16px", background: (!selected || !message.trim()) ? "#eee" : "#d4af37", color: (!selected || !message.trim()) ? "#999" : "#fff", border: "none", borderRadius: 6, cursor: (!selected || !message.trim()) ? "not-allowed" : "pointer" }}>
+        {sending ? "Sending…" : "✉️ Send Now"}
+      </button>
+      {result === "sent" && <div style={{ color: "#166534", marginTop: 8 }}>✅ Sent.</div>}
+      {result === "queued" && <div style={{ color: "#b45309", marginTop: 8 }}>⏳ Couldn't send live — queued, retry from Log or Pending Messages.</div>}
+      {result && result !== "sent" && result !== "queued" && <div style={{ color: "#b91c1c", marginTop: 8 }}>Error: {result}</div>}
     </div>
   );
 }
