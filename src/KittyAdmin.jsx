@@ -862,18 +862,24 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
     if (rate == null) return;
 
     // Preview the resulting gold weight before applying — matches
-    // set-monthly-rate's own matching (due_date's month, status paid), so
-    // staff can catch a wrong rate before it's booked instead of after.
+    // set-monthly-rate's own matching (due_date's month, status paid, rate
+    // NOT already set), so staff can catch a wrong rate before it's booked
+    // instead of after. Installments that already have a rate (punched
+    // individually at payment time) are skipped here and on the server —
+    // this only fills the ones paid with amount only, no rate typed.
     const matching = enrollments
       .filter((e) => e.scheme_id === schemeId)
-      .flatMap((e) => (e.installments || []).filter((i) => i.status === "paid" && i.due_date?.slice(0, 7) === monthStr));
+      .flatMap((e) => (e.installments || []).filter((i) => i.status === "paid" && i.rate_locked == null && i.due_date?.slice(0, 7) === monthStr));
+    const alreadySet = enrollments
+      .filter((e) => e.scheme_id === schemeId)
+      .flatMap((e) => (e.installments || []).filter((i) => i.status === "paid" && i.rate_locked != null && i.due_date?.slice(0, 7) === monthStr)).length;
     const totalAmount = matching.reduce((sum, i) => sum + Number(i.paid_amount ?? i.amount ?? 0), 0);
     const totalGrams = rate ? totalAmount / rate : 0;
     if (!confirm(
-      `Apply ₹${rate.toLocaleString("en-IN")}/g to every payment already recorded for "${scheme?.name}" in ${monthStr}?\n\n` +
-      `${matching.length} payment${matching.length === 1 ? "" : "s"}, ₹${totalAmount.toLocaleString("en-IN")} total → ${totalGrams.toFixed(3)}g gold.\n\n` +
-      `Is this month's gold weight correct? This overwrites any rate already set on those installments.\n\n` +
-      `Every affected member will get a WhatsApp with their rate + gold added.`
+      `Apply ₹${rate.toLocaleString("en-IN")}/g to payments for "${scheme?.name}" in ${monthStr} that don't have a rate yet?\n\n` +
+      `${matching.length} payment${matching.length === 1 ? "" : "s"} will get this rate — ₹${totalAmount.toLocaleString("en-IN")} total → ${totalGrams.toFixed(3)}g gold.\n\n` +
+      (alreadySet ? `${alreadySet} other payment${alreadySet === 1 ? "" : "s"} this month already ${alreadySet === 1 ? "has" : "have"} a rate individually punched — those are protected and will NOT change.\n\n` : "") +
+      `Every notified member will get a WhatsApp with their rate + gold added.`
     )) return;
     const d = await call("set-monthly-rate", { method: "POST", crmSecret, body: { schemeId, month: monthStr, ratePerGram: rate, actor } });
     if (d.ok) { alert(`Rate applied to ${d.updated} payment${d.updated === 1 ? "" : "s"} · ${d.notified || 0} member${d.notified === 1 ? "" : "s"} notified on WhatsApp.`); load(); } else alert(d.error);
@@ -1092,7 +1098,7 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
         {schemeFilter && !schemes.find((s) => s.id === schemeFilter)?.perks?.online_purchase && !schemes.find((s) => s.id === schemeFilter)?.perks?.mission100 && (
           <span style={{ display: "flex", gap: 6, alignItems: "center", border: "1px solid #ddd", borderRadius: 6, padding: "2px 8px" }}>
             <label>Rate month: <input type="month" value={rateMonth} onChange={(e) => setRateMonth(e.target.value)} /></label>
-            <button onClick={() => setMonthlyRate(schemeFilter, rateMonth)} title="Applies one ₹/g rate to everyone who already paid THIS scheme in the selected month — any past month works, not just current. Correct any individual entry later as usual">
+            <button onClick={() => setMonthlyRate(schemeFilter, rateMonth)} title="Applies one ₹/g rate to everyone who paid THIS scheme in the selected month AND doesn't have a rate yet — any past month works, not just current. Payments with a rate already individually punched are left untouched. Correct any individual entry later as usual">
               💰 Set {rateMonth} rate for this kitty
             </button>
           </span>
