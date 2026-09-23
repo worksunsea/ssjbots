@@ -1,9 +1,18 @@
 // GET /api/kitty-cron — fired once daily by Vercel cron (see vercel.json),
 // plus a second lighter daily hit at 10am IST with ?only=due_today that
 // runs ONLY the due-today sweep below and skips everything else.
-// Five independent sweeps, all WhatsApp-only:
+//
+// EVERY message below is QUEUED (kitty_message_queue, status=pending), never
+// auto-sent — owner instruction 2026-09-23, after a possession-toggle bug
+// sent Amit Bhatia 5 wrong "gold delivered" WhatsApps automatically. Staff
+// reviews and approves each one from Kitty Admin > Pending Messages (Send
+// Now / Send All). "Reminded"-type stamp columns are now set the moment a
+// message is QUEUED, not when it's actually sent, so the sweep doesn't
+// re-queue the same nudge every day while it sits waiting for approval.
+//
+// Five independent sweeps:
 //   1. Monthly due reminder — for each `due` installment whose due_date is
-//      within REMINDER_DAYS_BEFORE (7) days, send once (reminded_at
+//      within REMINDER_DAYS_BEFORE (7) days, queue once (reminded_at
 //      stamped so later ticks don't repeat).
 //   1b. 3-day urgent reminder — same shape, REMINDER_DAYS_BEFORE_3DAY (3)
 //      days out, own stamp (reminded_3day_at) so it fires independently
@@ -13,10 +22,8 @@
 //      (due_today_reminded_at) so it fires once more even if 1./1b.
 //      already reminded them days earlier.
 //   1d. Overdue nudge — due_date already in the past, still unpaid.
-//      Unlike 1/1b/1c this is QUEUED, not sent, so staff approve each one
-//      from Kitty Admin > Pending Messages first. Re-queued every
-//      OVERDUE_REMINDER_INTERVAL_DAYS days until paid (own stamp,
-//      overdue_reminded_at).
+//      Re-queued every OVERDUE_REMINDER_INTERVAL_DAYS days until paid (own
+//      stamp, overdue_reminded_at).
 //   2. Legacy unclaimed-benefit reminder — for completed enrollments with
 //      claim_status in (unclaimed, reminded), re-nudge every
 //      CLAIM_REMINDER_INTERVAL_DAYS days until staff marks it claimed.
@@ -36,7 +43,7 @@
 
 import { supa } from "./_lib/supabase.js";
 import { sendWhatsAppWbiz } from "./_lib/wa.js";
-import { sendKittyWA, queueKittyWA } from "./_lib/kittyMessageQueue.js";
+import { queueKittyWA } from "./_lib/kittyMessageQueue.js";
 import { TENANT_ID, DIGEST_CRON_SECRET, CRON_SECRET, OWNER_PHONE, DIGEST_EXTRA_RECIPIENTS } from "./_lib/config.js";
 import { logKittyAudit } from "./_lib/kittyAudit.js";
 import { getSwarnScheme } from "./_lib/swarnSuraksha.js";
@@ -91,8 +98,8 @@ async function sendDueTodayReminders(sb, today, stats) {
     const msg = await getKittyMessage(sb, TENANT_ID, "due_today_reminder", {
       scheme_name: schemeName, month_number: row.month_number, amount: row.amount,
     });
-    const { sent, queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: row.enrollment.lead_id, phone: lead.phone, msg, context: { type: "due_today_reminder", installmentId: row.id } });
-    if (!sent) { if (queued) stats.queued++; continue; }
+    const { queued } = await queueKittyWA(sb, { tenantId: TENANT_ID, leadId: row.enrollment.lead_id, phone: lead.phone, msg, context: { type: "due_today_reminder", installmentId: row.id } });
+    if (!queued) continue;
     await sb.from("kitty_installments").update({ due_today_reminded_at: new Date().toISOString() }).eq("id", row.id);
     stats.dueTodayReminders++;
   }
@@ -106,7 +113,7 @@ export default async function handler(req, res) {
   const windowEnd = new Date(Date.now() + 5.5 * 3600000 + REMINDER_DAYS_BEFORE * 86400000).toISOString().slice(0, 10);
   const windowEnd3day = new Date(Date.now() + 5.5 * 3600000 + REMINDER_DAYS_BEFORE_3DAY * 86400000).toISOString().slice(0, 10);
   const stats = {
-    dueReminders: 0, dueReminders3day: 0, dueTodayReminders: 0, overdueQueued: 0, claimReminders: 0, batchesRolledOver: 0, rolloverNudges: 0, swarnFrozen: 0, failed: 0, queued: 0,
+    dueReminders: 0, dueReminders3day: 0, dueTodayReminders: 0, overdueQueued: 0, claimReminders: 0, batchesRolledOver: 0, rolloverNudges: 0, swarnFrozen: 0, failed: 0,
     mission100Finishers: 0, mission100CompletionBonuses: 0, mission100CheckpointWins: 0, mission100Winners: 0,
     mission100Announcements: 0, mission100ReferralBonuses: 0,
   };
@@ -140,8 +147,8 @@ export default async function handler(req, res) {
       const msg = await getKittyMessage(sb, TENANT_ID, "due_reminder", {
         scheme_name: schemeName, month_number: row.month_number, amount: row.amount, due_date: row.due_date,
       });
-      const { sent, queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: row.enrollment.lead_id, phone: lead.phone, msg, context: { type: "due_reminder", installmentId: row.id } });
-      if (!sent) { if (queued) stats.queued++; continue; }
+      const { queued } = await queueKittyWA(sb, { tenantId: TENANT_ID, leadId: row.enrollment.lead_id, phone: lead.phone, msg, context: { type: "due_reminder", installmentId: row.id } });
+      if (!queued) continue;
       await sb.from("kitty_installments").update({ reminded_at: new Date().toISOString() }).eq("id", row.id);
       stats.dueReminders++;
     }
@@ -162,8 +169,8 @@ export default async function handler(req, res) {
       const msg = await getKittyMessage(sb, TENANT_ID, "due_reminder_3day", {
         scheme_name: schemeName, month_number: row.month_number, amount: row.amount, due_date: row.due_date,
       });
-      const { sent, queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: row.enrollment.lead_id, phone: lead.phone, msg, context: { type: "due_reminder_3day", installmentId: row.id } });
-      if (!sent) { if (queued) stats.queued++; continue; }
+      const { queued } = await queueKittyWA(sb, { tenantId: TENANT_ID, leadId: row.enrollment.lead_id, phone: lead.phone, msg, context: { type: "due_reminder_3day", installmentId: row.id } });
+      if (!queued) continue;
       await sb.from("kitty_installments").update({ reminded_3day_at: new Date().toISOString() }).eq("id", row.id);
       stats.dueReminders3day++;
     }
@@ -204,8 +211,8 @@ export default async function handler(req, res) {
       if (!lead?.phone || lead.dnd) continue;
       const schemeName = row.legacy_scheme_name || row.scheme?.name || "your Kitty scheme";
       const msg = `🎁 Your ${schemeName} is complete and waiting to be claimed! Visit Sun Sea Jewellers, Karol Bagh to pick your jewellery/benefit whenever convenient.\n- Sun Sea Jewellers`;
-      const { sent, queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: row.lead_id, phone: lead.phone, msg, context: { type: "unclaimed_reminder", enrollmentId: row.id } });
-      if (!sent) { if (queued) stats.queued++; continue; }
+      const { queued } = await queueKittyWA(sb, { tenantId: TENANT_ID, leadId: row.lead_id, phone: lead.phone, msg, context: { type: "unclaimed_reminder", enrollmentId: row.id } });
+      if (!queued) continue;
       await sb.from("kitty_enrollments").update({ claim_status: "reminded", last_claim_reminded_at: new Date().toISOString() }).eq("id", row.id);
       stats.claimReminders++;
     }
@@ -230,8 +237,8 @@ export default async function handler(req, res) {
         const { data: lead } = await sb.from("bullion_leads").select("phone,dnd").eq("id", m.lead_id).maybeSingle();
         if (!lead?.phone || lead.dnd) continue;
         const msg = `🪙 Your ${batch.scheme.name} (${batch.batch_label}) round has completed! Enroll for the next round anytime — visit https://ssj.in/kitty-schemes or reply here.\n- Sun Sea Jewellers, Karol Bagh`;
-        const { sent, queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: m.lead_id, phone: lead.phone, msg, context: { type: "batch_rollover", batchId: batch.id } });
-        if (sent) stats.rolloverNudges++; else if (queued) stats.queued++;
+        const { queued } = await queueKittyWA(sb, { tenantId: TENANT_ID, leadId: m.lead_id, phone: lead.phone, msg, context: { type: "batch_rollover", batchId: batch.id } });
+        if (queued) stats.rolloverNudges++;
       }
     }
 
@@ -254,8 +261,7 @@ export default async function handler(req, res) {
         const { data: lead } = await sb.from("bullion_leads").select("phone,dnd").eq("id", e.lead_id).maybeSingle();
         if (!lead?.phone || lead.dnd) continue;
         const msg = `🪙 Your ${swarnScheme.name} scheme has completed its 11-month term and is now ready to redeem — visit Sun Sea Jewellers, Karol Bagh to collect (redemption is in-store only). Want to keep saving? Start a fresh Swarn Suraksha anytime.\n- Sun Sea Jewellers`;
-        const { queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: e.lead_id, phone: lead.phone, msg, context: { type: "swarn_freeze", enrollmentId: e.id } });
-        if (queued) stats.queued++;
+        await queueKittyWA(sb, { tenantId: TENANT_ID, leadId: e.lead_id, phone: lead.phone, msg, context: { type: "swarn_freeze", enrollmentId: e.id } });
       }
     }
 
@@ -298,8 +304,7 @@ export default async function handler(req, res) {
             const { data: lead } = await sb.from("bullion_leads").select("phone,dnd").eq("id", m.enrollment.lead_id).maybeSingle();
             if (lead?.phone && !lead.dnd) {
               const msg = `🎉 You've completed all 100 coins in Mission 100 — +1g free bonus added, 101g total in hand!\n- Sun Sea Jewellers, Karol Bagh`;
-              const { queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: m.enrollment.lead_id, phone: lead.phone, msg, context: { type: "mission100_completion", enrollmentId: m.enrollment.id } });
-              if (queued) stats.queued++;
+              await queueKittyWA(sb, { tenantId: TENANT_ID, leadId: m.enrollment.lead_id, phone: lead.phone, msg, context: { type: "mission100_completion", enrollmentId: m.enrollment.id } });
             }
           } catch { stats.failed++; }
         }
@@ -337,8 +342,7 @@ export default async function handler(req, res) {
             const { data: lead } = await sb.from("bullion_leads").select("phone,dnd").eq("id", winner.leadId).maybeSingle();
             if (lead?.phone && !lead.dnd) {
               const msg = `🥇 You're first in your Mission 100 group to reach ${cp}g! +1g free bonus coin added.\n- Sun Sea Jewellers, Karol Bagh`;
-              const { queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: winner.leadId, phone: lead.phone, msg, context: { type: "mission100_checkpoint", enrollmentId: winner.enrollmentId, checkpoint: cp } });
-              if (queued) stats.queued++;
+              await queueKittyWA(sb, { tenantId: TENANT_ID, leadId: winner.leadId, phone: lead.phone, msg, context: { type: "mission100_checkpoint", enrollmentId: winner.enrollmentId, checkpoint: cp } });
             }
           } catch { stats.failed++; }
         } else {
@@ -352,8 +356,8 @@ export default async function handler(req, res) {
             const msg = isWinner
               ? `🏆 Congratulations — you're first in "${group.group_label}" to complete Mission 100! You've won ${tripDesc} (pending confirmation). Our team will be in touch.\n- Sun Sea Jewellers, Karol Bagh`
               : `🏆 Mission 100 winner declared in "${group.group_label}"! One of your group finished first and won ${tripDesc}. Keep going — your own checkpoints and completion bonus are still yours to win.\n- Sun Sea Jewellers, Karol Bagh`;
-            const { sent, queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: m.enrollment?.lead_id, phone: lead.phone, msg, context: { type: "mission100_winner", groupId: group.id } });
-            if (sent) stats.mission100Announcements++; else if (queued) stats.queued++;
+            const { queued } = await queueKittyWA(sb, { tenantId: TENANT_ID, leadId: m.enrollment?.lead_id, phone: lead.phone, msg, context: { type: "mission100_winner", groupId: group.id } });
+            if (queued) stats.mission100Announcements++;
           }
         }
       }
@@ -376,18 +380,17 @@ export default async function handler(req, res) {
         const { data: lead } = await sb.from("bullion_leads").select("phone,dnd").eq("id", m.enrollment?.lead_id).maybeSingle();
         if (lead?.phone && !lead.dnd) {
           const msg = `🎁 You've referred ${qualifyingCount} friends into Mission 100 who've each hit their first checkpoint — +${diff}g free bonus coin${diff > 1 ? "s" : ""} added!\n- Sun Sea Jewellers, Karol Bagh`;
-          const { queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: m.enrollment?.lead_id, phone: lead.phone, msg, context: { type: "mission100_referral", enrollmentId: m.enrollment_id } });
-          if (queued) stats.queued++;
+          await queueKittyWA(sb, { tenantId: TENANT_ID, leadId: m.enrollment?.lead_id, phone: lead.phone, msg, context: { type: "mission100_referral", enrollmentId: m.enrollment_id } });
         }
       } catch { stats.failed++; }
     }
 
-    // ── 6. Nudge admins if any Kitty messages are stuck pending ─────────
-    // Every failed send above got queued instead of dropped (kitty_message_queue).
-    // Tell admins once per cron run so they know to go hit "Send Now" in Kitty
-    // Admin — sent via WbizTool (sendWhatsAppWbiz), deliberately NOT the same
-    // Baileys channel (KITTY_WA_CLIENT_ID) that's usually why these are stuck
-    // in the first place.
+    // ── 6. Nudge admins if any Kitty messages are awaiting approval ──────
+    // Every automated message above is queued, not sent (owner instruction
+    // 2026-09-23) — nudge admins once per cron run so approvals don't sit
+    // unnoticed for days. Sent via WbizTool (sendWhatsAppWbiz), deliberately
+    // NOT the same Baileys channel (KITTY_WA_CLIENT_ID) the queued messages
+    // themselves would go out on.
     const { count: pendingCount } = await sb.from("kitty_message_queue")
       .select("*", { count: "exact", head: true }).eq("tenant_id", TENANT_ID).eq("status", "pending");
     if (pendingCount > 0) {
@@ -398,7 +401,7 @@ export default async function handler(req, res) {
           [OWNER_PHONE, ...DIGEST_EXTRA_RECIPIENTS.split(","), ...(adminStaff || []).map((s) => s.phone)]
             .map((p) => (p || "").trim()).filter(Boolean)
         )];
-        const msg = `🔔 ${pendingCount} Kitty message${pendingCount === 1 ? "" : "s"} pending (couldn't send — WA session down or number issue). Open Kitty Admin → Pending Messages → Send Now to retry.`;
+        const msg = `🔔 ${pendingCount} Kitty message${pendingCount === 1 ? "" : "s"} awaiting your approval. Open Kitty Admin → Pending Messages → review & Send Now/Send All.`;
         await Promise.all(recipients.map((phone) => sendWhatsAppWbiz({ phone, msg, whatsappClient: null }).catch(() => {})));
       } catch { /* nudge is best-effort, never fail the cron over it */ }
     }

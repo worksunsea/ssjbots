@@ -52,9 +52,9 @@ export const KITTY_MESSAGE_TYPES = [
   {
     type: "delivery_confirmation",
     label: "Gold/coin delivered confirmation",
-    description: "Sent when staff mark a member's gold/coin as physically handed over (possession -> with_client).",
-    placeholders: ["scheme_name", "grams"],
-    default: `🪙 Delivered! {{grams}}g of gold from your {{scheme_name}} has been handed over to you today.\n\nDelivery status: ✅ WITH YOU (no longer held by the store).\nThank you for banking with Sun Sea Jewellers, Karol Bagh.`,
+    description: "Queued when staff mark a member's gold/coin as physically handed over (possession -> with_client) — states running totals (with you vs. still with the store), not just this one transaction, so it can't be confused with an earlier delivery.",
+    placeholders: ["scheme_name", "grams", "total_with_client", "total_with_company"],
+    default: `🪙 {{grams}}g of gold from your {{scheme_name}} handed over to you today.\n\nYour totals under this scheme: {{total_with_client}}g with you, {{total_with_company}}g still with the store.\n- Sun Sea Jewellers, Karol Bagh`,
   },
   {
     type: "advance_payment_confirmation",

@@ -49,9 +49,9 @@ import { TENANT_ID, checkCrmSecret, normalizePhone, KITTY_WA_CLIENT_ID, KITTY_WA
 import { enrollLeadInDrip } from "./_lib/drip.js";
 import { logKittyAudit } from "./_lib/kittyAudit.js";
 import { sendWhatsApp } from "./_lib/wa.js";
-import { sendKittyWA } from "./_lib/kittyMessageQueue.js";
+import { sendKittyWA, queueKittyWA } from "./_lib/kittyMessageQueue.js";
 import { KITTY_MESSAGE_TYPES, getKittyMessage } from "./_lib/kittyTemplates.js";
-import { gramsForInstallments } from "./_lib/kittyGrams.js";
+import { gramsForInstallments, gramsByPossession } from "./_lib/kittyGrams.js";
 import { generateInviteCode, awardBonusCoin, CHECKPOINTS_G } from "./_lib/mission100.js";
 
 // set-monthly-rate paces WA sends across a whole scheme's members within
@@ -757,7 +757,7 @@ export default async function handler(req, res) {
         rate: rateCheck.value.toLocaleString("en-IN"), amount: totalAmount.toLocaleString("en-IN"),
         grams: totalGrams.toFixed(3), last_month: lastMonth,
       });
-      await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: enrollment.lead_id, phone: lead.phone, msg, context: { type: "advance_payment_confirmation", enrollmentId: body.enrollmentId } });
+      await queueKittyWA(sb, { tenantId: TENANT_ID, leadId: enrollment.lead_id, phone: lead.phone, msg, context: { type: "advance_payment_confirmation", enrollmentId: body.enrollmentId } });
     }
 
     return res.status(200).json({ ok: true, paidCount: dueRows.length, totalAmount, totalGrams, lastMonth });
@@ -774,18 +774,30 @@ export default async function handler(req, res) {
     const body = parseBody(req);
     if (!body.installmentId) return res.status(400).json({ ok: false, error: "installmentId_required" });
     if (!["with_company", "with_client"].includes(body.possession)) return res.status(400).json({ ok: false, error: "invalid_possession" });
+    const { data: before } = await sb.from("kitty_installments").select("possession").eq("tenant_id", TENANT_ID).eq("id", body.installmentId).maybeSingle();
+    const actuallyChanged = (before?.possession || "with_company") !== body.possession;
     const { data, error } = await sb.from("kitty_installments").update({ possession: body.possession })
       .eq("tenant_id", TENANT_ID).eq("id", body.installmentId).select("*, enrollment:kitty_enrollments(lead_id, scheme:kitty_schemes(name))").single();
     if (error) return res.status(500).json({ ok: false, error: error.message });
     await logAudit(sb, { entityType: "installment", entityId: data.id, action: "possession-changed", actor: body.actor, details: { possession: data.possession } });
-    if (body.possession === "with_client" && data.rate_locked) {
+    // Only WA the client on a REAL with_company -> with_client transition —
+    // a repeat click/double-click while already with_client (Amit Bhatia,
+    // 2026-09-23: 3 installments each toggled twice within 2 seconds) must
+    // not re-send "gold delivered" for something that isn't a new delivery.
+    if (actuallyChanged && body.possession === "with_client" && data.rate_locked) {
       const grams = Number(data.paid_amount ?? data.amount ?? 0) / Number(data.rate_locked);
       const { data: lead } = await sb.from("bullion_leads").select("phone, dnd").eq("id", data.enrollment?.lead_id).maybeSingle();
       if (lead?.phone && !lead.dnd) {
+        const { data: allInstallments } = await sb.from("kitty_installments").select("status,paid_amount,amount,rate_locked,possession").eq("enrollment_id", data.enrollment_id);
+        const { withClient, withCompany } = gramsByPossession(allInstallments);
         const msg = await getKittyMessage(sb, TENANT_ID, "delivery_confirmation", {
           scheme_name: data.enrollment?.scheme?.name || "your Kitty scheme", grams: grams.toFixed(3),
+          total_with_client: withClient.toFixed(3), total_with_company: withCompany.toFixed(3),
         });
-        await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: data.enrollment.lead_id, phone: lead.phone, msg, context: { type: "delivery_confirmation", installmentId: data.id } });
+        // Queued, not auto-sent (owner instruction 2026-09-23) — a
+        // mistaken/duplicate toggle no longer WhatsApps the client instantly;
+        // staff reviews from Pending Messages first.
+        await queueKittyWA(sb, { tenantId: TENANT_ID, leadId: data.enrollment.lead_id, phone: lead.phone, msg, context: { type: "delivery_confirmation", installmentId: data.id } });
       }
     }
     return res.status(200).json({ ok: true, installment: data });
@@ -862,10 +874,14 @@ export default async function handler(req, res) {
       const { data: enrollment } = await sb.from("kitty_enrollments").select("lead_id, scheme:kitty_schemes(name)").eq("id", body.enrollmentId).maybeSingle();
       const { data: lead } = await sb.from("bullion_leads").select("phone, dnd").eq("id", enrollment?.lead_id).maybeSingle();
       if (lead?.phone && !lead.dnd) {
+        const { data: allInstallments } = await sb.from("kitty_installments").select("status,paid_amount,amount,rate_locked,possession").eq("enrollment_id", body.enrollmentId);
+        const { withClient, withCompany } = gramsByPossession(allInstallments);
         const msg = await getKittyMessage(sb, TENANT_ID, "delivery_confirmation", {
           scheme_name: enrollment?.scheme?.name || "your Kitty scheme", grams: delivered.toFixed(3),
+          total_with_client: withClient.toFixed(3), total_with_company: withCompany.toFixed(3),
         });
-        await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: enrollment.lead_id, phone: lead.phone, msg, context: { type: "delivery_confirmation", enrollmentId: body.enrollmentId } });
+        // Queued, not auto-sent (owner instruction 2026-09-23).
+        await queueKittyWA(sb, { tenantId: TENANT_ID, leadId: enrollment.lead_id, phone: lead.phone, msg, context: { type: "delivery_confirmation", enrollmentId: body.enrollmentId } });
       }
     }
     return res.status(200).json({ ok: true, deliveredGrams: Number(delivered.toFixed(3)) });
@@ -1088,7 +1104,7 @@ export default async function handler(req, res) {
     if (lead?.phone) {
       const schemeName = enrollment.is_legacy ? enrollment.legacy_scheme_name : (enrollment.scheme?.name || "your Kitty");
       const msg = await getKittyMessage(sb, TENANT_ID, "redemption_thank_you", { scheme_name: schemeName });
-      await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: enrollment.lead_id, phone: lead.phone, msg, context: { type: "redemption_thank_you", enrollmentId: body.id } });
+      await queueKittyWA(sb, { tenantId: TENANT_ID, leadId: enrollment.lead_id, phone: lead.phone, msg, context: { type: "redemption_thank_you", enrollmentId: body.id } });
     }
 
     await logAudit(sb, { entityType: "enrollment", entityId: body.id, action: "redeem-confirmed", actor: body.actor || body.redeemedBy });
@@ -1359,21 +1375,19 @@ export default async function handler(req, res) {
       }
       const leadIds = [...byLead.keys()];
       const { data: leadRows } = await sb.from("bullion_leads").select("id, phone, dnd").in("id", leadIds);
-      let first = true;
       for (const lead of leadRows || []) {
         notifiedLeadIds.add(lead.id);
         if (!lead.phone || lead.dnd) continue;
-        // Space sends out (~2s + jitter) so a rate-cut to a big group doesn't
-        // fire as a burst — same anti-ban concern as broadcast-send.js's pacing.
-        if (!first) await new Promise((r) => setTimeout(r, 1800 + Math.random() * 700));
-        first = false;
         const { amount, grams } = byLead.get(lead.id);
         const msg = await getKittyMessage(sb, TENANT_ID, "rate_notify", {
           scheme_name: schemeName, month_label: monthLabel, rate: rateCheck.value.toLocaleString("en-IN"),
           amount: Math.round(amount).toLocaleString("en-IN"), grams: grams.toFixed(3),
         });
-        const { sent } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: lead.id, phone: lead.phone, msg, context: { type: "rate_notify", schemeId: body.schemeId, month: body.month } });
-        if (sent) notified++;
+        // Queued, not auto-sent (owner instruction 2026-09-23) — no send-
+        // pacing needed here anymore, that only mattered for real-time WA
+        // sends; Send All in Pending Messages paces its own approvals.
+        const { queued } = await queueKittyWA(sb, { tenantId: TENANT_ID, leadId: lead.id, phone: lead.phone, msg, context: { type: "rate_notify", schemeId: body.schemeId, month: body.month } });
+        if (queued) notified++;
       }
     }
 
@@ -1393,16 +1407,13 @@ export default async function handler(req, res) {
       const dueLeadIds = [...new Set((dueEnrollRows || []).map((e) => e.lead_id))].filter((id) => !notifiedLeadIds.has(id));
       if (dueLeadIds.length) {
         const { data: dueLeadRows } = await sb.from("bullion_leads").select("id, phone, dnd").in("id", dueLeadIds);
-        let first = true;
         for (const lead of dueLeadRows || []) {
           if (!lead.phone || lead.dnd) continue;
-          if (!first) await new Promise((r) => setTimeout(r, 1800 + Math.random() * 700));
-          first = false;
           const msg = await getKittyMessage(sb, TENANT_ID, "rate_cut_payment_reminder", {
             scheme_name: schemeName, month_label: monthLabel, rate: rateCheck.value.toLocaleString("en-IN"),
           });
-          const { sent } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: lead.id, phone: lead.phone, msg, context: { type: "rate_cut_payment_reminder", schemeId: body.schemeId, month: body.month } });
-          if (sent) reminded++;
+          const { queued } = await queueKittyWA(sb, { tenantId: TENANT_ID, leadId: lead.id, phone: lead.phone, msg, context: { type: "rate_cut_payment_reminder", schemeId: body.schemeId, month: body.month } });
+          if (queued) reminded++;
         }
       }
     }

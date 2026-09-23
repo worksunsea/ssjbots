@@ -9,3 +9,14 @@ export function gramsForInstallments(installments) {
   const totalPaid = settled.reduce((sum, i) => sum + Number(i.paid_amount ?? i.amount ?? 0), 0);
   return { totalGrams: Number(totalGrams.toFixed(3)), totalPaid };
 }
+
+// Same settled-rows grams total, split by current possession — for
+// delivery-confirmation messages that state the member's real running
+// totals instead of just the one transaction just delivered (a bare
+// "delivered Xg" reads as a new/duplicate delivery if they already got one
+// earlier — the totals make clear what's actually with them vs. the store).
+export function gramsByPossession(installments) {
+  const withClient = gramsForInstallments((installments || []).filter((i) => (i.possession || "with_company") === "with_client")).totalGrams;
+  const withCompany = gramsForInstallments((installments || []).filter((i) => (i.possession || "with_company") === "with_company")).totalGrams;
+  return { withClient, withCompany };
+}
