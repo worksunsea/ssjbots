@@ -340,7 +340,7 @@ function PendingMessagesTab({ crmSecret, actor }) {
                     <td style={{ whiteSpace: "nowrap" }}>{new Date(m.created_at).toLocaleString("en-IN")}</td>
                     <td>{typeLabel(m.context)}</td>
                     <td>{m.lead?.name || "—"}<br /><span style={{ color: "#888" }}>{m.phone}</span></td>
-                    <td style={{ maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.message}>{m.message}</td>
+                    <td style={{ maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer" }} title="Click to read full message" onClick={() => alert(m.message)}>{m.message}</td>
                     <td style={{ color: "#b91c1c", fontSize: 11 }}>{m.last_error || ""}</td>
                     <td>{m.attempts}</td>
                     <td>
@@ -495,7 +495,7 @@ function MessageLogSection({ crmSecret, actor }) {
                       : <span style={{ color: "#b91c1c" }}>⏳ Pending{m.attempts ? ` (${m.attempts}x)` : ""}</span>}
                   </td>
                   <td>{m.client_used || "—"}</td>
-                  <td style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.message}>{m.message}</td>
+                  <td style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer" }} title="Click to read full message" onClick={() => alert(m.message)}>{m.message}</td>
                   <td style={{ color: "#b91c1c", fontSize: 11, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={m.last_error || ""}>{m.last_error || ""}</td>
                   <td>
                     {m.status !== "sent" && (
