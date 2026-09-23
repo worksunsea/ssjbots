@@ -12,6 +12,11 @@
 //      installment is due TODAY and still unpaid, separate stamp
 //      (due_today_reminded_at) so it fires once more even if 1./1b.
 //      already reminded them days earlier.
+//   1d. Overdue nudge — due_date already in the past, still unpaid.
+//      Unlike 1/1b/1c this is QUEUED, not sent, so staff approve each one
+//      from Kitty Admin > Pending Messages first. Re-queued every
+//      OVERDUE_REMINDER_INTERVAL_DAYS days until paid (own stamp,
+//      overdue_reminded_at).
 //   2. Legacy unclaimed-benefit reminder — for completed enrollments with
 //      claim_status in (unclaimed, reminded), re-nudge every
 //      CLAIM_REMINDER_INTERVAL_DAYS days until staff marks it claimed.
@@ -31,7 +36,7 @@
 
 import { supa } from "./_lib/supabase.js";
 import { sendWhatsAppWbiz } from "./_lib/wa.js";
-import { sendKittyWA } from "./_lib/kittyMessageQueue.js";
+import { sendKittyWA, queueKittyWA } from "./_lib/kittyMessageQueue.js";
 import { TENANT_ID, DIGEST_CRON_SECRET, CRON_SECRET, OWNER_PHONE, DIGEST_EXTRA_RECIPIENTS } from "./_lib/config.js";
 import { logKittyAudit } from "./_lib/kittyAudit.js";
 import { getSwarnScheme } from "./_lib/swarnSuraksha.js";
@@ -45,6 +50,9 @@ import { getKittyMessage } from "./_lib/kittyTemplates.js";
 const REMINDER_DAYS_BEFORE = 7;
 const REMINDER_DAYS_BEFORE_3DAY = 3;
 const CLAIM_REMINDER_INTERVAL_DAYS = 14;
+// Overdue nudges are queued (not sent) — this just controls how often a
+// still-unpaid overdue installment gets re-queued for staff to approve.
+const OVERDUE_REMINDER_INTERVAL_DAYS = 5;
 
 function checkAuth(req) {
   if (!DIGEST_CRON_SECRET) return true;
@@ -98,7 +106,7 @@ export default async function handler(req, res) {
   const windowEnd = new Date(Date.now() + 5.5 * 3600000 + REMINDER_DAYS_BEFORE * 86400000).toISOString().slice(0, 10);
   const windowEnd3day = new Date(Date.now() + 5.5 * 3600000 + REMINDER_DAYS_BEFORE_3DAY * 86400000).toISOString().slice(0, 10);
   const stats = {
-    dueReminders: 0, dueReminders3day: 0, dueTodayReminders: 0, claimReminders: 0, batchesRolledOver: 0, rolloverNudges: 0, swarnFrozen: 0, failed: 0, queued: 0,
+    dueReminders: 0, dueReminders3day: 0, dueTodayReminders: 0, overdueQueued: 0, claimReminders: 0, batchesRolledOver: 0, rolloverNudges: 0, swarnFrozen: 0, failed: 0, queued: 0,
     mission100Finishers: 0, mission100CompletionBonuses: 0, mission100CheckpointWins: 0, mission100Winners: 0,
     mission100Announcements: 0, mission100ReferralBonuses: 0,
   };
@@ -158,6 +166,30 @@ export default async function handler(req, res) {
       if (!sent) { if (queued) stats.queued++; continue; }
       await sb.from("kitty_installments").update({ reminded_3day_at: new Date().toISOString() }).eq("id", row.id);
       stats.dueReminders3day++;
+    }
+
+    // ── 1c. Overdue nudge — due_date already passed, still unpaid. Queued
+    //        for staff approval (never auto-sent), re-queued every
+    //        OVERDUE_REMINDER_INTERVAL_DAYS days until paid so it isn't a
+    //        one-shot that's easy to miss.
+    const overdueCutoff = new Date(Date.now() - OVERDUE_REMINDER_INTERVAL_DAYS * 86400000).toISOString();
+    const { data: overdue } = await sb.from("kitty_installments")
+      .select("id,due_date,amount,month_number,enrollment:kitty_enrollments!inner(id,lead_id,tenant_id,status,scheme:kitty_schemes(name))")
+      .eq("tenant_id", TENANT_ID).eq("status", "due").lt("due_date", today)
+      .or(`overdue_reminded_at.is.null,overdue_reminded_at.lt.${overdueCutoff}`);
+
+    for (const row of overdue || []) {
+      if (row.enrollment?.status !== "active") continue;
+      const { data: lead } = await sb.from("bullion_leads").select("phone,name,dnd").eq("id", row.enrollment.lead_id).maybeSingle();
+      if (!lead?.phone || lead.dnd) continue;
+      const schemeName = row.enrollment.scheme?.name || "your Kitty scheme";
+      const msg = await getKittyMessage(sb, TENANT_ID, "overdue_reminder", {
+        scheme_name: schemeName, month_number: row.month_number, amount: row.amount, due_date: row.due_date,
+      });
+      const { queued } = await queueKittyWA(sb, { tenantId: TENANT_ID, leadId: row.enrollment.lead_id, phone: lead.phone, msg, context: { type: "overdue_reminder", installmentId: row.id } });
+      if (!queued) continue;
+      await sb.from("kitty_installments").update({ overdue_reminded_at: new Date().toISOString() }).eq("id", row.id);
+      stats.overdueQueued++;
     }
 
     // ── 2. Legacy unclaimed-benefit reminders ───────────────────────

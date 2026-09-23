@@ -34,6 +34,16 @@ export async function sendKittyWA(sb, { tenantId, leadId, phone, msg, context = 
   return { sent: false, queued: true };
 }
 
+// Queues a message WITHOUT attempting to send it — for reminders that need
+// staff sign-off before going out (overdue nudges), unlike sendKittyWA which
+// sends immediately and only queues on failure. Staff approves from Kitty
+// Admin > Pending Messages ("Send Now"/"Send All").
+export async function queueKittyWA(sb, { tenantId, leadId, phone, msg, context = {} }) {
+  if (!phone) return { queued: false };
+  await logKittyMessage(sb, { tenantId, leadId, phone, msg, context, status: "pending", error: "awaiting_staff_approval" });
+  return { queued: true };
+}
+
 async function logKittyMessage(sb, { tenantId, leadId, phone, msg, context, status, error, clientUsed }) {
   try {
     await sb.from("kitty_message_queue").insert({

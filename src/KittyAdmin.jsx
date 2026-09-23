@@ -172,9 +172,13 @@ function OverviewTab({ crmSecret, actor }) {
   pending.sort((a, b) => a.installment.due_date.localeCompare(b.installment.due_date));
   const gullakStale = [...gullakStats.values()].flatMap((s) => s.stale).sort((a, b) => (b.daysSince ?? 99999) - (a.daysSince ?? 99999));
 
-  const sendReminder = async (installmentId) => {
-    setSendingId(installmentId);
-    const d = await call("send-installment-reminder", { method: "POST", crmSecret, body: { installmentId, actor } });
+  const sendReminder = async (installment, enrollment) => {
+    const schemeName = enrollment.is_legacy ? enrollment.legacy_scheme_name : enrollment.scheme?.name;
+    const defaultMsg = `🪙 Reminder: your ${schemeName} installment #${installment.month_number} of ₹${installment.amount} is due on ${installment.due_date}.\n- Sun Sea Jewellers, Karol Bagh`;
+    const message = prompt(`Edit message to ${enrollment.lead?.name} (${enrollment.lead?.phone}) — sends instantly:`, defaultMsg);
+    if (message == null) return; // cancelled
+    setSendingId(installment.id);
+    const d = await call("send-installment-reminder", { method: "POST", crmSecret, body: { installmentId: installment.id, message, actor } });
     setSendingId(null);
     if (d.ok) { alert("Reminder sent."); load(); } else alert(d.error);
   };
@@ -250,7 +254,7 @@ function OverviewTab({ crmSecret, actor }) {
               <td>{i.due_date}</td>
               <td>{Math.floor((Date.now() - new Date(i.due_date).getTime()) / 86400000)}</td>
               <td>
-                <button onClick={() => sendReminder(i.id)} disabled={sendingId === i.id}>
+                <button onClick={() => sendReminder(i, e)} disabled={sendingId === i.id}>
                   {sendingId === i.id ? "Sending…" : i.reminded_at ? "Send Again" : "Send Reminder"}
                 </button>
               </td>
@@ -1185,31 +1189,57 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
     const d = await call("update-claim-status", { method: "POST", crmSecret, body: { id, claimStatus, actor } });
     if (d.ok) load(); else alert(d.error);
   };
-  const addInstallment = async (enrollmentId) => {
-    // Grams are always entered/stored to 3 decimals (e.g. 1.635g) — round
-    // here so the derived rate (amount / grams) doesn't drift on a stray
-    // extra-precision entry.
-    const gramsRaw = prompt("Grams purchased (leave blank if not gram-based / no rate lock)?");
-    if (gramsRaw && !validateGramsInput(Math.round(Number(gramsRaw) * 1000) / 1000)) {
-      return alert("Invalid grams value — must be max 3 digits before the decimal, up to 3 decimals (0.001-999.999g).");
-    }
-    const gramsPurchased = gramsRaw ? (Math.round(Number(gramsRaw) * 1000) / 1000).toFixed(3) : null;
-
-    // If this is a whole-gram MMTC coin (1g, 2g, 5g, 10g...) we have a live
-    // rate for, offer to auto-fill today's exact coin price instead of
-    // typing it — matches what the customer's actually being charged today.
-    // Declining leaves the amount to be entered manually as before; if
-    // staff also leaves grams blank the rate stays unset and gets filled
-    // whenever the monthly rate is next booked (~20th).
-    const gramsNum = gramsPurchased ? Number(gramsPurchased) : null;
-    const matchedCoin = gramsNum && Number.isInteger(gramsNum) ? mmtcCoins.find((c) => c.weight_g === gramsNum && c.mmtc9999) : null;
+  const addInstallment = async (enrollmentId, isCoinScheme) => {
+    let gramsPurchased = null;
     let amount;
-    if (matchedCoin && window.confirm(`Fix today's rate for this ${gramsNum}g coin — ₹${matchedCoin.mmtc9999.toLocaleString("en-IN")} (MMTC 9999)?\n\nOK = use this price now.\nCancel = enter the amount manually instead.`)) {
-      amount = String(matchedCoin.mmtc9999);
+
+    if (isCoinScheme) {
+      // Gullak is sold per MMTC coin, each 1g — pricing quoted to clients is
+      // always ₹/coin, never ₹/gram, so entry mirrors that: number of coins
+      // + price per coin, with the totals shown before confirming. 1 coin =
+      // 1g exactly, so coin count doubles as the grams figure.
+      const coinsRaw = prompt("Number of coins purchased (each 1g MMTC)?");
+      if (!coinsRaw) return;
+      const coins = parseInt(coinsRaw, 10);
+      if (!Number.isInteger(coins) || coins < 1 || coins > 999) return alert("Invalid coin count — must be a whole number, 1-999.");
+
+      const liveCoinPrice = mmtcCoins.find((c) => c.weight_g === 1 && c.mmtc9999)?.mmtc9999;
+      const priceRaw = prompt(`Price per coin (₹)?${liveCoinPrice ? ` [today's live MMTC 9999 1g rate: ₹${liveCoinPrice.toLocaleString("en-IN")}]` : ""}`, liveCoinPrice ? String(liveCoinPrice) : "");
+      if (!priceRaw) return;
+      const pricePerCoin = Number(priceRaw);
+      if (!Number.isFinite(pricePerCoin) || pricePerCoin <= 0) return alert("Invalid price per coin.");
+
+      const totalAmount = coins * pricePerCoin;
+      if (!confirm(`${coins} coin(s) × ₹${pricePerCoin.toLocaleString("en-IN")} = ₹${totalAmount.toLocaleString("en-IN")} total, ${coins}.000g total this month. Confirm?`)) return;
+
+      gramsPurchased = coins.toFixed(3);
+      amount = String(totalAmount);
     } else {
-      amount = prompt(`Amount received (₹)?${goldRate ? ` [today's live 995 rate: ₹${Math.round(goldRate)}/g]` : ""}`);
-      if (!amount) return;
+      // Grams are always entered/stored to 3 decimals (e.g. 1.635g) — round
+      // here so the derived rate (amount / grams) doesn't drift on a stray
+      // extra-precision entry.
+      const gramsRaw = prompt("Grams purchased (leave blank if not gram-based / no rate lock)?");
+      if (gramsRaw && !validateGramsInput(Math.round(Number(gramsRaw) * 1000) / 1000)) {
+        return alert("Invalid grams value — must be max 3 digits before the decimal, up to 3 decimals (0.001-999.999g).");
+      }
+      gramsPurchased = gramsRaw ? (Math.round(Number(gramsRaw) * 1000) / 1000).toFixed(3) : null;
+
+      // If this is a whole-gram MMTC coin (1g, 2g, 5g, 10g...) we have a live
+      // rate for, offer to auto-fill today's exact coin price instead of
+      // typing it — matches what the customer's actually being charged today.
+      // Declining leaves the amount to be entered manually as before; if
+      // staff also leaves grams blank the rate stays unset and gets filled
+      // whenever the monthly rate is next booked (~20th).
+      const gramsNum = gramsPurchased ? Number(gramsPurchased) : null;
+      const matchedCoin = gramsNum && Number.isInteger(gramsNum) ? mmtcCoins.find((c) => c.weight_g === gramsNum && c.mmtc9999) : null;
+      if (matchedCoin && window.confirm(`Fix today's rate for this ${gramsNum}g coin — ₹${matchedCoin.mmtc9999.toLocaleString("en-IN")} (MMTC 9999)?\n\nOK = use this price now.\nCancel = enter the amount manually instead.`)) {
+        amount = String(matchedCoin.mmtc9999);
+      } else {
+        amount = prompt(`Amount received (₹)?${goldRate ? ` [today's live 995 rate: ₹${Math.round(goldRate)}/g]` : ""}`);
+        if (!amount) return;
+      }
     }
+
     const paymentMethod = promptPaymentMethod();
     if (paymentMethod == null) return;
     const paymentRemarks = prompt("Remarks (UPI ref no. / transfer ref no. / cash given to whom)? Optional.") || null;
@@ -1472,7 +1502,7 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
                           {e.status === "pending_confirmation" && <button onClick={() => confirm_(e.id)} style={{ marginRight: 8 }}>Confirm & Start</button>}
                           {(e.status === "pending_confirmation" || e.status === "active") && <button onClick={() => cancel_(e.id)} style={{ marginRight: 8 }}>Cancel</button>}
                           <button onClick={() => deleteEnrollment_(e)} style={{ marginRight: 8, color: "#b91c1c" }}>Delete (duplicate)</button>
-                          {e.status === "active" && <button onClick={() => addInstallment(e.id)} style={{ marginRight: 8 }}>+ Add Purchase/Installment</button>}
+                          {e.status === "active" && <button onClick={() => addInstallment(e.id, e.scheme?.perks?.unit === "grams")} style={{ marginRight: 8 }}>+ Add Purchase/Installment</button>}
                           {e.status === "active" && !grams && <button onClick={() => advancePay(e)} style={{ marginRight: 8 }}>⏩ Advance Pay Months</button>}
                           {(e.status === "active" || e.status === "completed") && (
                             <button onClick={() => redeem(e)} style={{ marginRight: 8, fontWeight: 600 }}>

@@ -862,11 +862,12 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, deliveredGrams: Number(delivered.toFixed(3)) });
   }
 
-  // POST ?action=send-installment-reminder — staff. Body: { installmentId }.
+  // POST ?action=send-installment-reminder — staff. Body: { installmentId, message? }.
   // On-demand WA nudge for a pending payment (same wording as kitty-cron.js's
-  // automatic 3-day-before reminder), for staff working the Overview
-  // dashboard's pending-payments list right now instead of waiting for the
-  // next cron tick.
+  // automatic 3-day-before reminder unless `message` overrides it), for
+  // staff working the Overview dashboard's pending-payments list right now
+  // instead of waiting for the next cron tick. Sends instantly — no queue/
+  // approval step, since a staff member is choosing to send this themselves.
   if (req.method === "POST" && action === "send-installment-reminder") {
     const authFail = checkCrmSecret(req, res);
     if (authFail) return;
@@ -880,7 +881,7 @@ export default async function handler(req, res) {
     if (!lead?.phone) return res.status(400).json({ ok: false, error: "member_has_no_phone_on_file" });
     if (lead.dnd) return res.status(400).json({ ok: false, error: "member_opted_out_dnd" });
     const schemeName = row.enrollment?.is_legacy ? row.enrollment.legacy_scheme_name : (row.enrollment?.scheme?.name || "your Kitty scheme");
-    const msg = `🪙 Reminder: your ${schemeName} installment #${row.month_number} of ₹${row.amount} is due on ${row.due_date}.\n- Sun Sea Jewellers, Karol Bagh`;
+    const msg = body.message?.trim() || `🪙 Reminder: your ${schemeName} installment #${row.month_number} of ₹${row.amount} is due on ${row.due_date}.\n- Sun Sea Jewellers, Karol Bagh`;
     const { sent, queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: row.enrollment?.lead_id, phone: lead.phone, msg, context: { type: "due_reminder", installmentId: body.installmentId } });
     if (!sent && !queued) return res.status(500).json({ ok: false, error: "whatsapp_send_failed" });
     if (sent) await sb.from("kitty_installments").update({ reminded_at: new Date().toISOString() }).eq("id", body.installmentId);
