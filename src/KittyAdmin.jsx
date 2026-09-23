@@ -1235,7 +1235,35 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
     if (d.ok) { alert(d.sent ? "Sent." : "WA session down — queued, approve from Pending Messages."); setMessagingFor(null); }
     else alert(d.error);
   };
-  const editInstallment = async (i) => {
+  const editInstallment = async (i, isCoinScheme) => {
+    if (isCoinScheme) {
+      // Gullak: one amount, one coin count — rate (₹/coin, already includes
+      // GST/making charges, not a bare bullion rate) is derived, never
+      // asked twice. Previously this asked "Amount" then separately "Amount
+      // actually received" for the same payment, which was confusing.
+      const currentCoins = i.rate_locked ? Number(i.paid_amount ?? i.amount ?? 0) / Number(i.rate_locked) : "";
+      const paidRaw = prompt("Amount paid (₹)?", i.paid_amount ?? i.amount);
+      if (paidRaw == null) return;
+      const paidAmount = Number(paidRaw);
+      if (!Number.isFinite(paidAmount) || paidAmount <= 0) return alert("Invalid amount.");
+      const coinsRaw = prompt("Number of coins/units (each 1g MMTC)?", currentCoins || "");
+      if (coinsRaw == null) return;
+      const coins = parseInt(coinsRaw, 10);
+      if (!Number.isInteger(coins) || coins < 1 || coins > 999) return alert("Invalid coin count — must be a whole number, 1-999.");
+      const dueDate = prompt("Due date (YYYY-MM-DD)?", i.due_date) ?? i.due_date;
+      const status = promptStatus(i.status) ?? i.status;
+      const paymentMethod = promptPaymentMethod(i.payment_method) ?? i.payment_method ?? null;
+      const paymentRemarks = prompt("Remarks (UPI ref no. / transfer ref no. / cash given to whom)?", i.payment_remarks || "") ?? i.payment_remarks;
+      if (!confirm(`${coins} coin(s) at ₹${Math.round(paidAmount / coins).toLocaleString("en-IN")}/coin = ₹${paidAmount.toLocaleString("en-IN")}. Confirm?`)) return;
+      // gramsPurchased (not rateLocked) — derives rate_locked = amount/coins
+      // directly, same as add-installment, instead of routing through the
+      // generic 5000-35000-whole-number rate validator meant for staff
+      // typing a bare market rate by hand.
+      const d = await call("update-installment", { method: "POST", crmSecret, body: { id: i.id, amount: paidAmount, dueDate, status, paymentMethod, paymentRemarks, paidAmount, gramsPurchased: coins, actor } });
+      if (d.ok) load(); else alert(d.error);
+      return;
+    }
+
     const amount = prompt("Amount (₹)?", i.amount) ?? i.amount;
     const dueDate = prompt("Due date (YYYY-MM-DD)?", i.due_date) ?? i.due_date;
     const status = promptStatus(i.status) ?? i.status;
@@ -1654,7 +1682,7 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
                               const monthLabel = i.due_date ? new Date(`${i.due_date}T00:00:00Z`).toLocaleDateString("en-IN", { month: "short", year: "numeric", timeZone: "UTC" }) : "";
                               return (
                                 <span key={i.month_number} title={`Due ${i.due_date}${rateTxt}${gramsTxt}${payTxt} — click to mark paid, shift+click to edit`}
-                                  onClick={(ev) => { if (ev.shiftKey) editInstallment(i); else if (i.status === "due") markPaid(i.id, e.scheme?.perks?.unit === "grams"); else editInstallment(i); }}
+                                  onClick={(ev) => { const isCoin = e.scheme?.perks?.unit === "grams"; if (ev.shiftKey) editInstallment(i, isCoin); else if (i.status === "due") markPaid(i.id, isCoin); else editInstallment(i, isCoin); }}
                                   style={{ padding: "3px 8px", borderRadius: 4, fontSize: 12, cursor: "pointer", background: bg,
                                     display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1.3 }}>
                                   <span>
