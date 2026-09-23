@@ -913,12 +913,18 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
   const [mmtcCoins, setMmtcCoins] = useState([]); // today's live MMTC 9999 coin prices, per weight tier — for the "fix today's rate" option on Gullak purchases
   const [mergeSelected, setMergeSelected] = useState([]); // up to 2 enrollment ids
   const [expandedId, setExpandedId] = useState(null); // enrollment id whose full management panel is open
+  const [templates, setTemplates] = useState([]); // Message Templates registry, for per-member "Send Message"
+  const [messagingFor, setMessagingFor] = useState(null); // enrollment id whose send-message panel is open
+  const [messageType, setMessageType] = useState("");
+  const [messageDraft, setMessageDraft] = useState("");
+  const [sendingMsg, setSendingMsg] = useState(false);
 
   useEffect(() => {
     fetch("/api/rates").then((r) => r.json()).then((d) => {
       if (d.ok) { setGoldRate(d.rates?.spot?.gold24kt || null); setMmtcCoins(d.rates?.goldCoins || []); }
     }).catch(() => {});
-  }, []);
+    call("admin-list-message-templates", { crmSecret }).then((d) => { if (d.ok) setTemplates(d.templates); });
+  }, [crmSecret]);
 
   // Lock the scheme filter to lockedSchemeSlug once schemes have loaded —
   // can't do this at initial state since we don't have the scheme's id
@@ -1178,6 +1184,50 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
     const next = (i.possession || "with_company") === "with_company" ? "with_client" : "with_company";
     const d = await call("toggle-installment-possession", { method: "POST", crmSecret, body: { installmentId: i.id, possession: next, actor } });
     if (d.ok) load(); else alert(d.error);
+  };
+
+  // Per-member "✉️ Message" — picks the template that matches this
+  // member's current payment status (overdue > due this month > upcoming),
+  // pre-fills it with their real numbers, but staff can switch templates
+  // or freehand-edit before it goes out. Sends instantly via the same
+  // adhoc endpoint as Messages > Send Now.
+  const fillTemplate = (tpl, vars) => tpl.replace(/\{\{(\w+)\}\}/g, (_, k) => (vars[k] != null ? String(vars[k]) : ""));
+  const statusForEnrollment = (e) => {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const due = (e.installments || []).filter((i) => i.status === "due").sort((a, b) => a.due_date.localeCompare(b.due_date));
+    const overdue = due.find((i) => i.due_date < todayStr);
+    if (overdue) return { type: "overdue_reminder", installment: overdue };
+    const dueThisMonth = due.find((i) => i.due_date?.slice(0, 7) === todayStr.slice(0, 7));
+    if (dueThisMonth) return { type: "due_reminder", installment: dueThisMonth };
+    if (due[0]) return { type: "due_reminder", installment: due[0] };
+    return { type: "", installment: null };
+  };
+  const draftFor = (e, type) => {
+    const t = templates.find((x) => x.type === type);
+    if (!t) return "";
+    const { installment: i } = statusForEnrollment(e);
+    const schemeName = e.is_legacy ? e.legacy_scheme_name : e.scheme?.name || "your Kitty scheme";
+    return fillTemplate(t.template, {
+      scheme_name: schemeName, month_number: i?.month_number, amount: i?.amount, due_date: i?.due_date,
+      month_label: i?.due_date ? new Date(`${i.due_date}T00:00:00Z`).toLocaleDateString("en-IN", { month: "long", year: "numeric", timeZone: "UTC" }) : "",
+    });
+  };
+  const openMessagePanel = (e) => {
+    const { type } = statusForEnrollment(e);
+    const defaultType = type || templates[0]?.type || "";
+    setMessagingFor(e.id);
+    setMessageType(defaultType);
+    setMessageDraft(defaultType ? draftFor(e, defaultType) : "");
+  };
+  const changeMessageType = (e, type) => { setMessageType(type); setMessageDraft(draftFor(e, type)); };
+  const sendMessage = async (e) => {
+    if (!e.lead_id) return alert("No lead on this enrollment.");
+    if (!messageDraft.trim()) return alert("Message is empty.");
+    setSendingMsg(true);
+    const d = await call("admin-send-adhoc-message", { method: "POST", crmSecret, body: { leadId: e.lead_id, message: messageDraft.trim(), actor } });
+    setSendingMsg(false);
+    if (d.ok) { alert(d.sent ? "Sent." : "WA session down — queued, approve from Pending Messages."); setMessagingFor(null); }
+    else alert(d.error);
   };
   const editInstallment = async (i) => {
     const amount = prompt("Amount (₹)?", i.amount) ?? i.amount;
@@ -1544,8 +1594,24 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
                               {e.status === "active" ? "Redeem Now (early)" : "Redeem"}
                             </button>
                           )}
+                          {e.lead_id && <button onClick={() => openMessagePanel(e)} style={{ marginRight: 8 }}>✉️ Message</button>}
                           {e.claim_status && e.claim_status !== "not_applicable" && <span style={{ marginRight: 8 }}>claim: {e.claim_status}</span>}
                         </div>
+                        {messagingFor === e.id && (
+                          <div style={{ marginTop: 8, padding: 10, background: "#fffaf0", border: "1px solid #eee5c8", borderRadius: 6, maxWidth: 480 }}>
+                            <select value={messageType} onChange={(ev) => changeMessageType(e, ev.target.value)} style={{ display: "block", width: "100%", marginBottom: 6 }}>
+                              <option value="">Custom (blank)</option>
+                              {templates.map((t) => <option key={t.type} value={t.type}>{t.label}</option>)}
+                            </select>
+                            <textarea value={messageDraft} onChange={(ev) => setMessageDraft(ev.target.value)} rows={5} style={{ width: "100%", fontSize: 12.5 }} />
+                            <div style={{ marginTop: 6 }}>
+                              <button onClick={() => sendMessage(e)} disabled={sendingMsg} style={{ marginRight: 8, background: "#d4af37", color: "#fff", border: "none", borderRadius: 4, padding: "4px 12px" }}>
+                                {sendingMsg ? "Sending…" : "Send to " + (e.lead?.phone || "member")}
+                              </button>
+                              <button onClick={() => setMessagingFor(null)}>Cancel</button>
+                            </div>
+                          </div>
+                        )}
                         {e.redemptions?.length > 0 && (
                           <div style={{ marginTop: 6, fontSize: 12, color: "#555" }}>
                             Redeemed: {e.redemptions.map((r) => `${r.redemption_type}${r.item_description ? ` — ${r.item_description}` : ""}${r.value ? ` (₹${r.value})` : ""}`).join("; ")}
