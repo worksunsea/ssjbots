@@ -918,6 +918,7 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
   const [messageType, setMessageType] = useState("");
   const [messageDraft, setMessageDraft] = useState("");
   const [sendingMsg, setSendingMsg] = useState(false);
+  const [messageHistory, setMessageHistory] = useState(null); // recent messages already sent to whoever's panel is open
 
   useEffect(() => {
     fetch("/api/rates").then((r) => r.json()).then((d) => {
@@ -1218,6 +1219,11 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
     setMessagingFor(e.id);
     setMessageType(defaultType);
     setMessageDraft(defaultType ? draftFor(e, defaultType) : "");
+    setMessageHistory(null);
+    if (e.lead_id) {
+      call("admin-list-message-log", { crmSecret, params: { leadId: e.lead_id, limit: 5 } })
+        .then((d) => setMessageHistory(d.ok ? d.messages : []));
+    } else setMessageHistory([]);
   };
   const changeMessageType = (e, type) => { setMessageType(type); setMessageDraft(draftFor(e, type)); };
   const sendMessage = async (e) => {
@@ -1599,6 +1605,18 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
                         </div>
                         {messagingFor === e.id && (
                           <div style={{ marginTop: 8, padding: 10, background: "#fffaf0", border: "1px solid #eee5c8", borderRadius: 6, maxWidth: 480 }}>
+                            <div style={{ fontSize: 11.5, color: "#666", marginBottom: 8 }}>
+                              {messageHistory === null ? "Loading recent messages…" : !messageHistory.length ? "No messages sent to this member yet." : (
+                                <>
+                                  <b>Already sent (most recent {messageHistory.length}):</b>
+                                  {messageHistory.map((m) => (
+                                    <div key={m.id} title={m.message} style={{ marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                      {new Date(m.sent_at || m.created_at).toLocaleDateString("en-IN")} — {typeLabel(m.context)}{m.status !== "sent" ? " (pending)" : ""}: {m.message}
+                                    </div>
+                                  ))}
+                                </>
+                              )}
+                            </div>
                             <select value={messageType} onChange={(ev) => changeMessageType(e, ev.target.value)} style={{ display: "block", width: "100%", marginBottom: 6 }}>
                               <option value="">Custom (blank)</option>
                               {templates.map((t) => <option key={t.type} value={t.type}>{t.label}</option>)}

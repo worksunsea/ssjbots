@@ -1453,6 +1453,7 @@ export default async function handler(req, res) {
       .select("id, phone, message, context, status, attempts, last_error, client_used, created_at, sent_at, lead:bullion_leads(name)")
       .eq("tenant_id", TENANT_ID).order("created_at", { ascending: false }).limit(Number(req.query.limit) || 500);
     if (req.query.status) q = q.eq("status", req.query.status);
+    if (req.query.leadId) q = q.eq("lead_id", req.query.leadId);
     const { data, error } = await q;
     if (error) return res.status(500).json({ ok: false, error: error.message });
     return res.status(200).json({ ok: true, messages: data || [] });
