@@ -8,11 +8,11 @@
 // Templates use {{placeholder}} tokens — see `placeholders` per entry.
 // Only a few send sites are wired to this registry so far (the ones this
 // session touched): rate_notify, rate_cut_payment_reminder, due_reminder,
-// due_reminder_3day, due_today_reminder, overdue_reminder. Other Kitty
-// messages (redemption, Mission 100, unclaimed, batch rollover, Swarn
-// freeze) still send their hardcoded text directly — add them here + swap
-// their call site to getKittyMessage() the same way when staff want those
-// editable too.
+// due_reminder_3day, due_today_reminder, overdue_reminder_1day,
+// overdue_reminder_3day, overdue_reminder_1week. Other Kitty messages
+// (redemption, Mission 100, unclaimed, batch rollover, Swarn freeze) still
+// send their hardcoded text directly — add them here + swap their call
+// site to getKittyMessage() the same way when staff want those editable too.
 export const KITTY_MESSAGE_TYPES = [
   {
     type: "due_reminder",
@@ -64,11 +64,25 @@ export const KITTY_MESSAGE_TYPES = [
     default: `🪙 Advance payment received! {{months}} upcoming month(s) of your {{scheme_name}} have been paid today at ₹{{rate}}/g — ₹{{amount}} total = {{grams}}g.\n\nYou're covered through installment #{{last_month}} — no more payment reminders until then.\n- Sun Sea Jewellers, Karol Bagh`,
   },
   {
-    type: "overdue_reminder",
-    label: "Overdue payment nudge (staff-approved)",
-    description: "Queued (not auto-sent) when an installment's due date has already passed and it's still unpaid — staff reviews and sends from Kitty Admin > Pending Messages.",
-    placeholders: ["scheme_name", "month_number", "amount", "due_date"],
-    default: `🪙 Your {{scheme_name}} installment #{{month_number}} of ₹{{amount}} was due on {{due_date}} and is still showing pending. Please pay at your earliest to keep your scheme on track — reply here or call us if you've already paid.\n- Sun Sea Jewellers, Karol Bagh`,
+    type: "overdue_reminder_1day",
+    label: "Overdue nudge — 1 day (staff-approved)",
+    description: "Queued once, the day after an installment's due date if still unpaid. rate_line is that day's live 24kt gold rate, or for Gullak/coin schemes that day's 1g MMTC coin rate.",
+    placeholders: ["scheme_name", "month_number", "amount", "due_date", "rate_line"],
+    default: `🪙 Your {{scheme_name}} installment #{{month_number}} of ₹{{amount}} was due on {{due_date}} and is still showing pending. Today's rate: {{rate_line}}. Please pay at your earliest — reply here or call us if you've already paid.\n- Sun Sea Jewellers, Karol Bagh`,
+  },
+  {
+    type: "overdue_reminder_3day",
+    label: "Overdue nudge — 3 days (staff-approved)",
+    description: "Queued once, 3 days after an installment's due date if still unpaid.",
+    placeholders: ["scheme_name", "month_number", "amount", "due_date", "rate_line"],
+    default: `🪙 Your {{scheme_name}} installment #{{month_number}} of ₹{{amount}} (due {{due_date}}) is now 3 days overdue. Today's rate: {{rate_line}}. Please pay soon to keep your scheme on track.\n- Sun Sea Jewellers, Karol Bagh`,
+  },
+  {
+    type: "overdue_reminder_1week",
+    label: "Overdue nudge — 1 week (staff-approved)",
+    description: "Queued once, 1 week after an installment's due date if still unpaid.",
+    placeholders: ["scheme_name", "month_number", "amount", "due_date", "rate_line"],
+    default: `🪙 Your {{scheme_name}} installment #{{month_number}} of ₹{{amount}} (due {{due_date}}) is now a week overdue. Today's rate: {{rate_line}}. Please pay at the earliest, or call us if there's an issue.\n- Sun Sea Jewellers, Karol Bagh`,
   },
   {
     type: "rate_cut_payment_reminder",

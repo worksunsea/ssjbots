@@ -1200,11 +1200,22 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
   // adhoc endpoint as Messages > Send Now — no click sends without staff
   // approving it from Pending Messages first (owner instruction 2026-09-23).
   const fillTemplate = (tpl, vars) => tpl.replace(/\{\{(\w+)\}\}/g, (_, k) => (vars[k] != null ? String(vars[k]) : ""));
+  const rateLineFor = (e) => {
+    if (e.scheme?.perks?.unit === "grams") {
+      const coin1g = mmtcCoins.find((c) => c.weight_g === 1)?.mmtc9999;
+      return coin1g ? `₹${Number(coin1g).toLocaleString("en-IN")}/coin (1g MMTC)` : "(rate unavailable)";
+    }
+    return goldRate ? `₹${Math.round(goldRate).toLocaleString("en-IN")}/g (24kt)` : "(rate unavailable)";
+  };
   const statusForEnrollment = (e) => {
     const todayStr = new Date().toISOString().slice(0, 10);
     const due = (e.installments || []).filter((i) => i.status === "due").sort((a, b) => a.due_date.localeCompare(b.due_date));
     const overdue = due.find((i) => i.due_date < todayStr);
-    if (overdue) return { type: "overdue_reminder", installment: overdue };
+    if (overdue) {
+      const daysOverdue = Math.floor((Date.now() - new Date(`${overdue.due_date}T00:00:00Z`).getTime()) / 86400000);
+      const type = daysOverdue >= 7 ? "overdue_reminder_1week" : daysOverdue >= 3 ? "overdue_reminder_3day" : "overdue_reminder_1day";
+      return { type, installment: overdue };
+    }
     const dueThisMonth = due.find((i) => i.due_date?.slice(0, 7) === todayStr.slice(0, 7));
     if (dueThisMonth) return { type: "due_reminder", installment: dueThisMonth };
     if (due[0]) return { type: "due_reminder", installment: due[0] };
@@ -1218,6 +1229,7 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
     return fillTemplate(t.template, {
       scheme_name: schemeName, month_number: i?.month_number, amount: i?.amount, due_date: i?.due_date,
       month_label: i?.due_date ? new Date(`${i.due_date}T00:00:00Z`).toLocaleDateString("en-IN", { month: "long", year: "numeric", timeZone: "UTC" }) : "",
+      rate_line: rateLineFor(e),
     });
   };
   const openMessagePanel = (e) => {

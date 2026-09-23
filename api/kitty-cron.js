@@ -21,9 +21,10 @@
 //      installment is due TODAY and still unpaid, separate stamp
 //      (due_today_reminded_at) so it fires once more even if 1./1b.
 //      already reminded them days earlier.
-//   1d. Overdue nudge — due_date already in the past, still unpaid.
-//      Re-queued every OVERDUE_REMINDER_INTERVAL_DAYS days until paid (own
-//      stamp, overdue_reminded_at).
+//   1d-1f. Overdue milestones — 1 day / 3 days / 1 week overdue, still
+//      unpaid, each firing ONCE (own stamp column each). Includes that
+//      day's live rate: 24kt spot for rupee schemes, 1g MMTC coin rate for
+//      gram-based schemes (Gullak).
 //   2. Legacy unclaimed-benefit reminder — for completed enrollments with
 //      claim_status in (unclaimed, reminded), re-nudge every
 //      CLAIM_REMINDER_INTERVAL_DAYS days until staff marks it claimed.
@@ -50,6 +51,7 @@ import { getSwarnScheme } from "./_lib/swarnSuraksha.js";
 import { gramsForInstallments } from "./_lib/kittyGrams.js";
 import { computeCheckpointCrossingTimes, awardBonusCoin, CHECKPOINTS_G } from "./_lib/mission100.js";
 import { getKittyMessage } from "./_lib/kittyTemplates.js";
+import { getRates } from "./_lib/rates.js";
 
 // Two separate advance reminders, not one replacing the other (owner
 // instruction, 2026-09-20): a 7-day heads-up AND a more urgent 3-day
@@ -57,9 +59,14 @@ import { getKittyMessage } from "./_lib/kittyTemplates.js";
 const REMINDER_DAYS_BEFORE = 7;
 const REMINDER_DAYS_BEFORE_3DAY = 3;
 const CLAIM_REMINDER_INTERVAL_DAYS = 14;
-// Overdue nudges are queued (not sent) — this just controls how often a
-// still-unpaid overdue installment gets re-queued for staff to approve.
-const OVERDUE_REMINDER_INTERVAL_DAYS = 5;
+// Overdue milestones (owner instruction 2026-09-23) — each fires exactly
+// once per installment, at 1/3/7 days overdue, own stamp column so they
+// don't repeat or interfere with each other.
+const OVERDUE_MILESTONES = [
+  { days: 1, stampColumn: "overdue_reminded_at", templateType: "overdue_reminder_1day", statKey: "overdue1dayQueued" },
+  { days: 3, stampColumn: "overdue_3day_reminded_at", templateType: "overdue_reminder_3day", statKey: "overdue3dayQueued" },
+  { days: 7, stampColumn: "overdue_1week_reminded_at", templateType: "overdue_reminder_1week", statKey: "overdue1weekQueued" },
+];
 
 function checkAuth(req) {
   if (!DIGEST_CRON_SECRET) return true;
@@ -79,6 +86,45 @@ function addMonths(dateStr, n) {
   const d = new Date(`${dateStr}T00:00:00Z`);
   d.setUTCMonth(d.getUTCMonth() + n);
   return d.toISOString().slice(0, 10);
+}
+
+// That day's live rate for an overdue-milestone message — 1g MMTC coin
+// price for gram-based schemes (Gullak), else 24kt spot ₹/g. `rates` is
+// this cron run's single getRates() call, shared across all installments
+// so it doesn't re-fetch per row.
+function rateLineFor(scheme, rates) {
+  if (scheme?.perks?.unit === "grams") {
+    const coin1g = rates?.goldCoins?.find((c) => c.weight_g === 1)?.mmtc9999;
+    return coin1g ? `₹${Number(coin1g).toLocaleString("en-IN")}/coin (1g MMTC)` : "(rate unavailable)";
+  }
+  const spot = rates?.spot?.gold24kt;
+  return spot ? `₹${Number(spot).toLocaleString("en-IN")}/g (24kt)` : "(rate unavailable)";
+}
+
+// One overdue milestone (1/3/7 days) — fires once per installment ever,
+// the first cron tick on or after that many days overdue; the stamp column
+// being non-null is permanent, so it never re-fires even if this specific
+// day's tick was missed.
+async function queueOverdueMilestone(sb, { today, rates, milestone, stats }) {
+  const cutoffDate = new Date(Date.now() + 5.5 * 3600000 - milestone.days * 86400000).toISOString().slice(0, 10);
+  const { data: rows } = await sb.from("kitty_installments")
+    .select(`id,due_date,amount,month_number,enrollment:kitty_enrollments!inner(id,lead_id,tenant_id,status,scheme:kitty_schemes(name,perks))`)
+    .eq("tenant_id", TENANT_ID).eq("status", "due").is(milestone.stampColumn, null).lte("due_date", cutoffDate);
+
+  for (const row of rows || []) {
+    if (row.enrollment?.status !== "active") continue;
+    const { data: lead } = await sb.from("bullion_leads").select("phone,name,dnd").eq("id", row.enrollment.lead_id).maybeSingle();
+    if (!lead?.phone || lead.dnd) continue;
+    const schemeName = row.enrollment.scheme?.name || "your Kitty scheme";
+    const msg = await getKittyMessage(sb, TENANT_ID, milestone.templateType, {
+      scheme_name: schemeName, month_number: row.month_number, amount: row.amount, due_date: row.due_date,
+      rate_line: rateLineFor(row.enrollment.scheme, rates),
+    });
+    const { queued } = await queueKittyWA(sb, { tenantId: TENANT_ID, leadId: row.enrollment.lead_id, phone: lead.phone, msg, context: { type: milestone.templateType, installmentId: row.id } });
+    if (!queued) continue;
+    await sb.from("kitty_installments").update({ [milestone.stampColumn]: new Date().toISOString() }).eq("id", row.id);
+    stats[milestone.statKey]++;
+  }
 }
 
 // Same-day urgent nudge — anyone whose installment is due TODAY and still
@@ -113,7 +159,7 @@ export default async function handler(req, res) {
   const windowEnd = new Date(Date.now() + 5.5 * 3600000 + REMINDER_DAYS_BEFORE * 86400000).toISOString().slice(0, 10);
   const windowEnd3day = new Date(Date.now() + 5.5 * 3600000 + REMINDER_DAYS_BEFORE_3DAY * 86400000).toISOString().slice(0, 10);
   const stats = {
-    dueReminders: 0, dueReminders3day: 0, dueTodayReminders: 0, overdueQueued: 0, claimReminders: 0, batchesRolledOver: 0, rolloverNudges: 0, swarnFrozen: 0, failed: 0,
+    dueReminders: 0, dueReminders3day: 0, dueTodayReminders: 0, overdue1dayQueued: 0, overdue3dayQueued: 0, overdue1weekQueued: 0, claimReminders: 0, batchesRolledOver: 0, rolloverNudges: 0, swarnFrozen: 0, failed: 0,
     mission100Finishers: 0, mission100CompletionBonuses: 0, mission100CheckpointWins: 0, mission100Winners: 0,
     mission100Announcements: 0, mission100ReferralBonuses: 0,
   };
@@ -175,28 +221,16 @@ export default async function handler(req, res) {
       stats.dueReminders3day++;
     }
 
-    // ── 1c. Overdue nudge — due_date already passed, still unpaid. Queued
-    //        for staff approval (never auto-sent), re-queued every
-    //        OVERDUE_REMINDER_INTERVAL_DAYS days until paid so it isn't a
-    //        one-shot that's easy to miss.
-    const overdueCutoff = new Date(Date.now() - OVERDUE_REMINDER_INTERVAL_DAYS * 86400000).toISOString();
-    const { data: overdue } = await sb.from("kitty_installments")
-      .select("id,due_date,amount,month_number,enrollment:kitty_enrollments!inner(id,lead_id,tenant_id,status,scheme:kitty_schemes(name))")
-      .eq("tenant_id", TENANT_ID).eq("status", "due").lt("due_date", today)
-      .or(`overdue_reminded_at.is.null,overdue_reminded_at.lt.${overdueCutoff}`);
-
-    for (const row of overdue || []) {
-      if (row.enrollment?.status !== "active") continue;
-      const { data: lead } = await sb.from("bullion_leads").select("phone,name,dnd").eq("id", row.enrollment.lead_id).maybeSingle();
-      if (!lead?.phone || lead.dnd) continue;
-      const schemeName = row.enrollment.scheme?.name || "your Kitty scheme";
-      const msg = await getKittyMessage(sb, TENANT_ID, "overdue_reminder", {
-        scheme_name: schemeName, month_number: row.month_number, amount: row.amount, due_date: row.due_date,
-      });
-      const { queued } = await queueKittyWA(sb, { tenantId: TENANT_ID, leadId: row.enrollment.lead_id, phone: lead.phone, msg, context: { type: "overdue_reminder", installmentId: row.id } });
-      if (!queued) continue;
-      await sb.from("kitty_installments").update({ overdue_reminded_at: new Date().toISOString() }).eq("id", row.id);
-      stats.overdueQueued++;
+    // ── 1c-1e. Overdue milestones — 1 day / 3 days / 1 week overdue, still
+    //        unpaid. Each fires ONCE (own stamp column, never re-queued
+    //        once set) at the moment that milestone is first reached or
+    //        passed — not a repeating nudge. Each message includes that
+    //        day's live rate: the 24kt spot rate for rupee schemes, or the
+    //        1g MMTC coin rate for gram-based schemes like Gullak (owner
+    //        instruction 2026-09-23).
+    const rates = await getRates();
+    for (const milestone of OVERDUE_MILESTONES) {
+      await queueOverdueMilestone(sb, { today, rates, milestone, stats });
     }
 
     // ── 2. Legacy unclaimed-benefit reminders ───────────────────────
