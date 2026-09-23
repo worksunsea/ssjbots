@@ -175,12 +175,12 @@ function OverviewTab({ crmSecret, actor }) {
   const sendReminder = async (installment, enrollment) => {
     const schemeName = enrollment.is_legacy ? enrollment.legacy_scheme_name : enrollment.scheme?.name;
     const defaultMsg = `🪙 Reminder: your ${schemeName} installment #${installment.month_number} of ₹${installment.amount} is due on ${installment.due_date}.\n- Sun Sea Jewellers, Karol Bagh`;
-    const message = prompt(`Edit message to ${enrollment.lead?.name} (${enrollment.lead?.phone}) — sends instantly:`, defaultMsg);
+    const message = prompt(`Edit message to ${enrollment.lead?.name} (${enrollment.lead?.phone}) — queued for approval, not sent immediately:`, defaultMsg);
     if (message == null) return; // cancelled
     setSendingId(installment.id);
     const d = await call("send-installment-reminder", { method: "POST", crmSecret, body: { installmentId: installment.id, message, actor } });
     setSendingId(null);
-    if (d.ok) { alert("Reminder sent."); load(); } else alert(d.error);
+    if (d.ok) { alert("Queued — approve from Kitty Admin > Pending Messages."); load(); } else alert(d.error);
   };
 
   return (
@@ -542,13 +542,13 @@ function SendNowSection({ sb, crmSecret, actor }) {
     setSending(true); setResult(null);
     const d = await call("admin-send-adhoc-message", { method: "POST", crmSecret, body: { leadId: selected.id, message: message.trim(), actor } });
     setSending(false);
-    setResult(d.ok ? (d.sent ? "sent" : "queued") : (d.error || "failed"));
+    setResult(d.ok ? "queued" : (d.error || "failed"));
     if (d.ok) setMessage("");
   };
 
   return (
     <div style={{ maxWidth: 560 }}>
-      <p style={{ fontSize: 13, color: "#666" }}>Send a one-off WhatsApp to a specific member — outside any automated flow. Goes through the same Kitty number (with fallback), and shows up in the Log above.</p>
+      <p style={{ fontSize: 13, color: "#666" }}>Queues a one-off WhatsApp to a specific member for approval — outside any automated flow. Approve from Pending Messages; shows up in the Log above once sent.</p>
       <div style={{ marginBottom: 10 }}>
         <input placeholder="Search member by name or phone…" value={query} onChange={(e) => { setQuery(e.target.value); setSelected(null); }}
           style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid #ccc", boxSizing: "border-box" }} />
@@ -570,11 +570,10 @@ function SendNowSection({ sb, crmSecret, actor }) {
         style={{ width: "100%", fontSize: 13, fontFamily: "inherit", padding: 8, borderRadius: 6, border: "1px solid #ccc", boxSizing: "border-box", marginBottom: 8 }} />
       <button onClick={send} disabled={!selected || !message.trim() || sending}
         style={{ padding: "8px 16px", background: (!selected || !message.trim()) ? "#eee" : "#d4af37", color: (!selected || !message.trim()) ? "#999" : "#fff", border: "none", borderRadius: 6, cursor: (!selected || !message.trim()) ? "not-allowed" : "pointer" }}>
-        {sending ? "Sending…" : "✉️ Send Now"}
+        {sending ? "Queuing…" : "✉️ Queue Message"}
       </button>
-      {result === "sent" && <div style={{ color: "#166534", marginTop: 8 }}>✅ Sent.</div>}
-      {result === "queued" && <div style={{ color: "#b45309", marginTop: 8 }}>⏳ Couldn't send live — queued, retry from Log or Pending Messages.</div>}
-      {result && result !== "sent" && result !== "queued" && <div style={{ color: "#b91c1c", marginTop: 8 }}>Error: {result}</div>}
+      {result === "queued" && <div style={{ color: "#166534", marginTop: 8 }}>⏳ Queued — approve from Pending Messages.</div>}
+      {result && result !== "queued" && <div style={{ color: "#b91c1c", marginTop: 8 }}>Error: {result}</div>}
     </div>
   );
 }
@@ -1190,8 +1189,9 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
   // Per-member "✉️ Message" — picks the template that matches this
   // member's current payment status (overdue > due this month > upcoming),
   // pre-fills it with their real numbers, but staff can switch templates
-  // or freehand-edit before it goes out. Sends instantly via the same
-  // adhoc endpoint as Messages > Send Now.
+  // or freehand-edit before it goes out. Queued for approval via the same
+  // adhoc endpoint as Messages > Send Now — no click sends without staff
+  // approving it from Pending Messages first (owner instruction 2026-09-23).
   const fillTemplate = (tpl, vars) => tpl.replace(/\{\{(\w+)\}\}/g, (_, k) => (vars[k] != null ? String(vars[k]) : ""));
   const statusForEnrollment = (e) => {
     const todayStr = new Date().toISOString().slice(0, 10);
@@ -1232,7 +1232,7 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
     setSendingMsg(true);
     const d = await call("admin-send-adhoc-message", { method: "POST", crmSecret, body: { leadId: e.lead_id, message: messageDraft.trim(), actor } });
     setSendingMsg(false);
-    if (d.ok) { alert(d.sent ? "Sent." : "WA session down — queued, approve from Pending Messages."); setMessagingFor(null); }
+    if (d.ok) { alert("Queued — approve from Kitty Admin > Pending Messages."); setMessagingFor(null); }
     else alert(d.error);
   };
   const editInstallment = async (i, isCoinScheme) => {
@@ -1652,7 +1652,7 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
                             <textarea value={messageDraft} onChange={(ev) => setMessageDraft(ev.target.value)} rows={5} style={{ width: "100%", fontSize: 12.5 }} />
                             <div style={{ marginTop: 6 }}>
                               <button onClick={() => sendMessage(e)} disabled={sendingMsg} style={{ marginRight: 8, background: "#d4af37", color: "#fff", border: "none", borderRadius: 4, padding: "4px 12px" }}>
-                                {sendingMsg ? "Sending…" : "Send to " + (e.lead?.phone || "member")}
+                                {sendingMsg ? "Queuing…" : "Queue for " + (e.lead?.phone || "member")}
                               </button>
                               <button onClick={() => setMessagingFor(null)}>Cancel</button>
                             </div>

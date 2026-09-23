@@ -49,7 +49,7 @@ import { TENANT_ID, checkCrmSecret, normalizePhone, KITTY_WA_CLIENT_ID, KITTY_WA
 import { enrollLeadInDrip } from "./_lib/drip.js";
 import { logKittyAudit } from "./_lib/kittyAudit.js";
 import { sendWhatsApp } from "./_lib/wa.js";
-import { sendKittyWA, queueKittyWA } from "./_lib/kittyMessageQueue.js";
+import { queueKittyWA } from "./_lib/kittyMessageQueue.js";
 import { KITTY_MESSAGE_TYPES, getKittyMessage } from "./_lib/kittyTemplates.js";
 import { gramsForInstallments, gramsByPossession } from "./_lib/kittyGrams.js";
 import { generateInviteCode, awardBonusCoin, CHECKPOINTS_G } from "./_lib/mission100.js";
@@ -891,8 +891,9 @@ export default async function handler(req, res) {
   // On-demand WA nudge for a pending payment (same wording as kitty-cron.js's
   // automatic 3-day-before reminder unless `message` overrides it), for
   // staff working the Overview dashboard's pending-payments list right now
-  // instead of waiting for the next cron tick. Sends instantly — no queue/
-  // approval step, since a staff member is choosing to send this themselves.
+  // instead of waiting for the next cron tick. Queued, not sent instantly —
+  // owner instruction 2026-09-23: no click anywhere sends without staff
+  // approving from Pending Messages first, including this one.
   if (req.method === "POST" && action === "send-installment-reminder") {
     const authFail = checkCrmSecret(req, res);
     if (authFail) return;
@@ -907,11 +908,10 @@ export default async function handler(req, res) {
     if (lead.dnd) return res.status(400).json({ ok: false, error: "member_opted_out_dnd" });
     const schemeName = row.enrollment?.is_legacy ? row.enrollment.legacy_scheme_name : (row.enrollment?.scheme?.name || "your Kitty scheme");
     const msg = body.message?.trim() || `🪙 Reminder: your ${schemeName} installment #${row.month_number} of ₹${row.amount} is due on ${row.due_date}.\n- Sun Sea Jewellers, Karol Bagh`;
-    const { sent, queued } = await sendKittyWA(sb, { tenantId: TENANT_ID, leadId: row.enrollment?.lead_id, phone: lead.phone, msg, context: { type: "due_reminder", installmentId: body.installmentId } });
-    if (!sent && !queued) return res.status(500).json({ ok: false, error: "whatsapp_send_failed" });
-    if (sent) await sb.from("kitty_installments").update({ reminded_at: new Date().toISOString() }).eq("id", body.installmentId);
-    await logAudit(sb, { entityType: "installment", entityId: body.installmentId, action: sent ? "reminder-sent" : "reminder-queued", actor: body.actor });
-    return res.status(200).json({ ok: true, sent, queued });
+    const { queued } = await queueKittyWA(sb, { tenantId: TENANT_ID, leadId: row.enrollment?.lead_id, phone: lead.phone, msg, context: { type: "due_reminder", installmentId: body.installmentId } });
+    if (!queued) return res.status(500).json({ ok: false, error: "queue_failed" });
+    await logAudit(sb, { entityType: "installment", entityId: body.installmentId, action: "reminder-queued", actor: body.actor });
+    return res.status(200).json({ ok: true, queued });
   }
 
   if (req.method === "POST" && action === "record-draw") {
@@ -1527,7 +1527,9 @@ export default async function handler(req, res) {
 
   // POST ?action=admin-send-adhoc-message — staff. Body: { leadId, message, actor }.
   // One-off message to a specific member, outside any automated flow —
-  // Kitty Admin > Messages > Send Now.
+  // Kitty Admin > Messages > Send Now, and the per-member card's ✉️
+  // Message panel. Queued, not sent instantly — owner instruction
+  // 2026-09-23: no click anywhere sends without staff approval first.
   if (req.method === "POST" && action === "admin-send-adhoc-message") {
     const authFail = checkCrmSecret(req, res);
     if (authFail) return;
@@ -1537,11 +1539,11 @@ export default async function handler(req, res) {
     if (!lead) return res.status(404).json({ ok: false, error: "lead_not_found" });
     if (lead.dnd) return res.status(400).json({ ok: false, error: "lead_is_dnd" });
     if (!lead.phone) return res.status(400).json({ ok: false, error: "lead_has_no_phone" });
-    const { sent, queued } = await sendKittyWA(sb, {
+    const { queued } = await queueKittyWA(sb, {
       tenantId: TENANT_ID, leadId: lead.id, phone: lead.phone, msg: body.message.trim(),
       context: { type: "adhoc", sentBy: body.actor || null },
     });
-    return res.status(200).json({ ok: true, sent, queued });
+    return res.status(200).json({ ok: true, queued });
   }
 
   // GET ?action=admin-list-audit-log — staff. Query: entityType?, entityId?, limit? (default 200)
