@@ -1433,6 +1433,24 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, messages: data || [] });
   }
 
+  // POST ?action=admin-edit-pending-message — staff. Body: { id, message, actor }.
+  // Edits a still-pending queued message's text WITHOUT sending it — staff
+  // reviewing Pending Messages can fix wording/numbers and come back to
+  // approve later; editing never sends, only Send/Send All does that.
+  if (req.method === "POST" && action === "admin-edit-pending-message") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    if (!body.id || !body.message?.trim()) return res.status(400).json({ ok: false, error: "id_and_message_required" });
+    const { data: row } = await sb.from("kitty_message_queue").select("id,status").eq("tenant_id", TENANT_ID).eq("id", body.id).maybeSingle();
+    if (!row) return res.status(404).json({ ok: false, error: "not_found" });
+    if (row.status !== "pending") return res.status(400).json({ ok: false, error: "already_sent_cannot_edit" });
+    const { error } = await sb.from("kitty_message_queue").update({ message: body.message.trim() }).eq("id", body.id);
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    await logAudit(sb, { entityType: "kitty_message_queue", entityId: body.id, action: "edit", actor: body.actor });
+    return res.status(200).json({ ok: true });
+  }
+
   // POST ?action=admin-send-pending-message — staff. Body: { id, actor }.
   // Retries one queued message. Frontend calls this in a loop with a delay
   // between calls for "send all" — kept per-message here (not a bulk

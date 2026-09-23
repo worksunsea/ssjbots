@@ -289,6 +289,13 @@ function PendingMessagesTab({ crmSecret, actor }) {
 
   useEffect(() => { load(); }, [load]);
 
+  const editOne = async (m) => {
+    const edited = prompt("Edit message (saved only, not sent — click Send/Send All separately when ready):", m.message);
+    if (edited == null || edited.trim() === m.message) return;
+    const d = await call("admin-edit-pending-message", { method: "POST", crmSecret, body: { id: m.id, message: edited.trim(), actor } });
+    if (d.ok) load(); else alert(d.error);
+  };
+
   const sendOne = async (id) => {
     setSendingId(id);
     const d = await call("admin-send-pending-message", { method: "POST", crmSecret, body: { id, actor } });
@@ -319,8 +326,8 @@ function PendingMessagesTab({ crmSecret, actor }) {
   return (
     <div>
       <p style={{ fontSize: 13, color: "#666" }}>
-        Kitty WhatsApp messages that failed to send — usually the WA session was down. Nothing here means everything's going out fine.
-        These stay queued until sent; staff can retry one at a time or all at once (paced ~{SEND_ALL_INTERVAL_MS / 1000}s apart, same anti-ban spacing as broadcasts).
+        Every Kitty WhatsApp waits here for approval before it goes out — nothing sends on its own.
+        Click a message's text to edit and save it (not sent) — send it individually or all together (paced ~{SEND_ALL_INTERVAL_MS / 1000}s apart, same anti-ban spacing as broadcasts). Sending one leaves the rest untouched.
       </p>
       {messages === null ? <div>Loading…</div> : (
         <>
@@ -344,7 +351,7 @@ function PendingMessagesTab({ crmSecret, actor }) {
                     <td style={{ whiteSpace: "nowrap" }}>{new Date(m.created_at).toLocaleString("en-IN")}</td>
                     <td>{typeLabel(m.context)}</td>
                     <td>{m.lead?.name || "—"}<br /><span style={{ color: "#888" }}>{m.phone}</span></td>
-                    <td style={{ maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer" }} title="Click to read full message" onClick={() => alert(m.message)}>{m.message}</td>
+                    <td style={{ maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer" }} title="Click to edit (saves only, doesn't send)" onClick={() => editOne(m)}>{m.message}</td>
                     <td style={{ color: "#b91c1c", fontSize: 11 }}>{m.last_error || ""}</td>
                     <td>{m.attempts}</td>
                     <td>
