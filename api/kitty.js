@@ -679,12 +679,21 @@ export default async function handler(req, res) {
 
     // If this was the enrollment's last unpaid installment, mark the scheme
     // complete and open the claim-status tracker (kitty-cron.js starts
-    // reminding them to come collect once claim_status = unclaimed).
-    const { count: remaining } = await sb.from("kitty_installments")
-      .select("*", { count: "exact", head: true })
-      .eq("enrollment_id", data.enrollment_id).eq("status", "due");
-    if (!remaining) {
-      await sb.from("kitty_enrollments").update({ status: "completed", claim_status: "unclaimed" }).eq("id", data.enrollment_id);
+    // reminding them to come collect once claim_status = unclaimed). Only
+    // applies to fixed-schedule schemes (all N months' installments exist
+    // upfront) — gram-based/ad-hoc schemes like Gullak generate installments
+    // one at a time per purchase (see add-installment), so `due` count
+    // legitimately hits zero after every single payment even mid-scheme.
+    // Applying this there wrongly closed the whole multi-year enrollment
+    // after the very first purchase (Sunita Aggarwal (Jmu), 2026-09-23).
+    const { data: enrollmentScheme } = await sb.from("kitty_enrollments").select("scheme:kitty_schemes(perks)").eq("id", data.enrollment_id).maybeSingle();
+    if (enrollmentScheme?.scheme?.perks?.unit !== "grams") {
+      const { count: remaining } = await sb.from("kitty_installments")
+        .select("*", { count: "exact", head: true })
+        .eq("enrollment_id", data.enrollment_id).eq("status", "due");
+      if (!remaining) {
+        await sb.from("kitty_enrollments").update({ status: "completed", claim_status: "unclaimed" }).eq("id", data.enrollment_id);
+      }
     }
     await logAudit(sb, { entityType: "installment", entityId: data.id, action: "paid", actor: body.actor || body.recordedBy, details: { paidAmount: data.paid_amount, rateLocked: data.rate_locked } });
     return res.status(200).json({ ok: true, installment: data });
