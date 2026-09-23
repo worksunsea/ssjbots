@@ -73,12 +73,34 @@ function enrollmentGramsByPossession(e, possession) {
 export default function KittyAdminScreen({ sb, tenantId, crmSecret, staffName }) {
   const [tab, setTab] = useState("enrollments");
   const actor = staffName || "staff";
+  const [pendingCount, setPendingCount] = useState(0);
+
+  // Nudge on every page load + poll every 60s so a fresh batch of queued
+  // messages (cron just ran, or staff just did something that queued a
+  // few) doesn't sit unnoticed until someone happens to click the tab.
+  const checkPendingCount = useCallback(async () => {
+    const d = await call("admin-list-pending-messages", { crmSecret });
+    setPendingCount(d.ok ? d.messages.length : 0);
+  }, [crmSecret]);
+  useEffect(() => {
+    checkPendingCount();
+    const interval = setInterval(checkPendingCount, 60000);
+    return () => clearInterval(interval);
+  }, [checkPendingCount]);
+
   return (
     <div style={{ padding: 20 }}>
+      {pendingCount > 0 && tab !== "pending" && (
+        <div onClick={() => setTab("pending")}
+          style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 16px", marginBottom: 16, borderRadius: 8,
+            background: "#fef3c7", border: "1px solid #f59e0b", color: "#92400e", cursor: "pointer", fontSize: 13.5, fontWeight: 600 }}>
+          🔔 {pendingCount} Kitty message{pendingCount === 1 ? "" : "s"} awaiting your approval — click to review
+        </div>
+      )}
       <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
         {[["overview", "Overview"], ["schemes", "Schemes"], ["enroll", "Enroll New Member"], ["enrollments", "Enrollments"],
           ["gullak", "Gullak"], ["swarn", "Swarn Suraksha"], ["goldensparkle", "Golden Sparkle"], ["mission100", "Mission 100"], ["goldtally", "Gold Tally"],
-          ["legacy", "Add Legacy Member"], ["pending", "📨 Pending Messages"], ["messages", "✉️ Messages"], ["activity", "Activity Log"]].map(([k, l]) => (
+          ["legacy", "Add Legacy Member"], ["pending", `📨 Pending Messages${pendingCount ? ` (${pendingCount})` : ""}`], ["messages", "✉️ Messages"], ["activity", "Activity Log"]].map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)}
             style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid #d4af37",
               background: tab === k ? "#d4af37" : "transparent", color: tab === k ? "#fff" : "#d4af37", cursor: "pointer" }}>
@@ -96,7 +118,7 @@ export default function KittyAdminScreen({ sb, tenantId, crmSecret, staffName })
       {tab === "mission100" && <Mission100Admin crmSecret={crmSecret} actor={actor} />}
       {tab === "goldtally" && <GoldTallyTab crmSecret={crmSecret} />}
       {tab === "legacy" && <LegacyTab crmSecret={crmSecret} actor={actor} />}
-      {tab === "pending" && <PendingMessagesTab crmSecret={crmSecret} actor={actor} />}
+      {tab === "pending" && <PendingMessagesTab crmSecret={crmSecret} actor={actor} onChange={checkPendingCount} />}
       {tab === "messages" && <MessagesTab sb={sb} crmSecret={crmSecret} actor={actor} />}
       {tab === "activity" && <ActivityLogTab crmSecret={crmSecret} />}
     </div>
@@ -275,7 +297,7 @@ function OverviewTab({ crmSecret, actor }) {
 // doesn't fire a burst of messages at once.
 const SEND_ALL_INTERVAL_MS = 3000;
 
-function PendingMessagesTab({ crmSecret, actor }) {
+function PendingMessagesTab({ crmSecret, actor, onChange }) {
   const [messages, setMessages] = useState(null);
   const [sendingId, setSendingId] = useState(null);
   const [sendingAll, setSendingAll] = useState(false);
@@ -285,7 +307,8 @@ function PendingMessagesTab({ crmSecret, actor }) {
   const load = useCallback(async () => {
     const d = await call("admin-list-pending-messages", { crmSecret });
     setMessages(d.ok ? d.messages : []);
-  }, [crmSecret]);
+    onChange?.();
+  }, [crmSecret, onChange]);
 
   useEffect(() => { load(); }, [load]);
 
