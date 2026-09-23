@@ -1139,14 +1139,38 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
     }
   };
 
-  const markPaid = async (installmentId) => {
-    const paidAmount = prompt("Amount received?");
-    if (paidAmount == null) return;
+  const markPaid = async (installmentId, isCoinScheme) => {
+    let paidAmount, rateLocked;
+
+    if (isCoinScheme) {
+      // Gullak is always whole 1g MMTC coins — deriving paid_amount from
+      // coins × price (instead of staff typing a lump amount by hand)
+      // guarantees grams (paid_amount / rate_locked) lands on a whole
+      // number. Free-typing let mistakes like 2 coins @ ₹17200 getting
+      // typed as ₹33871.80 slip through and show up as "1.969g" instead
+      // of a clean 2.000g.
+      const coinsRaw = prompt("Number of coins received (each 1g MMTC)?");
+      if (!coinsRaw) return;
+      const coins = parseInt(coinsRaw, 10);
+      if (!Number.isInteger(coins) || coins < 1 || coins > 999) return alert("Invalid coin count — must be a whole number, 1-999.");
+      const liveCoinPrice = mmtcCoins.find((c) => c.weight_g === 1 && c.mmtc9999)?.mmtc9999;
+      const priceRaw = prompt(`Price per coin (₹)?${liveCoinPrice ? ` [today's live MMTC 9999 1g rate: ₹${liveCoinPrice.toLocaleString("en-IN")}]` : ""}`, liveCoinPrice ? String(liveCoinPrice) : "");
+      if (!priceRaw) return;
+      const pricePerCoin = Number(priceRaw);
+      if (!Number.isFinite(pricePerCoin) || pricePerCoin <= 0) return alert("Invalid price per coin.");
+      const total = coins * pricePerCoin;
+      if (!confirm(`${coins} coin(s) × ₹${pricePerCoin.toLocaleString("en-IN")} = ₹${total.toLocaleString("en-IN")} total, ${coins}.000g. Confirm?`)) return;
+      paidAmount = String(total);
+      rateLocked = String(pricePerCoin);
+    } else {
+      paidAmount = prompt("Amount received?");
+      if (paidAmount == null) return;
+    }
+
     const paymentMethod = promptPaymentMethod();
     if (paymentMethod == null) return;
     const paymentRemarks = prompt("Remarks (UPI ref no. / transfer ref no. / cash given to whom)? Optional.") || null;
-    let rateLocked;
-    if (confirm("Is this a rate-lock scheme? Enter locked rate?")) rateLocked = promptRate("Locked gold rate (₹/g)?");
+    if (!isCoinScheme && confirm("Is this a rate-lock scheme? Enter locked rate?")) rateLocked = promptRate("Locked gold rate (₹/g)?");
     const d = await call("mark-installment-paid", { method: "POST", crmSecret, body: { installmentId, paidAmount, paymentMethod, paymentRemarks, rateLocked, recordedBy: actor, actor } });
     if (d.ok) load(); else alert(d.error);
   };
@@ -1162,6 +1186,17 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
     const paymentMethod = promptPaymentMethod(i.payment_method) ?? i.payment_method ?? null;
     const paymentRemarks = prompt("Remarks (UPI ref no. / transfer ref no. / cash given to whom)?", i.payment_remarks || "") ?? i.payment_remarks;
 
+    // `amount` above is the scheduled/expected figure — for an already-
+    // settled payment, what actually drives the gold weight (grams =
+    // paid_amount / rate_locked) is the separate paid_amount column. Fixing
+    // a wrong "Amount received" typo by editing `amount` alone silently
+    // leaves paid_amount (and therefore the grams shown to the client)
+    // wrong — ask for both whenever there's a real payment on this row.
+    let paidAmount;
+    if (i.paid_amount != null) {
+      paidAmount = prompt("Amount actually received (₹)? This is what grams are calculated from — fix this too if the amount above was wrong.", i.paid_amount) ?? i.paid_amount;
+    }
+
     // Gold weight is stored as rate_locked (₹/g) — paid_amount / rate_locked
     // gives the grams. Edit this person's rate directly (not grams) — same
     // 5-digit-whole-number prompt/validation as the monthly bulk-set, so a
@@ -1170,13 +1205,13 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
     if (confirm(`Change this payment's locked rate?${i.rate_locked ? ` Currently ₹${Number(i.rate_locked).toLocaleString("en-IN")}/g.` : " Currently not set."}`)) {
       const rateLocked = promptRate("New locked gold rate (₹/g)? Leave blank to keep unchanged.");
       if (rateLocked != null) {
-        const d = await call("update-installment", { method: "POST", crmSecret, body: { id: i.id, amount, dueDate, status, paymentMethod, paymentRemarks, rateLocked, actor } });
+        const d = await call("update-installment", { method: "POST", crmSecret, body: { id: i.id, amount, dueDate, status, paymentMethod, paymentRemarks, paidAmount, rateLocked, actor } });
         if (d.ok) load(); else alert(d.error);
         return;
       }
     }
 
-    const d = await call("update-installment", { method: "POST", crmSecret, body: { id: i.id, amount, dueDate, status, paymentMethod, paymentRemarks, actor } });
+    const d = await call("update-installment", { method: "POST", crmSecret, body: { id: i.id, amount, dueDate, status, paymentMethod, paymentRemarks, paidAmount, actor } });
     if (d.ok) load(); else alert(d.error);
   };
   const editEnrollment = async (e) => {
@@ -1535,7 +1570,7 @@ function EnrollmentsTab({ crmSecret, actor, onNewEnroll, lockedSchemeSlug }) {
                               const monthLabel = i.due_date ? new Date(`${i.due_date}T00:00:00Z`).toLocaleDateString("en-IN", { month: "short", year: "numeric", timeZone: "UTC" }) : "";
                               return (
                                 <span key={i.month_number} title={`Due ${i.due_date}${rateTxt}${gramsTxt}${payTxt} — click to mark paid, shift+click to edit`}
-                                  onClick={(ev) => { if (ev.shiftKey) editInstallment(i); else if (i.status === "due") markPaid(i.id); else editInstallment(i); }}
+                                  onClick={(ev) => { if (ev.shiftKey) editInstallment(i); else if (i.status === "due") markPaid(i.id, e.scheme?.perks?.unit === "grams"); else editInstallment(i); }}
                                   style={{ padding: "3px 8px", borderRadius: 4, fontSize: 12, cursor: "pointer", background: bg,
                                     display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1.3 }}>
                                   <span>
