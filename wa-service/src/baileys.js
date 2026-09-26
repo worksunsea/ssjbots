@@ -21,6 +21,33 @@ const DEFAULT_CLIENT_ID = process.env.WA_CLIENT_ID || "default";
 
 const logger = pino({ level: process.env.BAILEYS_LOG || "warn" });
 
+// Recently-sent messages, keyed by message id. When a recipient's phone fails
+// to decrypt a message (shows "Waiting for this message"), WhatsApp asks us to
+// re-send it and Baileys calls getMessage() to fetch the original. Without a
+// store the retry silently fails and the message stays stuck forever.
+const SENT_STORE_MAX = 5000;
+const sentStore = new Map();
+function rememberSent(result) {
+  const id = result?.key?.id;
+  if (!id || !result.message) return result;
+  sentStore.set(id, result.message);
+  if (sentStore.size > SENT_STORE_MAX) sentStore.delete(sentStore.keys().next().value);
+  return result;
+}
+
+// Retry-attempt counter Baileys uses to cap decrypt-retry loops per message.
+const RETRY_CACHE_MAX = 5000;
+const retryCache = new Map();
+const msgRetryCounterCache = {
+  get: (k) => retryCache.get(k),
+  set: (k, v) => {
+    retryCache.set(k, v);
+    if (retryCache.size > RETRY_CACHE_MAX) retryCache.delete(retryCache.keys().next().value);
+  },
+  del: (k) => retryCache.delete(k),
+  flushAll: () => retryCache.clear(),
+};
+
 // clientId -> { sock, connected, qrDataUrl, me, reconnectTimer }
 const sessions = new Map();
 let onIncoming = null;
@@ -123,6 +150,8 @@ export async function connectClient(clientIdRaw, { force = false } = {}) {
     logger,
     printQRInTerminal: false,
     browser: [`SSJ Jew CRM — ${clientId}`, "Chrome", "1.0"],
+    getMessage: async (key) => sentStore.get(key.id),
+    msgRetryCounterCache,
   });
 
   const sess = {
@@ -213,7 +242,7 @@ export async function sendForClient(clientIdRaw, target, message) {
   const sess = sessions.get(clientId);
   if (!sess?.sock || !sess.connected) throw new Error(`not_connected:${clientId}`);
   if (!target) throw new Error("invalid_target");
-  return sess.sock.sendMessage(resolveJid(target), { text: String(message) });
+  return rememberSent(await sess.sock.sendMessage(resolveJid(target), { text: String(message) }));
 }
 
 // Send an image, video, or document from a URL.
@@ -234,7 +263,7 @@ export async function sendMediaForClient(clientIdRaw, { target, mediaUrl, mediaT
     const mimeMap = { pdf: "application/pdf", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" };
     content = { document: { url: mediaUrl }, mimetype: mimeMap[ext] || "application/octet-stream", fileName: filename || `file.${ext}`, caption };
   }
-  return sess.sock.sendMessage(jid, content);
+  return rememberSent(await sess.sock.sendMessage(jid, content));
 }
 
 export function getClients() {
