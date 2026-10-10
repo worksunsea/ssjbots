@@ -15691,7 +15691,7 @@ function CorporateGiftingScreen() {
 }
 
 function CalculatorScreen({ funnels = [], allTags = [] }) {
-  const [tab, setTab] = useState(SOLITAIRE_LANDING_USERS.includes(user?.username) ? "solitaire" : "jewellery");
+  const [tab, setTab] = useState(SOLITAIRE_LANDING_USERS.includes(loadUser()?.username) ? "solitaire" : "jewellery");
   const [rapData, setRapData] = useState(RAP_SEED);
   const [rapAge, setRapAge] = useState(null);
   const [rapChanges, setRapChanges] = useState(null); // /api/rapaport-changes response, once loaded
