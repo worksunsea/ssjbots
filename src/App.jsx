@@ -16474,7 +16474,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   // on purpose — index.css stacks any literal "1fr 1fr 1fr" grid to one column on mobile.
   const cInp = { ...inp, padding: "3px 6px", fontSize: 12 };
   const cLbl = { ...lbl, fontSize: 10, marginBottom: 1 };
-  const SOL_WHEEL_COLS = "1.6fr 0.8fr 1fr 1.2fr";
+  const SOL_WHEEL_COLS = "1.7fr 0.8fr 1fr 1.2fr";
 
   const solDerived = (stone) => {
     const isNonCert = stone.cert === "Non-Cert";
@@ -16523,10 +16523,10 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
         </div>
         <div style={{ ...card, background: "#f8faff", padding: "6px 6px 8px", marginBottom: 0 }}>
           <div style={{ display: "grid", gridTemplateColumns: SOL_WHEEL_COLS, gap: 4 }}>
-            <WheelPicker label="Shape" items={SOL_SHAPE_ITEMS} value={stone.shape} onChange={v => onChange("shape", v)} fontSize={12} itemHeight={30} />
-            <WheelPicker label="Color" items={SOL_COLOR_ITEMS} value={stone.color} onChange={v => onChange("color", v)} fontSize={13} itemHeight={30} />
-            <WheelPicker label="Clarity" items={SOL_CLARITY_ITEMS} value={stone.clarity} onChange={v => onChange("clarity", v)} fontSize={13} itemHeight={30} />
-            <WheelPicker label="Disc." items={SOL_DISC_ITEMS} value={sellDiscNow} onChange={v => onChange("sellDisc", String(v))} fontSize={13} itemHeight={30} />
+            <WheelPicker label="Shape" items={SOL_SHAPE_ITEMS} value={stone.shape} onChange={v => onChange("shape", v)} fontSize={15} itemHeight={44} />
+            <WheelPicker label="Color" items={SOL_COLOR_ITEMS} value={stone.color} onChange={v => onChange("color", v)} fontSize={18} itemHeight={44} />
+            <WheelPicker label="Clarity" items={SOL_CLARITY_ITEMS} value={stone.clarity} onChange={v => onChange("clarity", v)} fontSize={18} itemHeight={44} />
+            <WheelPicker label="Disc." items={SOL_DISC_ITEMS} value={sellDiscNow} onChange={v => onChange("sellDisc", String(v))} fontSize={18} itemHeight={44} />
           </div>
           <div style={{ display: "grid", gridTemplateColumns: SOL_WHEEL_COLS, gap: 4, marginTop: 4, alignItems: "center" }}>
             <div style={{ gridColumn: "1 / 4", fontSize: 10, color: "#888", textAlign: "right", paddingRight: 4 }}>
