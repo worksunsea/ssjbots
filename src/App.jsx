@@ -11713,14 +11713,11 @@ export default function App() {
       const goto = new URLSearchParams(window.location.search).get("screen");
       if (goto) return goto;
     } catch {}
-    // Saurav's own login only — jump straight to Vendors → new-vendor card
-    // scan form on every app open. Everyone else keeps the normal default.
-    if (user?.username === "saurav") return "vendors";
+    // Owners land on the Solitaire calculator on every app open; everyone else on Demands.
+    if (SOLITAIRE_LANDING_USERS.includes(user?.username)) return "calculator";
     return "demands";
   });
-  const [, forceNavRefresh] = useState(0); // re-render after localStorage-only pinned-tabs changes
   const [moreTabsOpen, setMoreTabsOpen] = useState(false);
-  const [draggingTabKey, setDraggingTabKey] = useState(null);
 
   // In-header alert for superadmin/admin when a WA session is down —
   // the watchdog (wa-service/watchdog.py) already pushes + WhatsApps admins
@@ -11950,35 +11947,6 @@ export default function App() {
   // silently redirect to the first allowed tab.
   const activeScreen = tabs.find((t) => t.k === screen) ? screen : (tabs[0]?.k || "demands");
 
-  // Primary tab bar shows only the daily-use tabs; everything else lives in
-  // a "More" dropdown. Which tabs are primary + their order is a personal,
-  // per-browser preference (localStorage), adjustable via drag-drop reorder
-  // and pin/unpin — not tied to app_permissions (that still gates visibility).
-  const tabKeySet = new Set(tabs.map((t) => t.k));
-  const DEFAULT_PINNED_TABS = ["demands", "adleads", "upcoming", "calculator", "walkin", "catalogue", "vendors"];
-  const savedPinned = (() => {
-    try {
-      const p = JSON.parse(localStorage.getItem("ssj_pinned_tabs") || "null");
-      return Array.isArray(p) && p.length ? p : null;
-    } catch { return null; }
-  })();
-  const primaryKeys = (savedPinned || DEFAULT_PINNED_TABS).filter((k) => tabKeySet.has(k));
-  const effectivePrimaryKeys = primaryKeys.length ? primaryKeys : tabs.slice(0, 6).map((t) => t.k);
-  const primaryTabs = effectivePrimaryKeys.map((k) => tabs.find((t) => t.k === k)).filter(Boolean);
-  const overflowTabs = tabs.filter((t) => !effectivePrimaryKeys.includes(t.k));
-  const savePinnedTabs = (keys) => { try { localStorage.setItem("ssj_pinned_tabs", JSON.stringify(keys)); } catch {} forceNavRefresh((n) => n + 1); };
-  const pinTab = (k) => savePinnedTabs([...effectivePrimaryKeys, k]);
-  const unpinTab = (k) => savePinnedTabs(effectivePrimaryKeys.filter((x) => x !== k));
-  const reorderPrimaryTab = (fromKey, toKey) => {
-    if (fromKey === toKey) return;
-    const arr = [...effectivePrimaryKeys];
-    const fromIdx = arr.indexOf(fromKey), toIdx = arr.indexOf(toKey);
-    if (fromIdx === -1 || toIdx === -1) return;
-    arr.splice(fromIdx, 1);
-    arr.splice(toIdx, 0, fromKey);
-    savePinnedTabs(arr);
-  };
-
   // Embed mode (iframed from fms-tracker): hide outer header/tabs, render only
   // the requested screen. Keeps login chrome out of the embedded view.
   const embedScreen = (() => {
@@ -12011,59 +11979,31 @@ export default function App() {
     <div style={{ maxWidth: 1280, margin: "0 auto", padding: "1rem" }}>
       <VersionChecker />
       {header}
-      <div style={{ display: "flex", gap: 6, marginBottom: 16, borderBottom: "1px solid #eee", paddingBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
-        {primaryTabs.map((t) => (
-          <button
-            key={t.k}
-            draggable
-            onDragStart={() => setDraggingTabKey(t.k)}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => { e.preventDefault(); if (draggingTabKey) reorderPrimaryTab(draggingTabKey, t.k); setDraggingTabKey(null); }}
-            onDragEnd={() => setDraggingTabKey(null)}
-            onClick={() => setScreen(t.k)}
-            title="Drag to reorder"
-            style={{ fontSize: 13, padding: "6px 8px 6px 14px", borderRadius: 8, border: `1px solid ${activeScreen === t.k ? C.blue : "#ddd"}`, background: activeScreen === t.k ? C.blue : "transparent", color: activeScreen === t.k ? "#fff" : "#333", cursor: "grab", display: "flex", alignItems: "center", gap: 6, opacity: draggingTabKey === t.k ? 0.4 : 1 }}
-          >
-            {t.icon} {t.l}
-            {overflowTabs.length > 0 && (
-              <span
-                onClick={(e) => { e.stopPropagation(); unpinTab(t.k); }}
-                title="Move to More menu"
-                style={{ fontSize: 10, opacity: 0.6, cursor: "pointer", marginLeft: 2, lineHeight: 1 }}
-              >✕</span>
-            )}
-          </button>
-        ))}
-        {overflowTabs.length > 0 && (
-          <div style={{ position: "relative" }}>
-            <button
-              onClick={() => setMoreTabsOpen((o) => !o)}
-              style={{ fontSize: 13, padding: "6px 14px", borderRadius: 8, border: `1px solid ${overflowTabs.some((t) => t.k === activeScreen) ? C.blue : "#ddd"}`, background: moreTabsOpen ? "#f0f4ff" : (overflowTabs.some((t) => t.k === activeScreen) ? "#eff6ff" : "transparent"), color: "#333", cursor: "pointer" }}
-            >
-              ⋯ More
-            </button>
-            {moreTabsOpen && (
-              <div
-                onMouseLeave={() => setMoreTabsOpen(false)}
-                style={{ position: "absolute", top: "100%", left: 0, marginTop: 4, background: "#fff", border: "1px solid #ddd", borderRadius: 8, boxShadow: "0 6px 20px rgba(0,0,0,0.14)", zIndex: 50, minWidth: 210, padding: 6, maxHeight: 360, overflowY: "auto" }}
-              >
-                {overflowTabs.map((t) => (
-                  <div
-                    key={t.k}
-                    onClick={() => { setScreen(t.k); setMoreTabsOpen(false); }}
-                    style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 8px", borderRadius: 6, cursor: "pointer", background: activeScreen === t.k ? "#f0f4ff" : "transparent", fontSize: 13 }}
-                  >
-                    <span>{t.icon} {t.l}</span>
-                    <span
-                      onClick={(e) => { e.stopPropagation(); pinTab(t.k); }}
-                      title="Pin to main bar"
-                      style={{ fontSize: 12, color: "#1565c0", cursor: "pointer", padding: "2px 4px" }}
-                    >📌</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+      <div style={{ position: "relative", marginBottom: 16, borderBottom: "1px solid #eee", paddingBottom: 10 }}>
+        <button
+          onClick={() => setMoreTabsOpen((o) => !o)}
+          aria-label="Open menu"
+          aria-expanded={moreTabsOpen}
+          style={{ fontSize: 14, padding: "6px 14px", borderRadius: 8, border: `1px solid ${moreTabsOpen ? C.blue : "#ddd"}`, background: moreTabsOpen ? "#f0f4ff" : "transparent", color: "#333", cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}
+        >
+          <span style={{ fontSize: 18, lineHeight: 1 }}>☰</span>
+          {tabs.find((t) => t.k === activeScreen)?.icon} {tabs.find((t) => t.k === activeScreen)?.l}
+        </button>
+        {moreTabsOpen && (
+          <>
+            <div onClick={() => setMoreTabsOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 49 }} />
+            <div style={{ position: "absolute", top: "100%", left: 0, marginTop: -6, background: "#fff", border: "1px solid #ddd", borderRadius: 8, boxShadow: "0 6px 20px rgba(0,0,0,0.14)", zIndex: 50, minWidth: 230, padding: 6, maxHeight: "70vh", overflowY: "auto" }}>
+              {tabs.map((t) => (
+                <div
+                  key={t.k}
+                  onClick={() => { setScreen(t.k); setMoreTabsOpen(false); }}
+                  style={{ padding: "9px 10px", borderRadius: 6, cursor: "pointer", background: activeScreen === t.k ? "#f0f4ff" : "transparent", fontWeight: activeScreen === t.k ? 600 : 400, fontSize: 14 }}
+                >
+                  {t.icon} {t.l}
+                </div>
+              ))}
+            </div>
+          </>
         )}
       </div>
 
@@ -12089,7 +12029,7 @@ export default function App() {
       {activeScreen === "staff" && <StaffAccessScreen />}
       {activeScreen === "walkin" && <WalkinDashboardScreen funnels={funnels} onEditEstimate={(est) => {
         try { localStorage.setItem("calc_pending_edit", JSON.stringify(est)); } catch {}
-        setActiveScreen("calculator");
+        setScreen("calculator");
       }} />}
       {activeScreen === "catalogue" && <CatalogueScreen />}
       {activeScreen === "vendors" && <VendorsScreen autoOpenScan={user?.username === "saurav"} />}
@@ -12175,6 +12115,8 @@ const SOL_COLOR_ITEMS = RAP_COLORS.map(c => ({ value: c, label: c }));
 const SOL_CLARITY_ITEMS = SOL_CLARITIES.map(c => ({ value: c, label: c }));
 const fmtDiscLabel = (v) => `${v > 0 ? "−" : v < 0 ? "+" : ""}${Math.abs(v)}%`;
 const SOL_DEFAULT_SELL_DISC = "40";
+// Usernames that open straight onto Calculator → Solitaire on every load.
+const SOLITAIRE_LANDING_USERS = ["saurav", "seema", "sanjeev"];
 // 90% off down to 10% premium in whole-number steps; half/decimal discounts go in the field under the wheel.
 const SOL_DISC_ITEMS = Array.from({ length: 101 }, (_, i) => { const v = 90 - i; return { value: v, label: fmtDiscLabel(v) }; });
 // Purity options — rateKey maps to live rate field; null = manual.
@@ -15749,7 +15691,7 @@ function CorporateGiftingScreen() {
 }
 
 function CalculatorScreen({ funnels = [], allTags = [] }) {
-  const [tab, setTab] = useState("jewellery");
+  const [tab, setTab] = useState(SOLITAIRE_LANDING_USERS.includes(user?.username) ? "solitaire" : "jewellery");
   const [rapData, setRapData] = useState(RAP_SEED);
   const [rapAge, setRapAge] = useState(null);
   const [rapChanges, setRapChanges] = useState(null); // /api/rapaport-changes response, once loaded
