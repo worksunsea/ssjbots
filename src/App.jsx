@@ -12173,9 +12173,10 @@ const SOL_CLARITIES = ["FL","IF","VVS1","VVS2","VS1","VS2","SI1","SI2","I1","I2"
 const SOL_SHAPE_ITEMS = ALL_SHAPES.map(s => ({ value: s, label: s }));
 const SOL_COLOR_ITEMS = RAP_COLORS.map(c => ({ value: c, label: c }));
 const SOL_CLARITY_ITEMS = SOL_CLARITIES.map(c => ({ value: c, label: c }));
-const fmtDiscLabel = (v) => `${v > 0 ? "−" : v < 0 ? "+" : ""}${Math.abs(v).toFixed(1)}%`;
-// 90% off down to 10% premium, 0.5 steps (halves are exact in binary — no float drift).
-const SOL_DISC_ITEMS = Array.from({ length: 201 }, (_, i) => { const v = 90 - i * 0.5; return { value: v, label: fmtDiscLabel(v) }; });
+const fmtDiscLabel = (v) => `${v > 0 ? "−" : v < 0 ? "+" : ""}${Math.abs(v)}%`;
+const SOL_DEFAULT_SELL_DISC = "40";
+// 90% off down to 10% premium in whole-number steps; half/decimal discounts go in the field under the wheel.
+const SOL_DISC_ITEMS = Array.from({ length: 101 }, (_, i) => { const v = 90 - i; return { value: v, label: fmtDiscLabel(v) }; });
 // Purity options — rateKey maps to live rate field; null = manual.
 // mult (optional) scales the live rate for purities that share a base rate
 // but sell at a discount to it — default 1 (unused for now: 92.5 silver is
@@ -15903,7 +15904,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
   const [quotShowExtra, setQuotShowExtra] = useState(false); // Notes column — hidden by default, same pattern as jwShowMisc
 
   // Solitaire (single stone) state
-  const [sol, setSol] = useState({ ...newSolRow(), includeGold: false, goldGrossWt: "", goldPurityIdx: 2, goldCustomPurity: "", goldRateOverride: "", goldMakingRatePg: "1500", goldMakingRatePct: "15", settingDiaWt: "", settingDiaRate: "", settingGemVal: "", applyGst: true });
+  const [sol, setSol] = useState({ ...newSolRow(), sellDisc: SOL_DEFAULT_SELL_DISC, includeGold: false, goldGrossWt: "", goldPurityIdx: 2, goldCustomPurity: "", goldRateOverride: "", goldMakingRatePg: "1500", goldMakingRatePct: "15", settingDiaWt: "", settingDiaRate: "", settingGemVal: "", applyGst: true });
 
   // Quotation sheet (multi-stone) state
   const [rows, setRows] = useState([newSolRow()]);
@@ -16587,7 +16588,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
           </div>
           <div style={{ display: "grid", gridTemplateColumns: SOL_WHEEL_COLS, gap: 4, marginTop: 4, alignItems: "center" }}>
             <div style={{ gridColumn: "1 / 4", fontSize: 10, color: "#888", textAlign: "right", paddingRight: 4 }}>
-              Sell disc % {stone.sellDisc === "" ? "(auto)" : <button type="button" onClick={() => onChange("sellDisc", "")} style={{ fontSize: 10, border: "1px solid #ddd", borderRadius: 4, background: "#fff", cursor: "pointer", padding: "0 5px" }}>↺ auto {autoSell.toFixed(1)}</button>}
+              Sell disc % {stone.sellDisc === SOL_DEFAULT_SELL_DISC ? "(default)" : <button type="button" onClick={() => onChange("sellDisc", SOL_DEFAULT_SELL_DISC)} style={{ fontSize: 10, border: "1px solid #ddd", borderRadius: 4, background: "#fff", cursor: "pointer", padding: "0 5px" }}>↺ {SOL_DEFAULT_SELL_DISC}%</button>}
             </div>
             <input style={{ ...cInp, textAlign: "right", fontWeight: 600, background: stone.sellDisc === "" ? "#fffbe6" : "#fff" }} type="number" step="0.01" inputMode="decimal" value={stone.sellDisc} onChange={e => onChange("sellDisc", e.target.value)} placeholder={autoSell.toFixed(2)} />
           </div>
