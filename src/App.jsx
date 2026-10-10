@@ -11743,7 +11743,8 @@ export default function App() {
   const [personas, setPersonas] = useState([]);
   const [allTags, setAllTags] = useState([]);
 
-  const login = (u) => { const stamped = { ...u, authAt: Date.now() }; saveUser(stamped); setUser(stamped); };
+  // screen state is created before anyone is logged in, so re-pick the landing screen at login.
+  const login = (u) => { const stamped = { ...u, authAt: Date.now() }; saveUser(stamped); setUser(stamped); setScreen(SOLITAIRE_LANDING_USERS.includes(stamped.username) ? "calculator" : "demands"); };
   const logout = (reason) => {
     saveUser(null); setUser(null);
     if (reason) { try { localStorage.setItem("ssj_logout_reason", reason); } catch { /* ignore */ } }
