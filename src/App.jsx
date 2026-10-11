@@ -16952,15 +16952,15 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
           }}>🔄 Sync Rapaport</Btn>
           <Btn small ghost color="#6a1b9a" onClick={() => setRapUploadOpen(true)}>📤 Upload PDF</Btn>
           <Btn small ghost color="#6a1b9a" onClick={async () => {
-            const token = loadUser()?.sessionToken;
-            if (!token) { showToast("⚠️ Please log out and log in once, then try View PDF again"); return; }
+            const me = loadUser();
+            if (!me?.id) { showToast("⚠️ Please log in again"); return; }
             const win = window.open("", "_blank"); // opened first so popup blockers allow it
             try {
-              const r = await fetch("/api/rapaport-pdf", { headers: { Authorization: `Bearer ${token}` } });
+              const r = await fetch("/api/rapaport-pdf", { headers: { "x-crm-secret": CRM_SECRET, "x-staff-id": me.id, ...(me.sessionToken ? { Authorization: `Bearer ${me.sessionToken}` } : {}) } });
               if (!r.ok) {
                 win?.close();
                 const d = await r.json().catch(() => ({}));
-                showToast(r.status === 401 ? "⚠️ Session expired — log out and log in again, then try View PDF" : "❌ " + (d.error || "Could not load PDF"));
+                showToast(r.status === 401 ? "⚠️ Not authorised — log out and log in again, then try View PDF" : "❌ " + (d.error || "Could not load PDF"));
                 return;
               }
               const url = URL.createObjectURL(await r.blob());
