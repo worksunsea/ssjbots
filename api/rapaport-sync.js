@@ -19,7 +19,7 @@
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 import { SUPABASE_URL, SUPABASE_SERVICE_KEY, CRM_SECRET } from "./_lib/config.js";
-import { orientSeed, fetchExistingRapData } from "./_lib/rapSeed.js";
+import { orientSeed, fetchExistingRapData, saveRapPdf } from "./_lib/rapSeed.js";
 import { splitRapText } from "./_lib/rapPdf.js";
 
 // ─── Weight-range labels (in order of appearance in the PDF tables) ──────────
@@ -781,12 +781,14 @@ export default async function handler(req, res) {
   }
 
   // Helper: fetch text content of a Drive file via Apps Script proxy
+  const pdfB64ById = new Map(); // keeps the downloaded PDF so the app can show it
   const fetchViaAppsScript = async (fileId) => {
     const r = await fetch(`${appsScriptUrl}?action=file&id=${fileId}`, { redirect: "follow" });
     const d = await r.json();
     if (!d.ok) throw new Error(d.error || "Apps Script file fetch failed");
     if (d.encoding === "base64") {
       const pdfParse = require("pdf-parse");
+      pdfB64ById.set(fileId, d.content);
       const buf = Buffer.from(d.content, "base64");
       const parsed = await pdfParse(buf);
       return parsed.text;
@@ -909,6 +911,12 @@ export default async function handler(req, res) {
     await upsertRapaportData(payload);
   } catch (e) {
     return res.status(500).json({ ok: false, error: String(e) });
+  }
+
+  // Keep the PDF the prices came from so staff can open it in the app (best-effort).
+  const shownFile = (roundsOk && roundFile) || (fancyOk && fancyFile) || null;
+  if (shownFile && pdfB64ById.has(shownFile.id)) {
+    await saveRapPdf({ name: shownFile.name, date, b64: pdfB64ById.get(shownFile.id) });
   }
 
   return res.status(200).json({

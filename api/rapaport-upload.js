@@ -1,7 +1,7 @@
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 import { SUPABASE_URL, SUPABASE_SERVICE_KEY } from "./_lib/config.js";
-import { orientSeed } from "./_lib/rapSeed.js";
+import { orientSeed, saveRapPdf } from "./_lib/rapSeed.js";
 import { splitRapText } from "./_lib/rapPdf.js";
 
 const WEIGHT_RANGES = [
@@ -644,10 +644,12 @@ export default async function handler(req, res) {
 
     // Every uploaded PDF is read and classified by its content, whichever slot it came from.
     const texts = [];
+    const sourceB64s = [];
     for (const b64 of [file64, rounds64, fancy64]) {
       if (!b64) continue;
       try {
         texts.push((await pdfParse(Buffer.from(b64, "base64"))).text);
+        sourceB64s.push(b64);
       } catch (err) { warnings.push("PDF could not be read: " + err.message); }
     }
     const sections = texts.map(splitRapText);
@@ -740,6 +742,9 @@ export default async function handler(req, res) {
       });
       if (!insertRes.ok) return res.json({ ok: false, error: "DB insert failed: " + await insertRes.text() });
     }
+
+    const shownIdx = sections.findIndex((p) => (roundsSource === "parsed" ? p.rounds : p.fancy));
+    if (anyParsed && shownIdx >= 0) await saveRapPdf({ name: "Rapaport " + date + ".pdf", date, b64: sourceB64s[shownIdx] });
 
     return res.json({
       ok: true,
