@@ -9,6 +9,7 @@
 import { SUPABASE_URL, SUPABASE_SERVICE_KEY, TENANT_ID, CRON_SECRET, DIGEST_CRON_SECRET, OWNER_PHONE, DIGEST_EXTRA_RECIPIENTS, WA_SESSION_CLIENT_ID } from "./_lib/config.js";
 import { sendWhatsApp } from "./_lib/wa.js";
 import { fetchExistingRapData } from "./_lib/rapSeed.js";
+import { pushToDiapriApp } from "./_lib/diapriFeed.js";
 import { resolveFiles, runDriveSync } from "./rapaport-sync.js";
 import { istParts, weekKey, stateForWeek, shouldStop, listingUnchanged, shouldAlertMissing, listIsCurrent } from "./_lib/diapriWeekly.js";
 
@@ -101,6 +102,9 @@ export default async function handler(req, res) {
         state.loaded_date = out.body.date;
         state.last_seen = listed;
         detail = { date: out.body.date, file: out.body.rounds_file };
+        // Republishing to the standalone app is opt-in (DIAPRI_FEED_ENABLED) and never blocks the CRM load.
+        const feed = await pushToDiapriApp(await fetchExistingRapData());
+        if (feed.pushed || feed.reason !== "feed disabled") detail.feed = feed;
       } else if (out.status === 200 && out.body.skipped) {
         state.last_seen = listed; // a file was added/re-saved but its printed date is not newer
         detail = { note: "newest file is not a newer list", date: out.body.date, stored_date: out.body.stored_date };
