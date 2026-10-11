@@ -12089,6 +12089,15 @@ const RAP_SEED = {
   },
 };
 
+// RAP_SEED is typed as the PDF prints it (rows = colour, cols = IF..I3 incl. SI3).
+// rapLookup reads [clarity][colour] with no SI3 column, so flip it before use.
+const orientRapSeed = (tables) => Object.fromEntries(Object.entries(tables).map(([bracket, rows]) => {
+  const t = Array.from({ length: 10 }, () => Array(11).fill(null));
+  rows.forEach((row, colorIdx) => row.forEach((v, col) => { if (col !== 7) t[col < 7 ? col : col - 1][colorIdx] = v; }));
+  return [bracket, t];
+}));
+const RAP_SEED_ORIENTED = { ...RAP_SEED, rounds: orientRapSeed(RAP_SEED.rounds), fancy: orientRapSeed(RAP_SEED.fancy) };
+
 function rapLookup(rapData, weight, color, clarity, isRound) {
   const tables = isRound ? rapData.rounds : rapData.fancy;
   if (!tables) return null;
@@ -15693,7 +15702,7 @@ function CorporateGiftingScreen() {
 
 function CalculatorScreen({ funnels = [], allTags = [] }) {
   const [tab, setTab] = useState(SOLITAIRE_LANDING_USERS.includes(loadUser()?.username) ? "solitaire" : "jewellery");
-  const [rapData, setRapData] = useState(RAP_SEED);
+  const [rapData, setRapData] = useState(RAP_SEED_ORIENTED);
   const [rapAge, setRapAge] = useState(null);
   const [rapChanges, setRapChanges] = useState(null); // /api/rapaport-changes response, once loaded
   const [rapUploadOpen, setRapUploadOpen] = useState(false);
@@ -16983,7 +16992,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
                   const r = await fetch("/api/rapaport-upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
                   const d = await r.json().catch(() => ({}));
                   if (d.ok) {
-                    showToast(`✅ Uploaded · ${d.date || ""} · ${[d.rounds_parsed && "Round ✓", d.fancy_parsed && "Fancy ✓"].filter(Boolean).join(", ")}`);
+                    showToast(`${d.warnings?.length ? "⚠️" : "✅"} Uploaded · ${d.date || ""} · Round ${d.rounds_source === "parsed" ? "✓ updated" : "✗ NOT updated"}, Fancy ${d.fancy_source === "parsed" ? "✓ updated" : "✗ NOT updated"}${d.warnings?.length ? " — " + d.warnings.join("; ") : ""}`);
                     setRapAge(0);
                     setRapUploadOpen(false); setRapUploadRounds(null); setRapUploadFancy(null); rapRoundsFileRef.current = null; rapFancyFileRef.current = null;
                     // Reload rapaport data

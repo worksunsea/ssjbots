@@ -18,6 +18,7 @@
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 import { SUPABASE_URL, SUPABASE_SERVICE_KEY, CRM_SECRET } from "./_lib/config.js";
+import { orientSeed, fetchExistingRapData } from "./_lib/rapSeed.js";
 
 // ─── Weight-range labels (in order of appearance in the PDF tables) ──────────
 const WEIGHT_RANGES = [
@@ -745,8 +746,8 @@ export default async function handler(req, res) {
       date: SEED_DATE,
       rounds_ranges: WEIGHT_RANGES,
       fancy_ranges: WEIGHT_RANGES,
-      rounds: SEED_ROUNDS,
-      fancy: SEED_FANCY,
+      rounds: orientSeed(SEED_ROUNDS),
+      fancy: orientSeed(SEED_FANCY),
       source: "seed",
       updated_at: new Date().toISOString(),
     };
@@ -874,11 +875,24 @@ export default async function handler(req, res) {
     }
   }
 
-  // Fall back to seed data for any shape that failed to parse
-  const rounds = roundTables && Object.keys(roundTables).length >= 1 ? roundTables : SEED_ROUNDS;
-  const fancy = fancyTables && Object.keys(fancyTables).length >= 1 ? fancyTables : SEED_FANCY;
-  const source = (roundTables || fancyTables) ? "drive" : "seed";
-  const date = detectedDate || SEED_DATE;
+  // A shape that failed to parse keeps what is already stored (live prices must
+  // never be replaced by stale seed data). Seed is only a first-install fallback.
+  const existing = await fetchExistingRapData();
+  const roundsOk = roundTables && Object.keys(roundTables).length >= 1;
+  const fancyOk = fancyTables && Object.keys(fancyTables).length >= 1;
+  if (!roundsOk && !fancyOk && existing) {
+    return res.status(502).json({
+      ok: false,
+      error: "Could not read prices from the Rapaport PDFs — existing data left unchanged",
+      warnings,
+    });
+  }
+  if (!roundsOk) warnings.push("Round prices NOT updated — kept previously stored data");
+  if (!fancyOk) warnings.push("Fancy prices NOT updated — kept previously stored data");
+  const rounds = roundsOk ? roundTables : (existing?.rounds || orientSeed(SEED_ROUNDS));
+  const fancy = fancyOk ? fancyTables : (existing?.fancy || orientSeed(SEED_FANCY));
+  const source = (roundsOk || fancyOk) ? "drive" : "seed";
+  const date = (roundsOk || fancyOk) && detectedDate ? detectedDate : (existing?.date || SEED_DATE);
 
   const payload = {
     date,

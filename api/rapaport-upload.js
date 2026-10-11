@@ -1,6 +1,7 @@
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 import { SUPABASE_URL, SUPABASE_SERVICE_KEY } from "./_lib/config.js";
+import { orientSeed } from "./_lib/rapSeed.js";
 
 const WEIGHT_RANGES = [
   "0.30","0.40","0.50","0.70","0.90",
@@ -673,15 +674,12 @@ export default async function handler(req, res) {
     if (rounds64 && roundData && validateRapTables(roundData.tables)) {
       roundsFinal = roundData.tables;
       roundsSource = "parsed";
-    } else if (rounds64) {
-      // PDF was provided but parsing failed or failed validation → seed fallback
-      roundsFinal = SEED_ROUNDS;
-      roundsSource = "seed_fallback";
-      warnings.push("Rounds PDF parsed but data failed sanity check — using June-19 seed data");
     } else {
-      // No rounds PDF uploaded → preserve existing rounds (or seed if no existing)
-      roundsFinal = existing?.rounds || SEED_ROUNDS;
-      roundsSource = "preserved";
+      // Not uploaded, or the PDF failed parsing/validation → keep stored prices
+      // (never overwrite live data with the stale seed).
+      roundsFinal = existing?.rounds || orientSeed(SEED_ROUNDS);
+      roundsSource = rounds64 ? "failed_kept_existing" : "preserved";
+      if (rounds64) warnings.push("Round PDF could not be read — round prices NOT updated");
     }
 
     // ── Determine fancy data source ──────────────────────────────────────────
@@ -689,18 +687,17 @@ export default async function handler(req, res) {
     if (fancy64 && fancyData && validateRapTables(fancyData.tables)) {
       fancyFinal = fancyData.tables;
       fancySource = "parsed";
-    } else if (fancy64) {
-      // Fancy PDF provided but parsing failed/invalid → seed fallback
-      fancyFinal = SEED_FANCY;
-      fancySource = "seed_fallback";
-      warnings.push("Fancy PDF parsed but data failed sanity check — using June-19 seed data");
     } else {
-      // No fancy PDF uploaded → preserve existing fancy (or seed if no existing)
-      fancyFinal = existing?.fancy || SEED_FANCY;
-      fancySource = "preserved";
+      fancyFinal = existing?.fancy || orientSeed(SEED_FANCY);
+      fancySource = fancy64 ? "failed_kept_existing" : "preserved";
+      if (fancy64) warnings.push("Fancy PDF could not be read — fancy prices NOT updated");
     }
 
-    const date = parsedDate || existing?.date || SEED_DATE;
+    const anyParsed = roundsSource === "parsed" || fancySource === "parsed";
+    if (!anyParsed && (rounds64 || fancy64)) {
+      return res.json({ ok: false, error: "Could not read prices from the PDF — existing prices left unchanged", warnings });
+    }
+    const date = (anyParsed && parsedDate) || existing?.date || SEED_DATE;
 
     const merged = {
       date,
