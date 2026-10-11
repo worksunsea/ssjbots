@@ -2,6 +2,7 @@ import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 import { SUPABASE_URL, SUPABASE_SERVICE_KEY } from "./_lib/config.js";
 import { orientSeed } from "./_lib/rapSeed.js";
+import { splitRapText } from "./_lib/rapPdf.js";
 
 const WEIGHT_RANGES = [
   "0.30","0.40","0.50","0.70","0.90",
@@ -631,8 +632,9 @@ export default async function handler(req, res) {
   const body = req.body || {};
   const rounds64 = body.rounds || null;
   const fancy64  = body.fancy  || null;
+  const file64   = body.file   || null; // any Rapaport PDF: combined, round-only or pear-only
 
-  if (!rounds64 && !fancy64) return res.status(400).json({ ok: false, error: "No PDF data received" });
+  if (!rounds64 && !fancy64 && !file64) return res.status(400).json({ ok: false, error: "No PDF data received" });
 
   try {
     const pdfParse = require("pdf-parse");
@@ -640,23 +642,19 @@ export default async function handler(req, res) {
     const warnings = [];
     let roundsText = null, fancyText = null;
 
-    if (rounds64) {
+    // Every uploaded PDF is read and classified by its content, whichever slot it came from.
+    const texts = [];
+    for (const b64 of [file64, rounds64, fancy64]) {
+      if (!b64) continue;
       try {
-        const buf = Buffer.from(rounds64, "base64");
-        const parsed = await pdfParse(buf);
-        roundsText = parsed.text;
-        const sample = parsed.text.split(/\n/).map(l=>l.trim()).filter(Boolean).slice(0,80);
-        console.log("ROUNDS_PDF_SAMPLE:", JSON.stringify(sample));
-      } catch (err) { warnings.push("Round PDF parse failed: " + err.message); }
+        texts.push((await pdfParse(Buffer.from(b64, "base64"))).text);
+      } catch (err) { warnings.push("PDF could not be read: " + err.message); }
     }
-    if (fancy64) {
-      try {
-        const buf = Buffer.from(fancy64, "base64");
-        const parsed = await pdfParse(buf);
-        fancyText = parsed.text;
-        const sample = parsed.text.split(/\n/).map(l=>l.trim()).filter(Boolean).slice(0,40);
-        console.log("FANCY_PDF_SAMPLE:", JSON.stringify(sample));
-      } catch (err) { warnings.push("Fancy PDF parse failed: " + err.message); }
+    const sections = texts.map(splitRapText);
+    roundsText = sections.find((p) => p.rounds)?.rounds || null;
+    fancyText  = sections.find((p) => p.fancy)?.fancy || null;
+    if (!roundsText && !fancyText) {
+      return res.json({ ok: false, error: "This does not look like a Rapaport price list (no Round or Pear section found) — nothing was changed", warnings });
     }
 
     // Parse PDFs
@@ -671,30 +669,30 @@ export default async function handler(req, res) {
 
     // ── Determine rounds data source ─────────────────────────────────────────
     let roundsFinal, roundsSource;
-    if (rounds64 && roundData && validateRapTables(roundData.tables)) {
+    if (roundsText && roundData && validateRapTables(roundData.tables)) {
       roundsFinal = roundData.tables;
       roundsSource = "parsed";
     } else {
       // Not uploaded, or the PDF failed parsing/validation → keep stored prices
       // (never overwrite live data with the stale seed).
       roundsFinal = existing?.rounds || orientSeed(SEED_ROUNDS);
-      roundsSource = rounds64 ? "failed_kept_existing" : "preserved";
-      if (rounds64) warnings.push("Round PDF could not be read — round prices NOT updated");
+      roundsSource = roundsText ? "failed_kept_existing" : "preserved";
+      if (roundsText) warnings.push("Round PDF could not be read — round prices NOT updated");
     }
 
     // ── Determine fancy data source ──────────────────────────────────────────
     let fancyFinal, fancySource;
-    if (fancy64 && fancyData && validateRapTables(fancyData.tables)) {
+    if (fancyText && fancyData && validateRapTables(fancyData.tables)) {
       fancyFinal = fancyData.tables;
       fancySource = "parsed";
     } else {
       fancyFinal = existing?.fancy || orientSeed(SEED_FANCY);
-      fancySource = fancy64 ? "failed_kept_existing" : "preserved";
-      if (fancy64) warnings.push("Fancy PDF could not be read — fancy prices NOT updated");
+      fancySource = fancyText ? "failed_kept_existing" : "preserved";
+      if (fancyText) warnings.push("Fancy PDF could not be read — fancy prices NOT updated");
     }
 
     const anyParsed = roundsSource === "parsed" || fancySource === "parsed";
-    if (!anyParsed && (rounds64 || fancy64)) {
+    if (!anyParsed) {
       return res.json({ ok: false, error: "Could not read prices from the PDF — existing prices left unchanged", warnings });
     }
     const date = (anyParsed && parsedDate) || existing?.date || SEED_DATE;

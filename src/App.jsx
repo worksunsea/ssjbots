@@ -16962,8 +16962,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
             <div style={{ fontSize: 12, color: "#888", marginBottom: 8 }}>Upload the Round and/or Fancy price list PDFs from Rapaport. Both files can be uploaded at once.</div>
             <div style={{ fontSize: 11, color: "#b45309", background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 6, padding: "6px 10px", marginBottom: 12 }}>⚠️ On mobile: first download the PDF to your device (Downloads folder), then select it here. Files picked directly from Google Drive/cloud will fail.</div>
             {[
-              { label: "Round Price List (PDF)", key: "rounds", stored: rapUploadRounds, set: setRapUploadRounds, ref: rapRoundsFileRef },
-              { label: "Fancy/Pear Price List (PDF)", key: "fancy", stored: rapUploadFancy, set: setRapUploadFancy, ref: rapFancyFileRef },
+              { label: "Rapaport Price List (PDF) — the combined \"All Rapaport Price Lists\" file; file name does not matter", key: "rounds", stored: rapUploadRounds, set: setRapUploadRounds, ref: rapRoundsFileRef },
             ].map(f => (
               <div key={f.key} style={{ marginBottom: 12 }}>
                 <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>{f.label}</div>
@@ -16982,7 +16981,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
                 try {
                   const payload = {};
                   if (rapRoundsFileRef.current) {
-                    try { const r = await fileToB64(rapRoundsFileRef.current); payload.rounds = r.b64; }
+                    try { const r = await fileToB64(rapRoundsFileRef.current); payload.file = r.b64; }
                     catch (err) { showToast("❌ Round PDF unreadable: " + (err?.message || String(err))); setRapUploading(false); return; }
                   }
                   if (rapFancyFileRef.current) {

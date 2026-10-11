@@ -12,13 +12,15 @@
 // the function falls back to seed data.
 //
 // Folder: 152rXtP8ioZ3lcsrsmQJ9w9qpA0ApgLEY  (shared "Rapnet" folder)
-// Round PDF:  file whose name contains "Round"
-// Fancy PDF:  file whose name contains "Pear" or "Fancy"
+// File names are ignored. Newest PDFs (by upload time) are read and classified by
+// their content: a combined "All Rapaport Price Lists" PDF supplies both rounds
+// and pears; single-kind Round / Pear PDFs still work.
 
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 import { SUPABASE_URL, SUPABASE_SERVICE_KEY, CRM_SECRET } from "./_lib/config.js";
 import { orientSeed, fetchExistingRapData } from "./_lib/rapSeed.js";
+import { splitRapText } from "./_lib/rapPdf.js";
 
 // ─── Weight-range labels (in order of appearance in the PDF tables) ──────────
 const WEIGHT_RANGES = [
@@ -407,7 +409,7 @@ async function readDriveFile(token, fileId, mimeType) {
  *
  * Returns null if fewer than 10 data rows found.
  */
-function parsePdfTables(text) {
+export function parsePdfTables(text) {
   if (!text) return null;
 
   const rawLines = text.split(/\n/).map(l => l.trim()).filter(Boolean);
@@ -820,66 +822,60 @@ export default async function handler(req, res) {
     }
   }
 
-  // Sort by date embedded in filename (e.g. "Round Price List 06.26.2026.pdf")
-  // Falls back to modifiedTime, then filename alphabetical — always picks newest
-  const filenameDate = (name) => {
-    const m = String(name).match(/(\d{2})\.(\d{2})\.(\d{4})/);
-    if (m) return new Date(`${m[3]}-${m[1]}-${m[2]}`).getTime();
-    return 0;
-  };
-  files.sort((a, b) => {
-    const da = filenameDate(a.name) || new Date(a.modifiedTime || 0).getTime();
-    const db = filenameDate(b.name) || new Date(b.modifiedTime || 0).getTime();
-    return db - da;
-  });
-  const roundFile = files.find((f) => /round/i.test(f.name));
-  const fancyFile = files.find((f) => /pear|fancy/i.test(f.name));
+  // Newest upload first. File names are ignored — each PDF is classified by its content.
+  files.sort((x, y) => new Date(y.modifiedTime || 0).getTime() - new Date(x.modifiedTime || 0).getTime());
 
-  if (!roundFile && !fancyFile) {
-    return res.status(404).json({
-      ok: false,
-      error: "No Round or Pear/Fancy files found in the Rapnet folder",
-      files: files.map((f) => f.name),
-    });
+  if (!files.length) {
+    return res.status(404).json({ ok: false, error: "No files found in the Rapnet folder" });
   }
 
-  let roundTables = null;
-  let fancyTables = null;
-  let detectedDate = null;
   const warnings = [];
-
   const readFile = (fileId, mimeType) =>
     appsScriptUrl
       ? fetchViaAppsScript(fileId)
       : readDriveFile(token, fileId, mimeType);
 
-  if (roundFile) {
+  const MAX_FILES_READ = 6;
+  let roundText = null, fancyText = null, roundFile = null, fancyFile = null;
+  for (const f of files.slice(0, MAX_FILES_READ)) {
+    if (roundText && fancyText) break;
+    let parts;
     try {
-      const text = await readFile(roundFile.id, roundFile.mimeType);
-      roundTables = parsePdfTables(text);
-      if (!detectedDate) detectedDate = extractDate(text);
-      if (!roundTables) warnings.push(`Round file parsed but not enough numbers found — using seed`);
+      parts = splitRapText(await readFile(f.id, f.mimeType));
     } catch (e) {
-      warnings.push(`Round file read failed: ${String(e)} — using seed`);
+      warnings.push(`${f.name}: could not be read (${String(e)})`);
+      continue;
     }
+    if (parts.rounds && !roundText) { roundText = parts.rounds; roundFile = f; }
+    if (parts.fancy && !fancyText) { fancyText = parts.fancy; fancyFile = f; }
   }
 
-  if (fancyFile) {
-    try {
-      const text = await readFile(fancyFile.id, fancyFile.mimeType);
-      fancyTables = parsePdfTables(text);
-      if (!detectedDate) detectedDate = extractDate(text);
-      if (!fancyTables) warnings.push(`Fancy file parsed but not enough numbers found — using seed`);
-    } catch (e) {
-      warnings.push(`Fancy file read failed: ${String(e)} — using seed`);
-    }
+  if (!roundText && !fancyText) {
+    return res.status(404).json({
+      ok: false,
+      error: "No Rapaport price list found among the newest files in the Rapnet folder",
+      files: files.slice(0, MAX_FILES_READ).map((f) => f.name),
+      warnings,
+    });
   }
+
+  const roundTables = roundText ? parsePdfTables(roundText) : null;
+  const fancyTables = fancyText ? parsePdfTables(fancyText) : null;
+  const detectedDate = extractDate(roundText || "") || extractDate(fancyText || "");
+  if (roundText && !roundTables) warnings.push("Round section found but numbers could not be read");
+  if (fancyText && !fancyTables) warnings.push("Pear/Fancy section found but numbers could not be read");
 
   // A shape that failed to parse keeps what is already stored (live prices must
   // never be replaced by stale seed data). Seed is only a first-install fallback.
   const existing = await fetchExistingRapData();
   const roundsOk = roundTables && Object.keys(roundTables).length >= 1;
   const fancyOk = fancyTables && Object.keys(fancyTables).length >= 1;
+  if (existing?.date && detectedDate && detectedDate < existing.date && !req.query.force) {
+    return res.status(409).json({
+      ok: false,
+      error: `Newest PDF is dated ${detectedDate}, older than stored prices (${existing.date}) — not updated. Add ?force=1 to override.`,
+    });
+  }
   if (!roundsOk && !fancyOk && existing) {
     return res.status(502).json({
       ok: false,
