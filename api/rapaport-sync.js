@@ -799,8 +799,13 @@ export default async function handler(req, res) {
   let token = null;
 
   if (appsScriptUrl) {
-    const r = await fetch(`${appsScriptUrl}?action=files`, { redirect: "follow" });
-    const d = await r.json();
+    let d;
+    try {
+      const r = await fetch(`${appsScriptUrl}?action=files`, { redirect: "follow" });
+      d = await r.json();
+    } catch (e) {
+      return res.status(502).json({ ok: false, error: `Apps Script did not return a file list (${String(e)}) — prices unchanged, try again in a minute` });
+    }
     if (!d.ok) return res.status(500).json({ ok: false, error: `Apps Script list failed: ${d.error}` });
     files = (d.files || []).map(f => ({ id: f.id, name: f.name, mimeType: "application/pdf", modifiedTime: f.modified }));
   } else {
