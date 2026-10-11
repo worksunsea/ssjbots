@@ -17004,7 +17004,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
                     try { const r = await fileToB64(rapFancyFileRef.current); payload.fancy = r.b64; }
                     catch (err) { showToast("❌ Fancy PDF unreadable: " + (err?.message || String(err))); setRapUploading(false); return; }
                   }
-                  const r = await fetch("/api/rapaport-upload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+                  const r = await fetch("/api/rapaport-upload", { method: "POST", headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET }, body: JSON.stringify(payload) });
                   const d = await r.json().catch(() => ({}));
                   if (d.ok) {
                     showToast(`${d.warnings?.length ? "⚠️" : "✅"} Uploaded · ${d.date || ""} · Round ${d.rounds_source === "parsed" ? "✓ updated" : "✗ NOT updated"}, Fancy ${d.fancy_source === "parsed" ? "✓ updated" : "✗ NOT updated"}${d.warnings?.length ? " — " + d.warnings.join("; ") : ""}`);

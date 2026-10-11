@@ -32,6 +32,8 @@
     { "path": "/api/staff-profile-reminders", "schedule": "0 1 * * *" },
     { "path": "/api/kitty-cron", "schedule": "0 2 * * *" },
     { "path": "/api/kitty-cron?only=due_today", "schedule": "30 4 * * *" },
-    { "path": "/api/catalogue-backup", "schedule": "30 20 * * *" }
+    { "path": "/api/catalogue-backup", "schedule": "30 20 * * *" },
+    { "path": "/api/diapri-weekly", "schedule": "30 4 * * 5" },
+    { "path": "/api/diapri-weekly", "schedule": "30 5-17 * * 5" }
   ]
 }

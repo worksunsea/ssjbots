@@ -681,3 +681,10 @@ Scan supplier business cards → auto-fill contact details via AI vision → tag
 - **Before this is usable**: (1) Razorpay merchant account + the 3 env vars above; (2) confirm Bliss/Bloom's separate lucky-draw legal exposure with a CA/lawyer is out of scope for this entry but was flagged in conversation the same day.
 
 ---
+
+## 31. DIAPRI WEEKLY PRICE-LIST AUTOLOAD + PDF VIEW (2026-10-11)
+- **Source of truth**: `bullion_dropdowns` fields `rapaport_data` (tables, oriented `[clarity][colour]`), `rapaport_pdf` (copy of the PDF, base64) and `diapri_weekly_state` (week marker).
+- **Sync (`api/rapaport-sync.js`)** now exports `resolveFiles()` / `runDriveSync({force, onlyIfNewer, resolved})`. Newest uploaded PDFs are read; each is classified by its *content* (`api/_lib/rapPdf.js splitRapText`), file names are ignored. Combined "All … Price Lists" PDF = rounds + pears (+ parcel pages, ignored). A shape that fails to parse keeps the stored prices — never overwritten by seed. Seed tables are colour-major and MUST go through `orientSeed()` (`api/_lib/rapSeed.js`, client `orientRapSeed`). Auth: `x-crm-secret` (CRM button) or `Bearer CRON_SECRET/DIGEST_CRON_SECRET`; `maxDuration` 300.
+- **Weekly job (`api/diapri-weekly.js`, pure logic in `api/_lib/diapriWeekly.js`)**: cron Fri 10:00 IST (`30 4 * * 5` UTC) then hourly to 23:00 IST (`30 5-17 * * 5`). Exits at once if this week's list is already stored (printed date ≥ that Friday), skips if the newest Drive file (id+modified) is unchanged, otherwise runs the sync with `onlyIfNewer`. WhatsApp to owner once when loaded, once if still missing from 18:00 IST. Retries next hour on Apps Script errors.
+- **PDF view**: `/api/rapaport-pdf` (staff only: session token OR `x-crm-secret` + active `x-staff-id`), button "View PDF" in Calculator. SSO users have no session token, hence the second path.
+- Tests: `src/__tests__/diapriWeekly.test.js`, `src/__tests__/rapPdf.test.js`.

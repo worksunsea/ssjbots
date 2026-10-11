@@ -1,6 +1,6 @@
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
-import { SUPABASE_URL, SUPABASE_SERVICE_KEY } from "./_lib/config.js";
+import { SUPABASE_URL, SUPABASE_SERVICE_KEY, checkCrmSecret } from "./_lib/config.js";
 import { orientSeed, saveRapPdf } from "./_lib/rapSeed.js";
 import { splitRapText } from "./_lib/rapPdf.js";
 
@@ -627,6 +627,7 @@ async function fetchExistingRapData() {
 }
 
 export default async function handler(req, res) {
+  if (checkCrmSecret(req, res)) return;
   if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Method not allowed" });
 
   const body = req.body || {};

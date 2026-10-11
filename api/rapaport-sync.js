@@ -18,7 +18,7 @@
 
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
-import { SUPABASE_URL, SUPABASE_SERVICE_KEY, CRM_SECRET } from "./_lib/config.js";
+import { SUPABASE_URL, SUPABASE_SERVICE_KEY, CRM_SECRET, CRON_SECRET, DIGEST_CRON_SECRET } from "./_lib/config.js";
 import { orientSeed, fetchExistingRapData, saveRapPdf } from "./_lib/rapSeed.js";
 import { splitRapText } from "./_lib/rapPdf.js";
 
@@ -732,15 +732,25 @@ async function upsertRapaportData(payload) {
 
 // ─── Main handler ─────────────────────────────────────────────────────────────
 
+// A full sync takes ~70 s (Apps Script download + PDF parse), longer than the default limit.
+export const config = { maxDuration: 300 };
+
+// Callers: the CRM Sync button (x-crm-secret) or a scheduler (Bearer CRON_SECRET / DIGEST_CRON_SECRET).
+// Nothing configured ⇒ deny (the old "no auth" behaviour let anyone trigger a 70 s sync).
+function isAuthorizedCaller(req) {
+  if (CRM_SECRET && req.headers["x-crm-secret"] === CRM_SECRET) return true;
+  const bearer = String(req.headers.authorization || "").replace(/^Bearers+/i, "");
+  return Boolean(bearer) && (bearer === CRON_SECRET || bearer === DIGEST_CRON_SECRET);
+}
+
 export default async function handler(req, res) {
   // Only GET allowed
   if (req.method !== "GET") {
     return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
+  if (!isAuthorizedCaller(req)) return res.status(401).json({ ok: false, error: "unauthorized" });
 
   const forceSeed = req.query.action === "seed";
-
-  // Rapaport data is public pricing — no auth required on this endpoint.
 
   // ── Seed path ────────────────────────────────────────────────────────────────
   if (forceSeed) {
@@ -768,17 +778,79 @@ export default async function handler(req, res) {
     });
   }
 
+  const outcome = await runDriveSync({ force: Boolean(req.query.force) });
+  return res.status(outcome.status).json(outcome.body);
+}
+
+const result = (status, body) => ({ status, body });
+const httpError = (status, body) => Object.assign(new Error(body.error || "error"), { status, body });
+
+/** Lists the files in the price-list Drive folder (id, name, modifiedTime). Throws httpError. */
+export async function resolveFiles() {
   // ── Drive access — Apps Script proxy (preferred) or Service Account ──────────
   const appsScriptUrl = process.env.RAPNET_APPS_SCRIPT_URL;
   const saEnv = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
 
   if (!appsScriptUrl && !saEnv) {
-    return res.status(501).json({
+    throw httpError(501, {
       ok: false,
       error: "No Drive access configured",
       hint: "Set RAPNET_APPS_SCRIPT_URL in Vercel env (easiest) or GOOGLE_SERVICE_ACCOUNT_JSON.",
     });
   }
+
+  // Resolve file list (Apps Script or Service Account)
+  let files;
+  let token = null;
+
+  if (appsScriptUrl) {
+    let d;
+    try {
+      const r = await fetch(`${appsScriptUrl}?action=files`, { redirect: "follow" });
+      d = await r.json();
+    } catch (e) {
+      throw httpError(502, { ok: false, error: `Apps Script did not return a file list (${String(e)}) — prices unchanged, try again in a minute` });
+    }
+    if (!d.ok) throw httpError(500, { ok: false, error: `Apps Script list failed: ${d.error}` });
+    files = (d.files || []).map(f => ({ id: f.id, name: f.name, mimeType: "application/pdf", modifiedTime: f.modified }));
+  } else {
+    let sa;
+    try {
+      sa = JSON.parse(Buffer.from(saEnv, "base64").toString("utf8"));
+    } catch {
+      throw httpError(500, { ok: false, error: "Failed to parse GOOGLE_SERVICE_ACCOUNT_JSON" });
+    }
+    try {
+      token = await getGoogleAccessToken(sa);
+    } catch (e) {
+      throw httpError(500, { ok: false, error: `Google auth failed: ${String(e)}` });
+    }
+    try {
+      files = await listDriveFiles(token);
+    } catch (e) {
+      throw httpError(500, { ok: false, error: `Drive list failed: ${String(e)}` });
+    }
+  }
+
+  return { files, token, appsScriptUrl, saEnv };
+}
+
+/**
+ * Reads the newest price-list PDFs from Drive, parses them and stores the prices.
+ * @param {{ force?: boolean, onlyIfNewer?: boolean, resolved?: object }} opts
+ *   onlyIfNewer: skip writing when the printed date is not later than the stored one.
+ *   resolved: result of resolveFiles() when the caller already listed the folder.
+ * @returns {Promise<{status:number, body:object}>}
+ */
+export async function runDriveSync({ force = false, onlyIfNewer = false, resolved = null } = {}) {
+  let ctx;
+  try {
+    ctx = resolved || await resolveFiles();
+  } catch (e) {
+    if (e.status) return result(e.status, e.body);
+    return result(500, { ok: false, error: String(e) });
+  }
+  const { files, token, appsScriptUrl } = ctx;
 
   // Helper: fetch text content of a Drive file via Apps Script proxy
   const pdfB64ById = new Map(); // keeps the downloaded PDF so the app can show it
@@ -796,44 +868,12 @@ export default async function handler(req, res) {
     return d.content;
   };
 
-  // Resolve file list (Apps Script or Service Account)
-  let files;
-  let token = null;
-
-  if (appsScriptUrl) {
-    let d;
-    try {
-      const r = await fetch(`${appsScriptUrl}?action=files`, { redirect: "follow" });
-      d = await r.json();
-    } catch (e) {
-      return res.status(502).json({ ok: false, error: `Apps Script did not return a file list (${String(e)}) — prices unchanged, try again in a minute` });
-    }
-    if (!d.ok) return res.status(500).json({ ok: false, error: `Apps Script list failed: ${d.error}` });
-    files = (d.files || []).map(f => ({ id: f.id, name: f.name, mimeType: "application/pdf", modifiedTime: f.modified }));
-  } else {
-    let sa;
-    try {
-      sa = JSON.parse(Buffer.from(saEnv, "base64").toString("utf8"));
-    } catch {
-      return res.status(500).json({ ok: false, error: "Failed to parse GOOGLE_SERVICE_ACCOUNT_JSON" });
-    }
-    try {
-      token = await getGoogleAccessToken(sa);
-    } catch (e) {
-      return res.status(500).json({ ok: false, error: `Google auth failed: ${String(e)}` });
-    }
-    try {
-      files = await listDriveFiles(token);
-    } catch (e) {
-      return res.status(500).json({ ok: false, error: `Drive list failed: ${String(e)}` });
-    }
-  }
 
   // Newest upload first. File names are ignored — each PDF is classified by its content.
   files.sort((x, y) => new Date(y.modifiedTime || 0).getTime() - new Date(x.modifiedTime || 0).getTime());
 
   if (!files.length) {
-    return res.status(404).json({ ok: false, error: "No files found in the Rapnet folder" });
+    return result(404, { ok: false, error: "No files found in the Rapnet folder" });
   }
 
   const warnings = [];
@@ -858,7 +898,7 @@ export default async function handler(req, res) {
   }
 
   if (!roundText && !fancyText) {
-    return res.status(404).json({
+    return result(404, {
       ok: false,
       error: "No Rapaport price list found among the newest files in the Rapnet folder",
       files: files.slice(0, MAX_FILES_READ).map((f) => f.name),
@@ -877,14 +917,17 @@ export default async function handler(req, res) {
   const existing = await fetchExistingRapData();
   const roundsOk = roundTables && Object.keys(roundTables).length >= 1;
   const fancyOk = fancyTables && Object.keys(fancyTables).length >= 1;
-  if (existing?.date && detectedDate && detectedDate < existing.date && !req.query.force) {
-    return res.status(409).json({
+  if (existing?.date && detectedDate && detectedDate < existing.date && !force) {
+    return result(409, {
       ok: false,
       error: `Newest PDF is dated ${detectedDate}, older than stored prices (${existing.date}) — not updated. Add ?force=1 to override.`,
     });
   }
+  if (onlyIfNewer && existing?.date && detectedDate && detectedDate <= existing.date) {
+    return result(200, { ok: true, skipped: "not_newer", date: detectedDate, stored_date: existing.date });
+  }
   if (!roundsOk && !fancyOk && existing) {
-    return res.status(502).json({
+    return result(502, {
       ok: false,
       error: "Could not read prices from the Rapaport PDFs — existing data left unchanged",
       warnings,
@@ -910,7 +953,7 @@ export default async function handler(req, res) {
   try {
     await upsertRapaportData(payload);
   } catch (e) {
-    return res.status(500).json({ ok: false, error: String(e) });
+    return result(500, { ok: false, error: String(e) });
   }
 
   // Keep the PDF the prices came from so staff can open it in the app (best-effort).
@@ -919,7 +962,7 @@ export default async function handler(req, res) {
     await saveRapPdf({ name: shownFile.name, date, b64: pdfB64ById.get(shownFile.id) });
   }
 
-  return res.status(200).json({
+  return result(200, {
     ok: true,
     source,
     date,
@@ -928,6 +971,7 @@ export default async function handler(req, res) {
     rounds_ranges: Object.keys(rounds).length,
     fancy_ranges: Object.keys(fancy).length,
     updated_at: payload.updated_at,
+    newest_listed: { id: files[0].id, modified: files[0].modifiedTime },
     ...(warnings.length ? { warnings } : {}),
   });
 }
