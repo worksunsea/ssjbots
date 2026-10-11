@@ -688,3 +688,9 @@ Scan supplier business cards → auto-fill contact details via AI vision → tag
 - **Weekly job (`api/diapri-weekly.js`, pure logic in `api/_lib/diapriWeekly.js`)**: cron Fri 10:00 IST (`30 4 * * 5` UTC) then hourly to 23:00 IST (`30 5-17 * * 5`). Exits at once if this week's list is already stored (printed date ≥ that Friday), skips if the newest Drive file (id+modified) is unchanged, otherwise runs the sync with `onlyIfNewer`. WhatsApp to owner once when loaded, once if still missing from 18:00 IST. Retries next hour on Apps Script errors.
 - **PDF view**: `/api/rapaport-pdf` (staff only: session token OR `x-crm-secret` + active `x-staff-id`), button "View PDF" in Calculator. SSO users have no session token, hence the second path.
 - Tests: `src/__tests__/diapriWeekly.test.js`, `src/__tests__/rapPdf.test.js`.
+
+## 32. DIAPRI CALCULATOR — STANDALONE PLAY-STORE APP (2026-10-11, separate repo)
+- Lives in `C:\projects\ssj-calculator` (own git repo, own Vercel + Supabase projects — never share the CRM database). Package `com.diapri.calculator`; ₹79/month, ₹499/year, 7-day trial; Google sign-in; Google Play Billing verified server-side. Setup steps: that repo's `README.md`; store text: `store/listing.md`.
+- Naming rule (owner): no "rap…" wording anywhere in that repo or in new CRM files for it — use "Diapri". Only the existing PDF parser files keep the source headings they must match.
+- CRM → app feed: `api/_lib/diapriFeed.js`, called from `api/diapri-weekly.js` after a new grid loads. **OFF** unless `DIAPRI_FEED_ENABLED=true` + `DIAPRI_APP_URL` + `DIAPRI_INGEST_SECRET`. Do not switch it on for third-party price data without permission to republish it.
+- Upload keystore: `C:\Users\NUC\.diapri\diapri-upload.jks` (+ `keystore.properties.backup`) — back it up; it is not in git.
