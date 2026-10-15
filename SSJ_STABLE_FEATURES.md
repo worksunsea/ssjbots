@@ -694,3 +694,21 @@ Scan supplier business cards → auto-fill contact details via AI vision → tag
 - Naming rule (owner): no "rap…" wording anywhere in that repo or in new CRM files for it — use "Diapri". Only the existing PDF parser files keep the source headings they must match.
 - CRM → app feed: `api/_lib/diapriFeed.js`, called from `api/diapri-weekly.js` after a new grid loads. **OFF** unless `DIAPRI_FEED_ENABLED=true` + `DIAPRI_APP_URL` + `DIAPRI_INGEST_SECRET`. Do not switch it on for third-party price data without permission to republish it.
 - Upload keystore: `C:\Users\NUC\.diapri\diapri-upload.jks` (+ `keystore.properties.backup`) — back it up; it is not in git.
+
+---
+
+## 33. CLIENT DETAILS CARD — paper form + scan into Contacts
+
+- **Paper card:** `node tools/make-client-form.mjs out.pdf` → A5 one-sided form (name, mobile, email, birthday, anniversary, address, 6 family rows, 3 friend referrals, signature/consent, office strip). Segmented boxes for mobile/pincode/dates so handwriting reads reliably. `tools/make-client-card.mjs` = 90x55 mm visiting card with QR to `/profile?src=card` (digital route).
+- **Scan:** Contacts → "📇 Scan client card" (`src/ClientCardScan.jsx`) → photo is downscaled client-side → `POST /api/contact-card-scan` (AI vision, `x-crm-secret`) → `api/_lib/cardScan.js` normalises dates/phones/relations (unit-tested in `src/__tests__/cardScan.test.js`) → staff review/edit → `POST /api/contact-update` with `source:"client_card"`.
+- **Safety:** nothing is saved by the scan itself. New phone → lead created. Existing phone → goes to Profile Edit Requests (never overwrites). Friend gift WhatsApps only send if the staff ticks the box. The photo is not stored.
+- If the printed layout changes, update the field list in the prompt in `api/contact-card-scan.js` to match.
+
+---
+
+## 34. GIFTS SCREEN (festival gift list) — tab key `gifts`
+
+- `src/GiftList.jsx` (+ pure logic `src/giftFilter.js`, tests `giftFilter.test.js`, `giftList.test.js`). Tab "🎁 Gifts" for manager/staff/admin; added to BOTH tab lists in App.jsx (`CRM_ALL_TABS` and `ALL_TABS`) and both role-default maps.
+- Everything is stored in `bullion_leads.tags` — no new tables. "Gift list" tag and "Gift sent" tag default to `Diwali 2026 Gift` / `Diwali 2026 Gift Sent`, changeable on the screen (kept in localStorage `gift_pick_tag` / `gift_sent_tag`). For the next festival just pick/create new tags.
+- Server filters: search, must-have tags (ALL/ANY), city, min rating, clients only. Browser filters: without-tags, pincode prefix, address complete/incomplete (street + 6-digit pincode + city), gift sent/not sent, hide DND. Loads up to 10,000 matches (1,000 per request).
+- Tag editing: per-row chips (click to remove) + searchable picker (can create a new tag, which is also added to `bullion_tags`); bulk add/remove of several tags at once, "Mark sent / Unmark sent / Add to gift list" buttons; CSV export of the list (or the selected rows) with full address.

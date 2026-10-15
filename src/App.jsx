@@ -11,6 +11,8 @@ import WheelPicker from "./WheelPicker";
 import ClientPlatformAdminScreen from "./ClientPlatformAdminScreen";
 import BlogAdminScreen from "./BlogAdmin";
 import KittyAdminScreen from "./KittyAdmin";
+import ClientCardScan from "./ClientCardScan";
+import GiftList from "./GiftList";
 
 // ── SUPABASE (shared Sun Sea project — same as ssj-hr / fms-tracker) ──
 const SUPABASE_URL = "https://uppyxzellmuissdlxsmy.supabase.co";
@@ -136,6 +138,7 @@ const CRM_ALL_TABS = [
   { k: "adleads",     l: "AdLeads",     icon: "📢" },
   { k: "contacts",    l: "Contacts",    icon: "📇" },
   { k: "contactsdb",  l: "DB",          icon: "📋" },
+  { k: "gifts",       l: "Gifts",       icon: "🎁" },
   { k: "upcoming",    l: "Upcoming",    icon: "🎂" },
   { k: "messages",    l: "Messages",    icon: "💬" },
   { k: "funnels",     l: "Funnels",     icon: "🔀" },
@@ -164,8 +167,8 @@ const CRM_ALL_TABS = [
 const CRM_ROLE_DEFAULT_TABS = {
   superadmin: CRM_ALL_TABS.map((t) => t.k),
   admin:      CRM_ALL_TABS.map((t) => t.k),
-  manager:    ["demands", "adleads", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift", "corpgiftdesigns", "solitairedesigns", "blog", "kitty"],
-  staff:      ["demands", "adleads", "contacts", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
+  manager:    ["demands", "adleads", "contacts", "contactsdb", "gifts", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift", "corpgiftdesigns", "solitairedesigns", "blog", "kitty"],
+  staff:      ["demands", "adleads", "contacts", "gifts", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
   telecaller: ["demands", "adleads"],
 };
 
@@ -4877,6 +4880,7 @@ function ContactsScreen({ funnels }) {
   const [showLid, setShowLid] = useState(false); // hide WA-hidden (LID) leads by default
   const { customFields, fieldOrder, setCustomFields, setFieldOrder } = React.useContext(ContactFieldsContext);
   const [showFieldMgr, setShowFieldMgr] = useState(false);
+  const [showCardScan, setShowCardScan] = useState(false);
   const [filterTags, setFilterTags] = useState([]);
   const [tagLogic, setTagLogic] = useState("AND"); // AND = must have all, OR = any
   const isSA = loadUser()?.role === "superadmin";
@@ -5031,6 +5035,7 @@ function ContactsScreen({ funnels }) {
         <Input placeholder="Search name / phone / email / city…" value={search} onChange={(e) => setSearch(e.target.value)} style={{ flex: "1 1 220px" }} />
         <Btn ghost small color={C.gray} onClick={() => load(search, filterTags, tagLogic, page)}>↻</Btn>
         <Btn small color={C.blue} onClick={() => setEditing({})}>+ Add Contact</Btn>
+        <Btn small color={C.green} onClick={() => setShowCardScan(true)}>📇 Scan client card</Btn>
         <Btn ghost small color={C.orange} onClick={() => setShowFieldMgr(v => !v)}>⚙ Fields</Btn>
         <Btn ghost small color={bulkMode ? C.purple : C.gray} onClick={() => bulkMode ? exitBulk() : setBulkMode(true)}>{bulkMode ? "✕ Cancel" : "☑ Bulk"}</Btn>
         <Btn ghost small color={C.gray} onClick={() => setViewMode(v => v === "card" ? "list" : "card")}>{viewMode === "card" ? "☰ List" : "⊞ Cards"}</Btn>
@@ -5039,6 +5044,7 @@ function ContactsScreen({ funnels }) {
           Show WA-hidden ({lidCount})
         </label>
         <span style={{ fontSize: 11, color: "#888" }}>{loading ? "Loading…" : `${total.toLocaleString()} contacts`}</span>
+        {showCardScan && <ClientCardScan onClose={() => setShowCardScan(false)} onSaved={() => load(search, filterTags, tagLogic, page)} />}
       </div>
 
       {isSA && pendingMerges?.length > 0 && (
@@ -11900,6 +11906,7 @@ export default function App() {
     { k: "adleads",    l: "AdLeads",     icon: "📢" },
     { k: "contacts",   l: "Contacts",    icon: "📇" },
     { k: "contactsdb", l: "DB",          icon: "📋" },
+    { k: "gifts",      l: "Gifts",       icon: "🎁" },
     { k: "upcoming",   l: "Upcoming",    icon: "🎂" },
     { k: "messages",   l: "Messages",    icon: "💬" },
     { k: "funnels",    l: "Funnels",     icon: "🔀" },
@@ -11930,8 +11937,8 @@ export default function App() {
   const ROLE_DEFAULT_TABS = {
     superadmin: ALL_TABS.map((t) => t.k),
     admin:      ALL_TABS.map((t) => t.k),
-    manager:    ["demands", "adleads", "contacts", "contactsdb", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift", "corpgiftdesigns", "solitairedesigns", "clientplatform", "blog", "kitty"],
-    staff:      ["demands", "adleads", "contacts", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
+    manager:    ["demands", "adleads", "contacts", "contactsdb", "gifts", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift", "corpgiftdesigns", "solitairedesigns", "clientplatform", "blog", "kitty"],
+    staff:      ["demands", "adleads", "contacts", "gifts", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
     telecaller: ["demands", "adleads"],
   };
 
@@ -12013,6 +12020,7 @@ export default function App() {
       {activeScreen === "adleads" && <DemandsScreen funnels={funnels} allTags={allTags} adOnly />}
       {activeScreen === "contacts" && <ContactsScreen funnels={funnels} />}
       {activeScreen === "contactsdb" && <ContactsDBScreen />}
+      {activeScreen === "gifts" && <GiftList sb={sb} tenantId={getTenantId()} />}
       {activeScreen === "upcoming" && <UpcomingEventsScreen />}
       {activeScreen === "messages" && <MessageHistoryScreen funnels={funnels} />}
       {activeScreen === "funnels" && <FunnelsScreen funnels={funnels} personas={personas} onReload={loadFunnels} />}
