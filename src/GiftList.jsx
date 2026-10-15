@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { applyGiftFilters, editTags, giftCsv, addressLine, hasCompleteAddress, DEFAULT_SENT_TAG, DEFAULT_PICK_TAG } from "./giftFilter";
+import { DEFAULT_ZONES, groupByZone, buildTrips, buildRoutePrintHtml, parsePincodes } from "./giftZones";
 
 // 🎁 Gifts — pick who gets a festival gift. Filter the client database, see the
 // list, edit tags right on the page (one contact or many at once), mark gifts
@@ -77,6 +78,35 @@ export default function GiftList({ sb, tenantId }) {
 
   const [bulkAdd, setBulkAdd] = useState([]);
   const [bulkRemove, setBulkRemove] = useState([]);
+
+  // Area-wise printing
+  const [zones, setZones] = useState(DEFAULT_ZONES);
+  const [showPrint, setShowPrint] = useState(false);
+  const [pickedZones, setPickedZones] = useState(null); // null = all
+  const [tripSize, setTripSize] = useState(25);
+  const [skipIncomplete, setSkipIncomplete] = useState(true);
+  const [editZones, setEditZones] = useState(null); // draft [{name, text}] while editing
+
+  useEffect(() => {
+    sb.from("bullion_dropdowns").select("value").eq("tenant_id", tenantId).eq("field", "gift_zones").maybeSingle()
+      .then(({ data }) => {
+        try {
+          const parsed = data?.value ? JSON.parse(data.value) : null;
+          if (Array.isArray(parsed) && parsed.length) setZones(parsed);
+        } catch { /* bad saved value — keep the starter zones */ }
+      });
+  }, [sb, tenantId]);
+
+  async function saveZones(draft) {
+    const next = draft.map((z) => ({ name: z.name.trim(), pincodes: parsePincodes(z.text) })).filter((z) => z.name);
+    const value = JSON.stringify(next);
+    const { data: ex } = await sb.from("bullion_dropdowns").select("id").eq("tenant_id", tenantId).eq("field", "gift_zones").maybeSingle();
+    const { error: err } = ex?.id
+      ? await sb.from("bullion_dropdowns").update({ value, active: true }).eq("id", ex.id)
+      : await sb.from("bullion_dropdowns").insert({ tenant_id: tenantId, field: "gift_zones", value, active: true, sort_order: 0 });
+    if (err) { setError(`Could not save zones: ${err.message}`); return; }
+    setZones(next); setPickedZones(null); setEditZones(null);
+  }
 
   const loadRegistry = useCallback(async () => {
     const { data } = await sb.from("bullion_tags").select("name,category,color").eq("tenant_id", tenantId).order("sort_order");
@@ -184,6 +214,26 @@ export default function GiftList({ sb, tenantId }) {
     URL.revokeObjectURL(url);
   }
 
+  // Rows going on the area-wise sheets: the ticked rows if any, else everything the filters show.
+  const printScope = useMemo(() => {
+    const base = selected.size ? visible.filter((c) => selected.has(c.id)) : visible;
+    return skipIncomplete ? base.filter(hasCompleteAddress) : base;
+  }, [visible, selected, skipIncomplete]);
+  const zoneGroups = useMemo(() => groupByZone(printScope, zones), [printScope, zones]);
+  const chosenGroups = zoneGroups.filter((g) => !pickedZones || pickedZones.includes(g.zone));
+  const chosenCount = chosenGroups.reduce((n, g) => n + g.rows.length, 0);
+
+  function printRoutes() {
+    const trips = buildTrips(chosenGroups, tripSize);
+    const win = window.open("", "_blank");
+    if (!win) { setError("Your browser blocked the print window — allow pop-ups for this site and try again."); return; }
+    win.document.open();
+    win.document.write(buildRoutePrintHtml(trips, { title: "Gift delivery list" }));
+    win.document.close();
+    win.focus();
+    setTimeout(() => win.print(), 300);
+  }
+
   const pages = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
   const pageRows = visible.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
   const allOnPage = pageRows.length > 0 && pageRows.every((c) => selected.has(c.id));
@@ -253,8 +303,60 @@ export default function GiftList({ sb, tenantId }) {
         <span style={{ fontSize: 12, color: "#2563eb" }}>🎁 {stats.sent} sent</span>
         <span style={{ fontSize: 12, color: "#888" }}>{selected.size} selected</span>
         {truncated && <span style={{ fontSize: 12, color: "#dc2626" }}>Showing the first {FETCH_CAP.toLocaleString()} — narrow the filters.</span>}
-        <button onClick={exportCsv} style={{ ...actionBtn("#16a34a"), marginLeft: "auto" }}>⬇ Export {selected.size ? `${selected.size} selected` : "list"} (CSV)</button>
+        <button onClick={() => setShowPrint((v) => !v)} style={{ ...actionBtn("#8e44ad"), marginLeft: "auto" }}>🖨 Print by area</button>
+        <button onClick={exportCsv} style={actionBtn("#16a34a")}>⬇ Export {selected.size ? `${selected.size} selected` : "list"} (CSV)</button>
       </div>
+
+      {/* Area-wise delivery sheets */}
+      {showPrint && (
+        <div style={{ ...box, background: "#faf5ff", border: "1px solid #e9d5ff", marginBottom: 10 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <b style={{ fontSize: 14 }}>🖨 Delivery sheets by area</b>
+            <button onClick={() => setShowPrint(false)} style={pill(false)}>Close</button>
+          </div>
+          <p style={{ fontSize: 12, color: "#666", margin: "4px 0 8px" }}>
+            Uses {selected.size ? `the ${selected.size} ticked clients` : `all ${visible.length} clients in the current filters`}. Each sheet lists name, phone and address, ordered by pincode then area, with a tick box and remarks column.
+          </p>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+            <button onClick={() => setPickedZones(null)} style={pill(!pickedZones, "#8e44ad")}>All areas ({printScope.length})</button>
+            {zoneGroups.map((g) => {
+              const on = !pickedZones || pickedZones.includes(g.zone);
+              return (
+                <button key={g.zone} style={pill(on && !!pickedZones, "#8e44ad")}
+                  onClick={() => setPickedZones((cur) => {
+                    const base = cur || [];
+                    return base.includes(g.zone) ? base.filter((z) => z !== g.zone) : [...base, g.zone];
+                  })}>
+                  {g.zone} ({g.rows.length})
+                </button>
+              );
+            })}
+          </div>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", fontSize: 12 }}>
+            <label>Stops per trip <input type="number" min={5} max={100} value={tripSize} onChange={(e) => setTripSize(Number(e.target.value) || 25)} style={{ ...inp, width: 64 }} /></label>
+            <label style={{ display: "flex", gap: 4, alignItems: "center" }}><input type="checkbox" checked={skipIncomplete} onChange={(e) => setSkipIncomplete(e.target.checked)} /> Skip clients with incomplete address</label>
+            <button disabled={!chosenCount} onClick={printRoutes} style={actionBtn("#8e44ad", !chosenCount)}>Print {chosenCount} stops</button>
+            <button onClick={() => setEditZones(zones.map((z) => ({ name: z.name, text: z.pincodes.join(", ") })))} style={pill(false)}>✎ Edit areas &amp; pincodes</button>
+          </div>
+          {editZones && (
+            <div style={{ marginTop: 10, borderTop: "1px solid #e9d5ff", paddingTop: 8 }}>
+              <p style={{ fontSize: 12, color: "#666", margin: "0 0 6px" }}>One line per area: a name and its 6-digit pincodes. Clients whose pincode is in no area appear as “Other / not in a zone”. Saved for everyone.</p>
+              {editZones.map((z, i) => (
+                <div key={i} style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "flex-start" }}>
+                  <input value={z.name} onChange={(e) => setEditZones((l) => l.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))} style={{ ...inp, width: 170 }} />
+                  <textarea value={z.text} rows={2} onChange={(e) => setEditZones((l) => l.map((x, j) => (j === i ? { ...x, text: e.target.value } : x)))} style={{ ...inp, flex: 1, fontFamily: "inherit" }} />
+                  <button onClick={() => setEditZones((l) => l.filter((_, j) => j !== i))} style={{ ...pill(false), color: "#c0392b" }}>×</button>
+                </div>
+              ))}
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => setEditZones((l) => [...l, { name: "", text: "" }])} style={pill(false)}>+ Add area</button>
+                <button onClick={() => saveZones(editZones)} style={actionBtn("#16a34a")}>Save areas</button>
+                <button onClick={() => setEditZones(null)} style={pill(false)}>Cancel</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       {error && <div style={{ background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", borderRadius: 8, padding: "6px 10px", fontSize: 12, marginBottom: 8 }}>{error}</div>}
 
       {/* Bulk bar */}
