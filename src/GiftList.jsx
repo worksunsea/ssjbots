@@ -123,7 +123,7 @@ export default function GiftList({ sb, tenantId }) {
     try {
       for (let from = 0; ; from += FETCH_PAGE) {
         let q = sb.from("bullion_leads")
-          .select("id,name,phone,city,tags,source,client_rating,is_client,dnd,address_house,address_locality,address_state,address_pincode")
+          .select("id,name,phone,city,tags,source,client_rating,is_client,dnd,address_house,address_locality,address_state,address_pincode,address_zone,household_id")
           .eq("tenant_id", tenantId).is("deleted_at", null)
           .order("name", { ascending: true, nullsFirst: false })
           .range(from, from + FETCH_PAGE - 1);

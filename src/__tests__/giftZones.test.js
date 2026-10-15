@@ -28,6 +28,11 @@ describe("groupByZone", () => {
     expect(out.map((g) => g.zone)).toEqual(["North Delhi", "South Delhi", UNZONED]);
     expect(out[0].rows.map((r) => r.id)).toEqual([3, 2]);
   });
+  it("prefers the stored zone over the pincode lists and creates zones it has not heard of", () => {
+    const rows = [c(1, "110007", { address_zone: "South Delhi" }), c(2, "", { address_zone: "Noida" })];
+    const out = groupByZone(rows, zones);
+    expect(out.map((g) => [g.zone, g.rows.length])).toEqual([["South Delhi", 1], ["Noida", 1]]);
+  });
   it("does not reorder the caller's array", () => {
     const rows = [c(2, "110009"), c(1, "110007")];
     groupByZone(rows, zones);

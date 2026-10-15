@@ -7,16 +7,16 @@ import { addressLine } from "./giftFilter";
 export const UNZONED = "Other / not in a zone";
 
 /**
- * Starter zones (editable on the Gifts screen and saved for everyone). Pincodes
- * listed here are the ones that are certain; anything not listed shows up under
- * "Other / not in a zone" so it can be assigned instead of silently misplaced.
+ * Area labels. Every contact's `address_zone` is filled from its pincode by tools/address-cleanup.mjs,
+ * so these entries only matter as a fallback: add pincodes to an area here (Edit areas on the Gifts
+ * screen) for contacts that have a pincode but no stored zone. Anything else shows under "Other".
  */
 export const DEFAULT_ZONES = [
-  { name: "North Delhi", pincodes: ["110007", "110009", "110033", "110052", "110054", "110084", "110085", "110086", "110088"] },
-  { name: "Central / Old Delhi", pincodes: ["110001", "110002", "110005", "110006", "110055"] },
-  { name: "West Delhi", pincodes: ["110008", "110015", "110018", "110026", "110027", "110041", "110058", "110063", "110064"] },
-  { name: "South Delhi", pincodes: ["110016", "110017", "110019", "110024", "110029", "110048", "110049", "110067", "110070"] },
-  { name: "East Delhi / Shahdara", pincodes: ["110031", "110032", "110051", "110053", "110090", "110091", "110092", "110093", "110094"] },
+  { name: "North Delhi", pincodes: [] },
+  { name: "Central Delhi", pincodes: [] },
+  { name: "West Delhi", pincodes: [] },
+  { name: "South Delhi", pincodes: [] },
+  { name: "East Delhi", pincodes: [] },
 ];
 
 const pin = (c) => String(c.address_pincode ?? "").trim();
@@ -42,8 +42,16 @@ export function routeCompare(a, b) {
 
 /** @returns {{zone:string, rows:object[]}[]} in zone-config order, "other" last, empty zones dropped. */
 export function groupByZone(rows, zones) {
-  const buckets = new Map([...zones.map((z) => [z.name, []]), [UNZONED, []]]);
-  rows.forEach((c) => buckets.get(zoneForPincode(zones, pin(c))).push(c));
+  const buckets = new Map(zones.map((z) => [z.name, []]));
+  // The stored zone (set by the address clean-up from the pincode) wins; the pincode lists are the fallback.
+  rows.forEach((c) => {
+    const zone = String(c.address_zone ?? "").trim() || zoneForPincode(zones, pin(c));
+    if (!buckets.has(zone)) buckets.set(zone, []);
+    buckets.get(zone).push(c);
+  });
+  const unzoned = buckets.get(UNZONED);
+  buckets.delete(UNZONED);
+  if (unzoned) buckets.set(UNZONED, unzoned);
   return [...buckets.entries()]
     .map(([zone, list]) => ({ zone, rows: list.sort(routeCompare) }))
     .filter((g) => g.rows.length);

@@ -4,7 +4,7 @@ import { render, screen, waitFor, fireEvent, within } from "@testing-library/rea
 import GiftList from "../GiftList.jsx";
 
 const rows = [
-  { id: "1", name: "Asha", phone: "9810000001", city: "Delhi", tags: ["VIP"], address_house: "B-1", address_pincode: "110005" },
+  { id: "1", name: "Asha", phone: "9810000001", city: "Delhi", tags: ["VIP"], address_house: "B-1", address_pincode: "110005", address_zone: "Central Delhi" },
   { id: "2", name: "Bharat", phone: "9810000002", city: "Noida", tags: [], address_house: "", address_pincode: "" },
 ];
 
@@ -57,7 +57,7 @@ describe("GiftList", () => {
     await waitFor(() => expect(written).toHaveLength(1));
     expect(written[0]).toContain("Asha");
     expect(written[0]).not.toContain("Bharat");
-    expect(written[0]).toContain("Central / Old Delhi");
+    expect(written[0]).toContain("Central Delhi");
   });
 
   it("marks several selected contacts as sent in one go", async () => {
