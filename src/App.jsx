@@ -13,6 +13,7 @@ import BlogAdminScreen from "./BlogAdmin";
 import KittyAdminScreen from "./KittyAdmin";
 import ClientCardScan from "./ClientCardScan";
 import GiftList from "./GiftList";
+import MultiMerge from "./MultiMerge";
 
 // ── SUPABASE (shared Sun Sea project — same as ssj-hr / fms-tracker) ──
 const SUPABASE_URL = "https://uppyxzellmuissdlxsmy.supabase.co";
@@ -4881,6 +4882,7 @@ function ContactsScreen({ funnels }) {
   const { customFields, fieldOrder, setCustomFields, setFieldOrder } = React.useContext(ContactFieldsContext);
   const [showFieldMgr, setShowFieldMgr] = useState(false);
   const [showCardScan, setShowCardScan] = useState(false);
+  const [multiMerge, setMultiMerge] = useState(null); // contact ids being merged in one go
   const [filterTags, setFilterTags] = useState([]);
   const [tagLogic, setTagLogic] = useState("AND"); // AND = must have all, OR = any
   const isSA = loadUser()?.role === "superadmin";
@@ -5045,6 +5047,7 @@ function ContactsScreen({ funnels }) {
         </label>
         <span style={{ fontSize: 11, color: "#888" }}>{loading ? "Loading…" : `${total.toLocaleString()} contacts`}</span>
         {showCardScan && <ClientCardScan onClose={() => setShowCardScan(false)} onSaved={() => load(search, filterTags, tagLogic, page)} />}
+        {multiMerge && <MultiMerge sb={sb} ids={multiMerge} user={loadUser()} onClose={() => setMultiMerge(null)} onDone={() => { clearSel(); load(search, filterTags, tagLogic, page); }} />}
       </div>
 
       {isSA && pendingMerges?.length > 0 && (
@@ -5115,10 +5118,10 @@ function ContactsScreen({ funnels }) {
                 pick primary/secondary; submitting only queues a request —
                 a superadmin approves before anything actually merges. */}
             {isManagerPlus && (
-              <Btn small ghost color={C.purple} disabled={selected.size !== 2}
-                title={selected.size !== 2 ? "Select exactly 2 contacts to merge" : "Merge these two"}
-                onClick={() => { const [a, b] = [...selected]; setMergeModal({ primaryId: a, secondaryId: b }); }}>
-                🔗 Merge {selected.size === 2 ? "" : "(pick 2)"}
+              <Btn small ghost color={C.purple} disabled={selected.size < 2}
+                title={selected.size < 2 ? "Select 2 or more duplicate contacts to merge" : `Merge these ${selected.size} into one`}
+                onClick={() => setMultiMerge([...selected])}>
+                🔗 Merge {selected.size >= 2 ? selected.size : "(pick 2+)"}
               </Btn>
             )}
             {/* Bulk delete — SA only */}
@@ -12020,7 +12023,7 @@ export default function App() {
       {activeScreen === "adleads" && <DemandsScreen funnels={funnels} allTags={allTags} adOnly />}
       {activeScreen === "contacts" && <ContactsScreen funnels={funnels} />}
       {activeScreen === "contactsdb" && <ContactsDBScreen />}
-      {activeScreen === "gifts" && <GiftList sb={sb} tenantId={getTenantId()} />}
+      {activeScreen === "gifts" && <GiftList sb={sb} tenantId={getTenantId()} user={loadUser()} />}
       {activeScreen === "upcoming" && <UpcomingEventsScreen />}
       {activeScreen === "messages" && <MessageHistoryScreen funnels={funnels} />}
       {activeScreen === "funnels" && <FunnelsScreen funnels={funnels} personas={personas} onReload={loadFunnels} />}

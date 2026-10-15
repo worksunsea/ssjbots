@@ -1,6 +1,10 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { applyGiftFilters, editTags, giftCsv, addressLine, hasCompleteAddress, DEFAULT_SENT_TAG, DEFAULT_PICK_TAG } from "./giftFilter";
 import { DEFAULT_ZONES, groupByZone, buildTrips, buildRoutePrintHtml, parsePincodes } from "./giftZones";
+import { collapseHouseholds } from "./households";
+import HouseholdPanel from "./HouseholdPanel";
+import MultiMerge from "./MultiMerge";
+import { ScheduleModal, DaySheets } from "./GiftDeliveryUI";
 
 // 🎁 Gifts — pick who gets a festival gift. Filter the client database, see the
 // list, edit tags right on the page (one contact or many at once), mark gifts
@@ -52,7 +56,7 @@ function TagPicker({ label, allTags, selected, onToggle, onCreate, color = "#3b8
   );
 }
 
-export default function GiftList({ sb, tenantId }) {
+export default function GiftList({ sb, tenantId, user }) {
   const [registry, setRegistry] = useState([]);
   const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -78,6 +82,14 @@ export default function GiftList({ sb, tenantId }) {
 
   const [bulkAdd, setBulkAdd] = useState([]);
   const [bulkRemove, setBulkRemove] = useState([]);
+
+  // Households, merging and scheduling
+  const [showHouseholds, setShowHouseholds] = useState(false);
+  const [mergeIds, setMergeIds] = useState(null);
+  const [scheduleLeads, setScheduleLeads] = useState(null);
+  const [showDays, setShowDays] = useState(false);
+  const [oneStopPerHousehold, setOneStopPerHousehold] = useState(true);
+  const [notice, setNotice] = useState("");
 
   // Area-wise printing
   const [zones, setZones] = useState(DEFAULT_ZONES);
@@ -123,7 +135,7 @@ export default function GiftList({ sb, tenantId }) {
     try {
       for (let from = 0; ; from += FETCH_PAGE) {
         let q = sb.from("bullion_leads")
-          .select("id,name,phone,city,tags,source,client_rating,is_client,dnd,address_house,address_locality,address_state,address_pincode,address_zone,household_id")
+          .select("id,name,phone,city,tags,source,client_rating,is_client,dnd,address_house,address_locality,address_state,address_pincode,address_zone,household_id,partner_lead_id,spouse_mobile,mobile2")
           .eq("tenant_id", tenantId).is("deleted_at", null)
           .order("name", { ascending: true, nullsFirst: false })
           .range(from, from + FETCH_PAGE - 1);
@@ -151,7 +163,7 @@ export default function GiftList({ sb, tenantId }) {
   }, [load, search]);
 
   const visible = useMemo(
-    () => applyGiftFilters(contacts, { excludeTags, pincodePrefix, address, gift, sentTag, hideDnd }),
+    () => applyGiftFilters(contacts.filter((c) => !String(c.name || "").startsWith("[MERGED]")), { excludeTags, pincodePrefix, address, gift, sentTag, hideDnd }),
     [contacts, excludeTags, pincodePrefix, address, gift, sentTag, hideDnd],
   );
   useEffect(() => { setPage(0); setSelected(new Set()); }, [visible.length, search, includeTags, excludeTags, address, gift]);
@@ -181,6 +193,30 @@ export default function GiftList({ sb, tenantId }) {
       setContacts((l) => l.map((c) => (c.id === contact.id ? { ...c, tags: before } : c)));
       setError(`Could not save tags for ${contact.name || contact.phone}: ${err.message}`);
     }
+  }
+
+  /** Give all these contacts one household_id (reusing the group's existing one when it has it). */
+  async function linkHousehold(ids, existingId) {
+    const householdId = existingId || crypto.randomUUID();
+    const { error: err } = await sb.from("bullion_leads").update({ household_id: householdId }).in("id", ids);
+    if (err) { setError(`Could not link: ${err.message}`); return; }
+    setContacts((l) => l.map((c) => (ids.includes(c.id) ? { ...c, household_id: householdId } : c)));
+    setNotice(`${ids.length} contacts linked as one household.`);
+  }
+
+  async function unlinkHousehold(ids) {
+    if (!window.confirm(`Remove ${ids.length} contact(s) from their household? The contacts themselves are not changed.`)) return;
+    const { error: err } = await sb.from("bullion_leads").update({ household_id: null }).in("id", ids);
+    if (err) { setError(`Could not unlink: ${err.message}`); return; }
+    setContacts((l) => l.map((c) => (ids.includes(c.id) ? { ...c, household_id: null } : c)));
+  }
+
+  /** A delivery marked "delivered" on a day sheet also marks the client's gift as sent. */
+  async function markSentFromSheet(lead) {
+    const current = contacts.find((c) => c.id === lead.id) || lead;
+    if ((current.tags || []).includes(sentTag)) return;
+    await ensureTag(sentTag);
+    await saveTags(current, editTags(current.tags, { add: [sentTag] }));
   }
 
   async function bulkEdit(edit, what) {
@@ -217,8 +253,9 @@ export default function GiftList({ sb, tenantId }) {
   // Rows going on the area-wise sheets: the ticked rows if any, else everything the filters show.
   const printScope = useMemo(() => {
     const base = selected.size ? visible.filter((c) => selected.has(c.id)) : visible;
-    return skipIncomplete ? base.filter(hasCompleteAddress) : base;
-  }, [visible, selected, skipIncomplete]);
+    const stops = oneStopPerHousehold ? collapseHouseholds(base) : base;   // joint household = one stop, best address
+    return skipIncomplete ? stops.filter(hasCompleteAddress) : stops;
+  }, [visible, selected, skipIncomplete, oneStopPerHousehold]);
   const zoneGroups = useMemo(() => groupByZone(printScope, zones), [printScope, zones]);
   const chosenGroups = zoneGroups.filter((g) => !pickedZones || pickedZones.includes(g.zone));
   const chosenCount = chosenGroups.reduce((n, g) => n + g.rows.length, 0);
@@ -240,6 +277,11 @@ export default function GiftList({ sb, tenantId }) {
   const toggle = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const togglePage = () => setSelected((s) => { const n = new Set(s); pageRows.forEach((c) => (allOnPage ? n.delete(c.id) : n.add(c.id))); return n; });
   const flip = (list, setList) => (name) => setList(list.includes(name) ? list.filter((t) => t !== name) : [...list, name]);
+  const householdSize = useMemo(() => {
+    const m = new Map();
+    contacts.forEach((c) => { if (c.household_id) m.set(c.household_id, (m.get(c.household_id) || 0) + 1); });
+    return m;
+  }, [contacts]);
   const stats = useMemo(() => ({
     complete: visible.filter(hasCompleteAddress).length,
     sent: visible.filter((c) => (c.tags || []).includes(sentTag)).length,
@@ -303,9 +345,18 @@ export default function GiftList({ sb, tenantId }) {
         <span style={{ fontSize: 12, color: "#2563eb" }}>🎁 {stats.sent} sent</span>
         <span style={{ fontSize: 12, color: "#888" }}>{selected.size} selected</span>
         {truncated && <span style={{ fontSize: 12, color: "#dc2626" }}>Showing the first {FETCH_CAP.toLocaleString()} — narrow the filters.</span>}
-        <button onClick={() => setShowPrint((v) => !v)} style={{ ...actionBtn("#8e44ad"), marginLeft: "auto" }}>🖨 Print by area</button>
+        <button onClick={() => setShowHouseholds((v) => !v)} style={{ ...actionBtn("#0284c7"), marginLeft: "auto" }}>🏠 Households</button>
+        <button onClick={() => setShowDays(true)} style={actionBtn("#d97706")}>📅 Day sheets</button>
+        <button onClick={() => setShowPrint((v) => !v)} style={actionBtn("#8e44ad")}>🖨 Print by area</button>
         <button onClick={exportCsv} style={actionBtn("#16a34a")}>⬇ Export {selected.size ? `${selected.size} selected` : "list"} (CSV)</button>
       </div>
+      {notice && <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", color: "#166534", borderRadius: 8, padding: "6px 10px", fontSize: 12, marginBottom: 8, display: "flex", justifyContent: "space-between" }}>{notice}<button onClick={() => setNotice("")} style={{ border: "none", background: "none", cursor: "pointer" }}>×</button></div>}
+
+      {showHouseholds && <HouseholdPanel contacts={contacts} onLink={linkHousehold} onClose={() => setShowHouseholds(false)} />}
+      {mergeIds && <MultiMerge sb={sb} ids={mergeIds} user={user} onClose={() => setMergeIds(null)} onDone={() => { setSelected(new Set()); load(); }} />}
+      {scheduleLeads && <ScheduleModal sb={sb} tenantId={tenantId} user={user} leads={scheduleLeads} onClose={() => setScheduleLeads(null)}
+        onDone={(n, date) => { setScheduleLeads(null); setSelected(new Set()); setNotice(`${n} deliveries scheduled for ${date}. Open “Day sheets” to print.`); }} />}
+      {showDays && <DaySheets sb={sb} tenantId={tenantId} onClose={() => setShowDays(false)} onDelivered={markSentFromSheet} />}
 
       {/* Area-wise delivery sheets */}
       {showPrint && (
@@ -335,6 +386,7 @@ export default function GiftList({ sb, tenantId }) {
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", fontSize: 12 }}>
             <label>Stops per trip <input type="number" min={5} max={100} value={tripSize} onChange={(e) => setTripSize(Number(e.target.value) || 25)} style={{ ...inp, width: 64 }} /></label>
             <label style={{ display: "flex", gap: 4, alignItems: "center" }}><input type="checkbox" checked={skipIncomplete} onChange={(e) => setSkipIncomplete(e.target.checked)} /> Skip clients with incomplete address</label>
+            <label style={{ display: "flex", gap: 4, alignItems: "center" }}><input type="checkbox" checked={oneStopPerHousehold} onChange={(e) => setOneStopPerHousehold(e.target.checked)} /> One stop per household</label>
             <button disabled={!chosenCount} onClick={printRoutes} style={actionBtn("#8e44ad", !chosenCount)}>Print {chosenCount} stops</button>
             <button onClick={() => setEditZones(zones.map((z) => ({ name: z.name, text: z.pincodes.join(", ") })))} style={pill(false)}>✎ Edit areas &amp; pincodes</button>
           </div>
@@ -365,6 +417,11 @@ export default function GiftList({ sb, tenantId }) {
           <b style={{ fontSize: 13, color: "#1d4ed8" }}>{selected.size} selected</b>
           {selected.size < visible.length && <button onClick={() => setSelected(new Set(visible.map((c) => c.id)))} style={pill(false)}>Select all {visible.length}</button>}
           <button onClick={() => setSelected(new Set())} style={pill(false)}>Clear</button>
+          <span style={{ borderLeft: "1px solid #bfdbfe", height: 20 }} />
+          <button onClick={() => setScheduleLeads(contacts.filter((c) => selected.has(c.id)))} style={actionBtn("#d97706")}>📅 Schedule delivery</button>
+          <button disabled={selected.size < 2} onClick={() => setMergeIds([...selected])} style={actionBtn("#7c3aed", selected.size < 2)}>🔗 Merge {selected.size}</button>
+          <button disabled={selected.size < 2} onClick={() => linkHousehold([...selected], null)} style={actionBtn("#0284c7", selected.size < 2)}>🏠 Link as household</button>
+          <button onClick={() => unlinkHousehold([...selected])} style={{ ...pill(false), fontSize: 12 }}>Unlink</button>
           <span style={{ borderLeft: "1px solid #bfdbfe", height: 20 }} />
           <button disabled={!!busy} onClick={() => bulkEdit({ add: [pickTag] }, `Add to gift list ("${pickTag}")`)} style={actionBtn("#8e44ad", !!busy)}>＋ Add to gift list</button>
           <button disabled={!!busy} onClick={() => bulkEdit({ add: [sentTag] }, `Mark gift sent ("${sentTag}")`)} style={actionBtn("#2563eb", !!busy)}>🎁 Mark sent</button>
@@ -397,6 +454,7 @@ export default function GiftList({ sb, tenantId }) {
                   <td style={{ padding: "7px 10px", minWidth: 150 }}>
                     <div style={{ fontWeight: 600 }}>{c.name || <em style={{ color: "#aaa" }}>no name</em>}{c.dnd ? " 🚫" : ""}</div>
                     <div style={{ fontSize: 12, color: "#666" }}>{c.phone}</div>
+                    {c.household_id && <div style={{ fontSize: 11, color: "#0369a1" }} title="Linked household — printed as one stop">🏠 household of {householdSize.get(c.household_id) || 1}</div>}
                   </td>
                   <td style={{ padding: "7px 10px", minWidth: 190, fontSize: 12, color: hasCompleteAddress(c) ? "#333" : "#b45309" }}>
                     {addressLine(c) || <em>no address</em>}

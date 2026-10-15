@@ -11,10 +11,12 @@ const rows = [
 /** Minimal stand-in for the supabase query builder: chainable and awaitable. */
 function fakeSb() {
   const updates = [];
+  const inserts = [];
   const builder = (table, result) => {
     const b = {
       select: () => b, eq: () => b, is: () => b, order: () => b, range: () => b, or: () => b,
-      contains: () => b, overlaps: () => b, ilike: () => b, gte: () => b, insert: () => Promise.resolve({ error: null }),
+      contains: () => b, overlaps: () => b, ilike: () => b, gte: () => b, in: () => b, neq: () => b, limit: () => b,
+      insert: (rows) => { inserts.push({ table, rows }); return Promise.resolve({ error: null }); },
       maybeSingle: () => Promise.resolve({ data: null, error: null }),
       update: (patch) => ({ eq: (_c, id) => { updates.push({ id, patch }); return Promise.resolve({ error: null }); } }),
       then: (res, rej) => Promise.resolve(result).then(res, rej),
@@ -22,7 +24,7 @@ function fakeSb() {
     return b;
   };
   return {
-    updates,
+    updates, inserts,
     from: (table) => builder(table, table === "bullion_tags"
       ? { data: [{ name: "VIP", category: "segment", color: "#eee" }], error: null }
       : { data: rows, error: null }),
@@ -58,6 +60,20 @@ describe("GiftList", () => {
     expect(written[0]).toContain("Asha");
     expect(written[0]).not.toContain("Bharat");
     expect(written[0]).toContain("Central Delhi");
+  });
+
+  it("schedules the ticked clients for a day with an employee and gift", async () => {
+    const sb = fakeSb();
+    render(React.createElement(GiftList, { sb, tenantId: "t1" }));
+    await waitFor(() => expect(screen.getByText("Asha")).toBeTruthy());
+    fireEvent.click(screen.getAllByRole("checkbox")[2]);
+    fireEvent.click(await screen.findByText("📅 Schedule delivery"));
+    fireEvent.change(await screen.findByPlaceholderText(/Silver coin/), { target: { value: "Silver coin 10 g" } });
+    fireEvent.click(await screen.findByText(/^Schedule 2$/));
+    await waitFor(() => expect(sb.inserts.some((i) => i.table === "gift_deliveries")).toBe(true));
+    const rows = sb.inserts.find((i) => i.table === "gift_deliveries").rows;
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.gift_item === "Silver coin 10 g" && r.status === "planned")).toBe(true);
   });
 
   it("marks several selected contacts as sent in one go", async () => {
