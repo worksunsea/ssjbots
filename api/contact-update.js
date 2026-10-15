@@ -146,7 +146,8 @@ export default async function handler(req, res) {
         tenant_id: TENANT_ID,
         phone,
         status: "new",
-        source: "profile_form",
+        // Staff-keyed paper cards are tagged so they can be told apart from web-form sign-ups.
+        source: body.source === "client_card" ? "client_card" : "profile_form",
       };
       if (body.name) ins.name = String(body.name).slice(0, 100);
       const { data: newLead } = await sb.from("bullion_leads").insert(ins).select("id, tenant_id, name").single();
