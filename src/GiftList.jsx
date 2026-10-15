@@ -2,6 +2,8 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import { applyGiftFilters, editTags, giftCsv, addressLine, hasCompleteAddress, DEFAULT_SENT_TAG, DEFAULT_PICK_TAG } from "./giftFilter";
 import { DEFAULT_ZONES, groupByZone, buildTrips, buildRoutePrintHtml, parsePincodes } from "./giftZones";
 import { collapseHouseholds } from "./households";
+import postal from "../tools/data/postal.json";
+import { fillFromPincode, normalizePincode } from "../api/_lib/addressParse";
 import HouseholdPanel from "./HouseholdPanel";
 import MultiMerge from "./MultiMerge";
 import { ScheduleModal, DaySheets } from "./GiftDeliveryUI";
@@ -11,6 +13,9 @@ import { ScheduleModal, DaySheets } from "./GiftDeliveryUI";
 // sent, export the address list. All state lives in bullion_leads.tags, so the
 // rest of the CRM (Contacts, Broadcasts, DB) sees the same tags.
 
+const ADDRESS_FIELDS = [
+  ["address_house", "House / flat / street"], ["address_locality", "Area / colony"], ["city", "City"], ["address_state", "State"], ["address_pincode", "Pincode"],
+];
 const PAGE_SIZE = 100;
 const FETCH_PAGE = 1000;
 const FETCH_CAP = 10000;
@@ -90,6 +95,7 @@ export default function GiftList({ sb, tenantId, user }) {
   const [showDays, setShowDays] = useState(false);
   const [oneStopPerHousehold, setOneStopPerHousehold] = useState(true);
   const [notice, setNotice] = useState("");
+  const [editAddr, setEditAddr] = useState(null); // { id, draft, error }
 
   // Area-wise printing
   const [zones, setZones] = useState(DEFAULT_ZONES);
@@ -193,6 +199,20 @@ export default function GiftList({ sb, tenantId, user }) {
       setContacts((l) => l.map((c) => (c.id === contact.id ? { ...c, tags: before } : c)));
       setError(`Could not save tags for ${contact.name || contact.phone}: ${err.message}`);
     }
+  }
+
+  /** Save a hand-edited address; city, state and the delivery zone are filled in from the pincode when blank. */
+  async function saveAddress() {
+    const { id, draft } = editAddr;
+    const next = Object.fromEntries(ADDRESS_FIELDS.map(([k]) => [k, String(draft[k] ?? "").trim()]));
+    next.address_pincode = normalizePincode(next.address_pincode) || next.address_pincode;
+    if (next.address_pincode && !/^\d{6}$/.test(next.address_pincode)) { setEditAddr({ ...editAddr, error: "Pincode must be 6 digits." }); return; }
+    const fill = fillFromPincode(next, postal);
+    const patch = { ...next, city: fill.city, address_state: fill.address_state, address_zone: fill.address_zone || null };
+    const { error: err } = await sb.from("bullion_leads").update(patch).eq("id", id);
+    if (err) { setEditAddr({ ...editAddr, error: err.message }); return; }
+    setContacts((l) => l.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+    setEditAddr(null);
   }
 
   /** Give all these contacts one household_id (reusing the group's existing one when it has it). */
@@ -457,8 +477,31 @@ export default function GiftList({ sb, tenantId, user }) {
                     {c.household_id && <div style={{ fontSize: 11, color: "#0369a1" }} title="Linked household — printed as one stop">🏠 household of {householdSize.get(c.household_id) || 1}</div>}
                   </td>
                   <td style={{ padding: "7px 10px", minWidth: 190, fontSize: 12, color: hasCompleteAddress(c) ? "#333" : "#b45309" }}>
-                    {addressLine(c) || <em>no address</em>}
-                    {!hasCompleteAddress(c) && <div style={{ fontSize: 11 }}>⚠ needs street, city &amp; 6-digit pincode</div>}
+                    {editAddr?.id === c.id ? (
+                      <div style={{ minWidth: 230 }}>
+                        {ADDRESS_FIELDS.map(([k, label]) => (
+                          <label key={k} style={{ display: "block", fontSize: 10, color: "#666", marginBottom: 3 }}>{label}
+                            <input value={editAddr.draft[k] ?? ""} onChange={(e) => setEditAddr((s) => ({ ...s, error: "", draft: { ...s.draft, [k]: e.target.value } }))}
+                              onKeyDown={(e) => { if (e.key === "Enter") saveAddress(); if (e.key === "Escape") setEditAddr(null); }}
+                              style={{ ...inp, width: "100%", boxSizing: "border-box", padding: "3px 6px", fontSize: 12 }} />
+                          </label>
+                        ))}
+                        {editAddr.error && <div style={{ color: "#b91c1c", fontSize: 11 }}>{editAddr.error}</div>}
+                        <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                          <button onClick={saveAddress} style={actionBtn("#16a34a")}>Save</button>
+                          <button onClick={() => setEditAddr(null)} style={pill(false)}>Cancel</button>
+                        </div>
+                        <div style={{ fontSize: 10, color: "#888", marginTop: 3 }}>City, state and area zone fill in from the pincode.</div>
+                      </div>
+                    ) : (
+                      <>
+                        {addressLine(c) || <em>no address</em>}
+                        {c.address_zone && <span style={{ fontSize: 10, background: "#ede9fe", color: "#5b21b6", borderRadius: 8, padding: "1px 6px", marginLeft: 6 }}>{c.address_zone}</span>}
+                        {!hasCompleteAddress(c) && <div style={{ fontSize: 11 }}>⚠ needs street, city &amp; 6-digit pincode</div>}
+                        <div><button onClick={() => setEditAddr({ id: c.id, error: "", draft: Object.fromEntries(ADDRESS_FIELDS.map(([k]) => [k, c[k] || ""])) })}
+                          style={{ ...pill(false), marginTop: 3, fontSize: 11 }}>✎ Edit address</button></div>
+                      </>
+                    )}
                   </td>
                   <td style={{ padding: "7px 10px", minWidth: 220 }}>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 3, alignItems: "center" }}>

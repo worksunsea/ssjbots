@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseAddress, normalizePincode, zoneFor, detectCity } from "../../api/_lib/addressParse.js";
+import { parseAddress, normalizePincode, zoneFor, detectCity, fillFromPincode } from "../../api/_lib/addressParse.js";
 
 const postal = {
   "110005": { district: "Central Delhi", state: "Delhi", offices: ["Karol Bagh", "Anand Parbat"] },
@@ -107,5 +107,16 @@ describe("zoneFor / detectCity", () => {
     expect(detectCity("gzb").city).toBe("Ghaziabad");
     expect(detectCity("Gurugram").city).toBe("Gurgaon");
     expect(detectCity("somewhere")).toBe(null);
+  });
+});
+
+describe("fillFromPincode", () => {
+  it("fills blank city, state and zone from a known pincode without touching typed text", () => {
+    expect(fillFromPincode({ address_pincode: "110005" }, postal)).toEqual({ city: "New Delhi", address_state: "Delhi", address_zone: "Central Delhi" });
+    expect(fillFromPincode({ city: "Delhi", address_state: "Delhi", address_pincode: "110009" }, postal).city).toBe("Delhi");
+  });
+  it("copes with an unknown or missing pincode", () => {
+    expect(fillFromPincode({ city: "Noida" }, postal)).toEqual({ city: "Noida", address_state: "Uttar Pradesh", address_zone: "Noida" });
+    expect(fillFromPincode({ address_pincode: "999999" }, postal).address_zone).toBe("");
   });
 });

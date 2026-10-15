@@ -62,6 +62,29 @@ describe("GiftList", () => {
     expect(written[0]).toContain("Central Delhi");
   });
 
+  it("edits a client address on the page and works out the zone from the pincode", async () => {
+    const sb = fakeSb();
+    render(React.createElement(GiftList, { sb, tenantId: "t1" }));
+    await waitFor(() => expect(screen.getByText("Asha")).toBeTruthy());
+    fireEvent.click(screen.getAllByText("✎ Edit address")[0]);
+    fireEvent.change(screen.getByLabelText("Pincode"), { target: { value: "110009" } });
+    fireEvent.change(screen.getByLabelText("City"), { target: { value: "" } });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => expect(sb.updates).toHaveLength(1));
+    expect(sb.updates[0].patch).toMatchObject({ address_pincode: "110009", city: "New Delhi", address_zone: "North Delhi" });
+  });
+
+  it("refuses a pincode that is not 6 digits", async () => {
+    const sb = fakeSb();
+    render(React.createElement(GiftList, { sb, tenantId: "t1" }));
+    await waitFor(() => expect(screen.getByText("Asha")).toBeTruthy());
+    fireEvent.click(screen.getAllByText("✎ Edit address")[0]);
+    fireEvent.change(screen.getByLabelText("Pincode"), { target: { value: "1100" } });
+    fireEvent.click(screen.getByText("Save"));
+    expect(await screen.findByText("Pincode must be 6 digits.")).toBeTruthy();
+    expect(sb.updates).toHaveLength(0);
+  });
+
   it("schedules the ticked clients for a day with an employee and gift", async () => {
     const sb = fakeSb();
     render(React.createElement(GiftList, { sb, tenantId: "t1" }));

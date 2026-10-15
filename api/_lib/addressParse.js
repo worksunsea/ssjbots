@@ -170,3 +170,22 @@ export function parseAddress(c, postal = {}) {
   const zone = international ? "" : zoneFor(city, finalInfo?.district);
   return { fields, zone, sources, flags };
 }
+
+/**
+ * For a hand-edited address: from a valid pincode fill the city/state that are still blank and work out
+ * the delivery zone. Never changes text the user typed.
+ * @returns {{ city: string, address_state: string, address_zone: string }}
+ */
+export function fillFromPincode(a, postal = {}) {
+  const pin = normalizePincode(a.address_pincode);
+  const info = pin ? postal[pin] : null;
+  let city = clean(a.city);
+  let state = clean(a.address_state);
+  if (info) {
+    if (!state && info.state) state = info.state;
+    if (!city && info.district && DELHI_ZONE_BY_DISTRICT[info.district.toLowerCase()]) city = "New Delhi";
+  }
+  const cityInfo = detectCity(city);
+  if (!state && cityInfo) state = cityInfo.state;
+  return { city, address_state: state, address_zone: zoneFor(city, info?.district) };
+}
