@@ -101,7 +101,7 @@ export default function KittyAdminScreen({ sb, tenantId, crmSecret, staffName })
       <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
         {[["overview", "Overview"], ["schemes", "Schemes"], ["enroll", "Enroll New Member"], ["enrollments", "Enrollments"],
           ["gullak", "Gullak"], ["swarn", "Swarn Suraksha"], ["goldensparkle", "Golden Sparkle"], ["mission100", "Mission 100"], ["goldtally", "Gold Tally"],
-          ["legacy", "Add Legacy Member"], ["pending", `📨 Pending Messages${pendingCount ? ` (${pendingCount})` : ""}`], ["messages", "✉️ Messages"], ["activity", "Activity Log"]].map(([k, l]) => (
+          ["legacy", "Add Legacy Member"], ["bulk", "📣 Bulk Message"], ["pending", `📨 Pending Messages${pendingCount ? ` (${pendingCount})` : ""}`], ["messages", "✉️ Messages"], ["activity", "Activity Log"]].map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)}
             style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid #d4af37",
               background: tab === k ? "#d4af37" : "transparent", color: tab === k ? "#fff" : "#d4af37", cursor: "pointer" }}>
@@ -119,6 +119,7 @@ export default function KittyAdminScreen({ sb, tenantId, crmSecret, staffName })
       {tab === "mission100" && <Mission100Admin crmSecret={crmSecret} actor={actor} />}
       {tab === "goldtally" && <GoldTallyTab crmSecret={crmSecret} />}
       {tab === "legacy" && <LegacyTab crmSecret={crmSecret} actor={actor} />}
+      {tab === "bulk" && <BulkMessageTab crmSecret={crmSecret} actor={actor} />}
       {tab === "pending" && <PendingMessagesTab crmSecret={crmSecret} actor={actor} onChange={checkPendingCount} />}
       {tab === "messages" && <MessagesTab sb={sb} crmSecret={crmSecret} actor={actor} />}
       {tab === "activity" && <ActivityLogTab crmSecret={crmSecret} />}
@@ -198,6 +199,19 @@ function BulkMessagePanel({ crmSecret, actor, schemes }) {
       <span style={{ fontSize: 12, color: "#666", marginLeft: 10 }}>Goes to Pending Messages for your approval.</span>
     </div>
   );
+}
+
+// Standalone tab for the bulk message panel — loads the live schemes itself.
+function BulkMessageTab({ crmSecret, actor }) {
+  const [schemes, setSchemes] = useState(null);
+  useEffect(() => {
+    call("admin-list-enrollments", { crmSecret }).then((d) => {
+      const live = (d.ok ? d.enrollments : []).filter((e) => ["active", "completed", "redeemed"].includes(e.status) && !e.is_legacy && e.scheme_id);
+      setSchemes([...new Map(live.map((e) => [e.scheme_id, { id: e.scheme_id, name: e.scheme?.name || "—", isCoin: e.scheme?.perks?.unit === "grams" }])).values()]);
+    });
+  }, [crmSecret]);
+  if (schemes === null) return <div>Loading…</div>;
+  return <BulkMessagePanel crmSecret={crmSecret} actor={actor} schemes={schemes} />;
 }
 
 // Per-scheme member/payment stats + a pending-payments worklist with
@@ -280,13 +294,9 @@ function OverviewTab({ crmSecret, actor }) {
     if (d.ok) { alert("Queued — approve from Kitty Admin > Pending Messages."); load(); } else alert(d.error);
   };
 
-  // One entry per live (non-legacy) scheme, for the bulk message panel.
-  const remindableSchemes = [...new Map(live.filter((e) => !e.is_legacy && e.scheme_id).map((e) => [e.scheme_id, { id: e.scheme_id, name: e.scheme?.name || "—", isGram: isGramScheme(e), isCoin: e.scheme?.perks?.unit === "grams" }])).values()];
-
   return (
     <div>
       <p style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Total active enrollments: {live.length}</p>
-      <BulkMessagePanel crmSecret={crmSecret} actor={actor} schemes={remindableSchemes} />
       <h4>Members & Payments per Kitty</h4>
       <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 28, fontSize: 12.5 }}>
         <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
@@ -384,6 +394,7 @@ function PendingMessagesTab({ crmSecret, actor, onChange }) {
   const [progress, setProgress] = useState({ done: 0, total: 0, sent: 0, failed: 0 });
   const cancelRef = useRef(false);
   const [selected, setSelected] = useState(() => new Set());
+  const [editing, setEditing] = useState(null); // { id, text }
 
   const load = useCallback(async () => {
     const d = await call("admin-list-pending-messages", { crmSecret });
@@ -411,11 +422,16 @@ function PendingMessagesTab({ crmSecret, actor, onChange }) {
 
   useEffect(() => { load(); }, [load]);
 
-  const editOne = async (m) => {
-    const edited = prompt("Edit message (saved only, not sent — click Send/Send All separately when ready):", m.message);
-    if (edited == null || edited.trim() === m.message) return;
-    const d = await call("admin-edit-pending-message", { method: "POST", crmSecret, body: { id: m.id, message: edited.trim(), actor } });
-    if (d.ok) load(); else alert(d.error);
+  const saveEdit = async () => {
+    const text = editing.text.trim();
+    const original = messages.find((m) => m.id === editing.id)?.message;
+    if (!text) { alert("Message cannot be empty."); return; }
+    if (text !== original) {
+      const d = await call("admin-edit-pending-message", { method: "POST", crmSecret, body: { id: editing.id, message: text, actor } });
+      if (!d.ok) { alert(d.error); return; }
+    }
+    setEditing(null);
+    load();
   };
 
   const sendOne = async (id) => {
@@ -449,7 +465,7 @@ function PendingMessagesTab({ crmSecret, actor, onChange }) {
     <div>
       <p style={{ fontSize: 13, color: "#666" }}>
         Every Kitty WhatsApp waits here for approval before it goes out — nothing sends on its own.
-        Click a message's text to edit and save it (not sent) — send it individually or all together (paced at a random {SEND_GAP_MIN_MS / 1000}–{SEND_GAP_MAX_MS / 1000}s apart, same anti-ban spacing as broadcasts). Sending one leaves the rest untouched.
+        Press Edit on a message to change it (saved only, not sent) — send it individually or all together (paced at a random {SEND_GAP_MIN_MS / 1000}–{SEND_GAP_MAX_MS / 1000}s apart, same anti-ban spacing as broadcasts). Sending one leaves the rest untouched.
       </p>
       {messages === null ? <div>Loading…</div> : (
         <>
@@ -478,19 +494,28 @@ function PendingMessagesTab({ crmSecret, actor, onChange }) {
               </tr></thead>
               <tbody>
                 {messages.map((m) => (
-                  <tr key={m.id} style={{ borderBottom: "1px solid #eee", background: selected.has(m.id) ? "#fff8e1" : undefined }}>
+                  <tr key={m.id} style={{ borderBottom: "1px solid #eee", verticalAlign: "top", background: selected.has(m.id) ? "#fff8e1" : undefined }}>
                     <td><input type="checkbox" checked={selected.has(m.id)} onChange={() => toggleOne(m.id)} /></td>
                     <td style={{ whiteSpace: "nowrap" }}>{new Date(m.created_at).toLocaleString("en-IN")}</td>
                     <td>{typeLabel(m.context)}</td>
                     <td>{m.lead?.name || "—"}<br /><span style={{ color: "#888" }}>{m.phone}</span></td>
-                    <td style={{ maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer" }} title="Click to edit (saves only, doesn't send)" onClick={() => editOne(m)}>{m.message}</td>
+                    <td style={{ minWidth: 320, maxWidth: 460, whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: 1.4 }}>
+                      {editing?.id === m.id ? (
+                        <div>
+                          <textarea value={editing.text} onChange={(e) => setEditing({ id: m.id, text: e.target.value })} rows={Math.max(6, editing.text.split("\n").length + 2)}
+                            style={{ width: "100%", boxSizing: "border-box", fontSize: 13 }} autoFocus />
+                          <button onClick={saveEdit} style={{ padding: "3px 10px", marginRight: 6 }}>💾 Save</button>
+                          <button onClick={() => setEditing(null)} style={{ padding: "3px 10px" }}>Cancel</button>
+                        </div>
+                      ) : m.message}
+                    </td>
                     <td style={{ color: "#b91c1c", fontSize: 11 }}>{m.last_error || ""}</td>
                     <td>{m.attempts}</td>
                     <td style={{ whiteSpace: "nowrap" }}>
                       <button onClick={() => sendOne(m.id)} disabled={sendingAll || sendingId === m.id} style={{ padding: "3px 10px" }}>
                         {sendingId === m.id ? "Sending…" : "Send"}
                       </button>{" "}
-                      <button onClick={() => editOne(m)} disabled={sendingAll} style={{ padding: "3px 10px" }}>✏️ Edit</button>{" "}
+                      <button onClick={() => setEditing({ id: m.id, text: m.message })} disabled={sendingAll} style={{ padding: "3px 10px" }}>✏️ Edit</button>{" "}
                       <button onClick={() => deleteMessages({ ids: [m.id] })} disabled={sendingAll} style={{ padding: "3px 10px", color: "#b91c1c" }}>🗑 Delete</button>
                     </td>
                   </tr>
