@@ -29,6 +29,7 @@ const KITTY_MSG_TYPE_LABELS = {
   rate_cut_payment_reminder: "Rate booked, unpaid nudge", redemption_thank_you: "Redemption thank-you",
   mission100_completion: "Mission 100 finish", mission100_checkpoint: "Mission 100 checkpoint",
   mission100_winner: "Mission 100 winner", mission100_referral: "Mission 100 referral", adhoc: "Manual send",
+  scheme_bulk_reminder: "Unpaid reminder (bulk)",
 };
 const typeLabel = (ctx) => KITTY_MSG_TYPE_LABELS[ctx?.type] || ctx?.type || "Message";
 
@@ -131,6 +132,7 @@ export default function KittyAdminScreen({ sb, tenantId, crmSecret, staffName })
 function OverviewTab({ crmSecret, actor }) {
   const [enrollments, setEnrollments] = useState(null);
   const [sendingId, setSendingId] = useState(null);
+  const [bulkBusy, setBulkBusy] = useState(null);
 
   const load = useCallback(async () => {
     const d = await call("admin-list-enrollments", { crmSecret });
@@ -205,9 +207,36 @@ function OverviewTab({ crmSecret, actor }) {
     if (d.ok) { alert("Queued — approve from Kitty Admin > Pending Messages."); load(); } else alert(d.error);
   };
 
+  // One entry per live (non-legacy) scheme, for the one-click bulk reminder.
+  const remindableSchemes = [...new Map(live.filter((e) => !e.is_legacy && e.scheme_id).map((e) => [e.scheme_id, { id: e.scheme_id, name: e.scheme?.name || "—", isGram: isGramScheme(e) }])).values()];
+
+  const bulkRemind = async (s) => {
+    setBulkBusy(s.id);
+    const pv = await call("queue-scheme-reminders", { method: "POST", crmSecret, body: { schemeId: s.id, preview: true, actor } });
+    if (!pv.ok) { setBulkBusy(null); alert(pv.error); return; }
+    if (!pv.count) { setBulkBusy(null); alert(`Nobody to remind in ${s.name}${pv.skippedAlreadyQueued ? ` (${pv.skippedAlreadyQueued} already waiting in Pending Messages)` : ""}.`); return; }
+    const ok = confirm(`Queue a payment reminder for ${pv.count} unpaid member${pv.count === 1 ? "" : "s"} in ${s.name}?\n\n${pv.names.join(", ")}${pv.count > pv.names.length ? ", …" : ""}\n\nNothing sends yet — you approve them in Pending Messages.`);
+    if (ok) {
+      const d = await call("queue-scheme-reminders", { method: "POST", crmSecret, body: { schemeId: s.id, actor } });
+      alert(d.ok ? `Queued ${d.queued}. Review and press Send All in Pending Messages.` : d.error);
+    }
+    setBulkBusy(null);
+  };
+
   return (
     <div>
       <p style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Total active enrollments: {live.length}</p>
+      <h4>Remind everyone who hasn't paid</h4>
+      <p style={{ fontSize: 12.5, color: "#666", marginTop: 0 }}>Gullak-type kitties: no purchase logged this month. Installment kitties (e.g. Golden Sparkle): installment due this month or earlier still unpaid. Messages are queued for your approval in Pending Messages.</p>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 24 }}>
+        {remindableSchemes.map((s) => (
+          <button key={s.id} onClick={() => bulkRemind(s)} disabled={bulkBusy === s.id}
+            style={{ padding: "6px 14px", background: "#d4af37", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer" }}>
+            {bulkBusy === s.id ? "Checking…" : `📣 ${s.name} — remind unpaid`}
+          </button>
+        ))}
+        {!remindableSchemes.length && <span style={{ color: "#888" }}>No active schemes.</span>}
+      </div>
       <h4>Members & Payments per Kitty</h4>
       <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 28, fontSize: 12.5 }}>
         <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
