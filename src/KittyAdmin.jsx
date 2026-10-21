@@ -29,7 +29,7 @@ const KITTY_MSG_TYPE_LABELS = {
   rate_cut_payment_reminder: "Rate booked, unpaid nudge", redemption_thank_you: "Redemption thank-you",
   mission100_completion: "Mission 100 finish", mission100_checkpoint: "Mission 100 checkpoint",
   mission100_winner: "Mission 100 winner", mission100_referral: "Mission 100 referral", adhoc: "Manual send",
-  scheme_bulk_reminder: "Unpaid reminder (bulk)",
+  scheme_bulk_reminder: "Unpaid reminder (bulk)", scheme_bulk_paid: "Paid thank-you (bulk)",
 };
 const typeLabel = (ctx) => KITTY_MSG_TYPE_LABELS[ctx?.type] || ctx?.type || "Message";
 
@@ -126,13 +126,86 @@ export default function KittyAdminScreen({ sb, tenantId, crmSecret, staffName })
   );
 }
 
+// Bulk WhatsApp to a scheme's members: unpaid this month (pay-today nudge with
+// today's rate) or already paid (thank-you). Message is editable; {rate} is
+// pre-filled from today's rates but can be overridden. Queues into Pending
+// Messages — nothing sends until staff approve there.
+const BULK_TEMPLATES = {
+  unpaid: "Dear {name}, your payment for this month's {scheme} is pending. Please pay today to book today's rate of ₹{rate}. Contact us on 9205065375. Pay today to enjoy this rate, or the new rate will apply whenever you pay.\n- Sun Sea Jewellers, Karol Bagh",
+  paid: "Dear {name}, thank you for your {scheme} payment for {month}. Today's rate is ₹{rate}. Contact us on 9205065375 for any help.\n- Sun Sea Jewellers, Karol Bagh",
+};
+
+function BulkMessagePanel({ crmSecret, actor, schemes }) {
+  const [schemeId, setSchemeId] = useState("");
+  const [audience, setAudience] = useState("unpaid");
+  const [messages, setMessages] = useState(BULK_TEMPLATES);
+  const [rates, setRates] = useState(null); // { gold, coin }
+  const [rate, setRate] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/rates").then((r) => r.json()).then((d) => {
+      if (!d.ok) return;
+      setRates({ gold: d.rates?.spot?.gold24kt || null, coin: (d.rates?.goldCoins || []).find((c) => c.weight_g === 1)?.mmtc9999 || null });
+    }).catch(() => {});
+  }, []);
+
+  const scheme = schemes.find((s) => s.id === schemeId) || null;
+  // Coin (gram) kitties quote the 1g MMTC coin price; the rest the 24kt/g rate.
+  const liveRate = rates ? (scheme?.isCoin ? rates.coin : rates.gold) : null;
+  useEffect(() => { setRate(liveRate ? String(Math.round(liveRate)) : ""); }, [schemeId, liveRate]);
+
+  const message = messages[audience];
+  const run = async (preview) => {
+    if (!scheme) { alert("Pick a kitty first."); return; }
+    setBusy(true);
+    const body = { schemeId, audience, message, rate: rate ? Number(rate) : undefined, preview, actor };
+    const d = await call("queue-scheme-reminders", { method: "POST", crmSecret, body });
+    setBusy(false);
+    if (!d.ok) { alert(d.error); return; }
+    if (preview) {
+      if (!d.count) { alert(`Nobody to message in ${scheme.name}${d.skippedAlreadyQueued ? ` (${d.skippedAlreadyQueued} already waiting in Pending Messages)` : ""}.`); return; }
+      if (confirm(`Queue this message for ${d.count} ${audience} member${d.count === 1 ? "" : "s"} in ${scheme.name}?\n\n${d.names.join(", ")}${d.count > d.names.length ? ", …" : ""}\n\nNothing sends yet — you approve in Pending Messages.`)) run(false);
+    } else {
+      alert(`Queued ${d.queued}. Go to Pending Messages and press Send All (sends are spaced 5–10s apart at random).`);
+    }
+  };
+
+  const sample = message.replace(/\{name\}/g, "Rahul").replace(/\{rate\}/g, rate ? Number(rate).toLocaleString("en-IN") : "—").replace(/\{scheme\}/g, scheme?.name || "kitty").replace(/\{month\}/g, new Date().toLocaleDateString("en-IN", { month: "long", year: "numeric" }));
+
+  return (
+    <div style={{ border: "1px solid #d4af37", borderRadius: 8, padding: 14, marginBottom: 24 }}>
+      <h4 style={{ marginTop: 0 }}>📣 Bulk message to a kitty's members</h4>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", marginBottom: 10 }}>
+        <select value={schemeId} onChange={(e) => setSchemeId(e.target.value)}>
+          <option value="">Select kitty…</option>
+          {schemes.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+        {[["unpaid", "Not paid this month"], ["paid", "Already paid"]].map(([k, l]) => (
+          <button key={k} onClick={() => setAudience(k)}
+            style={{ padding: "5px 12px", borderRadius: 6, border: "1px solid #d4af37", background: audience === k ? "#d4af37" : "#fff", color: audience === k ? "#fff" : "#333", cursor: "pointer" }}>{l}</button>
+        ))}
+        <label style={{ fontSize: 13 }}>Today's rate ₹ <input type="number" value={rate} onChange={(e) => setRate(e.target.value)} style={{ width: 90 }} /></label>
+        <span style={{ fontSize: 11.5, color: "#888" }}>{scheme ? (liveRate ? `live ${scheme.isCoin ? "1g coin" : "24kt/g"}: ₹${Math.round(liveRate).toLocaleString("en-IN")} (editable)` : "live rate unavailable — type it") : ""}</span>
+      </div>
+      <textarea value={message} onChange={(e) => setMessages({ ...messages, [audience]: e.target.value })} rows={5} style={{ width: "100%", boxSizing: "border-box", fontSize: 13 }} />
+      <div style={{ fontSize: 11.5, color: "#888", margin: "2px 0 8px" }}>Placeholders: {"{name}"} {"{rate}"} {"{scheme}"} {"{month}"} — filled per member.</div>
+      <div style={{ background: "#f6f6f6", padding: 8, borderRadius: 6, fontSize: 12.5, whiteSpace: "pre-wrap", marginBottom: 10 }}><b>Preview:</b> {sample}</div>
+      <button onClick={() => run(true)} disabled={busy || !scheme}
+        style={{ padding: "6px 16px", background: "#d4af37", color: "#fff", border: "none", borderRadius: 6, cursor: scheme ? "pointer" : "not-allowed" }}>
+        {busy ? "Working…" : `Queue for ${audience === "unpaid" ? "unpaid" : "paid"} members`}
+      </button>
+      <span style={{ fontSize: 12, color: "#666", marginLeft: 10 }}>Goes to Pending Messages for your approval.</span>
+    </div>
+  );
+}
+
 // Per-scheme member/payment stats + a pending-payments worklist with
 // on-demand WA reminders (the automatic kitty-cron.js reminder only fires
 // 3 days before due — this is for staff working the list right now).
 function OverviewTab({ crmSecret, actor }) {
   const [enrollments, setEnrollments] = useState(null);
   const [sendingId, setSendingId] = useState(null);
-  const [bulkBusy, setBulkBusy] = useState(null);
 
   const load = useCallback(async () => {
     const d = await call("admin-list-enrollments", { crmSecret });
@@ -207,36 +280,13 @@ function OverviewTab({ crmSecret, actor }) {
     if (d.ok) { alert("Queued — approve from Kitty Admin > Pending Messages."); load(); } else alert(d.error);
   };
 
-  // One entry per live (non-legacy) scheme, for the one-click bulk reminder.
-  const remindableSchemes = [...new Map(live.filter((e) => !e.is_legacy && e.scheme_id).map((e) => [e.scheme_id, { id: e.scheme_id, name: e.scheme?.name || "—", isGram: isGramScheme(e) }])).values()];
-
-  const bulkRemind = async (s) => {
-    setBulkBusy(s.id);
-    const pv = await call("queue-scheme-reminders", { method: "POST", crmSecret, body: { schemeId: s.id, preview: true, actor } });
-    if (!pv.ok) { setBulkBusy(null); alert(pv.error); return; }
-    if (!pv.count) { setBulkBusy(null); alert(`Nobody to remind in ${s.name}${pv.skippedAlreadyQueued ? ` (${pv.skippedAlreadyQueued} already waiting in Pending Messages)` : ""}.`); return; }
-    const ok = confirm(`Queue a payment reminder for ${pv.count} unpaid member${pv.count === 1 ? "" : "s"} in ${s.name}?\n\n${pv.names.join(", ")}${pv.count > pv.names.length ? ", …" : ""}\n\nNothing sends yet — you approve them in Pending Messages.`);
-    if (ok) {
-      const d = await call("queue-scheme-reminders", { method: "POST", crmSecret, body: { schemeId: s.id, actor } });
-      alert(d.ok ? `Queued ${d.queued}. Review and press Send All in Pending Messages.` : d.error);
-    }
-    setBulkBusy(null);
-  };
+  // One entry per live (non-legacy) scheme, for the bulk message panel.
+  const remindableSchemes = [...new Map(live.filter((e) => !e.is_legacy && e.scheme_id).map((e) => [e.scheme_id, { id: e.scheme_id, name: e.scheme?.name || "—", isGram: isGramScheme(e), isCoin: e.scheme?.perks?.unit === "grams" }])).values()];
 
   return (
     <div>
       <p style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Total active enrollments: {live.length}</p>
-      <h4>Remind everyone who hasn't paid</h4>
-      <p style={{ fontSize: 12.5, color: "#666", marginTop: 0 }}>Gullak-type kitties: no purchase logged this month. Installment kitties (e.g. Golden Sparkle): installment due this month or earlier still unpaid. Messages are queued for your approval in Pending Messages.</p>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 24 }}>
-        {remindableSchemes.map((s) => (
-          <button key={s.id} onClick={() => bulkRemind(s)} disabled={bulkBusy === s.id}
-            style={{ padding: "6px 14px", background: "#d4af37", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer" }}>
-            {bulkBusy === s.id ? "Checking…" : `📣 ${s.name} — remind unpaid`}
-          </button>
-        ))}
-        {!remindableSchemes.length && <span style={{ color: "#888" }}>No active schemes.</span>}
-      </div>
+      <BulkMessagePanel crmSecret={crmSecret} actor={actor} schemes={remindableSchemes} />
       <h4>Members & Payments per Kitty</h4>
       <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 28, fontSize: 12.5 }}>
         <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
@@ -324,7 +374,8 @@ function OverviewTab({ crmSecret, actor }) {
 // non-empty. Staff retries here: one at a time, or "Send All" which paces
 // itself (fixed gap + jitter, same anti-ban reasoning as a broadcast) so it
 // doesn't fire a burst of messages at once.
-const SEND_ALL_INTERVAL_MS = 3000;
+const SEND_GAP_MIN_MS = 5000;
+const SEND_GAP_MAX_MS = 10000;
 
 function PendingMessagesTab({ crmSecret, actor, onChange }) {
   const [messages, setMessages] = useState(null);
@@ -388,7 +439,7 @@ function PendingMessagesTab({ crmSecret, actor, onChange }) {
       p.done++; if (ok) p.sent++; else p.failed++;
       setProgress({ ...p });
       if (i < ids.length - 1 && !cancelRef.current) {
-        await new Promise((r) => setTimeout(r, SEND_ALL_INTERVAL_MS + Math.random() * 1000));
+        await new Promise((r) => setTimeout(r, SEND_GAP_MIN_MS + Math.random() * (SEND_GAP_MAX_MS - SEND_GAP_MIN_MS)));
       }
     }
     setSendingAll(false);
@@ -398,7 +449,7 @@ function PendingMessagesTab({ crmSecret, actor, onChange }) {
     <div>
       <p style={{ fontSize: 13, color: "#666" }}>
         Every Kitty WhatsApp waits here for approval before it goes out — nothing sends on its own.
-        Click a message's text to edit and save it (not sent) — send it individually or all together (paced ~{SEND_ALL_INTERVAL_MS / 1000}s apart, same anti-ban spacing as broadcasts). Sending one leaves the rest untouched.
+        Click a message's text to edit and save it (not sent) — send it individually or all together (paced at a random {SEND_GAP_MIN_MS / 1000}–{SEND_GAP_MAX_MS / 1000}s apart, same anti-ban spacing as broadcasts). Sending one leaves the rest untouched.
       </p>
       {messages === null ? <div>Loading…</div> : (
         <>

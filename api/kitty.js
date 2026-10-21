@@ -914,21 +914,24 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, queued });
   }
 
-  // POST ?action=queue-scheme-reminders — staff. Body: { schemeId, message?, preview?, actor }.
-  // One-shot "remind everyone who hasn't paid" for a scheme. Queues (never
-  // sends) one reminder per member into Pending Messages for approval.
-  //  - Gram schemes (Gullak coin): no fixed schedule, so "not paid" = no paid
+  // POST ?action=queue-scheme-reminders — staff. Body:
+  //   { schemeId, audience: "unpaid"|"paid", message?, rate?, preview?, actor }.
+  // One-shot bulk message for a scheme's members. Queues (never sends) one
+  // message per member into Pending Messages for approval.
+  //  - Gram schemes (Gullak coin): no fixed schedule, so "paid" = a paid
   //    purchase logged in the current calendar month (IST).
-  //  - Installment schemes (Golden Sparkle etc.): has a still-"due" installment
-  //    whose due date is this month or earlier.
-  // `message` may use {name}. Members with no phone / DND, or who already have
-  // an unsent reminder for this scheme waiting, are skipped. preview:true only
-  // counts, queues nothing.
+  //  - Installment schemes (Golden Sparkle etc.): "unpaid" = a still-"due"
+  //    installment due this month or earlier; "paid" = not unpaid, and has a
+  //    paid installment due this month.
+  // `message` may use {name} {rate} {scheme} {month}. Members with no phone /
+  // DND, or who already have an unsent message of this kind waiting for this
+  // scheme, are skipped. preview:true only counts, queues nothing.
   if (req.method === "POST" && action === "queue-scheme-reminders") {
     const authFail = checkCrmSecret(req, res);
     if (authFail) return;
     const body = parseBody(req);
     if (!body.schemeId) return res.status(400).json({ ok: false, error: "schemeId_required" });
+    const audience = body.audience === "paid" ? "paid" : "unpaid";
     const { data: scheme } = await sb.from("kitty_schemes").select("name,perks").eq("tenant_id", TENANT_ID).eq("id", body.schemeId).maybeSingle();
     if (!scheme) return res.status(404).json({ ok: false, error: "scheme_not_found" });
     const isGram = scheme.perks?.unit === "grams" || isGoldRedemptionScheme(scheme.perks);
@@ -936,49 +939,54 @@ export default async function handler(req, res) {
     const istNow = new Date(Date.now() + 5.5 * 3600 * 1000);
     const monthKey = istNow.toISOString().slice(0, 7);
     const nextMonthStart = new Date(Date.UTC(istNow.getUTCFullYear(), istNow.getUTCMonth() + 1, 1)).toISOString().slice(0, 10);
+    const monthStart = `${monthKey}-01`;
+    const istMonthOf = (ts) => new Date(new Date(ts).getTime() + 5.5 * 3600 * 1000).toISOString().slice(0, 7);
 
     const { data: enrollments, error: enrErr } = await sb.from("kitty_enrollments")
       .select("id, lead_id, lead:bullion_leads(name,phone,dnd), installments:kitty_installments(status,due_date,paid_at,amount)")
       .eq("tenant_id", TENANT_ID).eq("scheme_id", body.schemeId).eq("status", "active");
     if (enrErr) return res.status(500).json({ ok: false, error: enrErr.message });
 
-    const unpaidByLead = new Map(); // lead_id -> { lead, amount }
+    // Per lead: paid if ANY of their enrollments shows payment this month and
+    // none is still unpaid — unpaid wins so a half-paid member still gets nudged.
+    const byLead = new Map(); // lead_id -> { lead, unpaid, paid }
     for (const e of enrollments || []) {
       const inst = e.installments || [];
-      let unpaid = false, amount = 0;
-      if (isGram) {
-        unpaid = !inst.some((i) => i.status === "paid" && i.paid_at && new Date(new Date(i.paid_at).getTime() + 5.5 * 3600 * 1000).toISOString().slice(0, 7) === monthKey);
-      } else {
-        const dueRows = inst.filter((i) => i.status === "due" && i.due_date < nextMonthStart);
-        unpaid = dueRows.length > 0;
-        amount = dueRows.reduce((s, i) => s + Number(i.amount || 0), 0);
-      }
-      if (!unpaid || !e.lead?.phone || e.lead.dnd) continue;
-      const prev = unpaidByLead.get(e.lead_id);
-      unpaidByLead.set(e.lead_id, { lead: e.lead, amount: (prev?.amount || 0) + amount });
+      const unpaid = isGram
+        ? !inst.some((i) => i.status === "paid" && i.paid_at && istMonthOf(i.paid_at) === monthKey)
+        : inst.some((i) => i.status === "due" && i.due_date < nextMonthStart);
+      const paid = isGram
+        ? !unpaid
+        : !unpaid && inst.some((i) => i.status === "paid" && i.due_date >= monthStart && i.due_date < nextMonthStart);
+      const prev = byLead.get(e.lead_id) || { lead: e.lead, unpaid: false, paid: false };
+      byLead.set(e.lead_id, { lead: e.lead, unpaid: prev.unpaid || unpaid, paid: prev.paid || paid });
     }
+    const matching = [...byLead.entries()].filter(([, v]) => v.lead?.phone && !v.lead.dnd && (audience === "unpaid" ? v.unpaid : (v.paid && !v.unpaid)));
 
-    // Skip members who already have an unsent reminder of this kind waiting.
+    const ctxType = audience === "unpaid" ? "scheme_bulk_reminder" : "scheme_bulk_paid";
     const { data: waiting } = await sb.from("kitty_message_queue").select("lead_id")
-      .eq("tenant_id", TENANT_ID).eq("status", "pending").contains("context", { type: "scheme_bulk_reminder", schemeId: body.schemeId });
+      .eq("tenant_id", TENANT_ID).eq("status", "pending").contains("context", { type: ctxType, schemeId: body.schemeId });
     const alreadyQueued = new Set((waiting || []).map((w) => w.lead_id));
-    const targets = [...unpaidByLead.entries()].filter(([leadId]) => !alreadyQueued.has(leadId));
+    const targets = matching.filter(([leadId]) => !alreadyQueued.has(leadId));
 
     if (body.preview) {
-      return res.status(200).json({ ok: true, preview: true, count: targets.length, skippedAlreadyQueued: unpaidByLead.size - targets.length, names: targets.slice(0, 15).map(([, v]) => v.lead.name) });
+      return res.status(200).json({ ok: true, preview: true, count: targets.length, skippedAlreadyQueued: matching.length - targets.length, names: targets.slice(0, 15).map(([, v]) => v.lead.name) });
     }
 
     const monthLabel = istNow.toLocaleDateString("en-IN", { month: "long", year: "numeric", timeZone: "UTC" });
-    const template = body.message?.trim() || (isGram
-      ? `🪙 Hi {name}, your ${scheme.name} purchase for ${monthLabel} is still pending. Add to your Gullak today and grow your gold savings.\n- Sun Sea Jewellers, Karol Bagh`
-      : `🪙 Hi {name}, a gentle reminder — your ${scheme.name} installment for ${monthLabel} is pending. Please pay at your earliest to keep your Kitty on track.\n- Sun Sea Jewellers, Karol Bagh`);
+    const rateText = body.rate ? Number(body.rate).toLocaleString("en-IN") : "";
+    const template = body.message?.trim();
+    if (!template) return res.status(400).json({ ok: false, error: "message_required" });
+    if (/\{rate\}/.test(template) && !rateText) return res.status(400).json({ ok: false, error: "rate_required_for_message" });
     let queued = 0;
     for (const [leadId, { lead }] of targets) {
-      const msg = template.replace(/\{name\}/g, lead.name || "there");
-      const r = await queueKittyWA(sb, { tenantId: TENANT_ID, leadId, phone: lead.phone, msg, context: { type: "scheme_bulk_reminder", schemeId: body.schemeId, month: monthKey } });
+      const msg = template
+        .replace(/\{name\}/g, lead.name || "there").replace(/\{rate\}/g, rateText)
+        .replace(/\{scheme\}/g, scheme.name).replace(/\{month\}/g, monthLabel);
+      const r = await queueKittyWA(sb, { tenantId: TENANT_ID, leadId, phone: lead.phone, msg, context: { type: ctxType, schemeId: body.schemeId, month: monthKey } });
       if (r.queued) queued++;
     }
-    await logAudit(sb, { entityType: "kitty_scheme", entityId: body.schemeId, action: "bulk_reminders_queued", actor: body.actor, details: { queued, month: monthKey } });
+    await logAudit(sb, { entityType: "kitty_scheme", entityId: body.schemeId, action: `bulk_${audience}_queued`, actor: body.actor, details: { queued, month: monthKey } });
     return res.status(200).json({ ok: true, queued });
   }
 
