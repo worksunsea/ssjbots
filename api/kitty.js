@@ -1451,6 +1451,23 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true });
   }
 
+  // POST ?action=admin-delete-pending-messages — staff. Body: { ids: [..], actor }
+  // or { all: true, actor } for every pending message. Only status=pending
+  // rows are ever deleted — sent history in the Log is never touched.
+  if (req.method === "POST" && action === "admin-delete-pending-messages") {
+    const authFail = checkCrmSecret(req, res);
+    if (authFail) return;
+    const body = parseBody(req);
+    const ids = Array.isArray(body.ids) ? body.ids.filter(Boolean) : [];
+    if (!body.all && !ids.length) return res.status(400).json({ ok: false, error: "ids_or_all_required" });
+    let q = sb.from("kitty_message_queue").delete().eq("tenant_id", TENANT_ID).eq("status", "pending");
+    if (!body.all) q = q.in("id", ids);
+    const { data, error } = await q.select("id");
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    await logAudit(sb, { entityType: "kitty_message_queue", entityId: null, action: "delete-pending", actor: body.actor, details: { count: data?.length || 0, all: Boolean(body.all) } });
+    return res.status(200).json({ ok: true, deleted: data?.length || 0 });
+  }
+
   // POST ?action=admin-send-pending-message — staff. Body: { id, actor }.
   // Retries one queued message. Frontend calls this in a loop with a delay
   // between calls for "send all" — kept per-message here (not a bulk

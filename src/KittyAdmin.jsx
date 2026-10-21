@@ -303,12 +303,31 @@ function PendingMessagesTab({ crmSecret, actor, onChange }) {
   const [sendingAll, setSendingAll] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0, sent: 0, failed: 0 });
   const cancelRef = useRef(false);
+  const [selected, setSelected] = useState(() => new Set());
 
   const load = useCallback(async () => {
     const d = await call("admin-list-pending-messages", { crmSecret });
-    setMessages(d.ok ? d.messages : []);
+    const list = d.ok ? d.messages : [];
+    setMessages(list);
+    // Drop selections for rows that are gone (sent/deleted elsewhere).
+    setSelected((prev) => new Set([...prev].filter((id) => list.some((m) => m.id === id))));
     onChange?.();
   }, [crmSecret, onChange]);
+
+  const toggleOne = (id) => setSelected((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const toggleAll = () => setSelected((prev) => (messages && prev.size === messages.length ? new Set() : new Set((messages || []).map((m) => m.id))));
+
+  const deleteMessages = async ({ ids, all }) => {
+    const count = all ? messages.length : ids.length;
+    if (!count || !confirm(`Delete ${count} pending message${count === 1 ? "" : "s"}? They will NOT be sent. This cannot be undone.`)) return;
+    const d = await call("admin-delete-pending-messages", { method: "POST", crmSecret, body: { ids, all, actor } });
+    if (!d.ok) alert(d.error);
+    await load();
+  };
 
   useEffect(() => { load(); }, [load]);
 
@@ -361,26 +380,38 @@ function PendingMessagesTab({ crmSecret, actor, onChange }) {
               {sendingAll ? `Sending… ${progress.done}/${progress.total} (✓${progress.sent} ✗${progress.failed})` : `📤 Send All (${messages.length})`}
             </button>
             {sendingAll && <button onClick={() => { cancelRef.current = true; }} style={{ padding: "6px 12px" }}>Cancel after current</button>}
+            <button onClick={() => deleteMessages({ ids: [...selected] })} disabled={sendingAll || !selected.size}
+              style={{ padding: "6px 12px", background: selected.size ? "#b91c1c" : "#ddd", color: "#fff", border: "none", borderRadius: 6, cursor: selected.size ? "pointer" : "not-allowed" }}>
+              🗑 Delete selected ({selected.size})
+            </button>
+            <button onClick={() => deleteMessages({ all: true })} disabled={sendingAll || !messages.length}
+              style={{ padding: "6px 12px", background: "#fff", color: "#b91c1c", border: "1px solid #b91c1c", borderRadius: 6, cursor: messages.length ? "pointer" : "not-allowed" }}>
+              🗑 Delete all pending ({messages.length})
+            </button>
           </div>
           {!messages.length && <div style={{ color: "#888" }}>No pending messages.</div>}
           {messages.length > 0 && (
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
               <thead><tr style={{ textAlign: "left", borderBottom: "1px solid #ccc" }}>
+                <th><input type="checkbox" checked={selected.size === messages.length} onChange={toggleAll} title="Select all" /></th>
                 <th>Queued</th><th>Type</th><th>To</th><th>Message</th><th>Last error</th><th>Attempts</th><th></th>
               </tr></thead>
               <tbody>
                 {messages.map((m) => (
-                  <tr key={m.id} style={{ borderBottom: "1px solid #eee" }}>
+                  <tr key={m.id} style={{ borderBottom: "1px solid #eee", background: selected.has(m.id) ? "#fff8e1" : undefined }}>
+                    <td><input type="checkbox" checked={selected.has(m.id)} onChange={() => toggleOne(m.id)} /></td>
                     <td style={{ whiteSpace: "nowrap" }}>{new Date(m.created_at).toLocaleString("en-IN")}</td>
                     <td>{typeLabel(m.context)}</td>
                     <td>{m.lead?.name || "—"}<br /><span style={{ color: "#888" }}>{m.phone}</span></td>
                     <td style={{ maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer" }} title="Click to edit (saves only, doesn't send)" onClick={() => editOne(m)}>{m.message}</td>
                     <td style={{ color: "#b91c1c", fontSize: 11 }}>{m.last_error || ""}</td>
                     <td>{m.attempts}</td>
-                    <td>
+                    <td style={{ whiteSpace: "nowrap" }}>
                       <button onClick={() => sendOne(m.id)} disabled={sendingAll || sendingId === m.id} style={{ padding: "3px 10px" }}>
                         {sendingId === m.id ? "Sending…" : "Send"}
-                      </button>
+                      </button>{" "}
+                      <button onClick={() => editOne(m)} disabled={sendingAll} style={{ padding: "3px 10px" }}>✏️ Edit</button>{" "}
+                      <button onClick={() => deleteMessages({ ids: [m.id] })} disabled={sendingAll} style={{ padding: "3px 10px", color: "#b91c1c" }}>🗑 Delete</button>
                     </td>
                   </tr>
                 ))}
