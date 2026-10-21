@@ -13,9 +13,32 @@
 import { sendWhatsApp } from "./wa.js";
 import { KITTY_WA_CLIENT_ID, KITTY_WA_FALLBACK_CLIENT_ID } from "./config.js";
 
+// Every message goes out addressed to the member by name — identical text to
+// many numbers is what gets WhatsApp accounts flagged. Adds "Dear <First>,"
+// unless the text already mentions the name (e.g. a {name} template). Pure
+// string helper so list/send paths can personalise rows queued before this
+// existed.
+export function personalizeKittyMessage(name, msg) {
+  const first = String(name || "").trim().split(/\s+/)[0];
+  if (!first || first.length < 2 || !msg) return msg;
+  if (msg.toLowerCase().includes(first.toLowerCase())) return msg;
+  const pretty = first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
+  return `Dear ${pretty},
+${msg}`;
+}
+
+async function personalizeFor(sb, leadId, msg) {
+  if (!leadId) return msg;
+  try {
+    const { data } = await sb.from("bullion_leads").select("name").eq("id", leadId).maybeSingle();
+    return personalizeKittyMessage(data?.name, msg);
+  } catch { return msg; }
+}
+
 // Returns { sent: boolean, queued: boolean, clientUsed?: string }. Never throws.
-export async function sendKittyWA(sb, { tenantId, leadId, phone, msg, context = {} }) {
+export async function sendKittyWA(sb, { tenantId, leadId, phone, msg: rawMsg, context = {} }) {
   if (!phone) return { sent: false, queued: false };
+  const msg = await personalizeFor(sb, leadId, rawMsg);
   const clients = [KITTY_WA_CLIENT_ID, KITTY_WA_FALLBACK_CLIENT_ID].filter((c, i, arr) => c && arr.indexOf(c) === i);
   let lastError = null;
   for (const client of clients) {
@@ -38,8 +61,9 @@ export async function sendKittyWA(sb, { tenantId, leadId, phone, msg, context = 
 // staff sign-off before going out (overdue nudges), unlike sendKittyWA which
 // sends immediately and only queues on failure. Staff approves from Kitty
 // Admin > Pending Messages ("Send Now"/"Send All").
-export async function queueKittyWA(sb, { tenantId, leadId, phone, msg, context = {} }) {
+export async function queueKittyWA(sb, { tenantId, leadId, phone, msg: rawMsg, context = {} }) {
   if (!phone) return { queued: false };
+  const msg = await personalizeFor(sb, leadId, rawMsg);
   await logKittyMessage(sb, { tenantId, leadId, phone, msg, context, status: "pending", error: "awaiting_staff_approval" });
   return { queued: true };
 }

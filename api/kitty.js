@@ -49,7 +49,7 @@ import { TENANT_ID, checkCrmSecret, normalizePhone, KITTY_WA_CLIENT_ID, KITTY_WA
 import { enrollLeadInDrip } from "./_lib/drip.js";
 import { logKittyAudit } from "./_lib/kittyAudit.js";
 import { sendWhatsApp } from "./_lib/wa.js";
-import { queueKittyWA } from "./_lib/kittyMessageQueue.js";
+import { queueKittyWA, personalizeKittyMessage } from "./_lib/kittyMessageQueue.js";
 import { KITTY_MESSAGE_TYPES, getKittyMessage } from "./_lib/kittyTemplates.js";
 import { gramsForInstallments, gramsByPossession } from "./_lib/kittyGrams.js";
 import { generateInviteCode, awardBonusCoin, CHECKPOINTS_G } from "./_lib/mission100.js";
@@ -1506,7 +1506,9 @@ export default async function handler(req, res) {
       .select("id, phone, message, context, status, attempts, last_error, created_at, sent_at, lead:bullion_leads(name)")
       .eq("tenant_id", TENANT_ID).eq("status", "pending").order("created_at", { ascending: true });
     if (error) return res.status(500).json({ ok: false, error: error.message });
-    return res.status(200).json({ ok: true, messages: data || [] });
+    // Rows queued before names were added show (and send) personalised too.
+    const messages = (data || []).map((m) => ({ ...m, message: personalizeKittyMessage(m.lead?.name, m.message) }));
+    return res.status(200).json({ ok: true, messages });
   }
 
   // POST ?action=admin-edit-pending-message — staff. Body: { id, message, actor }.
@@ -1559,6 +1561,10 @@ export default async function handler(req, res) {
     if (!row) return res.status(404).json({ ok: false, error: "not_found" });
     if (row.status !== "pending") return res.status(200).json({ ok: true, alreadyHandled: true, status: row.status });
     let sent = false, errMsg = null, clientUsed = null;
+    if (row.lead_id) {
+      const { data: l } = await sb.from("bullion_leads").select("name").eq("id", row.lead_id).maybeSingle();
+      row.message = personalizeKittyMessage(l?.name, row.message);
+    }
     for (const client of [KITTY_WA_CLIENT_ID, KITTY_WA_FALLBACK_CLIENT_ID].filter((c, i, arr) => c && arr.indexOf(c) === i)) {
       try {
         const wa = await sendWhatsApp({ phone: row.phone, msg: row.message, client });
@@ -1567,7 +1573,7 @@ export default async function handler(req, res) {
       } catch (err) { errMsg = `${String(err?.message || err)} via ${client}`; }
     }
     if (sent) {
-      await sb.from("kitty_message_queue").update({ status: "sent", sent_at: new Date().toISOString(), client_used: clientUsed }).eq("id", row.id);
+      await sb.from("kitty_message_queue").update({ status: "sent", message: row.message, sent_at: new Date().toISOString(), client_used: clientUsed }).eq("id", row.id);
       await logAudit(sb, { entityType: "kitty_message_queue", entityId: row.id, action: "retry-sent", actor: body.actor });
     } else {
       await sb.from("kitty_message_queue").update({ attempts: (row.attempts || 1) + 1, last_error: errMsg }).eq("id", row.id);
