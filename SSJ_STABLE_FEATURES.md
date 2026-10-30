@@ -733,3 +733,7 @@ Scan supplier business cards → auto-fill contact details via AI vision → tag
 - **Drive access:** `CVD_APPS_SCRIPT_URL` + `CVD_APPS_SCRIPT_TOKEN` (script in `apps-script/CvdFolder.gs`, runs as the folder owner) or `GOOGLE_SERVICE_ACCOUNT_JSON`. Manual run: `GET /api/cvd-sync` with `x-crm-secret`; `?dry=1` parses and plans without writing.
 - **Tests:** `src/__tests__/cvdStock.test.js`, `cvdSyncRun.test.js`. Verified against the real 29-10-26 files (white 763/763, fancy 1399/1399 rows).
 - **Do NOT** expose purchase cost, change the 100% markup / +0.50 margin / 1.5% GST without explicit instruction.
+
+## TAGS: "+ New tag" in contact forms and Merge in Tags tab
+- Contact forms (ContactEditModal, WalkinEntryModal) show a "+ New tag" pill: creates the tag in `bullion_tags` (category custom) and ticks it on the contact. Forms re-read the master tag list on open (`useLiveTags`), so new tags are never missing.
+- Tags tab: tick 2+ tags, "Merge selected", type the final name. Updates `bullion_leads.tags` (deduped via `src/tagMerge.js`), `bday_footer_rules.tags`, legacy `bullion_lead_tags`, then renames the kept tag and deletes the others. Contacts first, tag rows last, so a half-finished merge can be re-run.

@@ -14,6 +14,7 @@ import KittyAdminScreen from "./KittyAdmin";
 import ClientCardScan from "./ClientCardScan";
 import GiftList from "./GiftList";
 import MultiMerge from "./MultiMerge";
+import { mergeTagNames } from "./tagMerge.js";
 
 // ── SUPABASE (shared Sun Sea project — same as ssj-hr / fms-tracker) ──
 const SUPABASE_URL = "https://uppyxzellmuissdlxsmy.supabase.co";
@@ -2329,8 +2330,9 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
 // Saves contact (bullion_leads) with source=walk_in + tag walk_in,
 // then optionally records a demand. Bot is OFF by default (client is in store).
 // ──────────────────────────────────────────────────────────
-function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved, prefill = null }) {
+function WalkinEntryModal({ funnels, allTags: allTagsProp = [], onClose, onSaved, prefill = null }) {
   const { customFields } = React.useContext(ContactFieldsContext);
+  const [allTags, addLiveTag] = useLiveTags(allTagsProp);
   const sourceTags = allTags.filter((t) => t.category === "source").map((t) => t.name);
   const otherTags = allTags.filter((t) => t.category !== "source").map((t) => t.name);
   const [pastEstimates, setPastEstimates] = useState([]);
@@ -2788,21 +2790,20 @@ function WalkinEntryModal({ funnels, allTags = [], onClose, onSaved, prefill = n
                 </Field>
               </div>
 
-              {otherTags.length > 0 && (
-                <Field label="Tags" style={{ marginTop: 8 }}>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {otherTags.map((tag) => {
-                      const active = form.tags.includes(tag);
-                      const meta = allTags.find((t) => t.name === tag);
-                      return (
-                        <button key={tag} onClick={() => toggleTag(tag)} style={{ padding: "3px 10px", borderRadius: 20, fontSize: 12, cursor: "pointer", border: `1px solid ${active ? (meta?.color || C.blue) : "#ddd"}`, background: active ? (meta?.color || C.blue) : "transparent", color: active ? "#fff" : "#555", fontWeight: active ? 600 : 400 }}>
-                          {tag}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </Field>
-              )}
+              <Field label="Tags" style={{ marginTop: 8 }}>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                  {otherTags.map((tag) => {
+                    const active = form.tags.includes(tag);
+                    const meta = allTags.find((t) => t.name === tag);
+                    return (
+                      <button key={tag} onClick={() => toggleTag(tag)} style={{ padding: "3px 10px", borderRadius: 20, fontSize: 12, cursor: "pointer", border: `1px solid ${active ? (meta?.color || C.blue) : "#ddd"}`, background: active ? (meta?.color || C.blue) : "transparent", color: active ? "#fff" : "#555", fontWeight: active ? 600 : 400 }}>
+                        {tag}
+                      </button>
+                    );
+                  })}
+                  <NewTagInput tags={allTags} onCreated={(t) => { addLiveTag(t); setForm((s) => (s.tags.includes(t.name) ? s : { ...s, tags: [...s.tags, t.name] })); }} />
+                </div>
+              </Field>
 
               <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, margin: "8px 0", cursor: "pointer" }}>
                 <input type="checkbox" checked={form.is_client} onChange={(e) => set("is_client", e.target.checked)} />
@@ -5496,8 +5497,9 @@ function CustomFieldsManager({ fields }) {
   );
 }
 
-function ContactEditModal({ contact, allTags = [], customFields = [], onClose, onSaved }) {
+function ContactEditModal({ contact, allTags: allTagsProp = [], customFields = [], onClose, onSaved }) {
   const { fieldOrder } = React.useContext(ContactFieldsContext);
+  const [allTags, addLiveTag] = useLiveTags(allTagsProp);
   const isNew = !contact.id;
   const sourceTags = allTags.filter((t) => t.category === "source").map((t) => t.name);
   const otherTags = allTags.filter((t) => t.category !== "source").map((t) => t.name);
@@ -5750,6 +5752,7 @@ function ContactEditModal({ contact, allTags = [], customFields = [], onClose, o
             );
           })}
           {otherTags.length === 0 && <span style={{ fontSize: 12, color: "#aaa" }}>No tags configured yet</span>}
+          <NewTagInput tags={allTags} onCreated={(t) => { addLiveTag(t); setForm((s) => (s.tags.includes(t.name) ? s : { ...s, tags: [...s.tags, t.name] })); }} />
         </div>
       </Field>
 
@@ -9004,6 +9007,65 @@ function TagChip({ tag, onRemove, small }) {
   );
 }
 
+// Contact forms get their tag list as a prop that can be stale (a tag made
+// moments ago is missing). Re-read the master list when a form opens and let
+// the form add a tag it just created.
+function useLiveTags(initial = []) {
+  const [tags, setTags] = useState(initial);
+  useEffect(() => {
+    let off = false;
+    sb.from("bullion_tags").select("name,category,color").eq("tenant_id", getTenantId()).order("sort_order")
+      .then(({ data }) => { if (!off && data) setTags(data); });
+    return () => { off = true; };
+  }, []);
+  const addTag = (tag) => setTags((t) => (t.some((x) => x.name === tag.name) ? t : [...t, tag]));
+  return [tags, addTag];
+}
+
+// "+ New tag" pill for the contact forms: creates the tag in the master list
+// (category custom) and hands it back so the form can tick it straight away.
+function NewTagInput({ tags, onCreated }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const reset = () => { setOpen(false); setName(""); setErr(""); };
+  const create = async () => {
+    const clean = name.trim().replace(/\s+/g, " ");
+    if (!clean || busy) return;
+    const existing = tags.find((t) => t.name.toLowerCase() === clean.toLowerCase());
+    if (existing) {
+      if (existing.category === "source") { setErr(`"${existing.name}" is a Source — pick it in the Source field`); return; }
+      onCreated(existing); reset(); return;
+    }
+    setBusy(true);
+    const row = { tenant_id: getTenantId(), name: clean, category: "custom", color: "#888", sort_order: (tags.length + 1) * 10 };
+    const { error } = await sb.from("bullion_tags").insert(row);
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    onCreated({ name: row.name, category: row.category, color: row.color });
+    reset();
+  };
+
+  if (!open) {
+    return (
+      <button type="button" onClick={() => setOpen(true)} style={{ padding: "3px 10px", borderRadius: 20, fontSize: 12, cursor: "pointer", border: `1px dashed ${C.gray}`, background: "transparent", color: C.gray }}>+ New tag</button>
+    );
+  }
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+      <input autoFocus value={name} placeholder="New tag name" disabled={busy}
+        onChange={(e) => { setName(e.target.value); setErr(""); }}
+        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); create(); } else if (e.key === "Escape") reset(); }}
+        style={{ padding: "3px 10px", borderRadius: 20, fontSize: 12, border: "1px solid #ddd", width: 140 }} />
+      <button type="button" onClick={create} disabled={busy || !name.trim()} style={{ padding: "3px 10px", borderRadius: 20, fontSize: 12, cursor: "pointer", border: "none", background: C.blue, color: "#fff" }}>{busy ? "…" : "Add"}</button>
+      <button type="button" onClick={reset} style={{ padding: "3px 8px", borderRadius: 20, fontSize: 12, cursor: "pointer", border: "none", background: "transparent", color: C.gray }}>✕</button>
+      {err && <span style={{ fontSize: 11, color: C.red }}>{err}</span>}
+    </span>
+  );
+}
+
 function TagEditor({ leadId, allTags, onReload }) {
   const [attached, setAttached] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -9179,11 +9241,87 @@ function TagsScreen({ onReload }) {
   const [saving, setSaving] = useState(false);
   const [dragIdx, setDragIdx] = useState(null);
   const [overIdx, setOverIdx] = useState(null);
+  const [picked, setPicked] = useState(() => new Set());
+  const [merging, setMerging] = useState(false);
 
   const load = useCallback(async () => {
     const { data } = await sb.from("bullion_tags").select("*").eq("tenant_id", getTenantId()).order("category").order("sort_order");
     setRows(data || []);
+    setPicked(new Set());
   }, []);
+
+  const togglePick = (id) => setPicked((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+
+  // Merge the ticked tags into ONE tag: every contact that has any of them ends
+  // up with the single merged tag (no duplicates), the other tags are deleted.
+  // Safe to re-run if it stops half way: contacts are updated first, tag rows last.
+  const mergeSelected = async () => {
+    const chosen = rows.filter((r) => r.id && picked.has(r.id));
+    if (chosen.length < 2) return;
+    if (rows.some((r) => r._new || r._dirty)) { alert("Save your changes first, then merge."); return; }
+    const target = (prompt(`Merge ${chosen.length} tags into one. Name of the merged tag:`, chosen[0].name) || "").trim();
+    if (!target) return;
+    if (rows.some((r) => !picked.has(r.id) && r.name.toLowerCase() === target.toLowerCase())) { alert(`A tag named "${target}" already exists. Tick it too, or pick another name.`); return; }
+    if (!confirm(`Merge ${chosen.map((r) => `"${r.name}"`).join(", ")} into "${target}"?\n\nEvery contact with any of these gets "${target}"; the old tags are removed.`)) return;
+
+    setMerging(true);
+    try {
+      const tid = getTenantId();
+      const keeper = chosen.find((r) => r.name === target) || chosen[0];
+      const sourceNames = chosen.map((r) => r.name);
+      const oldIds = chosen.filter((r) => r.id !== keeper.id).map((r) => r.id);
+      const fail = (error) => { if (error) throw new Error(error.message); };
+      const inChunks = async (items, size, fn) => { for (let i = 0; i < items.length; i += size) await Promise.all(items.slice(i, i + size).map(fn)); };
+
+      // 1. contacts (bullion_leads.tags)
+      const leads = [];
+      for (let from = 0; ; from += 1000) {
+        const { data, error } = await sb.from("bullion_leads").select("id,tags").eq("tenant_id", tid).overlaps("tags", sourceNames).order("id").range(from, from + 999);
+        fail(error);
+        leads.push(...(data || []));
+        if ((data || []).length < 1000) break;
+      }
+      await inChunks(leads, 10, async (l) => {
+        const { error } = await sb.from("bullion_leads").update({ tags: mergeTagNames(l.tags, sourceNames, target) }).eq("id", l.id);
+        fail(error);
+      });
+
+      // 2. birthday footer rules store tag names too
+      const { data: rules, error: rulesErr } = await sb.from("bday_footer_rules").select("id,tags").eq("tenant_id", tid);
+      fail(rulesErr);
+      await inChunks((rules || []).filter((r) => (r.tags || []).some((t) => sourceNames.includes(t))), 10, async (r) => {
+        const { error } = await sb.from("bday_footer_rules").update({ tags: mergeTagNames(r.tags, sourceNames, target) }).eq("id", r.id);
+        fail(error);
+      });
+
+      // 3. legacy lead<->tag join table: move links to the kept tag
+      if (oldIds.length) {
+        const links = [];
+        for (let from = 0; ; from += 1000) {
+          const { data, error } = await sb.from("bullion_lead_tags").select("lead_id").in("tag_id", oldIds).order("lead_id").range(from, from + 999);
+          fail(error);
+          links.push(...(data || []));
+          if ((data || []).length < 1000) break;
+        }
+        const leadIds = [...new Set(links.map((l) => l.lead_id))];
+        for (let i = 0; i < leadIds.length; i += 500) {
+          const { error } = await sb.from("bullion_lead_tags").upsert(leadIds.slice(i, i + 500).map((lead_id) => ({ lead_id, tag_id: keeper.id })), { onConflict: "lead_id,tag_id", ignoreDuplicates: true });
+          fail(error);
+        }
+      }
+
+      // 4. tag list: rename the kept tag, delete the rest
+      if (keeper.name !== target) { const { error } = await sb.from("bullion_tags").update({ name: target }).eq("id", keeper.id); fail(error); }
+      if (oldIds.length) { const { error } = await sb.from("bullion_tags").delete().in("id", oldIds); fail(error); }
+
+      alert(`Merged into "${target}". ${leads.length} contact${leads.length === 1 ? "" : "s"} updated.`);
+    } catch (e) {
+      alert(`Merge stopped: ${e.message}\n\nNothing is lost — you can run the merge again.`);
+    }
+    setMerging(false);
+    await load();
+    onReload && onReload();
+  };
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { load(); }, [load]);
 
@@ -9229,12 +9367,15 @@ function TagsScreen({ onReload }) {
         <div style={{ fontSize: 13, color: "#666" }}>Tags = flexible labels on leads. Drag ⠿ to reorder. Order shown here = order on contact form.</div>
         <div style={{ display: "flex", gap: 6 }}>
           <Btn ghost small color={C.gray} onClick={load}>↻</Btn>
+          <Btn small color={C.purple || C.blue} onClick={mergeSelected} disabled={merging || picked.size < 2}>{merging ? "Merging…" : `Merge selected${picked.size ? ` (${picked.size})` : ""}`}</Btn>
           <Btn small color={C.blue} onClick={add}>+ Add</Btn>
         </div>
       </div>
+      <div style={{ fontSize: 12, color: "#888", marginBottom: 8 }}>To merge: tick two or more tags, press <b>Merge selected</b>, type the final tag name. All contacts get that one tag.</div>
       <Card style={{ padding: 0 }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead><tr style={{ background: "#f7f7f7" }}>
+            <th style={{ padding: 8, width: 28 }}></th>
             <th style={{ padding: 8, width: 28 }}></th>
             <th style={{ padding: 8, textAlign: "left", fontSize: 10, color: "#888" }}>NAME</th>
             <th style={{ padding: 8, textAlign: "left", fontSize: 10, color: "#888" }}>CATEGORY</th>
@@ -9251,6 +9392,9 @@ function TagsScreen({ onReload }) {
                 onDragEnd={() => { setDragIdx(null); setOverIdx(null); }}
                 style={{ borderTop: "1px solid #f5f5f5", background: overIdx === idx ? "#f0f7ff" : dragIdx === idx ? "#fffbeb" : "transparent", transition: "background 0.1s" }}>
                 <td style={{ padding: "6px 4px", textAlign: "center", cursor: "grab", color: "#bbb", fontSize: 16, userSelect: "none" }}>⠿</td>
+                <td style={{ padding: "6px 4px", textAlign: "center" }}>
+                  {row.id && <input type="checkbox" checked={picked.has(row.id)} onChange={() => togglePick(row.id)} aria-label={`Select ${row.name} to merge`} />}
+                </td>
                 <td style={{ padding: 6 }}><Input value={row.name || ""} onChange={(e) => update(idx, "name", e.target.value)} /></td>
                 <td style={{ padding: 6 }}>
                   <Select value={row.category} onChange={(e) => update(idx, "category", e.target.value)}>
@@ -9265,7 +9409,7 @@ function TagsScreen({ onReload }) {
                 </td>
               </tr>
             ))}
-            {!rows.length && <tr><td colSpan={5} style={{ padding: 20, textAlign: "center", color: "#aaa" }}>No tags.</td></tr>}
+            {!rows.length && <tr><td colSpan={6} style={{ padding: 20, textAlign: "center", color: "#aaa" }}>No tags.</td></tr>}
           </tbody>
         </table>
       </Card>
