@@ -15123,15 +15123,21 @@ function CorpGiftPricingScreen() {
   const [saving, setSaving] = useState({});
   const [toast, setToast] = useState("");
 
+  // Prices only (Our Price / Live Diff). Kept separate from the row load so a save
+  // can refresh them without overwriting edits typed into other, unsaved rows.
+  const loadPrices = () =>
+    fetch(`/api/corporate-gifting?action=products&_=${Date.now()}`, { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => { if (d.ok) setPriceMap(Object.fromEntries(d.products.map((p) => [p.id, p.price]))); })
+      .catch(() => {});
+
   const load = () => {
     sb.from("corporate_gifting_products")
       .select("id, category, name, weight_grams, price_mode, making_charge, tax_percent, price_diff, markup_amount, reference_price, active, image_url")
       .eq("tenant_id", getTenantId())
       .order("category", { ascending: true }).order("sort_order", { ascending: true })
       .then(({ data }) => setRows(data || []));
-    fetch("/api/corporate-gifting?action=products")
-      .then((r) => r.json())
-      .then((d) => { if (d.ok) setPriceMap(Object.fromEntries(d.products.map((p) => [p.id, p.price]))); });
+    loadPrices();
   };
   useEffect(load, []);
 
@@ -15141,7 +15147,7 @@ function CorpGiftPricingScreen() {
 
   const saveRow = async (row) => {
     setSaving((s) => ({ ...s, [row.id]: true }));
-    await sb.from("corporate_gifting_products").update({
+    const { error } = await sb.from("corporate_gifting_products").update({
       weight_grams: row.weight_grams === "" ? null : Number(row.weight_grams),
       making_charge: row.making_charge === "" ? null : Number(row.making_charge),
       tax_percent: row.tax_percent === "" ? 0 : Number(row.tax_percent),
@@ -15149,9 +15155,10 @@ function CorpGiftPricingScreen() {
       active: row.active,
       updated_at: new Date().toISOString(),
     }).eq("id", row.id);
+    if (!error) await loadPrices();
     setSaving((s) => ({ ...s, [row.id]: false }));
-    setToast("Saved");
-    setTimeout(() => setToast(""), 1500);
+    setToast(error ? `Not saved: ${error.message}` : "Saved");
+    setTimeout(() => setToast(""), error ? 4000 : 1500);
   };
 
   if (!rows) return <div style={{ padding: 20, color: "#888" }}>Loading…</div>;
