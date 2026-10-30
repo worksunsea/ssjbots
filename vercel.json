@@ -19,6 +19,7 @@
     }
   ],
   "crons": [
+    { "path": "/api/cvd-sync", "schedule": "30 9 * * *" },
     { "path": "/api/cron", "schedule": "* * * * *" },
     { "path": "/api/schedule-reminders", "schedule": "*/5 * * * *" },
     { "path": "/api/fms-delay-push", "schedule": "0 */2 * * *" },
