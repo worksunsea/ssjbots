@@ -5,6 +5,7 @@
 //                  sort=price_asc|price_desc|carat_asc|carat_desc|new, page, limit (<=60)
 //   ?action=get&sku=CVD-123
 //   ?action=facets  counts per shape / colour / clarity / kind + price & carat range
+//   ?action=skus    every live SKU with its last update (for the website sitemap)
 // Only PUBLIC_COLUMNS are ever selected — purchase cost never leaves the server.
 
 import { supa } from "./_lib/supabase.js";
@@ -79,6 +80,18 @@ async function facets(sb, res) {
   return res.status(200).json(data);
 }
 
+async function skus(sb, res) {
+  const out = [];
+  for (let from = 0; from < 20000; from += 1000) {
+    const { data, error } = await sb.from("cvd_stones").select("sku,updated_at,image_url")
+      .eq("tenant_id", TENANT_ID).neq("status", "delisted").order("sku").range(from, from + 999);
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    out.push(...data);
+    if (data.length < 1000) break;
+  }
+  return res.status(200).json({ ok: true, skus: out });
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
@@ -90,5 +103,6 @@ export default async function handler(req, res) {
   if (action === "list") return list(sb, req.query, res);
   if (action === "get") return getOne(sb, req.query.sku, res);
   if (action === "facets") return facets(sb, res);
+  if (action === "skus") return skus(sb, res);
   return res.status(400).json({ ok: false, error: "unknown_action" });
 }
