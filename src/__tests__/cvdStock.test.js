@@ -76,7 +76,17 @@ describe("priceStone", () => {
 
 describe("withGst", () => {
   it("adds 1.5% GST", () => {
-    expect(withGst(24600)).toEqual({ price_inr: 24600, gst_pct: 1.5, gst_inr: 369, total_inr: 24969 });
+    expect(withGst(24600, 1.1)).toEqual({ price_inr: 24600, gst_pct: 1.5, gst_inr: 369, total_inr: 24969, price_per_ct: 22364 });
+    expect(withGst(24600, 0).price_per_ct).toBeNull();
+  });
+});
+
+describe("fancy colour spelling", () => {
+  it("normalises PINK / Pink / pink to one value so filters do not split", () => {
+    const mk = (c, i) => normaliseStone({ STOCK: "X", AVAILABILITY: "YES", Shape: "Heart", Weight: "1", "Report #": "9", "Final Price": "10", "Fancy Color": c, "Fancy Color Intensity": i }, "fancy");
+    expect(mk("PINK", "VIVID").fancy_color).toBe("Pink");
+    expect(mk("pink", "intense").fancy_intensity).toBe("Intense");
+    expect(mk("Pink", "Vivid").fancy_color).toBe("Pink");
   });
 });
 

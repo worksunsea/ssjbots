@@ -11,6 +11,7 @@ export const PRICE_ROUND_TO = 100;        // selling price rounded to nearest â‚
 export const MIN_KEEP_RATIO = 0.7;        // abort delisting if a file shrinks below this vs stored
 
 const norm = (v) => String(v ?? "").trim();
+const titleCase = (v) => norm(v).toLowerCase().replace(/(^|[\s-])([a-z])/g, (_, sep, c) => sep + c.toUpperCase());
 const num = (v) => {
   const n = Number(String(v ?? "").replace(/,/g, "").trim());
   return Number.isFinite(n) ? n : null;
@@ -86,8 +87,8 @@ export function normaliseStone(row, kind) {
     shape: norm(row["Shape"]), carat, color: norm(row["Color"]), clarity: norm(row["Clarity"]),
     cut: norm(row["Cut"]), polish: norm(row["Polish"]), symmetry: norm(row["Symmetry"]),
     fluorescence: norm(row["Fluorescence Intensity"]), measurements: norm(row["Measurements"]),
-    lab: norm(row["LAB"]), fancy_color: norm(row["Fancy Color"]), fancy_intensity: norm(row["Fancy Color Intensity"]),
-    fancy_overtone: norm(row["Fancy Color Overtone"]), depth_pct: num(row["Depth %"]), table_pct: num(row["Table %"]),
+    lab: norm(row["LAB"]), fancy_color: titleCase(row["Fancy Color"]), fancy_intensity: titleCase(row["Fancy Color Intensity"]),
+    fancy_overtone: titleCase(row["Fancy Color Overtone"]), depth_pct: num(row["Depth %"]), table_pct: num(row["Table %"]),
     cert_url: norm(row["CertFile"]), video_url: norm(row["Diamond Video"]), image_url: norm(row["Diamond Image"]),
     purchase_usd: finalUsd,
   };
@@ -138,7 +139,9 @@ export const PUBLIC_COLUMNS = [
   "cert_url", "video_url", "image_url", "price_inr", "source_file_kind",
 ];
 
-export function withGst(priceInr) {
+// Selling-price breakup for display. price_per_ct is the ex-GST stone price per carat.
+export function withGst(priceInr, carat) {
   const gst = Math.round((priceInr * GST_PCT) / 100);
-  return { price_inr: priceInr, gst_pct: GST_PCT, gst_inr: gst, total_inr: priceInr + gst };
+  const perCt = carat > 0 ? Math.round(priceInr / carat) : null;
+  return { price_inr: priceInr, gst_pct: GST_PCT, gst_inr: gst, total_inr: priceInr + gst, price_per_ct: perCt };
 }

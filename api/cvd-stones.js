@@ -22,7 +22,7 @@ const FACET_TTL_MS = 5 * 60 * 1000;
 let facetCache = { ts: 0, data: null };
 
 const num = (v) => (v !== undefined && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null);
-const decorate = (s) => ({ ...s, ...withGst(Number(s.price_inr)) });
+const decorate = (s) => ({ ...s, ...withGst(Number(s.price_inr), Number(s.carat)) });
 
 function applyFilters(q, p) {
   if (p.kind === "white" || p.kind === "fancy") q = q.eq("source_file_kind", p.kind);
@@ -63,7 +63,7 @@ async function facets(sb, res) {
   if (facetCache.data && Date.now() - facetCache.ts < FACET_TTL_MS) return res.status(200).json(facetCache.data);
   const rows = [];
   for (let from = 0; ; from += 1000) {
-    const { data, error } = await sb.from("cvd_stones").select("shape,color,clarity,source_file_kind,price_inr,carat")
+    const { data, error } = await sb.from("cvd_stones").select("shape,color,clarity,fancy_color,source_file_kind,price_inr,carat")
       .eq("tenant_id", TENANT_ID).neq("status", "delisted").range(from, from + 999);
     if (error) return res.status(500).json({ ok: false, error: error.message });
     rows.push(...data);
@@ -72,7 +72,7 @@ async function facets(sb, res) {
   const count = (key) => Object.entries(rows.reduce((a, r) => (r[key] ? ((a[r[key]] = (a[r[key]] || 0) + 1), a) : a), {})).sort((a, b) => b[1] - a[1]).map(([value, n]) => ({ value, count: n }));
   const prices = rows.map((r) => Number(r.price_inr)); const carats = rows.map((r) => Number(r.carat));
   const data = {
-    ok: true, total: rows.length, shapes: count("shape"), colors: count("color"), clarities: count("clarity"), kinds: count("source_file_kind"),
+    ok: true, total: rows.length, shapes: count("shape"), colors: count("color"), fancy_colors: count("fancy_color"), clarities: count("clarity"), kinds: count("source_file_kind"),
     price: rows.length ? { min: Math.min(...prices), max: Math.max(...prices) } : null,
     carat: rows.length ? { min: Math.min(...carats), max: Math.max(...carats) } : null,
   };
