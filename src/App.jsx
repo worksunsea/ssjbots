@@ -15,6 +15,7 @@ import ClientCardScan from "./ClientCardScan";
 import GiftList from "./GiftList";
 import MultiMerge from "./MultiMerge";
 import { mergeTagNames } from "./tagMerge.js";
+import { computePrice as computeGiftPrice } from "../api/_lib/giftingPrice.js";
 
 // ── SUPABASE (shared Sun Sea project — same as ssj-hr / fms-tracker) ──
 const SUPABASE_URL = "https://uppyxzellmuissdlxsmy.supabase.co";
@@ -15119,6 +15120,7 @@ function PublicCatalogueScreen({ token }) {
 function CorpGiftPricingScreen() {
   const [rows, setRows] = useState(null);
   const [priceMap, setPriceMap] = useState({});
+  const [giftRates, setGiftRates] = useState(null);
   const [category, setCategory] = useState("all");
   const [saving, setSaving] = useState({});
   const [toast, setToast] = useState("");
@@ -15128,12 +15130,26 @@ function CorpGiftPricingScreen() {
   const loadPrices = () =>
     fetch(`/api/corporate-gifting?action=products&_=${Date.now()}`, { cache: "no-store" })
       .then((r) => r.json())
-      .then((d) => { if (d.ok) setPriceMap(Object.fromEntries(d.products.map((p) => [p.id, p.price]))); })
+      .then((d) => { if (d.ok) { setPriceMap(Object.fromEntries(d.products.map((p) => [p.id, p.price]))); setGiftRates(d.rates || null); } })
       .catch(() => {});
+
+  // Price the row would have with the values currently typed (saved or not),
+  // using the same formula the public catalogue uses.
+  const previewPrice = (r) => {
+    if (!giftRates) return priceMap[r.id];
+    const num = (v) => (v === "" || v == null ? null : Number(v));
+    return computeGiftPrice({
+      ...r,
+      weight_grams: num(r.weight_grams),
+      making_charge: num(r.making_charge),
+      tax_percent: r.tax_percent === "" || r.tax_percent == null ? 0 : Number(r.tax_percent),
+      price_diff: r.price_diff === "" || r.price_diff == null ? 0 : Number(r.price_diff),
+    }, giftRates);
+  };
 
   const load = () => {
     sb.from("corporate_gifting_products")
-      .select("id, category, name, weight_grams, price_mode, making_charge, tax_percent, price_diff, markup_amount, reference_price, active, image_url")
+      .select("id, category, name, weight_grams, price_mode, gifting_sheet_name, manual_price, making_charge, tax_percent, price_diff, markup_amount, reference_price, active, image_url")
       .eq("tenant_id", getTenantId())
       .order("category", { ascending: true }).order("sort_order", { ascending: true })
       .then(({ data }) => setRows(data || []));
@@ -15207,7 +15223,9 @@ function CorpGiftPricingScreen() {
           </thead>
           <tbody>
             {visible.map((r) => {
-              const ourPrice = priceMap[r.id];
+              const savedPrice = priceMap[r.id];
+              const ourPrice = previewPrice(r);
+              const changed = ourPrice != null && savedPrice != null && ourPrice !== savedPrice;
               const diff = ourPrice != null && r.reference_price != null ? ourPrice - Number(r.reference_price) : null;
               return (
                 <tr key={r.id}>
@@ -15218,7 +15236,10 @@ function CorpGiftPricingScreen() {
                   <td style={td}><input style={cellInput} type="number" value={r.making_charge ?? ""} onChange={(e) => updateField(r.id, "making_charge", e.target.value)} /></td>
                   <td style={td}><input style={{ ...cellInput, width: 50 }} type="number" value={r.tax_percent ?? ""} onChange={(e) => updateField(r.id, "tax_percent", e.target.value)} /></td>
                   <td style={td}><input style={cellInput} type="number" value={r.price_diff ?? ""} onChange={(e) => updateField(r.id, "price_diff", e.target.value)} /></td>
-                  <td style={{ ...td, fontWeight: 600 }}>{ourPrice != null ? `₹${ourPrice.toLocaleString("en-IN")}` : "—"}</td>
+                  <td style={{ ...td, fontWeight: 600, background: changed ? "#fffbeb" : undefined }}>
+                    {ourPrice != null ? `₹${ourPrice.toLocaleString("en-IN")}` : "—"}
+                    {changed && <div style={{ fontSize: 10.5, fontWeight: 400, color: "#92400e" }}>was ₹{savedPrice.toLocaleString("en-IN")} · not saved</div>}
+                  </td>
                   <td style={td}>{r.reference_price != null ? `₹${Number(r.reference_price).toLocaleString("en-IN")}` : "—"}</td>
                   <td style={{ ...td, color: diff == null ? "#888" : diff > 0 ? "#b91c1c" : "#16a34a", fontWeight: 600 }}>
                     {diff != null ? `${diff > 0 ? "+" : ""}₹${diff.toLocaleString("en-IN")}` : "—"}
