@@ -14,7 +14,7 @@ const secret = (env.match(/^CRM_SECRET=(.*)$/m) || [])[1]?.trim().replace(/^["']
 if (!secret) throw new Error("CRM_SECRET missing in .env.local");
 const token = crypto.createHmac("sha256", secret).update("mmtc-refresh").digest("hex").slice(0, 32);
 const dry = process.argv.includes("--dry") ? "1" : "0";
-const src = fs.readFileSync(path.join(here, "runner.js"), "utf8").replace("__TOKEN__", token).replace('"__DRY__"', `"${dry}"`);
+const src = fs.readFileSync(path.join(here, "runner.js"), "utf8").replace('"__TOKEN__"', `"${token}"`).replace('"__DRY__"', `"${dry}"`);
 const out = path.join(os.tmpdir(), "mmtc_runner.js");
 fs.writeFileSync(out, src);
 console.log(out);
