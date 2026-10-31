@@ -8,7 +8,7 @@ export function normKey(name) {
     .replace(/24k \(999\.9\+\) purest|\(999\.9\+\) purest|22k \(916\.7\) pure/g, "")
     .replace(/(\d)\s*gms?\b/g, "$1g")
     .replace(/(\d)\s*kg\b/g, (_, d) => `${d}000g`)
-    .replace(/(\d+)\.0+g/g, "$1g")
+    .replace(/(\d+)\.(\d*?)0*g/g, (_, a, b) => (b ? `${a}.${b}g` : `${a}g`))
     .replace(/[^a-z0-9.]/g, "");
 }
 
