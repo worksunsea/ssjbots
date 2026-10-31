@@ -18,7 +18,7 @@ export function computePrice(p, rates) {
     if (rate != null && p.weight_grams != null) return Math.round(Number(p.weight_grams) * rate);
     return p.manual_price != null ? Number(p.manual_price) : null;
   }
-  // live_gold_markup / live_silver_markup: (weight x today's rate from our
+  // live_gold_markup / live_gold22_markup / live_silver_markup: (weight x today's rate from our
   // rates tab + making_charge) x (1 + tax_percent/100) + price_diff — GST
   // is charged on the full invoice value (metal + making), not just the
   // making charge; default 3% on both gold and silver. price_diff is a
@@ -26,8 +26,11 @@ export function computePrice(p, rates) {
   // editable anytime) that lands the total on their price today, while
   // the bullion component keeps tracking our rates tab daily. Falls back
   // to markup_amount for rows that don't have a real making_charge yet.
-  if (p.price_mode === "live_gold_markup" || p.price_mode === "live_silver_markup") {
-    const rate = p.price_mode === "live_gold_markup" ? rates.spot.gold24kt : rates.spot.silverPerGram;
+  // live_gold22_markup: same formula for 22K (916.7) coins, priced off the 22KT rate.
+  if (p.price_mode === "live_gold_markup" || p.price_mode === "live_gold22_markup" || p.price_mode === "live_silver_markup") {
+    const rate = p.price_mode === "live_gold_markup" ? rates.spot.gold24kt
+      : p.price_mode === "live_gold22_markup" ? rates.spot.gold22kt
+      : rates.spot.silverPerGram;
     if (rate != null && p.weight_grams != null) {
       const bullionValue = Number(p.weight_grams) * rate;
       if (p.making_charge != null) {
