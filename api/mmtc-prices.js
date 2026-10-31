@@ -31,6 +31,18 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type,x-mmtc-token");
   if (req.method === "OPTIONS") return res.status(200).end();
+  // mmtcpamp.com's CSP blocks cross-site fetches, so the runner stores
+  // {token, prices} in window.name, navigates the tab here, and this page
+  // (same origin as the API) does the POST and shows the result.
+  if (req.method === "GET") {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(200).send(`<!doctype html><meta charset="utf-8"><title>MMTC ingest</title><body><pre id="r">working...</pre><script>
+(async()=>{const r=document.getElementById("r");let p;try{p=JSON.parse(window.name)}catch(e){r.textContent="RESULT "+JSON.stringify({ok:false,error:"no_payload"});return}
+window.name="";try{const x=await fetch(location.pathname+(p.dry?"?dry=1":""),{method:"POST",headers:{"Content-Type":"application/json","x-mmtc-token":p.token},body:JSON.stringify({prices:p.prices})});
+r.textContent="RESULT "+JSON.stringify({status:x.status,...(await x.json())})}catch(e){r.textContent="RESULT "+JSON.stringify({ok:false,error:String(e)})}})();
+</script>`);
+  }
   if (req.method !== "POST") return res.status(405).json({ ok: false, error: "post_only" });
   if (!CRM_SECRET || req.headers["x-mmtc-token"] !== refreshToken(CRM_SECRET)) {
     return res.status(401).json({ ok: false, error: "unauthorized" });

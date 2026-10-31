@@ -12,7 +12,6 @@
 window.mmtcStep = async function (step) {
   window.__mmtcDone = null;
   const TOKEN = "__TOKEN__";
-  const API = "https://ssjbot.gemtre.in/api/mmtc-prices" + ("__DRY__" === "1" ? "?dry=1" : "");
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const num = (s) => Number(String(s).replace(/[^\d.]/g, ""));
   const acc = JSON.parse(sessionStorage.getItem("mmtc_acc") || "{}");
@@ -49,8 +48,11 @@ window.mmtcStep = async function (step) {
       save();
       window.__mmtcDone = JSON.stringify({ step, total: Object.keys(acc).length });
     } else if (step === "post") {
-      const r = await fetch(API, { method: "POST", headers: { "Content-Type": "application/json", "x-mmtc-token": TOKEN }, body: JSON.stringify({ prices: acc }) });
-      window.__mmtcDone = JSON.stringify({ step, status: r.status, scraped: Object.keys(acc).length, body: await r.json() });
+      // mmtcpamp.com's CSP blocks fetch to other origins: hand the payload over via
+      // window.name and navigate to the ingest page, which does the POST and prints "RESULT {...}".
+      window.name = JSON.stringify({ token: TOKEN, dry: "__DRY__" === "1", prices: acc });
+      sessionStorage.removeItem("mmtc_acc");
+      location.href = "https://ssjbot.gemtre.in/api/mmtc-prices";
     }
   } catch (e) {
     window.__mmtcDone = JSON.stringify({ step, error: String(e) });
