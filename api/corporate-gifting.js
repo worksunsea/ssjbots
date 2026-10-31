@@ -48,7 +48,7 @@ export default async function handler(req, res) {
   if (req.method === "GET" && action === "products") {
     const quick = Number(req.query?.quick) || null;
     let query = sb.from("corporate_gifting_products")
-      .select("id, category, name, description, image_url, sort_order, price_mode, gifting_sheet_name, weight_grams, manual_price, markup_amount, making_charge, tax_percent, price_diff")
+      .select("id, category, name, description, image_url, sort_order, price_mode, gifting_sheet_name, weight_grams, manual_price, markup_amount, making_charge, tax_percent, price_diff, reference_price")
       .eq("tenant_id", TENANT_ID).eq("active", true)
       .order("category", { ascending: true }).order("sort_order", { ascending: true });
     if (quick) query = query.limit(quick);

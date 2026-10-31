@@ -2,7 +2,7 @@
 // catalogue) and the CRM Corp Gifting Pricing screen (live preview while typing),
 // so what staff see before saving is exactly what customers will see.
 
-export function computePrice(p, rates) {
+function rawPrice(p, rates) {
   if (p.price_mode === "manual") return p.manual_price != null ? Number(p.manual_price) : null;
   if (p.price_mode === "gifting_sheet") {
     const match = (rates.giftingCoins || []).find((g) => g.name === p.gifting_sheet_name);
@@ -41,4 +41,15 @@ export function computePrice(p, rates) {
     return p.manual_price != null ? Number(p.manual_price) : null;
   }
   return null;
+}
+
+// Our price may never exceed MMTC's own listed price. reference_price is the
+// MMTC listing price, refreshed once a day; when set, it is a hard ceiling.
+export function computePrice(p, rates) {
+  const price = rawPrice(p, rates);
+  // Only MMTC categories: shagun_coins reference prices come from another supplier.
+  const isMmtc = String(p.category || "").startsWith("mmtc_");
+  const cap = isMmtc && p.reference_price != null ? Number(p.reference_price) : null;
+  if (price != null && cap != null && cap > 0 && price > cap) return Math.round(cap);
+  return price;
 }
