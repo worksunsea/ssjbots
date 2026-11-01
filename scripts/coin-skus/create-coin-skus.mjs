@@ -4,11 +4,9 @@
 //   node scripts/coin-skus/create-coin-skus.mjs            dry run, prints the codes
 //   node scripts/coin-skus/create-coin-skus.mjs --apply    writes to the database
 //
-// SKU codes:
-//   - Shagun coins use Shagun's OWN product code. Supply them in scripts/coin-skus/shagun-skus.csv
-//     (columns: name,sku). A Shagun coin with no code in the CSV is skipped, never invented.
-//   - MMTC coins have no code on MMTC's public pages, so a readable one is generated from the name:
-//     MMTC-<G|S>-<DESIGN>-<BAR|COIN>-<WEIGHT>, e.g. MMTC-G-LOTUS-BAR-1G.
+// SKU codes (generated, readable, unique; Shagun's own codes sit behind an OTP login and are not available):
+//   MMTC   : MMTC-<G|S>-<DESIGN>-<BAR|COIN>-<WEIGHT>   e.g. MMTC-G-LOTUS-BAR-1G
+//   Shagun : SHG-<G|S>-<WEIGHT>-<FORM>-<DESIGN>        e.g. SHG-G-1G-COIN-GANESH
 // Stock starts at 0 and is NOT live (opening_as_of unset) until an opening count is entered in
 // FMS -> IMS -> Coins, so the website keeps its current availability until then.
 import fs from "node:fs";
@@ -35,7 +33,7 @@ function weightToken(g) {
 function mmtcCode(p, taken) {
   const metal = p.category === "mmtc_gold" ? "G" : "S";
   const form = /\bbar\b/i.test(p.name) ? "BAR" : "COIN";
-  const design = p.name.replace(/\(.*?\)/g, " ").replace(/[^A-Za-z ]/g, " ").toUpperCase().split(/\s+/)
+  const design = p.name.replace(/\(.*?\)/g, " ").replace(/[^A-Za-z0-9 ]/g, " ").toUpperCase().split(/\s+/)
     .filter((w) => w && !STOP.has(w)).map((w) => w.slice(0, 7)).slice(0, 3).join("-") || "PLAIN";
   const base = `MMTC-${metal}-${design}-${form}-${weightToken(p.weight_grams)}`;
   let code = base; let i = 2;
@@ -44,18 +42,29 @@ function mmtcCode(p, taken) {
   return code;
 }
 
-function readShagunCsv() {
-  const f = path.join(here, "shagun-skus.csv");
-  if (!fs.existsSync(f)) return new Map();
-  const m = new Map();
-  for (const line of fs.readFileSync(f, "utf8").split(/\r?\n/).slice(1)) {
-    const i = line.lastIndexOf(",");
-    if (i < 1) continue;
-    const name = line.slice(0, i).replace(/^"|"$/g, "").trim();
-    const sku = line.slice(i + 1).trim();
-    if (name && sku) m.set(name.toLowerCase(), sku);
-  }
-  return m;
+
+// Shagun titles look like "1 GRAM GOLD COIN - Ganesh", "500 mg. GOLD COIN SET (100 mg. x 5 COINS) Tree",
+// "10 GRAM SILVER COIN BIG SIZE PREMIUM - 60MM - hanuman ji", "SHAGUN LIFAFA - 500 mg. GOLD - Thankyou".
+function shagunParts(name) {
+  // First "<number> <mg|gram|gm|g>" in the title; mg is converted to grams.
+  const m = /([0-9]+(?:[.][0-9]+)?)\s*(mg|gram|gm|g)/i.exec(name);
+  const grams = m ? (m[2].toLowerCase() === "mg" ? Number(m[1]) / 1000 : Number(m[1])) : null;
+  const metal = /\bsilver\b/i.test(name) ? "S" : "G";
+  const form = /\blifafa\b/i.test(name) ? "LIFAFA" : /\bfigurine\b/i.test(name) ? "FIGURINE" : /\bspoon\b/i.test(name) ? "SPOON"
+    : /\bbar\b/i.test(name) ? "BAR" : /\bset\b/i.test(name) ? "SET" : /\bbig size\b/i.test(name) ? "BIG" : "COIN";
+  let design = name.includes(" - ") ? name.split(" - ").pop() : name.replace(/^.*\)\s*/, "").replace(/^.*\bBAR\s*/i, "");
+  design = design.replace(/\b(printed|premium)\b/gi, "").replace(/[0-9]+\s*mm/gi, "").replace(/[^A-Za-z0-9 ]/g, " ").trim();
+  const dtok = design.toUpperCase().split(/\s+/).filter(Boolean).map((w) => w.slice(0, 8)).slice(0, 3).join("-") || "PLAIN";
+  const size = (/([0-9]+)\s*MM/i.exec(name) || [])[1];
+  return { metal, grams, form, dtok, size };
+}
+function shagunCode(name, taken) {
+  const x = shagunParts(name);
+  const base = `SHG-${x.metal}-${weightToken(x.grams)}-${x.form}${x.size ? x.size + "MM" : ""}-${x.dtok}`;
+  let code = base; let i = 2;
+  while (taken.has(code.toLowerCase())) code = `${base}-${i++}`;
+  taken.add(code.toLowerCase());
+  return code;
 }
 
 const { data: products, error } = await sb.from("corporate_gifting_products")
@@ -66,17 +75,13 @@ if (error) throw error;
 
 const { data: existing } = await sb.from("ims_jw_items").select("sku_code").eq("tenant_id", TENANT);
 const taken = new Set((existing || []).map((e) => e.sku_code.toLowerCase()));
-const shagun = readShagunCsv();
 
 const plan = [];
 const skipped = [];
 for (const p of products) {
   let sku;
   if (p.category === "shagun_coins") {
-    sku = shagun.get(p.name.toLowerCase());
-    if (!sku) { skipped.push(p.name); continue; }
-    if (taken.has(sku.toLowerCase())) { skipped.push(`${p.name} (code ${sku} already used)`); continue; }
-    taken.add(sku.toLowerCase());
+    sku = shagunCode(p.name, taken);
   } else {
     sku = mmtcCode(p, taken);
   }
@@ -92,11 +97,13 @@ let done = 0;
 for (const { p, sku } of plan) {
   const supplier = p.category === "shagun_coins" ? "Shagun Coins" : "MMTC-PAMP";
   const gold = p.category !== "mmtc_silver" && !/silver/i.test(p.name);
-  const purity = /22\s?k/i.test(p.name) ? "22K" : gold ? "24K" : "999";
+  const sg = p.category === "shagun_coins" ? shagunParts(p.name) : null;
+  // Shagun silver purity is not stated on their titles, so it is left blank rather than guessed.
+  const purity = /22\s?k/i.test(p.name) ? "22K" : sg && !gold ? null : gold ? "24K" : "999";
   const { data: item, error: e1 } = await sb.from("ims_jw_items").insert({
     tenant_id: TENANT, sku_code: sku, item_name: p.name, category: "Coins & Bars",
     jewellery_type: p.category === "mmtc_gold" ? "MMTC Gold" : p.category === "mmtc_silver" ? "MMTC Silver" : "Shagun Coin",
-    purity, net_wt: p.weight_grams, supplier_name: supplier, source: "bought", created_by: "coin-sku-script",
+    purity, net_wt: p.weight_grams ?? sg?.grams ?? null, supplier_name: supplier, source: "bought", created_by: "coin-sku-script",
   }).select("id").single();
   if (e1) { console.error("FAIL", sku, e1.message); continue; }
   if (p.image_url) {

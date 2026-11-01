@@ -15124,6 +15124,7 @@ function CorpGiftPricingScreen() {
   const [category, setCategory] = useState("all");
   const [saving, setSaving] = useState({});
   const [toast, setToast] = useState("");
+  const [zoomRow, setZoomRow] = useState(null); // product whose photo is enlarged
 
   // Prices only (Our Price / Live Diff). Kept separate from the row load so a save
   // can refresh them without overwriting edits typed into other, unsaved rows.
@@ -15205,6 +15206,12 @@ function CorpGiftPricingScreen() {
         ))}
         {toast && <span style={{ fontSize: 12, color: "#16a34a", alignSelf: "center", marginLeft: 8 }}>{toast}</span>}
       </div>
+      {zoomRow && (
+        <div onClick={() => setZoomRow(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 1000, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, cursor: "zoom-out", padding: 16 }}>
+          <img src={zoomRow.image_url} alt={zoomRow.name} style={{ maxWidth: "min(92vw, 520px)", maxHeight: "70vh", borderRadius: 8, background: "#fff" }} />
+          <div style={{ color: "#fff", fontSize: 14, textAlign: "center" }}>{zoomRow.name}{zoomRow.sku_code ? ` · ${zoomRow.sku_code}` : ""}</div>
+        </div>
+      )}
       <div style={{ overflowX: "auto", border: "1px solid #eee", borderRadius: 6 }}>
         <table style={{ borderCollapse: "collapse", width: "100%" }}>
           <thead>
@@ -15240,7 +15247,14 @@ function CorpGiftPricingScreen() {
                     ? <span style={{ fontSize: 11, color: "#666" }} title="Live stock is kept in FMS → IMS → Coins (sales and purchases). This field is only the fallback until an opening count is entered there.">FMS</span>
                     : <input style={{ ...cellInput, width: 64 }} type="number" min="0" placeholder="—" title="Units on hand (CRM only). 0 = website shows Out of stock; blank = not tracked" value={r.stock_qty ?? ""} onChange={(e) => updateField(r.id, "stock_qty", e.target.value)} />}</td>
                   <td style={{ ...td, fontSize: 11, whiteSpace: "nowrap" }}>{r.sku_code || "—"}</td>
-                  <td style={{ ...td, maxWidth: 260 }}>{r.name}</td>
+                  <td style={{ ...td, maxWidth: 300 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      {r.image_url
+                        ? <img src={r.image_url} alt={r.name} loading="lazy" decoding="async" onClick={() => setZoomRow(r)} style={{ width: 52, height: 52, objectFit: "cover", borderRadius: 4, border: "1px solid #eee", cursor: "zoom-in", flexShrink: 0 }} />
+                        : <div style={{ width: 52, height: 52, borderRadius: 4, background: "#f3f3f3", flexShrink: 0 }} />}
+                      <span>{r.name}</span>
+                    </div>
+                  </td>
                   <td style={{ ...td, fontSize: 11, color: "#888" }}>{r.price_mode}</td>
                   <td style={td}><input style={cellInput} type="number" value={r.weight_grams ?? ""} onChange={(e) => updateField(r.id, "weight_grams", e.target.value)} /></td>
                   <td style={td}><input style={cellInput} type="number" value={r.making_charge ?? ""} onChange={(e) => updateField(r.id, "making_charge", e.target.value)} /></td>
