@@ -48,7 +48,7 @@ export default async function handler(req, res) {
   if (req.method === "GET" && action === "products") {
     const quick = Number(req.query?.quick) || null;
     let query = sb.from("corporate_gifting_products")
-      .select("id, category, name, description, image_url, sort_order, price_mode, gifting_sheet_name, weight_grams, manual_price, markup_amount, making_charge, tax_percent, price_diff, reference_price")
+      .select("id, category, name, description, image_url, sort_order, price_mode, gifting_sheet_name, weight_grams, manual_price, markup_amount, making_charge, tax_percent, price_diff, reference_price, in_stock, stock_qty")
       .eq("tenant_id", TENANT_ID).eq("active", true)
       .order("category", { ascending: true }).order("sort_order", { ascending: true });
     if (quick) query = query.limit(quick);
@@ -64,6 +64,8 @@ export default async function handler(req, res) {
       imageUrl: p.image_url,
       weightGrams: p.weight_grams,
       price: computePrice(p, rates),
+      // Availability only: the stock_qty count stays in the CRM, never sent to the public site.
+      inStock: p.in_stock !== false && (p.stock_qty == null || p.stock_qty > 0),
     }));
 
     // MMTC Gold / MMTC Silver always list lowest-to-highest price, not the
@@ -160,7 +162,47 @@ export default async function handler(req, res) {
       product_category: "gold_coin",
       enquiry_items: enquiryItems,
       budget: total || null,
-      crm_source: "corporate_gifting_web",
+      // bullion_demands_crm_source_check only allows a fixed list; the old value
+      // "corporate_gifting_web" violated it, so cart enquiries never got logged.
+      crm_source: "online_other",
+      bot_active: false,
+    }).select("id").single();
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+
+    return res.status(200).json({ ok: true, demandId: demand.id });
+  }
+
+  // ── POST action=stock-request — public. "Request to buy" on an out-of-stock
+  // product: logs a demand card (Demands sheet) with the lead's contact details. ─
+  if (req.method === "POST" && action === "stock-request") {
+    let body = req.body; if (typeof body === "string") { try { body = JSON.parse(body); } catch { body = {}; } }
+    body = body || {};
+    const { leadId, productId } = body;
+    if (!leadId || !productId) return res.status(400).json({ ok: false, error: "lead_and_product_required" });
+
+    const { data: lead } = await sb.from("bullion_leads").select("id, tenant_id, name, phone").eq("id", leadId).maybeSingle();
+    if (!lead) return res.status(404).json({ ok: false, error: "lead_not_found" });
+    const { data: product } = await sb.from("corporate_gifting_products")
+      .select("id, name, category, weight_grams").eq("id", productId).eq("tenant_id", lead.tenant_id).maybeSingle();
+    if (!product) return res.status(404).json({ ok: false, error: "product_not_found" });
+
+    const qty = Math.max(1, Math.min(100000, Math.round(Number(body.qty) || 1)));
+    const description = `STOCK REQUEST (out of stock on website): ${qty} x ${product.name}`;
+
+    // Same lead asking for the same product within 24h = one card, not a pile.
+    const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const { data: dupe } = await sb.from("bullion_demands").select("id")
+      .eq("lead_id", lead.id).eq("description", description).gte("created_at", since).limit(1).maybeSingle();
+    if (dupe) return res.status(200).json({ ok: true, demandId: dupe.id, duplicate: true });
+
+    const { data: demand, error } = await sb.from("bullion_demands").insert({
+      tenant_id: lead.tenant_id,
+      lead_id: lead.id,
+      funnel_id: CORP_GIFT_FUNNEL_ID,
+      description,
+      product_category: String(product.category || "").includes("silver") ? "silver_coin" : "gold_coin",
+      enquiry_items: [{ name: product.name, qty, price: null }],
+      crm_source: "online_other",
       bot_active: false,
     }).select("id").single();
     if (error) return res.status(500).json({ ok: false, error: error.message });

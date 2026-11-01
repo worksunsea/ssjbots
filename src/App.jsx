@@ -15149,7 +15149,7 @@ function CorpGiftPricingScreen() {
 
   const load = () => {
     sb.from("corporate_gifting_products")
-      .select("id, category, name, weight_grams, price_mode, gifting_sheet_name, manual_price, making_charge, tax_percent, price_diff, markup_amount, reference_price, active, image_url")
+      .select("id, category, name, weight_grams, price_mode, gifting_sheet_name, manual_price, making_charge, tax_percent, price_diff, markup_amount, reference_price, active, in_stock, stock_qty, image_url")
       .eq("tenant_id", getTenantId())
       .order("category", { ascending: true }).order("sort_order", { ascending: true })
       .then(({ data }) => setRows(data || []));
@@ -15169,6 +15169,8 @@ function CorpGiftPricingScreen() {
       tax_percent: row.tax_percent === "" ? 0 : Number(row.tax_percent),
       price_diff: row.price_diff === "" ? 0 : Number(row.price_diff),
       active: row.active,
+      in_stock: row.in_stock !== false,
+      stock_qty: row.stock_qty === "" || row.stock_qty == null ? null : Math.max(0, Math.round(Number(row.stock_qty))),
       updated_at: new Date().toISOString(),
     }).eq("id", row.id);
     if (!error) await loadPrices();
@@ -15208,6 +15210,8 @@ function CorpGiftPricingScreen() {
           <thead>
             <tr>
               <th style={th}>Active</th>
+              <th style={th}>In stock</th>
+              <th style={th}>Stock qty</th>
               <th style={th}>Name</th>
               <th style={th}>Mode</th>
               <th style={th}>Weight (g)</th>
@@ -15230,6 +15234,8 @@ function CorpGiftPricingScreen() {
               return (
                 <tr key={r.id}>
                   <td style={td}><input type="checkbox" checked={r.active} onChange={(e) => updateField(r.id, "active", e.target.checked)} /></td>
+                  <td style={td}><input type="checkbox" checked={r.in_stock !== false} title="Untick = website shows 'Request to buy'" onChange={(e) => updateField(r.id, "in_stock", e.target.checked)} /></td>
+                  <td style={td}><input style={{ ...cellInput, width: 64 }} type="number" min="0" placeholder="—" title="Units on hand (CRM only). 0 = website shows Out of stock; blank = not tracked" value={r.stock_qty ?? ""} onChange={(e) => updateField(r.id, "stock_qty", e.target.value)} /></td>
                   <td style={{ ...td, maxWidth: 260 }}>{r.name}</td>
                   <td style={{ ...td, fontSize: 11, color: "#888" }}>{r.price_mode}</td>
                   <td style={td}><input style={cellInput} type="number" value={r.weight_grams ?? ""} onChange={(e) => updateField(r.id, "weight_grams", e.target.value)} /></td>
