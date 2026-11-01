@@ -48,12 +48,31 @@ export default async function handler(req, res) {
   if (req.method === "GET" && action === "products") {
     const quick = Number(req.query?.quick) || null;
     let query = sb.from("corporate_gifting_products")
-      .select("id, category, name, description, image_url, sort_order, price_mode, gifting_sheet_name, weight_grams, manual_price, markup_amount, making_charge, tax_percent, price_diff, reference_price, in_stock, stock_qty")
+      .select("id, category, name, description, image_url, sort_order, price_mode, gifting_sheet_name, weight_grams, manual_price, markup_amount, making_charge, tax_percent, price_diff, reference_price, in_stock, stock_qty, ims_item_id")
       .eq("tenant_id", TENANT_ID).eq("active", true)
       .order("category", { ascending: true }).order("sort_order", { ascending: true });
     if (quick) query = query.limit(quick);
     const { data: rows, error } = await query;
     if (error) return res.status(500).json({ ok: false, error: error.message });
+
+    // Live stock from FMS IMS (sales and purchases booked there). A linked coin counts as tracked
+    // only after an opening count was entered (opening_as_of set); until then the manual
+    // in_stock / stock_qty fields keep deciding availability. Counts are never sent to the site.
+    const imsStock = new Map();
+    const linkedIds = [...new Set((rows || []).map((p) => p.ims_item_id).filter(Boolean))];
+    if (linkedIds.length) {
+      const [{ data: items }, { data: stock }] = await Promise.all([
+        sb.from("ims_jw_items").select("id, opening_as_of").in("id", linkedIds),
+        sb.from("ims_jw_stock").select("item_id, stock").in("item_id", linkedIds),
+      ]);
+      const stockBy = new Map((stock || []).map((s) => [s.item_id, Number(s.stock)]));
+      for (const it of items || []) if (it.opening_as_of) imsStock.set(it.id, stockBy.get(it.id) ?? 0);
+    }
+    const isInStock = (p) => {
+      if (p.in_stock === false) return false;
+      if (p.ims_item_id && imsStock.has(p.ims_item_id)) return imsStock.get(p.ims_item_id) > 0;
+      return p.stock_qty == null || p.stock_qty > 0;
+    };
 
     const rates = await getRates();
     const products = (rows || []).map((p) => ({
@@ -64,8 +83,8 @@ export default async function handler(req, res) {
       imageUrl: p.image_url,
       weightGrams: p.weight_grams,
       price: computePrice(p, rates),
-      // Availability only: the stock_qty count stays in the CRM, never sent to the public site.
-      inStock: p.in_stock !== false && (p.stock_qty == null || p.stock_qty > 0),
+      // Availability only: the stock count stays in the CRM / FMS, never sent to the public site.
+      inStock: isInStock(p),
     }));
 
     // MMTC Gold / MMTC Silver always list lowest-to-highest price, not the
