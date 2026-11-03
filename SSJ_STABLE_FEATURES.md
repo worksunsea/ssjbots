@@ -752,3 +752,12 @@ Scan supplier business cards → auto-fill contact details via AI vision → tag
 - `*_flat`: the weight is STILL deducted from gross gold (ct×0.2 or g), but the rate field is a one-off flat ₹ amount instead of weight × rate. Flat with no weight = ₹0 (misc lines with a blank weight were already flat).
 - Used by `computeJewelleryEstimate`, the estimate slip/print rows and the slip's "today's rate" recalculation. Old saved estimates with `ct`/`g` are unchanged.
 - Reproduces invoice ES/598 line 1 exactly: 9kt @5700, gross 2.770, making 1100/g, dia 0.380 ct @15000, stone 0.540 `g_flat` ₹500, no GST = ₹20,847.
+
+---
+
+## CVD STONE → JEWELLERY + MATCHING PAIRS (2026-11-03)
+
+- `api/cvd-stones?action=pairs&sku=` (rules in `api/_lib/cvdPairs.js`, tested): listed stones with same shape (Oval = Oval Brilliant), same white grade or same fancy colour+intensity+overtone, length/width within 0.2 mm, depth within 0.3 mm, carat within 5%, clarity within 2 grades. Closest first. Change tolerances in `PAIR_RULE`.
+- ssj-website `src/CvdSettings.jsx` on every lab-grown stone page: Ring / Pendant / Earrings → approved solitaire designs that have a variant in the stone's shape → gold colour + purity → price = real stone price (both stones for earrings, picked via the pair finder) + gold + making + side diamonds + 3% GST (finished jewellery), with WhatsApp enquiry carrying SKUs + design. Uses `diamondValueOverride` added to the website copy of `computeSolitairePrice`.
+- **Data gap:** only RING designs have approved variants. Pendant, earring and gents-ring designs have none yet (generate + approve in CRM `solitairedesigns` tab) — until then those tabs show an "ask our designer on WhatsApp" link.
+- Earring gold weight uses the design variant's `est_gold_weight_g` as the weight for the pair.
