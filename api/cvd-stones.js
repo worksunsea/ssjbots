@@ -5,6 +5,7 @@
 //                  sort=price_asc|price_desc|carat_asc|carat_desc|new, page, limit (<=60)
 //                  no_image=1  show ONLY stones without a picture (default: only stones with one)
 //   ?action=get&sku=CVD-123
+//   ?action=pairs&sku=CVD-123  stones that can pair with it for earrings (see _lib/cvdPairs.js)
 //   ?action=facets  counts per shape / colour / clarity / kind + price & carat range
 //   ?action=skus    every live SKU with its last update (for the website sitemap)
 // Only PUBLIC_COLUMNS are ever selected — purchase cost never leaves the server.
@@ -12,6 +13,7 @@
 import { supa } from "./_lib/supabase.js";
 import { TENANT_ID } from "./_lib/config.js";
 import { PUBLIC_COLUMNS, withGst } from "./_lib/cvdStock.js";
+import { PAIR_RULE, findPairs } from "./_lib/cvdPairs.js";
 
 const COLS = PUBLIC_COLUMNS.join(",");
 const MAX_LIMIT = 60;
@@ -67,6 +69,21 @@ async function getOne(sb, sku, res) {
   return res.status(200).json({ ok: true, stone: decorate(data) });
 }
 
+// Stones that can pair with `sku` for earrings. Only available (listed) stones are offered.
+async function pairs(sb, sku, res) {
+  if (!sku) return res.status(400).json({ ok: false, error: "sku_required" });
+  const { data: base, error } = await sb.from("cvd_stones").select(COLS).eq("tenant_id", TENANT_ID).eq("sku", sku).maybeSingle();
+  if (error) return res.status(500).json({ ok: false, error: error.message });
+  if (!base || base.status === "delisted") return res.status(404).json({ ok: false, error: "not_found" });
+  const carat = Number(base.carat);
+  let q = sb.from("cvd_stones").select(COLS).eq("tenant_id", TENANT_ID).eq("status", "listed").neq("sku", sku)
+    .gte("carat", carat * (1 - PAIR_RULE.caratPct / 100)).lte("carat", carat * (1 + PAIR_RULE.caratPct / 100)).limit(1000);
+  q = base.fancy_color ? q.ilike("fancy_color", base.fancy_color) : q.ilike("color", base.color || "-").is("fancy_color", null);
+  const { data, error: e2 } = await q;
+  if (e2) return res.status(500).json({ ok: false, error: e2.message });
+  return res.status(200).json({ ok: true, rule: PAIR_RULE, pairs: findPairs(base, data || []).map(decorate) });
+}
+
 async function facets(sb, p, res) {
   const mode = wantsNoImage(p) ? "none" : "with";
   const hit = facetCache.get(mode);
@@ -112,6 +129,7 @@ export default async function handler(req, res) {
   const action = req.query.action || "list";
   if (action === "list") return list(sb, req.query, res);
   if (action === "get") return getOne(sb, req.query.sku, res);
+  if (action === "pairs") return pairs(sb, req.query.sku, res);
   if (action === "facets") return facets(sb, req.query, res);
   if (action === "skus") return skus(sb, res);
   return res.status(400).json({ ok: false, error: "unknown_action" });
