@@ -12415,7 +12415,7 @@ function JewelleryPricingFields({ jw, setJw, makingMode, onMakingModeChange, liv
             <div key={key} style={{ display: "grid", gridTemplateColumns: "1fr 80px 1fr", gap: 8, marginBottom: 8, alignItems: "end" }}>
               <div><label style={lbl}>{label} Weight</label><input style={inp} type="number" step="0.001" value={jw[wtK]} onChange={(e) => setJw((p) => ({ ...p, [wtK]: e.target.value }))} placeholder="0.000" /></div>
               <div><label style={lbl}>Unit</label><select style={inp} value={jw[unitK]} onChange={(e) => setJw((p) => ({ ...p, [unitK]: e.target.value }))}><option value="ct">ct</option><option value="g">g</option></select></div>
-              <div><label style={lbl}>{label} Rate (₹/g)</label><input style={inp} type="number" value={jw[rateK]} onChange={(e) => setJw((p) => ({ ...p, [rateK]: e.target.value }))} placeholder="0" /></div>
+              <div><label style={lbl}>{label} Rate (₹ per {jw[unitK]})</label><input style={inp} type="number" value={jw[rateK]} onChange={(e) => setJw((p) => ({ ...p, [rateK]: e.target.value }))} placeholder="0" /></div>
             </div>
           ))}
           <div style={{ marginBottom: 8 }}>
@@ -12441,7 +12441,7 @@ function JewelleryPricingFields({ jw, setJw, makingMode, onMakingModeChange, liv
                       <button type="button" style={{ ...inp, width: 40, cursor: "pointer", background: "#f0f0f0", fontWeight: 600, padding: "0 4px" }} onClick={() => setJw((p) => ({ ...p, [unitK]: p[unitK] === "ct" ? "g" : "ct" }))}>{jw[unitK]}</button>
                     </div>
                   </div>
-                  <div><label style={lbl}>Rate (₹)</label><input style={inp} type="number" step="1" value={jw[rateK]} onChange={(e) => setJw((p) => ({ ...p, [rateK]: e.target.value }))} placeholder="0" /></div>
+                  <div><label style={lbl}>{parseFloat(jw[wtK] || 0) > 0 ? "Rate (₹ per " + jw[unitK] + ")" : "Flat charge (₹)"}</label><input style={inp} type="number" step="1" value={jw[rateK]} onChange={(e) => setJw((p) => ({ ...p, [rateK]: e.target.value }))} placeholder={parseFloat(jw[wtK] || 0) > 0 ? "rate × weight" : "fixed amount"} title="With a weight: amount = weight × rate. Weight blank: the rate is added as one flat charge." /></div>
                   <div style={{ paddingBottom: 6 }}><label style={{ fontSize: 11, color: "#888", display: "block", marginBottom: 4 }}>Deduct</label><input type="checkbox" checked={jw[dK]} onChange={(e) => setJw((p) => ({ ...p, [dK]: e.target.checked }))} /></div>
                 </div>
               </div>
