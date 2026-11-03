@@ -3,6 +3,7 @@
 //                  carat_min, carat_max, price_min, price_max (selling price ex-GST),
 //                  status=listed|reserved|all (default all live), q (SKU / stock no),
 //                  sort=price_asc|price_desc|carat_asc|carat_desc|new, page, limit (<=60)
+//                  no_image=1  show ONLY stones without a picture (default: only stones with one)
 //   ?action=get&sku=CVD-123
 //   ?action=facets  counts per shape / colour / clarity / kind + price & carat range
 //   ?action=skus    every live SKU with its last update (for the website sitemap)
@@ -19,12 +20,19 @@ const SORTS = {
   carat_asc: ["carat", true], carat_desc: ["carat", false], new: ["first_seen_at", false],
 };
 const FACET_TTL_MS = 5 * 60 * 1000;
-let facetCache = { ts: 0, data: null };
+const facetCache = new Map(); // keyed by image mode
 
 const num = (v) => (v !== undefined && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null);
 const decorate = (s) => ({ ...s, ...withGst(Number(s.price_inr), Number(s.carat)) });
 
+// Stones without a picture are hidden unless the visitor asks for them (no_image=1), and then ONLY those show.
+const wantsNoImage = (p) => p.no_image === "1" || p.no_image === "true";
+function imageFilter(q, p) {
+  return wantsNoImage(p) ? q.or("image_url.is.null,image_url.eq.") : q.not("image_url", "is", null).neq("image_url", "");
+}
+
 function applyFilters(q, p) {
+  q = imageFilter(q, p);
   if (p.kind === "white" || p.kind === "fancy") q = q.eq("source_file_kind", p.kind);
   for (const f of ["shape", "color", "clarity", "cut", "fancy_color"]) if (p[f]) q = q.ilike(f, String(p[f]).replace(/[%,]/g, ""));
   const [cMin, cMax, pMin, pMax] = [num(p.carat_min), num(p.carat_max), num(p.price_min), num(p.price_max)];
@@ -59,12 +67,14 @@ async function getOne(sb, sku, res) {
   return res.status(200).json({ ok: true, stone: decorate(data) });
 }
 
-async function facets(sb, res) {
-  if (facetCache.data && Date.now() - facetCache.ts < FACET_TTL_MS) return res.status(200).json(facetCache.data);
+async function facets(sb, p, res) {
+  const mode = wantsNoImage(p) ? "none" : "with";
+  const hit = facetCache.get(mode);
+  if (hit && Date.now() - hit.ts < FACET_TTL_MS) return res.status(200).json(hit.data);
   const rows = [];
   for (let from = 0; ; from += 1000) {
-    const { data, error } = await sb.from("cvd_stones").select("shape,color,clarity,fancy_color,source_file_kind,price_inr,carat")
-      .eq("tenant_id", TENANT_ID).neq("status", "delisted").range(from, from + 999);
+    const { data, error } = await imageFilter(sb.from("cvd_stones").select("shape,color,clarity,fancy_color,source_file_kind,price_inr,carat")
+      .eq("tenant_id", TENANT_ID).neq("status", "delisted"), p).range(from, from + 999);
     if (error) return res.status(500).json({ ok: false, error: error.message });
     rows.push(...data);
     if (data.length < 1000) break;
@@ -76,7 +86,7 @@ async function facets(sb, res) {
     price: rows.length ? { min: Math.min(...prices), max: Math.max(...prices) } : null,
     carat: rows.length ? { min: Math.min(...carats), max: Math.max(...carats) } : null,
   };
-  facetCache = { ts: Date.now(), data };
+  facetCache.set(mode, { ts: Date.now(), data });
   return res.status(200).json(data);
 }
 
@@ -102,7 +112,7 @@ export default async function handler(req, res) {
   const action = req.query.action || "list";
   if (action === "list") return list(sb, req.query, res);
   if (action === "get") return getOne(sb, req.query.sku, res);
-  if (action === "facets") return facets(sb, res);
+  if (action === "facets") return facets(sb, req.query, res);
   if (action === "skus") return skus(sb, res);
   return res.status(400).json({ ok: false, error: "unknown_action" });
 }
