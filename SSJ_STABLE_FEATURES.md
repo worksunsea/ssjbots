@@ -737,3 +737,9 @@ Scan supplier business cards → auto-fill contact details via AI vision → tag
 ## TAGS: "+ New tag" in contact forms and Merge in Tags tab
 - Contact forms (ContactEditModal, WalkinEntryModal) show a "+ New tag" pill: creates the tag in `bullion_tags` (category custom) and ticks it on the contact. Forms re-read the master tag list on open (`useLiveTags`), so new tags are never missing.
 - Tags tab: tick 2+ tags, "Merge selected", type the final name. Updates `bullion_leads.tags` (deduped via `src/tagMerge.js`), `bday_footer_rules.tags`, legacy `bullion_lead_tags`, then renames the kept tag and deletes the others. Contacts first, tag rows last, so a half-finished merge can be re-run.
+
+## CVD SYNC: Vibgyor supplier (SKU VIB-)
+- Files in the Cvdapp folder with "VIBGYOR" in the name (fancy colour + "D TO H COLOR") are synced by the same 3 PM job as a second supplier. SKU = `VIB-<IGI cert no>`; main stock stays `CVD-<report>`.
+- Their layout differs (no totals row, "STOCK ID / Certificate No / Carat / SYM / Flou", whole colour in one cell). Parsing + word mapping: `parseCombinedColour`, `normaliseStone(..., {supplier:"vib"})` in `api/_lib/cvdStock.js`. White vs fancy is decided per row (the fancy file holds a few white stones).
+- Both Vibgyor files are reconciled together (`syncVib` in `cvdSyncRun.js`): VIB- stones missing from the newest files are delisted; a broken Vibgyor file only errors the vib group. A certificate already in the main stock stays under its CVD- SKU. If no Vibgyor files are in the folder, Vibgyor stock is left as is.
+- `extractTable` now finds the header row anywhere (supplier added a leading P-NO column on 31-10-26, which had silently broken the sync) and takes the count from the first filled cell of the row above.

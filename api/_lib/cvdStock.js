@@ -39,9 +39,25 @@ export function fileDateFromName(name) {
 
 // Picks the newest file per kind from a Drive listing [{id,name,modifiedTime}].
 export function pickLatestFiles(files) {
+  return pickLatestBy(files, classifyFile);
+}
+
+// Vibgyor (second supplier) files: "VIBGYOR DIAMONDS FANCY COLOR 03-11-2026..xlsx",
+// "VIBGYOR DIAMOND D TO H COLOR 03-11-2026..xlsx". Their stones get SKU VIB-<cert>.
+export const VIB_PREFIX = "VIB";
+export const MAIN_PREFIX = "CVD";
+
+export function classifyVibFile(name) {
+  const n = norm(name).toUpperCase();
+  if (!n.includes("VIBGYOR") || n.includes("NON CERTI") || n.includes("NON-CERTI")) return null;
+  return n.includes("FANCY") ? "fancy" : "white";
+}
+
+// Newest file per kind for one supplier; classify(name) -> kind|null.
+export function pickLatestBy(files, classify) {
   const best = {};
   for (const f of files || []) {
-    const kind = classifyFile(f.name);
+    const kind = classify(f.name);
     if (!kind) continue;
     const key = [fileDateFromName(f.name), Date.parse(f.modifiedTime) || 0];
     const cur = best[kind];
@@ -50,17 +66,32 @@ export function pickLatestFiles(files) {
   return Object.fromEntries(Object.entries(best).map(([k, v]) => [k, v.file]));
 }
 
+export const pickLatestVibFiles = (files) => pickLatestBy(files, classifyVibFile);
+
+// Supplier column names that differ from the main sheets -> the names used below.
+const HEADER_ALIASES = {
+  "stock id": "STOCK", stock: "STOCK", availability: "AVAILABILITY",
+  carat: "Weight", weight: "Weight", "certificate no": "Report #", "report #": "Report #",
+  sym: "Symmetry", flou: "Fluorescence Intensity", video: "Diamond Video", image: "Diamond Image",
+  depth: "Depth %", table: "Table %", lab: "LAB", certfile: "CertFile",
+};
+const canonHeader = (v) => { const t = norm(v); return HEADER_ALIASES[t.toLowerCase()] ?? t; };
+
 // Rows of arrays (sheet_to_json header:1) -> { totalsCount, headers, rows }.
-// The supplier puts a totals row (count, total ct, avg $/ct, total $) above
-// the header row that starts with STOCK, AVAILABILITY.
+// The header row is the one holding STOCK + AVAILABILITY in any column (the
+// supplier has added leading columns such as P-NO before). The row above it,
+// when present, is a totals row whose first filled cell is the stone count.
 export function extractTable(aoa) {
-  const hi = aoa.findIndex((r) => norm(r[0]).toUpperCase() === "STOCK" && norm(r[1]).toUpperCase() === "AVAILABILITY");
+  const isHeader = (r) => { const c = r.map((x) => canonHeader(x).toUpperCase()); return c.includes("STOCK") && c.includes("AVAILABILITY"); };
+  const hi = aoa.findIndex(isHeader);
   if (hi < 0) return { error: "header_row_not_found" };
-  const headers = aoa[hi].map(norm);
-  const totalsCount = hi > 0 ? num(aoa[hi - 1][0]) : null;
-  const rows = aoa.slice(hi + 1).filter((r) => norm(r[0]) !== "").map((r) => {
+  const headers = aoa[hi].map(canonHeader);
+  const stockIdx = headers.indexOf("STOCK");
+  const firstFilled = hi > 0 ? aoa[hi - 1].find((c) => norm(c) !== "") : undefined;
+  const totalsCount = firstFilled !== undefined ? num(firstFilled) : null;
+  const rows = aoa.slice(hi + 1).filter((r) => norm(r[stockIdx]) !== "").map((r) => {
     const o = {};
-    headers.forEach((h, i) => { if (h) o[h] = r[i] ?? ""; });
+    headers.forEach((h, i) => { if (h && (norm(o[h]) === "")) o[h] = r[i] ?? ""; });
     return o;
   });
   return { headers, totalsCount, rows };
@@ -74,23 +105,70 @@ export function workbookToTable(buffer) {
 
 const STATUS_BY_AVAILABILITY = { YES: "listed", HOLD: "reserved", "ON MEMO": "reserved" };
 
+// ── Vibgyor sheet vocabulary -> the wording the main sheets (and site) use ──
+const GRADE_WORDS = { EX: "Excellent", VG: "Very Good", G: "Good", GD: "Good", F: "Fair", FR: "Fair", P: "Poor" };
+const FLUOR_WORDS = {
+  NONE: "None", NON: "None", FNT: "Faint", F: "Faint", FAINT: "Faint", VSL: "Very Slight", VSLT: "Very Slight", VSLG: "Very Slight",
+  SL: "Slight", SLT: "Slight", SLG: "Slight", MED: "Medium", M: "Medium", MEDIUM: "Medium",
+  STG: "Strong", ST: "Strong", STRONG: "Strong", VST: "Very Strong", VSTG: "Very Strong",
+};
+const word = (map, v) => { const t = norm(v); return map[t.toUpperCase()] || titleCase(t); };
+
+const FANCY_INTENSITIES = ["FANCY DEEP", "FANCY DARK", "FANCY INTENSE", "FANCY VIVID", "FANCY LIGHT", "VERY LIGHT", "FAINT", "LIGHT", "FANCY"];
+
+// Vibgyor puts the whole colour in one cell: "N" (white grade) or
+// "FANCY INTENSE  PINK" / "FANCY VIVID YELLOWISH GREEN". Returns
+// { color } for white grades or { fancy_color, fancy_intensity, fancy_overtone }.
+export function parseCombinedColour(raw) {
+  const up = norm(raw).toUpperCase().replace(/\s+/g, " ");
+  if (!up) return {};
+  if (/^[D-Z]([-–][D-Z])?$/.test(up)) return { color: up };
+  const lead = FANCY_INTENSITIES.find((i) => up === i || up.startsWith(`${i} `));
+  const rest = (lead ? up.slice(lead.length) : up).trim().split(" ").filter(Boolean);
+  const isOvertone = (t) => t.endsWith("ISH") || t === "ORANGY" || t === "ORANGEY";
+  const overtone = rest.filter(isOvertone);
+  const base = rest.filter((t) => !isOvertone(t)).map((t) => (t === "GREY" ? "GRAY" : t));
+  const colour = (base.length ? base : overtone).join(" ");
+  const intensity = !lead ? "" : lead === "FANCY" ? "Fancy" : lead.replace(/^FANCY /, "");
+  return { fancy_color: titleCase(colour), fancy_intensity: titleCase(intensity), fancy_overtone: base.length ? titleCase(overtone.join(" ")) : "" };
+}
+
+const igiUrl = (reportNo) => `https://www.igi.org/Verify-Your-Report/?r=${reportNo}`;
+
 // One sheet row -> stone record, or null when it can't be listed (no report
 // number, no price, availability not YES/HOLD/ON MEMO).
-export function normaliseStone(row, kind) {
+// opts.supplier "vib" = Vibgyor sheet: SKU VIB-<cert>, codes expanded to words,
+// colour parsed from the single Color cell, kind decided per row.
+export function normaliseStone(row, kind, opts = {}) {
+  const vib = opts.supplier === "vib";
   const reportNo = norm(row["Report #"]);
   const finalUsd = num(row["Final Price"]);
   const carat = num(row["Weight"]);
   const status = STATUS_BY_AVAILABILITY[norm(row["AVAILABILITY"]).toUpperCase()];
   if (!reportNo || !finalUsd || !carat || !status) return null;
+
+  const lab = norm(row["LAB"]);
+  const common = {
+    sku: `${vib ? VIB_PREFIX : MAIN_PREFIX}-${reportNo}`, report_no: reportNo, stock_no: norm(row["STOCK"]), status, carat, lab,
+    depth_pct: num(row["Depth %"]), table_pct: num(row["Table %"]), measurements: norm(row["Measurements"]),
+    video_url: norm(row["Diamond Video"]), image_url: norm(row["Diamond Image"]), purchase_usd: finalUsd,
+  };
+  if (!vib) {
+    return {
+      ...common, source_file_kind: kind, shape: norm(row["Shape"]), color: norm(row["Color"]), clarity: norm(row["Clarity"]),
+      cut: norm(row["Cut"]), polish: norm(row["Polish"]), symmetry: norm(row["Symmetry"]), fluorescence: norm(row["Fluorescence Intensity"]),
+      fancy_color: titleCase(row["Fancy Color"]), fancy_intensity: titleCase(row["Fancy Color Intensity"]),
+      fancy_overtone: titleCase(row["Fancy Color Overtone"]), cert_url: norm(row["CertFile"]),
+    };
+  }
+  const colour = parseCombinedColour(row["Color"]);
+  const shape = norm(row["Shape"]).toUpperCase() === "ROUND" ? "Round Brilliant" : titleCase(row["Shape"]);
   return {
-    sku: `CVD-${reportNo}`, report_no: reportNo, stock_no: norm(row["STOCK"]), source_file_kind: kind, status,
-    shape: norm(row["Shape"]), carat, color: norm(row["Color"]), clarity: norm(row["Clarity"]),
-    cut: norm(row["Cut"]), polish: norm(row["Polish"]), symmetry: norm(row["Symmetry"]),
-    fluorescence: norm(row["Fluorescence Intensity"]), measurements: norm(row["Measurements"]),
-    lab: norm(row["LAB"]), fancy_color: titleCase(row["Fancy Color"]), fancy_intensity: titleCase(row["Fancy Color Intensity"]),
-    fancy_overtone: titleCase(row["Fancy Color Overtone"]), depth_pct: num(row["Depth %"]), table_pct: num(row["Table %"]),
-    cert_url: norm(row["CertFile"]), video_url: norm(row["Diamond Video"]), image_url: norm(row["Diamond Image"]),
-    purchase_usd: finalUsd,
+    ...common, source_file_kind: colour.fancy_color ? "fancy" : "white", shape,
+    color: colour.color || "", clarity: norm(row["Clarity"]).replace(/\s+/g, "").toUpperCase(), cut: word(GRADE_WORDS, row["Cut"]),
+    polish: word(GRADE_WORDS, row["Polish"]), symmetry: word(GRADE_WORDS, row["Symmetry"]), fluorescence: word(FLUOR_WORDS, row["Fluorescence Intensity"]),
+    fancy_color: colour.fancy_color || "", fancy_intensity: colour.fancy_intensity || "", fancy_overtone: colour.fancy_overtone || "",
+    cert_url: norm(row["CertFile"]) || (lab.toUpperCase() === "IGI" ? igiUrl(reportNo) : ""),
   };
 }
 
@@ -104,12 +182,12 @@ export function priceStone(purchaseUsd, usdInr) {
 
 // Builds stone records from a parsed table and checks the count against the
 // sheet's own totals row. Returns { stones, skipped, countMismatch }.
-export function buildStones(table, kind, usdInr) {
+export function buildStones(table, kind, usdInr, opts = {}) {
   const stones = [];
   const seen = new Set();
   let skipped = 0;
   for (const row of table.rows) {
-    const s = normaliseStone(row, kind);
+    const s = normaliseStone(row, kind, opts);
     if (!s || seen.has(s.report_no)) { skipped++; continue; }
     seen.add(s.report_no);
     stones.push({ ...s, ...priceStone(s.purchase_usd, usdInr) });

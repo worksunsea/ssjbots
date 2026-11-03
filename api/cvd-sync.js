@@ -30,13 +30,25 @@ function authorized(req) {
 
 function makeStore(sb) {
   return {
-    async loadExisting(kind) {
+    // kind null = any kind. prefix scopes to one supplier's SKUs (CVD- main, VIB- Vibgyor).
+    async loadExisting(kind, prefix = "CVD") {
       const out = [];
       for (let from = 0; ; from += PAGE) {
-        const { data, error } = await sb.from("cvd_stones").select("sku,status,price_inr")
-          .eq("tenant_id", TENANT_ID).eq("source_file_kind", kind).range(from, from + PAGE - 1);
+        let q = sb.from("cvd_stones").select("sku,status,price_inr").eq("tenant_id", TENANT_ID).like("sku", `${prefix}-%`);
+        if (kind) q = q.eq("source_file_kind", kind);
+        const { data, error } = await q.order("sku").range(from, from + PAGE - 1);
         if (error) throw new Error(`load existing: ${error.message}`);
         out.push(...data.map((r) => ({ ...r, price_inr: Number(r.price_inr) })));
+        if (data.length < PAGE) return out;
+      }
+    },
+    async loadReportNos(prefix = "CVD") {
+      const out = new Set();
+      for (let from = 0; ; from += PAGE) {
+        const { data, error } = await sb.from("cvd_stones").select("report_no")
+          .eq("tenant_id", TENANT_ID).like("sku", `${prefix}-%`).order("sku").range(from, from + PAGE - 1);
+        if (error) throw new Error(`load report numbers: ${error.message}`);
+        data.forEach((r) => out.add(r.report_no));
         if (data.length < PAGE) return out;
       }
     },
