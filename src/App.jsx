@@ -15,6 +15,7 @@ import ClientCardScan from "./ClientCardScan";
 import GiftList from "./GiftList";
 import MultiMerge from "./MultiMerge";
 import { mergeTagNames } from "./tagMerge.js";
+import { STONE_UNITS, isFlatUnit, unitBase, unitLabel, weightToGrams, lineValue, nextUnit } from "./utils/stoneLine.js";
 import { computePrice as computeGiftPrice } from "../api/_lib/giftingPrice.js";
 
 // ── SUPABASE (shared Sun Sea project — same as ssj-hr / fms-tracker) ──
@@ -12313,7 +12314,7 @@ function purityRatePg(purityIdx, liveRates) {
 // purityIdx, dia1/dia2/stone, misc1/2/3, applyGst, qty, ...). `gRate` is the
 // already-resolved per-gram rate for the chosen purity (live or overridden).
 function computeJewelleryEstimate(jw, makingMode, gRate) {
-  const ctToG = (w, unit) => unit === "ct" ? parseFloat(w || 0) * 0.2 : parseFloat(w || 0);
+  const ctToG = weightToGrams;
   const gross = parseFloat(jw.grossWt || 0);
   const d1g = ctToG(jw.dia1Wt, jw.dia1Unit);
   const d2g = ctToG(jw.dia2Wt, jw.dia2Unit);
@@ -12328,16 +12329,13 @@ function computeJewelleryEstimate(jw, makingMode, gRate) {
   const makingMrp = isBelow1g ? 2000 : (makingMode === "per_g" ? netGold * makingR : goldVal * (makingR / 100));
   const makingDiscPct = Math.min(100, Math.max(0, parseFloat(jw.makingDiscPct || 0)));
   const making = makingMrp * (1 - makingDiscPct / 100);
-  const d1raw = parseFloat(jw.dia1Wt || 0);
-  const d2raw = parseFloat(jw.dia2Wt || 0);
-  const straw = parseFloat(jw.stoneWt || 0);
-  const diaMrp = d1raw * parseFloat(jw.dia1Rate || 0) + d2raw * parseFloat(jw.dia2Rate || 0) + straw * parseFloat(jw.stoneRate || 0);
+  const diaMrp = lineValue(jw.dia1Wt, jw.dia1Rate, jw.dia1Unit) + lineValue(jw.dia2Wt, jw.dia2Rate, jw.dia2Unit) + lineValue(jw.stoneWt, jw.stoneRate, jw.stoneUnit);
   const diaDiscPct = Math.min(100, Math.max(0, parseFloat(jw.diaDiscPct || 0)));
   const diaTotal = diaMrp * (1 - diaDiscPct / 100);
-  const miscVal = (wt, rate) => { const w = parseFloat(wt || 0), r = parseFloat(rate || 0); return w > 0 ? w * r : r; };
-  const misc1Val = miscVal(jw.misc1Wt, jw.misc1Rate);
-  const misc2Val = miscVal(jw.misc2Wt, jw.misc2Rate);
-  const misc3Val = miscVal(jw.misc3Wt, jw.misc3Rate);
+  const miscVal = (wt, rate, unit) => { const w = parseFloat(wt || 0), r = parseFloat(rate || 0); return w > 0 && !isFlatUnit(unit) ? w * r : r; };
+  const misc1Val = miscVal(jw.misc1Wt, jw.misc1Rate, jw.misc1Unit);
+  const misc2Val = miscVal(jw.misc2Wt, jw.misc2Rate, jw.misc2Unit);
+  const misc3Val = miscVal(jw.misc3Wt, jw.misc3Rate, jw.misc3Unit);
   const miscTotal = misc1Val + misc2Val + misc3Val;
   const subTotal = goldVal + making + diaTotal + miscTotal;
   const gst = jw.applyGst ? subTotal * 0.03 : 0;
@@ -12414,8 +12412,8 @@ function JewelleryPricingFields({ jw, setJw, makingMode, onMakingModeChange, liv
           ].map(({ key, label, wtK, unitK, rateK }) => (
             <div key={key} style={{ display: "grid", gridTemplateColumns: "1fr 80px 1fr", gap: 8, marginBottom: 8, alignItems: "end" }}>
               <div><label style={lbl}>{label} Weight</label><input style={inp} type="number" step="0.001" value={jw[wtK]} onChange={(e) => setJw((p) => ({ ...p, [wtK]: e.target.value }))} placeholder="0.000" /></div>
-              <div><label style={lbl}>Unit</label><select style={inp} value={jw[unitK]} onChange={(e) => setJw((p) => ({ ...p, [unitK]: e.target.value }))}><option value="ct">ct</option><option value="g">g</option></select></div>
-              <div><label style={lbl}>{label} Rate (₹ per {jw[unitK]})</label><input style={inp} type="number" value={jw[rateK]} onChange={(e) => setJw((p) => ({ ...p, [rateK]: e.target.value }))} placeholder="0" /></div>
+              <div><label style={lbl}>Unit</label><select style={inp} value={jw[unitK]} onChange={(e) => setJw((p) => ({ ...p, [unitK]: e.target.value }))}>{STONE_UNITS.map((u) => <option key={u.value} value={u.value}>{u.label}</option>)}</select></div>
+              <div><label style={lbl}>{isFlatUnit(jw[unitK]) ? `${label} Flat charge (₹)` : `${label} Rate (₹ per ${jw[unitK]})`}</label><input style={inp} type="number" value={jw[rateK]} onChange={(e) => setJw((p) => ({ ...p, [rateK]: e.target.value }))} placeholder="0" /></div>
             </div>
           ))}
           <div style={{ marginBottom: 8 }}>
@@ -12438,10 +12436,10 @@ function JewelleryPricingFields({ jw, setJw, makingMode, onMakingModeChange, liv
                     <label style={lbl}>Weight</label>
                     <div style={{ display: "flex", gap: 4 }}>
                       <input style={{ ...inp, flex: 1 }} type="number" step="0.001" value={jw[wtK]} onChange={(e) => setJw((p) => ({ ...p, [wtK]: e.target.value }))} placeholder="0.00" />
-                      <button type="button" style={{ ...inp, width: 40, cursor: "pointer", background: "#f0f0f0", fontWeight: 600, padding: "0 4px" }} onClick={() => setJw((p) => ({ ...p, [unitK]: p[unitK] === "ct" ? "g" : "ct" }))}>{jw[unitK]}</button>
+                      <button type="button" style={{ ...inp, width: 40, cursor: "pointer", background: "#f0f0f0", fontWeight: 600, padding: "0 4px" }} title="Tap to switch: ct / g / ct flat / g flat" onClick={() => setJw((p) => ({ ...p, [unitK]: nextUnit(p[unitK]) }))}>{unitLabel(jw[unitK])}</button>
                     </div>
                   </div>
-                  <div><label style={lbl}>{parseFloat(jw[wtK] || 0) > 0 ? "Rate (₹ per " + jw[unitK] + ")" : "Flat charge (₹)"}</label><input style={inp} type="number" step="1" value={jw[rateK]} onChange={(e) => setJw((p) => ({ ...p, [rateK]: e.target.value }))} placeholder={parseFloat(jw[wtK] || 0) > 0 ? "rate × weight" : "fixed amount"} title="With a weight: amount = weight × rate. Weight blank: the rate is added as one flat charge." /></div>
+                  <div><label style={lbl}>{parseFloat(jw[wtK] || 0) > 0 && !isFlatUnit(jw[unitK]) ? "Rate (₹ per " + jw[unitK] + ")" : "Flat charge (₹)"}</label><input style={inp} type="number" step="1" value={jw[rateK]} onChange={(e) => setJw((p) => ({ ...p, [rateK]: e.target.value }))} placeholder={parseFloat(jw[wtK] || 0) > 0 && !isFlatUnit(jw[unitK]) ? "rate × weight" : "fixed amount"} title="With a weight: amount = weight × rate. Weight blank: the rate is added as one flat charge." /></div>
                   <div style={{ paddingBottom: 6 }}><label style={{ fontSize: 11, color: "#888", display: "block", marginBottom: 4 }}>Deduct</label><input type="checkbox" checked={jw[dK]} onChange={(e) => setJw((p) => ({ ...p, [dK]: e.target.checked }))} /></div>
                 </div>
               </div>
@@ -13153,14 +13151,14 @@ function openEstimateSlipWindow(est, liveRates = {}, clientPhone = "") {
     if (diaTotal > 0 && it.diaMrp > 0 && it.diaDiscPct > 0) {
       addRow("Diamond/Stone", `${fmtN(it.diaMrp)} → ${fmtN(diaTotal)}  (${it.diaDiscPct}% off)`);
     } else {
-      if (parseFloat(it.dia1Wt||0) > 0 && it.dia1Rate > 0) addRow(`Diamond 1 (${parseFloat(it.dia1Wt)}${it.dia1Unit} @ ₹${it.dia1Rate})`, fmtN(parseFloat(it.dia1Wt||0)*parseFloat(it.dia1Rate||0)));
-      if (parseFloat(it.dia2Wt||0) > 0 && it.dia2Rate > 0) addRow(`Diamond 2 (${parseFloat(it.dia2Wt)}${it.dia2Unit} @ ₹${it.dia2Rate})`, fmtN(parseFloat(it.dia2Wt||0)*parseFloat(it.dia2Rate||0)));
-      if (parseFloat(it.stoneWt||0) > 0 && it.stoneRate > 0) addRow(`Stone (${parseFloat(it.stoneWt)}${it.stoneUnit} @ ₹${it.stoneRate})`, fmtN(parseFloat(it.stoneWt||0)*parseFloat(it.stoneRate||0)));
+      if (parseFloat(it.dia1Wt||0) > 0 && it.dia1Rate > 0) addRow(isFlatUnit(it.dia1Unit) ? `Diamond 1 (${parseFloat(it.dia1Wt)}${unitBase(it.dia1Unit)}, flat)` : `Diamond 1 (${parseFloat(it.dia1Wt)}${it.dia1Unit} @ ₹${it.dia1Rate})`, fmtN(lineValue(it.dia1Wt, it.dia1Rate, it.dia1Unit)));
+      if (parseFloat(it.dia2Wt||0) > 0 && it.dia2Rate > 0) addRow(isFlatUnit(it.dia2Unit) ? `Diamond 2 (${parseFloat(it.dia2Wt)}${unitBase(it.dia2Unit)}, flat)` : `Diamond 2 (${parseFloat(it.dia2Wt)}${it.dia2Unit} @ ₹${it.dia2Rate})`, fmtN(lineValue(it.dia2Wt, it.dia2Rate, it.dia2Unit)));
+      if (parseFloat(it.stoneWt||0) > 0 && it.stoneRate > 0) addRow(isFlatUnit(it.stoneUnit) ? `Stone (${parseFloat(it.stoneWt)}${unitBase(it.stoneUnit)}, flat)` : `Stone (${parseFloat(it.stoneWt)}${it.stoneUnit} @ ₹${it.stoneRate})`, fmtN(lineValue(it.stoneWt, it.stoneRate, it.stoneUnit)));
     }
     [["misc1Lbl","misc1Wt","misc1Unit","misc1Rate"],["misc2Lbl","misc2Wt","misc2Unit","misc2Rate"],["misc3Lbl","misc3Wt","misc3Unit","misc3Rate"]].forEach(([lk,wk,uk,rk]) => {
       const mr = parseFloat(it[rk]||0); if (!mr) return;
       const mw = parseFloat(it[wk]||0);
-      addRow(mw > 0 ? `${it[lk]||"Misc"} (${mw}${it[uk]})` : (it[lk]||"Misc"), fmtN(mw > 0 ? mw*mr : mr));
+      addRow(mw > 0 ? `${it[lk]||"Misc"} (${mw}${unitBase(it[uk])}${isFlatUnit(it[uk]) ? ", flat" : ""})` : (it[lk]||"Misc"), fmtN(mw > 0 && !isFlatUnit(it[uk]) ? mw*mr : mr));
     });
     const qty = Math.max(1, parseInt(it.qty || "1", 10) || 1);
     if (qty > 1 && it.perPieceTotal > 0) {
@@ -13203,9 +13201,9 @@ function recalcToday(){
   rows.push(r(METAL+" Rate","₹"+TODAY_RATE.toLocaleString("en-IN")+"/g (today)"));
   rows.push(r(METAL+" Value",fmtR(newGoldVal)));
   if(MAKING>0){rows.push(r("Making Rate",MAKING_RATE_TXT));rows.push(r("Making Total",fmtR(MAKING)));}
-  if(parseFloat(DIA1)>0&&DIA1R)rows.push(r("Diamond 1 ("+parseFloat(DIA1)+DIA1U+" @ ₹"+DIA1R+")",fmtR(parseFloat(DIA1)*parseFloat(DIA1R))));
-  if(parseFloat(DIA2)>0&&DIA2R)rows.push(r("Diamond 2 ("+parseFloat(DIA2)+DIA2U+" @ ₹"+DIA2R+")",fmtR(parseFloat(DIA2)*parseFloat(DIA2R))));
-  if(parseFloat(STW)>0&&STR)rows.push(r("Stone ("+parseFloat(STW)+STU+" @ ₹"+STR+")",fmtR(parseFloat(STW)*parseFloat(STR))));
+  if(parseFloat(DIA1)>0&&DIA1R)rows.push(r(/flat/.test(DIA1U)?"Diamond 1 ("+parseFloat(DIA1)+DIA1U.replace("_flat","")+", flat)":"Diamond 1 ("+parseFloat(DIA1)+DIA1U+" @ ₹"+DIA1R+")",fmtR(/flat/.test(DIA1U)?parseFloat(DIA1R):parseFloat(DIA1)*parseFloat(DIA1R))));
+  if(parseFloat(DIA2)>0&&DIA2R)rows.push(r(/flat/.test(DIA2U)?"Diamond 2 ("+parseFloat(DIA2)+DIA2U.replace("_flat","")+", flat)":"Diamond 2 ("+parseFloat(DIA2)+DIA2U+" @ ₹"+DIA2R+")",fmtR(/flat/.test(DIA2U)?parseFloat(DIA2R):parseFloat(DIA2)*parseFloat(DIA2R))));
+  if(parseFloat(STW)>0&&STR)rows.push(r(/flat/.test(STU)?"Stone ("+parseFloat(STW)+STU.replace("_flat","")+", flat)":"Stone ("+parseFloat(STW)+STU+" @ ₹"+STR+")",fmtR(/flat/.test(STU)?parseFloat(STR):parseFloat(STW)*parseFloat(STR))));
   if(QTY>1){rows.push(r("Per-piece Total",fmtR(perPiece)));rows.push(r("Pcs",QTY));}
   var gstRow=APPLY_GST&&newGst>0?r("GST @ 3%",fmtR(newGst)):"";
   var h='<!DOCTYPE html><html><head><title>Estimate</title><style>'+document.head.querySelector("style").textContent+'<\/style><\/head><body><div class="wrap"><div class="om">ॐ<\/div><div class="title">ESTIMATE<\/div><div class="date">'+td+'<\/div>'+(CLIENT?'<div class="client">Prepared for: '+CLIENT+'<\/div>':'')+'<hr class="thick"\/><div class="item-header">'+(IMG?'<img class="item-img" src="'+IMG+'" alt="item"\/>':"")+(INAME?'<div class="item-name">'+INAME+'<\/div>':"")+

@@ -743,3 +743,12 @@ Scan supplier business cards → auto-fill contact details via AI vision → tag
 - Their layout differs (no totals row, "STOCK ID / Certificate No / Carat / SYM / Flou", whole colour in one cell). Parsing + word mapping: `parseCombinedColour`, `normaliseStone(..., {supplier:"vib"})` in `api/_lib/cvdStock.js`. White vs fancy is decided per row (the fancy file holds a few white stones).
 - Both Vibgyor files are reconciled together (`syncVib` in `cvdSyncRun.js`): VIB- stones missing from the newest files are delisted; a broken Vibgyor file only errors the vib group. A certificate already in the main stock stays under its CVD- SKU. If no Vibgyor files are in the folder, Vibgyor stock is left as is.
 - `extractTable` now finds the header row anywhere (supplier added a leading P-NO column on 31-10-26, which had silently broken the sync) and takes the count from the first filled cell of the row above.
+
+---
+
+## JEWELLERY CALCULATOR — FLAT-CHARGE UNITS FOR DIAMOND / STONE / MISC (2026-11-03)
+
+- Unit chooser on Diamond 1, Diamond 2, Stone (dropdown) and the Misc lines (tap button) now has 4 values: `ct`, `g`, `ct_flat`, `g_flat` (helpers in `src/utils/stoneLine.js`, tested).
+- `*_flat`: the weight is STILL deducted from gross gold (ct×0.2 or g), but the rate field is a one-off flat ₹ amount instead of weight × rate. Flat with no weight = ₹0 (misc lines with a blank weight were already flat).
+- Used by `computeJewelleryEstimate`, the estimate slip/print rows and the slip's "today's rate" recalculation. Old saved estimates with `ct`/`g` are unchanged.
+- Reproduces invoice ES/598 line 1 exactly: 9kt @5700, gross 2.770, making 1100/g, dia 0.380 ct @15000, stone 0.540 `g_flat` ₹500, no GST = ₹20,847.
