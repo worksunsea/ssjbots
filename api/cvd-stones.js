@@ -78,7 +78,7 @@ async function pairs(sb, sku, res) {
   const carat = Number(base.carat);
   let q = sb.from("cvd_stones").select(COLS).eq("tenant_id", TENANT_ID).eq("status", "listed").neq("sku", sku)
     .gte("carat", carat * (1 - PAIR_RULE.caratPct / 100)).lte("carat", carat * (1 + PAIR_RULE.caratPct / 100)).limit(1000);
-  q = base.fancy_color ? q.ilike("fancy_color", base.fancy_color) : q.ilike("color", base.color || "-").is("fancy_color", null);
+  q = base.fancy_color ? q.ilike("fancy_color", base.fancy_color) : q.ilike("color", base.color || "-").or("fancy_color.is.null,fancy_color.eq.");
   const { data, error: e2 } = await q;
   if (e2) return res.status(500).json({ ok: false, error: e2.message });
   return res.status(200).json({ ok: true, rule: PAIR_RULE, pairs: findPairs(base, data || []).map(decorate) });
