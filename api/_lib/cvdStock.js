@@ -133,6 +133,12 @@ export function parseCombinedColour(raw) {
   return { fancy_color: titleCase(colour), fancy_intensity: titleCase(intensity), fancy_overtone: base.length ? titleCase(overtone.join(" ")) : "" };
 }
 
+// Stones whose vendor photo/video is known to show a different stone (checked by hand
+// against the IGI cert). Media is blanked on every sync; the stone then only appears
+// under "Show stones without images". Add IGI report numbers here.
+// 836601023: cert says white M, vendor photo (RS-197 pink batch) shows pink.
+export const BAD_MEDIA_REPORTS = new Set(["836601023"]);
+
 const igiUrl = (reportNo) => `https://www.igi.org/Verify-Your-Report/?r=${reportNo}`;
 
 // One sheet row -> stone record, or null when it can't be listed (no report
@@ -148,10 +154,11 @@ export function normaliseStone(row, kind, opts = {}) {
   if (!reportNo || !finalUsd || !carat || !status) return null;
 
   const lab = norm(row["LAB"]);
+  const badMedia = BAD_MEDIA_REPORTS.has(reportNo);
   const common = {
     sku: `${vib ? VIB_PREFIX : MAIN_PREFIX}-${reportNo}`, report_no: reportNo, stock_no: norm(row["STOCK"]), status, carat, lab,
     depth_pct: num(row["Depth %"]), table_pct: num(row["Table %"]), measurements: norm(row["Measurements"]),
-    video_url: norm(row["Diamond Video"]), image_url: norm(row["Diamond Image"]), purchase_usd: finalUsd,
+    video_url: badMedia ? "" : norm(row["Diamond Video"]), image_url: badMedia ? "" : norm(row["Diamond Image"]), purchase_usd: finalUsd,
   };
   if (!vib) {
     return {
