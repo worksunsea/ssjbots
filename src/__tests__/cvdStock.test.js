@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   classifyFile, fileDateFromName, pickLatestFiles, extractTable, normaliseStone,
-  priceStone, buildStones, planReconcile, withGst, PUBLIC_COLUMNS, BAD_MEDIA_REPORTS,
+  priceStone, buildStones, planReconcile, withGst, PUBLIC_COLUMNS, EXCLUDED_REPORTS,
 } from "../../api/_lib/cvdStock.js";
 
 const HEADER = ["STOCK", "AVAILABILITY", "Shape", "Weight", "Color", "Clarity", "Report #", "Final Price", "Price Per Carat", "CertFile"];
@@ -56,13 +56,10 @@ describe("normaliseStone", () => {
     expect(normaliseStone(r({ AVAILABILITY: "ON MEMO" }), "white").status).toBe("reserved");
     expect(normaliseStone(r({ AVAILABILITY: "NO" }), "white")).toBeNull();
   });
-  it("blanks photo and video for stones on the bad-media list, keeps others", () => {
-    const media = { "Diamond Image": "http://i/x.jpg", "Diamond Video": "http://v/x" };
-    const bad = [...BAD_MEDIA_REPORTS][0];
-    const blanked = normaliseStone(r({ ...media, "Report #": bad }), "white");
-    expect(blanked.image_url).toBe("");
-    expect(blanked.video_url).toBe("");
-    expect(normaliseStone(r(media), "white").image_url).toBe("http://i/x.jpg");
+  it("never lists stones on the excluded list, keeps others", () => {
+    const bad = [...EXCLUDED_REPORTS][0];
+    expect(normaliseStone(r({ "Report #": bad }), "white")).toBeNull();
+    expect(normaliseStone(r({}), "white")).not.toBeNull();
   });
   it("rejects rows without report number or price", () => {
     expect(normaliseStone(r({ "Report #": "" }), "white")).toBeNull();

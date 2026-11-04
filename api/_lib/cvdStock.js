@@ -133,11 +133,10 @@ export function parseCombinedColour(raw) {
   return { fancy_color: titleCase(colour), fancy_intensity: titleCase(intensity), fancy_overtone: base.length ? titleCase(overtone.join(" ")) : "" };
 }
 
-// Stones whose vendor photo/video is known to show a different stone (checked by hand
-// against the IGI cert). Media is blanked on every sync; the stone then only appears
-// under "Show stones without images". Add IGI report numbers here.
-// 836601023: cert says white M, vendor photo (RS-197 pink batch) shows pink.
-export const BAD_MEDIA_REPORTS = new Set(["836601023"]);
+// Stones we never list, even though the vendor sheet has them (IGI report numbers).
+// They are left out of the snapshot, so the sync delists them and keeps them off.
+// 836601023: cert says white M, but the vendor's photo/video shows a pink stone.
+export const EXCLUDED_REPORTS = new Set(["836601023"]);
 
 const igiUrl = (reportNo) => `https://www.igi.org/Verify-Your-Report/?r=${reportNo}`;
 
@@ -151,14 +150,13 @@ export function normaliseStone(row, kind, opts = {}) {
   const finalUsd = num(row["Final Price"]);
   const carat = num(row["Weight"]);
   const status = STATUS_BY_AVAILABILITY[norm(row["AVAILABILITY"]).toUpperCase()];
-  if (!reportNo || !finalUsd || !carat || !status) return null;
+  if (!reportNo || !finalUsd || !carat || !status || EXCLUDED_REPORTS.has(reportNo)) return null;
 
   const lab = norm(row["LAB"]);
-  const badMedia = BAD_MEDIA_REPORTS.has(reportNo);
   const common = {
     sku: `${vib ? VIB_PREFIX : MAIN_PREFIX}-${reportNo}`, report_no: reportNo, stock_no: norm(row["STOCK"]), status, carat, lab,
     depth_pct: num(row["Depth %"]), table_pct: num(row["Table %"]), measurements: norm(row["Measurements"]),
-    video_url: badMedia ? "" : norm(row["Diamond Video"]), image_url: badMedia ? "" : norm(row["Diamond Image"]), purchase_usd: finalUsd,
+    video_url: norm(row["Diamond Video"]), image_url: norm(row["Diamond Image"]), purchase_usd: finalUsd,
   };
   if (!vib) {
     return {
