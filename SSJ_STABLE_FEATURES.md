@@ -761,3 +761,7 @@ Scan supplier business cards → auto-fill contact details via AI vision → tag
 - ssj-website `src/CvdSettings.jsx` on every lab-grown stone page: Ring / Pendant / Earrings → approved solitaire designs that have a variant in the stone's shape → gold colour + purity → price = real stone price (both stones for earrings, picked via the pair finder) + gold + making + side diamonds + 3% GST (finished jewellery), with WhatsApp enquiry carrying SKUs + design. Uses `diamondValueOverride` added to the website copy of `computeSolitairePrice`.
 - **Data gap:** only RING designs have approved variants. Pendant, earring and gents-ring designs have none yet (generate + approve in CRM `solitairedesigns` tab) — until then those tabs show an "ask our designer on WhatsApp" link.
 - Earring gold weight uses the design variant's `est_gold_weight_g` as the weight for the pair.
+
+## CORPORATE GIFTING — MMTC PRICES (no cap, admin alert)
+- MMTC coin prices follow our live Rates-tab rates all day (`api/_lib/giftingPrice.js` `computePrice`). `reference_price` (MMTC listed price) is NO LONGER a ceiling.
+- Daily MMTC refresh (`api/mmtc-prices.js`, 10:00 IST) still stores `reference_price`, then WhatsApps OWNER_PHONE + DIGEST_EXTRA_RECIPIENTS the coins priced above MMTC (ours vs MMTC, diff). Fix by editing "price adjustment" in CRM Corp Gifting Pricing.

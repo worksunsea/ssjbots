@@ -43,13 +43,9 @@ function rawPrice(p, rates) {
   return null;
 }
 
-// Our price may never exceed MMTC's own listed price. reference_price is the
-// MMTC listing price, refreshed once a day; when set, it is a hard ceiling.
+// Price always follows our live rates. reference_price (MMTC's listed price,
+// refreshed each morning) is NOT a ceiling any more — it is only compared by
+// api/mmtc-prices.js, which alerts the admins when our price is above MMTC's.
 export function computePrice(p, rates) {
-  const price = rawPrice(p, rates);
-  // Only MMTC categories: shagun_coins reference prices come from another supplier.
-  const isMmtc = String(p.category || "").startsWith("mmtc_");
-  const cap = isMmtc && p.reference_price != null ? Number(p.reference_price) : null;
-  if (price != null && cap != null && cap > 0 && price > cap) return Math.round(cap);
-  return price;
+  return rawPrice(p, rates);
 }

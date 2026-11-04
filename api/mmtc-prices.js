@@ -3,8 +3,9 @@
 // mmtcpamp.com blocks server-side requests (403), so the prices are read in a
 // real Chrome tab by the scheduled task in scripts/mmtc-refresh/ and POSTed
 // here from that page. This endpoint validates them and writes
-// corporate_gifting_products.reference_price, which giftingPrice.js uses as a
-// hard ceiling: our price may never exceed MMTC's listed price.
+// corporate_gifting_products.reference_price. Our price is NOT capped at it any
+// more (it follows live rates all day); instead, after each refresh, admins get
+// a WhatsApp listing coins priced above MMTC's listed price.
 //
 // Auth: header x-mmtc-token = first 32 hex of HMAC-SHA256(CRM_SECRET, "mmtc-refresh").
 // Body: { prices: { "<MMTC title>": { price: number, soldOut?: boolean } } }
@@ -12,8 +13,10 @@
 
 import crypto from "node:crypto";
 import { supa } from "./_lib/supabase.js";
-import { TENANT_ID, CRM_SECRET } from "./_lib/config.js";
+import { TENANT_ID, CRM_SECRET, OWNER_PHONE, DIGEST_EXTRA_RECIPIENTS, WA_SESSION_CLIENT_ID } from "./_lib/config.js";
 import { getRates } from "./_lib/rates.js";
+import { computePrice } from "./_lib/giftingPrice.js";
+import { sendWhatsApp } from "./_lib/wa.js";
 import { MMTC_TITLES, RATIO_BAND, normKey } from "./_lib/mmtcMap.js";
 
 export const config = { maxDuration: 60 };
@@ -24,6 +27,33 @@ export function refreshToken(secret) {
 
 function rateFor(mode, spot) {
   return mode === "live_gold22_markup" ? spot.gold22kt : mode === "live_gold_markup" ? spot.gold24kt : spot.silverPerGram;
+}
+
+// Coins whose live price (our rates + making + GST) is above the MMTC price just read.
+async function findAboveMmtc(sb, rates, updated) {
+  if (!updated.length) return [];
+  const mmtcById = new Map(updated.map((u) => [u.id, u.to]));
+  const { data, error } = await sb.from("corporate_gifting_products")
+    .select("*").eq("tenant_id", TENANT_ID).in("id", [...mmtcById.keys()]);
+  if (error) return [];
+  const out = [];
+  for (const p of data || []) {
+    const ours = computePrice(p, rates);
+    const mmtc = mmtcById.get(p.id);
+    if (ours != null && mmtc > 0 && ours > mmtc) out.push({ name: p.name, ours, mmtc, diff: ours - mmtc });
+  }
+  return out.sort((a, b) => b.diff - a.diff);
+}
+
+async function alertAdmins(above) {
+  const inr = (n) => `₹${Number(n).toLocaleString("en-IN")}`;
+  const shown = above.slice(0, 15).map((a) => `• ${a.name}: ours ${inr(a.ours)} vs MMTC ${inr(a.mmtc)} (+${inr(a.diff)})`);
+  const more = above.length > shown.length ? `\n…and ${above.length - shown.length} more` : "";
+  const msg = `⚠️ MMTC morning check: ${above.length} coin(s) on ssj.in are priced ABOVE MMTC's listed price.\n\n${shown.join("\n")}${more}\n\nAdjust "price adjustment" in CRM → Corp Gifting Pricing if needed.`;
+  const phones = [OWNER_PHONE, ...String(DIGEST_EXTRA_RECIPIENTS || "").split(",")].map((p) => p.trim()).filter(Boolean);
+  const results = await Promise.all([...new Set(phones)].map((phone) =>
+    sendWhatsApp({ phone, msg, client: WA_SESSION_CLIENT_ID }).then(() => true).catch(() => false)));
+  return results.some(Boolean);
 }
 
 export default async function handler(req, res) {
@@ -84,8 +114,15 @@ r.textContent="RESULT "+JSON.stringify({status:x.status,...(await x.json())})}ca
       if (e) return res.status(500).json({ ok: false, error: e.message, at: u.name });
     }
   }
+
+  // Our price is no longer capped at MMTC's. Tell the admins which coins are priced above MMTC today.
+  const above = await findAboveMmtc(sb, rates, updated);
+  let alerted = false;
+  if (req.query?.dry !== "1" && above.length) alerted = await alertAdmins(above);
+
   return res.status(200).json({
     ok: true, dry: req.query?.dry === "1", updated: updated.length,
     changed: updated.filter((u) => Number(u.from) !== u.to).length, unmapped, missing, rejected,
+    aboveMmtc: above.length, alerted,
   });
 }

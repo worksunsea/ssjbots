@@ -12,6 +12,10 @@ describe("computePrice (corp gifting)", () => {
     const base = { price_mode: "live_silver_markup", weight_grams: 50, making_charge: 200, tax_percent: 3, price_diff: 0 };
     expect(computePrice({ ...base, price_diff: 250 }, rates) - computePrice(base, rates)).toBe(250);
   });
+  it("MMTC reference_price is not a ceiling: price follows live rates", () => {
+    const p = { category: "mmtc_gold", price_mode: "live_gold_markup", weight_grams: 10, making_charge: 1000, tax_percent: 3, price_diff: 0, reference_price: 100000 };
+    expect(computePrice(p, rates)).toBe(Math.round((150000 + 1000) * 1.03));
+  });
   it("manual mode uses manual_price", () => {
     expect(computePrice({ price_mode: "manual", manual_price: 999 }, rates)).toBe(999);
   });
