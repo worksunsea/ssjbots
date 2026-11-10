@@ -765,3 +765,8 @@ Scan supplier business cards → auto-fill contact details via AI vision → tag
 ## CORPORATE GIFTING — MMTC PRICES (no cap, admin alert)
 - MMTC coin prices follow our live Rates-tab rates all day (`api/_lib/giftingPrice.js` `computePrice`). `reference_price` (MMTC listed price) is NO LONGER a ceiling.
 - Daily MMTC refresh (`api/mmtc-prices.js`, 10:00 IST) still stores `reference_price`, then WhatsApps OWNER_PHONE + DIGEST_EXTRA_RECIPIENTS the coins priced above MMTC (ours vs MMTC, diff). Fix by editing "price adjustment" in CRM Corp Gifting Pricing.
+
+## CONTACTS EXPORT / PRINT (2026-11-10)
+- Contacts toolbar -> "🖨 Export / Print" (`src/ContactsExport.jsx`, pure logic `src/contactExport.js`, tests `contactExport.test.js`). Pick tag(s) -> everyone with them is ticked (loads past the 200-per-page cap, up to 10,000) -> untick individuals -> tick columns (fixed + address + every custom field; presets Gift list / Phone book / Birthdays; last choice kept in localStorage `contacts_export_cols`) -> Print (A4 landscape, header repeats) or CSV (UTF-8 BOM for Excel). Optional blank "Done" and "Signature" columns.
+- Read-only: writes nothing. Client text is HTML-escaped in the print sheet.
+- Diwali 2026 gift tag is `Diwali 2026 Gift` (same as the Gifts tab default). 53 VIP-sheet contacts carry it; their Gift / Gift Received / Reference live in `extra_fields` (`gift`, `gift_received`, `reference`).

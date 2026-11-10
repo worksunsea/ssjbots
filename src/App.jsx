@@ -13,6 +13,7 @@ import BlogAdminScreen from "./BlogAdmin";
 import KittyAdminScreen from "./KittyAdmin";
 import ClientCardScan from "./ClientCardScan";
 import GiftList from "./GiftList";
+import ContactsExport from "./ContactsExport";
 import MultiMerge from "./MultiMerge";
 import { mergeTagNames } from "./tagMerge.js";
 import { STONE_UNITS, isFlatUnit, unitBase, unitLabel, weightToGrams, lineValue, nextUnit } from "./utils/stoneLine.js";
@@ -4885,6 +4886,7 @@ function ContactsScreen({ funnels }) {
   const { customFields, fieldOrder, setCustomFields, setFieldOrder } = React.useContext(ContactFieldsContext);
   const [showFieldMgr, setShowFieldMgr] = useState(false);
   const [showCardScan, setShowCardScan] = useState(false);
+  const [showExport, setShowExport] = useState(false);
   const [multiMerge, setMultiMerge] = useState(null); // contact ids being merged in one go
   const [filterTags, setFilterTags] = useState([]);
   const [tagLogic, setTagLogic] = useState("AND"); // AND = must have all, OR = any
@@ -5043,12 +5045,14 @@ function ContactsScreen({ funnels }) {
         <Btn small color={C.green} onClick={() => setShowCardScan(true)}>📇 Scan client card</Btn>
         <Btn ghost small color={C.orange} onClick={() => setShowFieldMgr(v => !v)}>⚙ Fields</Btn>
         <Btn ghost small color={bulkMode ? C.purple : C.gray} onClick={() => bulkMode ? exitBulk() : setBulkMode(true)}>{bulkMode ? "✕ Cancel" : "☑ Bulk"}</Btn>
+        <Btn ghost small color={C.green} onClick={() => setShowExport(true)}>🖨 Export / Print</Btn>
         <Btn ghost small color={C.gray} onClick={() => setViewMode(v => v === "card" ? "list" : "card")}>{viewMode === "card" ? "☰ List" : "⊞ Cards"}</Btn>
         <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#666", cursor: "pointer" }}>
           <input type="checkbox" checked={showLid} onChange={(e) => setShowLid(e.target.checked)} />
           Show WA-hidden ({lidCount})
         </label>
         <span style={{ fontSize: 11, color: "#888" }}>{loading ? "Loading…" : `${total.toLocaleString()} contacts`}</span>
+        {showExport && <ContactsExport sb={sb} tenantId={getTenantId()} initialTags={filterTags} initialLogic={tagLogic} onClose={() => setShowExport(false)} />}
         {showCardScan && <ClientCardScan onClose={() => setShowCardScan(false)} onSaved={() => load(search, filterTags, tagLogic, page)} />}
         {multiMerge && <MultiMerge sb={sb} ids={multiMerge} user={loadUser()} onClose={() => setMultiMerge(null)} onDone={() => { clearSel(); load(search, filterTags, tagLogic, page); }} />}
       </div>
