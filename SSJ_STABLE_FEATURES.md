@@ -773,3 +773,5 @@ Scan supplier business cards → auto-fill contact details via AI vision → tag
 
 ## CALCULATOR SEND ESTIMATE OPENS WHATSAPP (2026-11-12)
 `sendEstimatePdfOnWA` (App.jsx) no longer posts to /api/send-media. It builds + uploads the PDF, then opens `wa.me/91<phone>?text=<caption + PDF link>` so the client chat opens pre-filled; staff just press Send. wa.me cannot attach files, so PDF goes as a link.
+
+Gifts tab: "sent" = Sent tag OR contact field Gift Received = Yes (isGiftSent in giftFilter.js). Unmarking also clears Gift Received. (2026-11-12)

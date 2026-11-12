@@ -5,6 +5,11 @@ export const DEFAULT_PICK_TAG = "Diwali 2026 Gift";
 
 const text = (v) => String(v ?? "").trim();
 
+/** Sent = has the "sent" tag OR the contact's Gift Received field says Yes (either marks it). */
+export function isGiftSent(c, sentTag = DEFAULT_SENT_TAG) {
+  return (c.tags || []).includes(sentTag) || text(c.extra_fields?.gift_received).toLowerCase() === "yes";
+}
+
 /** House/street + 6-digit pincode + city are the minimum a courier needs. */
 export function hasCompleteAddress(c) {
   return Boolean(text(c.address_house)) && /^\d{6}$/.test(text(c.address_pincode)) && Boolean(text(c.city));
@@ -32,8 +37,8 @@ export function applyGiftFilters(list, f = {}) {
     if (prefix && !text(c.address_pincode).startsWith(prefix)) return false;
     if (f.address === "complete" && !hasCompleteAddress(c)) return false;
     if (f.address === "incomplete" && hasCompleteAddress(c)) return false;
-    if (f.gift === "sent" && !tags.includes(sentTag)) return false;
-    if (f.gift === "unsent" && tags.includes(sentTag)) return false;
+    if (f.gift === "sent" && !isGiftSent(c, sentTag)) return false;
+    if (f.gift === "unsent" && isGiftSent(c, sentTag)) return false;
     if (f.hideDnd && c.dnd) return false;
     return true;
   });
@@ -51,7 +56,7 @@ export function giftCsv(rows, sentTag = DEFAULT_SENT_TAG) {
   const header = ["Name", "Phone", "Address", "House/Street", "Area", "City", "State", "Pincode", "Address OK", "Gift sent", "Tags"];
   const lines = rows.map((c) => [
     c.name, c.phone, addressLine(c), c.address_house, c.address_locality, c.city, c.address_state, c.address_pincode,
-    hasCompleteAddress(c) ? "yes" : "no", (c.tags || []).includes(sentTag) ? "yes" : "no", (c.tags || []).join("; "),
+    hasCompleteAddress(c) ? "yes" : "no", isGiftSent(c, sentTag) ? "yes" : "no", (c.tags || []).join("; "),
   ].map(csvCell).join(","));
   return [header.map(csvCell).join(","), ...lines].join("\r\n");
 }

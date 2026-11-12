@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { applyGiftFilters, editTags, giftCsv, addressLine, hasCompleteAddress, DEFAULT_SENT_TAG, DEFAULT_PICK_TAG } from "./giftFilter";
+import { applyGiftFilters, isGiftSent, editTags, giftCsv, addressLine, hasCompleteAddress, DEFAULT_SENT_TAG, DEFAULT_PICK_TAG } from "./giftFilter";
 import { DEFAULT_ZONES, groupByZone, buildTrips, buildRoutePrintHtml, parsePincodes } from "./giftZones";
 import { collapseHouseholds } from "./households";
 import postal from "../tools/data/postal.json";
@@ -141,7 +141,7 @@ export default function GiftList({ sb, tenantId, user }) {
     try {
       for (let from = 0; ; from += FETCH_PAGE) {
         let q = sb.from("bullion_leads")
-          .select("id,name,phone,city,tags,source,client_rating,is_client,dnd,address_house,address_locality,address_state,address_pincode,address_zone,household_id,partner_lead_id,spouse_mobile,mobile2")
+          .select("id,name,phone,city,tags,source,client_rating,is_client,dnd,address_house,address_locality,address_state,address_pincode,address_zone,household_id,partner_lead_id,spouse_mobile,mobile2,extra_fields")
           .eq("tenant_id", tenantId).is("deleted_at", null)
           .order("name", { ascending: true, nullsFirst: false })
           .range(from, from + FETCH_PAGE - 1);
@@ -201,6 +201,20 @@ export default function GiftList({ sb, tenantId, user }) {
     }
   }
 
+  /** Mark/unmark sent. Unmarking also clears the contact's Gift Received field so it really shows unsent. */
+  async function toggleSent(c, isSent) {
+    const tags = c.tags || [];
+    if (!isSent) { await ensureTag(sentTag); return saveTags(c, editTags(tags, { add: [sentTag] })); }
+    const ef = c.extra_fields || {};
+    if (String(ef.gift_received || "").toLowerCase() === "yes") {
+      const extra_fields = { ...ef, gift_received: "" };
+      const { error: err } = await sb.from("bullion_leads").update({ extra_fields }).eq("id", c.id);
+      if (err) { setError(`Could not unmark ${c.name || c.phone}: ${err.message}`); return; }
+      setContacts((l) => l.map((x) => (x.id === c.id ? { ...x, extra_fields } : x)));
+    }
+    saveTags(c, editTags(tags, { remove: [sentTag] }));
+  }
+
   /** Save a hand-edited address; city, state and the delivery zone are filled in from the pincode when blank. */
   async function saveAddress() {
     const { id, draft } = editAddr;
@@ -234,7 +248,7 @@ export default function GiftList({ sb, tenantId, user }) {
   /** A delivery marked "delivered" on a day sheet also marks the client's gift as sent. */
   async function markSentFromSheet(lead) {
     const current = contacts.find((c) => c.id === lead.id) || lead;
-    if ((current.tags || []).includes(sentTag)) return;
+    if (isGiftSent(current, sentTag)) return;
     await ensureTag(sentTag);
     await saveTags(current, editTags(current.tags, { add: [sentTag] }));
   }
@@ -259,6 +273,14 @@ export default function GiftList({ sb, tenantId, user }) {
     }
     if (failed.length) setError(`${failed.length} contact(s) could not be updated — try again.`);
     else { setBulkAdd([]); setBulkRemove([]); }
+    setBusy("");
+  }
+
+  async function bulkUnmarkSent() {
+    const targets = contacts.filter((c) => selected.has(c.id));
+    if (!targets.length || !window.confirm(`Unmark gift sent for ${targets.length} contact(s)?`)) return;
+    setBusy("Unmark"); setError("");
+    for (const c of targets) await toggleSent(c, true);
     setBusy("");
   }
 
@@ -304,7 +326,7 @@ export default function GiftList({ sb, tenantId, user }) {
   }, [contacts]);
   const stats = useMemo(() => ({
     complete: visible.filter(hasCompleteAddress).length,
-    sent: visible.filter((c) => (c.tags || []).includes(sentTag)).length,
+    sent: visible.filter((c) => isGiftSent(c, sentTag)).length,
   }), [visible, sentTag]);
   const clearFilters = () => { setSearch(""); setIncludeTags([]); setExcludeTags([]); setCity(""); setPincodePrefix(""); setMinRating(""); setClientsOnly(false); setAddress("any"); setGift("any"); setHideDnd(false); };
 
@@ -445,7 +467,7 @@ export default function GiftList({ sb, tenantId, user }) {
           <span style={{ borderLeft: "1px solid #bfdbfe", height: 20 }} />
           <button disabled={!!busy} onClick={() => bulkEdit({ add: [pickTag] }, `Add to gift list ("${pickTag}")`)} style={actionBtn("#8e44ad", !!busy)}>＋ Add to gift list</button>
           <button disabled={!!busy} onClick={() => bulkEdit({ add: [sentTag] }, `Mark gift sent ("${sentTag}")`)} style={actionBtn("#2563eb", !!busy)}>🎁 Mark sent</button>
-          <button disabled={!!busy} onClick={() => bulkEdit({ remove: [sentTag] }, `Unmark gift sent`)} style={actionBtn("#64748b", !!busy)}>↩ Unmark sent</button>
+          <button disabled={!!busy} onClick={() => bulkUnmarkSent()} style={actionBtn("#64748b", !!busy)}>↩ Unmark sent</button>
           <span style={{ borderLeft: "1px solid #bfdbfe", height: 20 }} />
           <TagPicker label="Add tags" allTags={allTags} selected={bulkAdd} onToggle={flip(bulkAdd, setBulkAdd)} onCreate={(n) => { ensureTag(n); setBulkAdd((l) => [...l, n]); }} color="#16a34a" />
           <button disabled={!bulkAdd.length || !!busy} onClick={() => bulkEdit({ add: bulkAdd }, `Add ${bulkAdd.length} tag(s)`)} style={actionBtn("#16a34a", !bulkAdd.length || !!busy)}>Apply</button>
@@ -467,7 +489,7 @@ export default function GiftList({ sb, tenantId, user }) {
           <tbody>
             {pageRows.map((c) => {
               const tags = c.tags || [];
-              const isSent = tags.includes(sentTag);
+              const isSent = isGiftSent(c, sentTag);
               return (
                 <tr key={c.id} style={{ borderBottom: "1px solid #f3f4f6", background: selected.has(c.id) ? "#eff6ff" : "transparent", verticalAlign: "top" }}>
                   <td style={{ padding: "7px 10px" }}><input type="checkbox" checked={selected.has(c.id)} onChange={() => toggle(c.id)} /></td>
@@ -515,7 +537,7 @@ export default function GiftList({ sb, tenantId, user }) {
                     </div>
                   </td>
                   <td style={{ padding: "7px 10px", whiteSpace: "nowrap" }}>
-                    <button onClick={() => saveTags(c, isSent ? editTags(tags, { remove: [sentTag] }) : editTags(tags, { add: [sentTag] }))}
+                    <button onClick={() => toggleSent(c, isSent)}
                       style={{ ...pill(isSent, "#2563eb"), fontWeight: 600 }}>{isSent ? "🎁 Sent" : "Mark sent"}</button>
                   </td>
                 </tr>

@@ -68,3 +68,11 @@ describe("giftCsv", () => {
     expect(rows[2]).toContain('"yes","yes"');
   });
 });
+
+describe("gift received counts as sent", () => {
+  const list = [{ id: 1, extra_fields: { gift_received: "Yes" } }, { id: 2, tags: [DEFAULT_SENT_TAG] }, { id: 3 }];
+  it("sent filter includes tag or Gift Received = Yes", () => {
+    expect(applyGiftFilters(list, { gift: "sent" }).map((c) => c.id)).toEqual([1, 2]);
+    expect(applyGiftFilters(list, { gift: "unsent" }).map((c) => c.id)).toEqual([3]);
+  });
+});
