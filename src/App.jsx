@@ -13,6 +13,7 @@ import BlogAdminScreen from "./BlogAdmin";
 import KittyAdminScreen from "./KittyAdmin";
 import ClientCardScan from "./ClientCardScan";
 import GiftList from "./GiftList";
+import DocInbox from "./DocInbox";
 import ContactsExport from "./ContactsExport";
 import MultiMerge from "./MultiMerge";
 import { mergeTagNames } from "./tagMerge.js";
@@ -144,6 +145,7 @@ const CRM_ALL_TABS = [
   { k: "contacts",    l: "Contacts",    icon: "📇" },
   { k: "contactsdb",  l: "DB",          icon: "📋" },
   { k: "gifts",       l: "Gifts",       icon: "🎁" },
+  { k: "docinbox",    l: "Inbox",       icon: "📥" },
   { k: "upcoming",    l: "Upcoming",    icon: "🎂" },
   { k: "messages",    l: "Messages",    icon: "💬" },
   { k: "funnels",     l: "Funnels",     icon: "🔀" },
@@ -172,8 +174,8 @@ const CRM_ALL_TABS = [
 const CRM_ROLE_DEFAULT_TABS = {
   superadmin: CRM_ALL_TABS.map((t) => t.k),
   admin:      CRM_ALL_TABS.map((t) => t.k),
-  manager:    ["demands", "adleads", "contacts", "contactsdb", "gifts", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift", "corpgiftdesigns", "solitairedesigns", "blog", "kitty"],
-  staff:      ["demands", "adleads", "contacts", "gifts", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
+  manager:    ["demands", "adleads", "contacts", "contactsdb", "gifts", "docinbox", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift", "corpgiftdesigns", "solitairedesigns", "blog", "kitty"],
+  staff:      ["demands", "adleads", "contacts", "gifts", "docinbox", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
   telecaller: ["demands", "adleads"],
 };
 
@@ -12060,6 +12062,7 @@ export default function App() {
     { k: "contacts",   l: "Contacts",    icon: "📇" },
     { k: "contactsdb", l: "DB",          icon: "📋" },
     { k: "gifts",      l: "Gifts",       icon: "🎁" },
+    { k: "docinbox",   l: "Inbox",       icon: "📥" },
     { k: "upcoming",   l: "Upcoming",    icon: "🎂" },
     { k: "messages",   l: "Messages",    icon: "💬" },
     { k: "funnels",    l: "Funnels",     icon: "🔀" },
@@ -12090,8 +12093,8 @@ export default function App() {
   const ROLE_DEFAULT_TABS = {
     superadmin: ALL_TABS.map((t) => t.k),
     admin:      ALL_TABS.map((t) => t.k),
-    manager:    ["demands", "adleads", "contacts", "contactsdb", "gifts", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift", "corpgiftdesigns", "solitairedesigns", "clientplatform", "blog", "kitty"],
-    staff:      ["demands", "adleads", "contacts", "gifts", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
+    manager:    ["demands", "adleads", "contacts", "contactsdb", "gifts", "docinbox", "upcoming", "analytics", "formbuilder", "calculator", "walkin", "catalogue", "vendors", "corpgift", "corpgiftdesigns", "solitairedesigns", "clientplatform", "blog", "kitty"],
+    staff:      ["demands", "adleads", "contacts", "gifts", "docinbox", "upcoming", "calculator", "walkin", "catalogue", "vendors"],
     telecaller: ["demands", "adleads"],
   };
 
@@ -12174,6 +12177,7 @@ export default function App() {
       {activeScreen === "contacts" && <ContactsScreen funnels={funnels} />}
       {activeScreen === "contactsdb" && <ContactsDBScreen />}
       {activeScreen === "gifts" && <GiftList sb={sb} tenantId={getTenantId()} user={loadUser()} />}
+      {activeScreen === "docinbox" && <DocInbox sb={sb} tenantId={getTenantId()} user={loadUser()} />}
       {activeScreen === "upcoming" && <UpcomingEventsScreen />}
       {activeScreen === "messages" && <MessageHistoryScreen funnels={funnels} />}
       {activeScreen === "funnels" && <FunnelsScreen funnels={funnels} personas={personas} onReload={loadFunnels} />}

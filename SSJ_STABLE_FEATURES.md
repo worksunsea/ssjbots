@@ -775,3 +775,6 @@ Scan supplier business cards → auto-fill contact details via AI vision → tag
 `sendEstimatePdfOnWA` (App.jsx) no longer posts to /api/send-media. It builds + uploads the PDF, then opens `wa.me/91<phone>?text=<caption + PDF link>` so the client chat opens pre-filled; staff just press Send. wa.me cannot attach files, so PDF goes as a link.
 
 Gifts tab: "sent" = Sent tag OR contact field Gift Received = Yes (isGiftSent in giftFilter.js). Unmarking also clears Gift Received. (2026-11-12)
+
+## DOCUMENT INBOX (2026-11-12)
+Inbox tab (src/DocInbox.jsx, src/inboxApply.js, table doc_inbox migration 0135). Staff upload photos; hourly Claude routine (docs/INBOX_ROUTINE.md) writes a proposal; a person edits and Saves as final, which creates/updates bullion_leads. Routine never writes contacts directly.
