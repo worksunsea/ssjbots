@@ -787,3 +787,5 @@ Inbox tab (src/DocInbox.jsx, src/inboxApply.js, table doc_inbox migration 0135).
 
 ## GIFTS: REF/GIFT PRINT COLUMNS + ROUTE PLANNER (2026-11-12)
 Area print now has Ref (extra_fields.reference) and Gift (when any row has one). New 🗓 Plan routes by day (src/GiftRoutePlanner.jsx, planDays in giftZones.js): splits current list per area into days (one area/day, Sundays skipped), prints all days in one go, books all days into gift_deliveries.
+
+Inbox routine uses api/inbox-agent.js (INBOX_TOKEN env var, 3 actions only: pending/lookup/submit). No DB key in the routine.
