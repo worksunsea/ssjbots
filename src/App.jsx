@@ -13069,17 +13069,18 @@ async function sendEstimatePdfOnWA({ phone, clientName, title, sections, caption
   const filename = estimatePdfFilename(title, clientName);
   const file = new File([blob], filename, { type: "application/pdf" });
   const { publicUrl } = await secureNonImageUpload(file, sb, "estimates", ["application/pdf"], 10);
-  const res = await fetch("/api/send-media", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-crm-secret": CRM_SECRET },
-    // wa-service session client_id for phone 8860866000 is "Reception" (not
-    // the phone number itself — that was the bug: this hardcoded the old
-    // numeric client_id, which stopped matching once sessions got renamed
-    // to human-readable ids, so every automated Send Estimate silently
-    // failed even though the session showed "connected").
-    body: JSON.stringify({ phone: normalizePhone(phone), mediaUrl: publicUrl, mediaType: "document", filename, caption: caption || "", client: "Reception" }),
-  });
-  return await res.json();
+  // Opens WhatsApp on the user's own phone/PC with the client's chat open and
+  // the message (caption + PDF link) pre-typed — staff just press Send.
+  // (A wa.me link cannot attach a file, so the PDF goes as a link.)
+  const msg = `${caption ? caption + "\n\n" : ""}📄 Estimate PDF: ${publicUrl}`;
+  const a = document.createElement("a");
+  a.href = `https://wa.me/91${normalizePhone(phone)}?text=${encodeURIComponent(msg)}`;
+  a.target = "_blank";
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  return { ok: true };
 }
 
 // Module-level estimate slip opener — shared by CalculatorScreen and WalkinDashboardScreen
@@ -16673,7 +16674,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
                 setSendingEst(true);
                 try {
                   const r = await sendEstimatePdfOnWA({ phone: saveContact.phone, clientName: saveContact.name, title: "ESTIMATE", sections: [{ rows: jwPdfRows, total: fmt(jwCalc.total) }], caption: jwCaption });
-                  showToast(r.ok ? "✅ Estimate PDF sent on WhatsApp" : "❌ " + (r.error || "Send failed"));
+                  showToast(r.ok ? "✅ WhatsApp opened — press Send" : "❌ " + (r.error || "Send failed"));
                 } catch (e) { showToast("❌ " + e.message); }
                 setSendingEst(false);
               }} title={justSaved ? "Send this saved estimate as a PDF on WhatsApp" : "Save the estimate first"}>{sendingEst ? "Sending…" : "📤 Send Estimate"}</Btn>
@@ -16827,7 +16828,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
             setSendingEst(true);
             try {
               const r = await sendEstimatePdfOnWA({ phone: saveContact.phone, clientName: saveContact.name, title: "ESTIMATE", sections: [{ rows: solPdfRows, total: fmt(solFinalTotal) }], caption: solCaption });
-              showToast(r.ok ? "✅ Estimate PDF sent on WhatsApp" : "❌ " + (r.error || "Send failed"));
+              showToast(r.ok ? "✅ WhatsApp opened — press Send" : "❌ " + (r.error || "Send failed"));
             } catch (e) { showToast("❌ " + e.message); }
             setSendingEst(false);
           }} title={justSaved ? "Send this saved estimate as a PDF on WhatsApp" : "Save the estimate first"}>{sendingEst ? "Sending…" : "📤 Send Estimate"}</Btn>

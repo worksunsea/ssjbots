@@ -770,3 +770,6 @@ Scan supplier business cards → auto-fill contact details via AI vision → tag
 - Contacts toolbar -> "🖨 Export / Print" (`src/ContactsExport.jsx`, pure logic `src/contactExport.js`, tests `contactExport.test.js`). Pick tag(s) -> everyone with them is ticked (loads past the 200-per-page cap, up to 10,000) -> untick individuals -> tick columns (fixed + address + every custom field; presets Gift list / Phone book / Birthdays; last choice kept in localStorage `contacts_export_cols`) -> Print (A4 landscape, header repeats) or CSV (UTF-8 BOM for Excel). Optional blank "Done" and "Signature" columns.
 - Read-only: writes nothing. Client text is HTML-escaped in the print sheet.
 - Diwali 2026 gift tag is `Diwali 2026 Gift` (same as the Gifts tab default). 53 VIP-sheet contacts carry it; their Gift / Gift Received / Reference live in `extra_fields` (`gift`, `gift_received`, `reference`).
+
+## CALCULATOR SEND ESTIMATE OPENS WHATSAPP (2026-11-12)
+`sendEstimatePdfOnWA` (App.jsx) no longer posts to /api/send-media. It builds + uploads the PDF, then opens `wa.me/91<phone>?text=<caption + PDF link>` so the client chat opens pre-filled; staff just press Send. wa.me cannot attach files, so PDF goes as a link.
