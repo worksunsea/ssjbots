@@ -15,6 +15,8 @@ import ClientCardScan from "./ClientCardScan";
 import GiftList from "./GiftList";
 import DocInbox from "./DocInbox";
 import ContactsExport from "./ContactsExport";
+import PhoneField from "./PhoneField";
+import { normalizePhone, toStoredPhone, toWaNumber } from "./phoneIntl.js";
 import MultiMerge from "./MultiMerge";
 import { mergeTagNames } from "./tagMerge.js";
 import { STONE_UNITS, isFlatUnit, unitBase, unitLabel, weightToGrams, lineValue, nextUnit } from "./utils/stoneLine.js";
@@ -181,7 +183,7 @@ const CRM_ROLE_DEFAULT_TABS = {
 
 // ── HELPERS ──
 // WA JID localparts look like "918860866000:19" — strip the device-index suffix before normalizing.
-const normalizePhone = (p) => String(p || "").replace(/:\d+$/, "").replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, "");
+// normalizePhone / toStoredPhone / toWaNumber come from ./phoneIntl.js (India = 10 digits, international = full digits with country code).
 // Demand temperature — drives the Demands list sort order so staff focus on
 // hottest leads first. Buckets:
 //   hot       — needs human now: handoff status, qualified non-gold, visit today/tomorrow
@@ -2007,8 +2009,8 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
 
   const save = async () => {
     setErr("");
-    const phone = normPhoneJS(form.phone);
-    if (!phone) return setErr("Enter a valid 10-digit mobile number.");
+    const phone = normPhoneForm(form.phone);
+    if (!phone) return setErr("Enter a valid phone number (10 digits for India, or pick the country code).");
     if (!form.description) return setErr("Description is required.");
     setSaving(true);
     try {
@@ -2106,7 +2108,7 @@ function DemandEntryModal({ funnels, onClose, onSaved }) {
 
           {!selectedContact && (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <Field label="Phone" required><Input value={form.phone} onChange={(e) => set("phone", e.target.value)} placeholder="9876543210" /></Field>
+              <Field label="Phone" required><PhoneField value={form.phone} onChange={(v) => set("phone", v)} /></Field>
               <Field label="Name"><Input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Client name" /></Field>
             </div>
           )}
@@ -2509,8 +2511,8 @@ function WalkinEntryModal({ funnels, allTags: allTagsProp = [], onClose, onSaved
   const save = async () => {
     setErr("");
     setDupContact(null);
-    const phone = normPhoneJS(form.phone);
-    if (!phone) return setErr("Enter a valid 10-digit mobile number.");
+    const phone = normPhoneForm(form.phone);
+    if (!phone) return setErr("Enter a valid phone number (10 digits for India, or pick the country code).");
     if (createDemand && !form.description) return setErr("Description is required when creating a demand.");
     setSaving(true);
 
@@ -2713,7 +2715,7 @@ function WalkinEntryModal({ funnels, allTags: allTagsProp = [], onClose, onSaved
           <div style={{ fontSize: 12, color: "#666", margin: "10px 0 6px", fontWeight: 600 }}>👤 Contact Details</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <Field label="Name" required><Input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Full name" /></Field>
-            <Field label="Phone" required><Input value={form.phone} onChange={(e) => set("phone", e.target.value)} placeholder="9876543210" /></Field>
+            <Field label="Phone" required><PhoneField value={form.phone} onChange={(v) => set("phone", v)} /></Field>
           </div>
 
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, margin: "14px 0 6px", cursor: "pointer", fontWeight: 600, color: "#444" }}>
@@ -4470,8 +4472,8 @@ function ManualLeadForm({ funnels, onClose, onSaved }) {
 
   const save = async () => {
     setErr("");
-    const phone = String(form.phone || "").replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, "");
-    if (!phone) return setErr("Phone is required.");
+    const phone = normPhoneForm(form.phone);
+    if (!phone) return setErr("Enter a valid phone number (10 digits for India, or pick the country code).");
     setSaving(true);
     const payload = {
       tenant_id: getTenantId(),
@@ -4495,8 +4497,8 @@ function ManualLeadForm({ funnels, onClose, onSaved }) {
 
   return (
     <Modal title="Add lead manually" onClose={onClose} width={560}>
-      <Field label="Phone (10-digit, no country code)" required>
-        <Input value={form.phone} onChange={(e) => set("phone", e.target.value)} placeholder="9876543210" />
+      <Field label="Phone (+91 default; pick country code for international)" required>
+        <PhoneField value={form.phone} onChange={(v) => set("phone", v)} />
       </Field>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
         <Field label="Name"><Input value={form.name} onChange={(e) => set("name", e.target.value)} /></Field>
@@ -5601,8 +5603,8 @@ function ContactEditModal({ contact, allTags: allTagsProp = [], customFields = [
 
   const save = async () => {
     setErr("");
-    const phone = normPhoneJS(form.phone);
-    if (!phone) return setErr("Enter a valid 10-digit mobile number.");
+    const phone = normPhoneForm(form.phone);
+    if (!phone) return setErr("Enter a valid phone number (10 digits for India, or pick the country code).");
     setSaving(true);
     const payload = {
       tenant_id: getTenantId(),
@@ -5702,6 +5704,11 @@ function ContactEditModal({ contact, allTags: allTagsProp = [], customFields = [
           <option value="">— select source —</option>
           {sourceTags.map(s => <option key={s} value={s}>{s}</option>)}
         </Select>
+      </Field>
+    );
+    if (f.key === "phone" || f.key === "mobile2" || f.key === "spouse_mobile") return (
+      <Field key={f.key} label={f.label} required={f.required}>
+        <PhoneField value={form[f.key] || ""} onChange={v => set(f.key, v)} />
       </Field>
     );
     if (f.fixed) {
@@ -7446,6 +7453,9 @@ function UpcomingEventsScreen() {
 // ──────────────────────────────────────────────────────────
 // BULK IMPORT — helpers + modal
 // ──────────────────────────────────────────────────────────
+
+// Contact forms: accepts Indian 10-digit OR international (country code + number). null when unusable.
+const normPhoneForm = (raw) => toStoredPhone(raw) || null;
 
 function normPhoneJS(raw) {
   if (raw == null) return null;
@@ -12754,7 +12764,7 @@ function WalkinDashboardScreen({ funnels = [], onEditEstimate }) {
                   const selEsts = estimates.filter(e => cardSel[cardKey].has(e.id));
                   const sendAll = () => {
                     if (!lead.phone) return;
-                    const phone = lead.phone.replace(/\D/g, "").replace(/^0/, "91");
+                    const phone = toWaNumber(lead.phone);
                     const date = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
                     const lines = selEsts.map((e, i) => `${i+1}. ${estLabel(e)}${e.total_amount ? " — ₹" + Math.round(e.total_amount).toLocaleString("en-IN") : ""}`).join("\n");
                     const msg = encodeURIComponent(`*ESTIMATES — Sun Sea Jewellers*\nFor: ${lead.name || lead.phone}\nDate: ${date}\n\n${lines}\n\n_These are estimates only · Prices subject to change_`);
@@ -12786,7 +12796,7 @@ function WalkinDashboardScreen({ funnels = [], onEditEstimate }) {
                   ) : (
                     <button onClick={() => setAssigningLead(cardKey)} style={{ fontSize: 12, padding: "3px 10px", borderRadius: 6, border: "1px solid #bbb", background: "#fff", cursor: "pointer" }}>➡️ Add to Funnel</button>
                   )}
-                  {lead.phone && <button onClick={() => window.open(`https://wa.me/91${lead.phone.replace(/\D/g, "")}`, "_blank")} style={{ fontSize: 12, padding: "3px 10px", borderRadius: 6, border: "1px solid #25d366", background: "#f0fdf4", cursor: "pointer" }}>💬 WhatsApp</button>}
+                  {lead.phone && <button onClick={() => window.open(`https://wa.me/${toWaNumber(lead.phone)}`, "_blank")} style={{ fontSize: 12, padding: "3px 10px", borderRadius: 6, border: "1px solid #25d366", background: "#f0fdf4", cursor: "pointer" }}>💬 WhatsApp</button>}
                   {hasVisit && <button onClick={() => setEditingCard(c)} style={{ fontSize: 12, padding: "3px 10px", borderRadius: 6, border: "1px solid #ffb74d", background: "#fff8e1", cursor: "pointer" }}>{canEditDirectly ? "✏️ Edit walk-in" : "✏️ Request edit"}</button>}
                 </div>
               </div>
@@ -13078,7 +13088,7 @@ async function sendEstimatePdfOnWA({ phone, clientName, title, sections, caption
   // (A wa.me link cannot attach a file, so the PDF goes as a link.)
   const msg = `${caption ? caption + "\n\n" : ""}📄 Estimate PDF: ${publicUrl}`;
   const a = document.createElement("a");
-  a.href = `https://wa.me/91${normalizePhone(phone)}?text=${encodeURIComponent(msg)}`;
+  a.href = `https://wa.me/${toWaNumber(phone)}?text=${encodeURIComponent(msg)}`;
   a.target = "_blank";
   a.rel = "noopener";
   document.body.appendChild(a);
@@ -14122,7 +14132,7 @@ function VendorsScreen({ autoOpenScan }) {
                     {primaryContact?.phone && (
                       <div style={{ fontSize: 12, color: "#666" }}>
                         📞 <a href={`tel:${primaryContact.phone}`} onClick={(e) => e.stopPropagation()} style={{ color: C.blue }}>{primaryContact.phone}</a>{" "}
-                        <a href={`https://wa.me/${normalizePhone(primaryContact.phone)}`} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} title="Message on WhatsApp" style={{ textDecoration: "none" }}>💬</a>
+                        <a href={`https://wa.me/${toWaNumber(primaryContact.phone)}`} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} title="Message on WhatsApp" style={{ textDecoration: "none" }}>💬</a>
                         {(v.contacts || []).length > 1 ? ` +${v.contacts.length - 1} more` : ""}
                       </div>
                     )}
@@ -14264,7 +14274,7 @@ function VendorsScreen({ autoOpenScan }) {
                   <input style={inp} placeholder="Name" value={c.name} onChange={(e) => updateContactRow(idx, { name: e.target.value })} />
                   <input style={inp} placeholder="Phone" value={c.phone} onChange={(e) => updateContactRow(idx, { phone: e.target.value })} />
                   <input style={inp} placeholder="Designation" value={c.designation} onChange={(e) => updateContactRow(idx, { designation: e.target.value })} />
-                  {c.phone ? <a href={`https://wa.me/${normalizePhone(c.phone)}`} target="_blank" rel="noopener noreferrer" title="Message on WhatsApp" style={{ fontSize: 18, textDecoration: "none" }}>💬</a> : <span />}
+                  {c.phone ? <a href={`https://wa.me/${toWaNumber(c.phone)}`} target="_blank" rel="noopener noreferrer" title="Message on WhatsApp" style={{ fontSize: 18, textDecoration: "none" }}>💬</a> : <span />}
                   <button onClick={() => removeContactRow(idx)} style={{ background: "none", border: "none", color: "#ccc", cursor: "pointer", fontSize: 16 }}>×</button>
                 </div>
               ))}
@@ -16992,8 +17002,8 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
     if (!newClientName.trim() && !newClientPhone.trim()) return;
     let phone = null;
     if (newClientPhone.trim()) {
-      phone = normPhoneJS(newClientPhone);
-      if (!phone) { showToast("❌ Enter a valid 10-digit mobile number"); return; }
+      phone = normPhoneForm(newClientPhone);
+      if (!phone) { showToast("❌ Enter a valid phone number (10 digits for India, or with country code)"); return; }
     }
     const { data, error } = await sb.from("bullion_leads").insert({ name: newClientName.trim() || null, phone, source: "walk_in", tenant_id: getTenantId() }).select("id,name,phone").single();
     if (error) { showToast("❌ Add failed: " + error.message); return; }
@@ -17046,7 +17056,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
                 <div style={{ marginTop: 4 }}>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
                     <div><label style={{ ...lbl, fontSize: 11 }}>Name</label><input style={inp} value={newClientName} onChange={e => setNewClientName(e.target.value)} placeholder="Full name" /></div>
-                    <div><label style={{ ...lbl, fontSize: 11 }}>Phone</label><input style={inp} value={newClientPhone} onChange={e => setNewClientPhone(e.target.value)} placeholder="Mobile number" /></div>
+                    <div><label style={{ ...lbl, fontSize: 11 }}>Phone</label><PhoneField value={newClientPhone} onChange={setNewClientPhone} placeholder="Mobile number" /></div>
                   </div>
                   <div style={{ display: "flex", gap: 6 }}>
                     <Btn small color={C.green} onClick={addNewClient}>✓ Add & Select</Btn>

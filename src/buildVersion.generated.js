@@ -1,1 +1,1 @@
-export const BUILD_VERSION = "808f65441ba06f7340c1a832079b00c201a77580";
+export const BUILD_VERSION = "bc58aa5baad12e8f746b44e4fc3699988d035dfc";
