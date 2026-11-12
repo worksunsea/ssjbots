@@ -7,6 +7,7 @@ import { fillFromPincode, normalizePincode } from "../api/_lib/addressParse";
 import HouseholdPanel from "./HouseholdPanel";
 import MultiMerge from "./MultiMerge";
 import { ScheduleModal, DaySheets } from "./GiftDeliveryUI";
+import GiftRoutePlanner from "./GiftRoutePlanner";
 
 // 🎁 Gifts — pick who gets a festival gift. Filter the client database, see the
 // list, edit tags right on the page (one contact or many at once), mark gifts
@@ -93,6 +94,7 @@ export default function GiftList({ sb, tenantId, user }) {
   const [mergeIds, setMergeIds] = useState(null);
   const [scheduleLeads, setScheduleLeads] = useState(null);
   const [showDays, setShowDays] = useState(false);
+  const [showPlanner, setShowPlanner] = useState(false);
   const [oneStopPerHousehold, setOneStopPerHousehold] = useState(true);
   const [notice, setNotice] = useState("");
   const [editAddr, setEditAddr] = useState(null); // { id, draft, error }
@@ -388,6 +390,7 @@ export default function GiftList({ sb, tenantId, user }) {
         <span style={{ fontSize: 12, color: "#888" }}>{selected.size} selected</span>
         {truncated && <span style={{ fontSize: 12, color: "#dc2626" }}>Showing the first {FETCH_CAP.toLocaleString()} — narrow the filters.</span>}
         <button onClick={() => setShowHouseholds((v) => !v)} style={{ ...actionBtn("#0284c7"), marginLeft: "auto" }}>🏠 Households</button>
+        <button onClick={() => setShowPlanner(true)} style={actionBtn("#0d9488")}>🗓 Plan routes by day</button>
         <button onClick={() => setShowDays(true)} style={actionBtn("#d97706")}>📅 Day sheets</button>
         <button onClick={() => setShowPrint((v) => !v)} style={actionBtn("#8e44ad")}>🖨 Print by area</button>
         <button onClick={exportCsv} style={actionBtn("#16a34a")}>⬇ Export {selected.size ? `${selected.size} selected` : "list"} (CSV)</button>
@@ -398,6 +401,8 @@ export default function GiftList({ sb, tenantId, user }) {
       {mergeIds && <MultiMerge sb={sb} ids={mergeIds} user={user} onClose={() => setMergeIds(null)} onDone={() => { setSelected(new Set()); load(); }} />}
       {scheduleLeads && <ScheduleModal sb={sb} tenantId={tenantId} user={user} leads={scheduleLeads} onClose={() => setScheduleLeads(null)}
         onDone={(n, date) => { setScheduleLeads(null); setSelected(new Set()); setNotice(`${n} deliveries scheduled for ${date}. Open “Day sheets” to print.`); }} />}
+      {showPlanner && <GiftRoutePlanner sb={sb} tenantId={tenantId} user={user} groups={zoneGroups} onClose={() => setShowPlanner(false)}
+        onDone={(n, d) => { setShowPlanner(false); setNotice(`${n} deliveries booked over ${d} days. Open “Day sheets” to print each day.`); }} />}
       {showDays && <DaySheets sb={sb} tenantId={tenantId} onClose={() => setShowDays(false)} onDelivered={markSentFromSheet} />}
 
       {/* Area-wise delivery sheets */}

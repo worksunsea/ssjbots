@@ -784,3 +784,6 @@ Inbox tab (src/DocInbox.jsx, src/inboxApply.js, table doc_inbox migration 0135).
 - UI: `src/PhoneField.jsx` = country-code dropdown (default +91, common codes + Other) + number; used for phone/mobile2/spouse_mobile in the contact edit modal, manual lead form, demand + walk-in entry, walk-in quick-add client and the client-card scan. Indian entry is unchanged (type 10 digits). Pasting `+971...` auto-switches the code. Combos totalling exactly 10 digits (e.g. Singapore +65 + 8 digits) are rejected because they would look Indian.
 - WhatsApp links use `toWaNumber`. Server sends (`/api/send`, wa-service) already treat only 10-digit numbers as Indian, so intl numbers go through as-is.
 - Still Indian-only on purpose: bulk import (`normPhoneJS`), public ssj.in forms (kitty, mission100, bridal, corp gifting, solitaire), WbizTool legacy sender (`country_code: "91"`), households matching (last 10 digits).
+
+## GIFTS: REF/GIFT PRINT COLUMNS + ROUTE PLANNER (2026-11-12)
+Area print now has Ref (extra_fields.reference) and Gift (when any row has one). New 🗓 Plan routes by day (src/GiftRoutePlanner.jsx, planDays in giftZones.js): splits current list per area into days (one area/day, Sundays skipped), prints all days in one go, books all days into gift_deliveries.

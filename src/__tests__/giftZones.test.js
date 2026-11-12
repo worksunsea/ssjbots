@@ -73,3 +73,19 @@ describe("buildRoutePrintHtml", () => {
     expect(escapeHtml(null)).toBe("");
   });
 });
+
+import { planDays } from "../giftZones.js";
+describe("planDays", () => {
+  const mk = (n, z) => ({ zone: z, rows: Array.from({ length: n }, (_, i) => ({ id: `${z}${i}` })) });
+  it("splits per area, never mixes areas in a day, skips Sundays", () => {
+    // 2025-11-14 is Friday
+    const d = planDays([mk(5, "A"), mk(2, "B")], { perDay: 3, startIso: "2025-11-14", skipSundays: true });
+    expect(d.map((x) => [x.date, x.zone, x.rows.length])).toEqual([["2025-11-14", "A", 3], ["2025-11-15", "A", 2], ["2025-11-17", "B", 2]]);
+  });
+});
+describe("print columns", () => {
+  it("shows Ref and, when present, Gift", () => {
+    const html = buildRoutePrintHtml([{ zone: "Z", trip: 1, trips: 1, rows: [{ name: "A", phone: "1", extra_fields: { reference: "Via Bhumi", gift: "5 Elements Basket" } }] }]);
+    expect(html).toContain("<th>Ref</th>"); expect(html).toContain("Via Bhumi"); expect(html).toContain("<th>Gift</th>");
+  });
+});

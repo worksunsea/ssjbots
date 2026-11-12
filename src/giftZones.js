@@ -66,23 +66,44 @@ export function buildTrips(groups, size) {
   });
 }
 
+/**
+ * Day-by-day routes for a gifting drive. Each area is split into days of at most `perDay` stops
+ * (rows are already in neighbour order), an area never shares a day with another area, and
+ * Sundays are skipped on request. Returns [{ date, zone, day, days, rows }] in delivery order.
+ */
+export function planDays(groups, { perDay = 25, startIso, skipSundays = true } = {}) {
+  const n = Math.max(1, Math.floor(perDay) || 25);
+  const cur = new Date(`${startIso}T00:00:00`);
+  const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const nextDate = () => { while (skipSundays && cur.getDay() === 0) cur.setDate(cur.getDate() + 1); const out = iso(cur); cur.setDate(cur.getDate() + 1); return out; };
+  return groups.flatMap(({ zone, rows }) => {
+    const count = Math.ceil(rows.length / n);
+    return Array.from({ length: count }, (_, i) => ({ date: nextDate(), zone, day: i + 1, days: count, rows: rows.slice(i * n, (i + 1) * n) }));
+  });
+}
+
 export const escapeHtml = (v) => String(v ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 
 /** Self-contained printable HTML (one page break per trip). */
 export function buildRoutePrintHtml(trips, { title = "Gift delivery list", date = new Date() } = {}) {
   const day = date.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+  const refOf = (c) => c.extra_fields?.reference || "";
+  const giftOf = (c) => c.extra_fields?.gift || "";
+  const showGift = trips.some((t) => t.rows.some((c) => giftOf(c)));
   const pages = trips.map((t) => {
     const lines = t.rows.map((c, i) => `<tr>
       <td class="n">${i + 1}</td>
       <td><b>${escapeHtml(c.name || "—")}</b></td>
       <td class="nw">${escapeHtml(c.phone)}</td>
       <td>${escapeHtml(addressLine(c))}</td>
+      <td>${escapeHtml(refOf(c))}</td>${showGift ? `
+      <td>${escapeHtml(giftOf(c))}</td>` : ""}
       <td class="box">&#9744;</td>
       <td class="rem"></td></tr>`).join("");
     return `<section>
-      <h2>${escapeHtml(t.zone)} &mdash; Trip ${t.trip} of ${t.trips} <small>${t.rows.length} stops &middot; ${escapeHtml(day)}</small></h2>
+      <h2>${escapeHtml(t.title || `${t.zone} — Trip ${t.trip} of ${t.trips}`)} <small>${t.rows.length} stops &middot; ${escapeHtml(t.dateLabel || day)}</small></h2>
       <div class="meta">Delivered by: ____________________ &nbsp;&nbsp; Vehicle: ____________ &nbsp;&nbsp; Start: ______ &nbsp; End: ______</div>
-      <table><thead><tr><th>#</th><th>Name</th><th>Phone</th><th>Address</th><th>Done</th><th>Remarks / signature</th></tr></thead><tbody>${lines}</tbody></table>
+      <table><thead><tr><th>#</th><th>Name</th><th>Phone</th><th>Address</th><th>Ref</th>${showGift ? "<th>Gift</th>" : ""}<th>Done</th><th>Remarks / signature</th></tr></thead><tbody>${lines}</tbody></table>
     </section>`;
   }).join("");
   return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>
