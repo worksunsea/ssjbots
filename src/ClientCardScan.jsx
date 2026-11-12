@@ -1,3 +1,5 @@
+import PhoneField from "./PhoneField";
+import { toStoredPhone } from "./phoneIntl.js";
 import { useRef, useState } from "react";
 
 // Contacts -> "Scan client card": photo of a handwritten Client Details Card ->
@@ -89,7 +91,7 @@ export default function ClientCardScan({ onClose, onSaved }) {
   }
 
   async function save() {
-    if (!/^[6-9]\d{9}$/.test(String(form.phone || ""))) { setErr("Enter a valid 10-digit mobile number first."); return; }
+    if (!toStoredPhone(form.phone)) { setErr("Enter a valid mobile number first (10 digits for India, or pick the country code)."); return; }
     setErr(""); setBusy(true);
     try {
       const { phone, ...rest } = form;
@@ -145,7 +147,7 @@ export default function ClientCardScan({ onClose, onSaved }) {
               <div style={{ flex: 1, minWidth: 240 }}>
                 <div style={s.grid2}>
                   <Field label="Name" value={form.name || ""} onChange={(v) => setF("name", v)} />
-                  <Field label="Mobile *" value={form.phone || ""} onChange={(v) => setF("phone", v.replace(/\D/g, "").slice(0, 10))} type="tel" />
+                  <label style={s.label}>Mobile *<PhoneField value={form.phone || ""} onChange={(v) => setF("phone", v)} /></label>
                   <Field label="Email" value={form.email || ""} onChange={(v) => setF("email", v)} />
                   <Field label="Birthday (DD-MM or YYYY-MM-DD)" value={form.bday || ""} onChange={(v) => setF("bday", v)} />
                   <Field label="Anniversary (DD-MM or YYYY-MM-DD)" value={form.anniversary || ""} onChange={(v) => setF("anniversary", v)} />

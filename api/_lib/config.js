@@ -95,8 +95,16 @@ export const CRM_SECRET = process.env.CRM_SECRET || "";
 
 // WA JID localparts include a device index ("918860866000:19") — strip it before normalizing
 // so wa_number stored in funnels never contains the suffix (which breaks BOT_NUMBERS matching).
-export const normalizePhone = (p) =>
-  String(p || "").replace(/:\d+$/, "").replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, "");
+export const normalizePhone = (p) => {
+  // Indian 91+10 / 0-prefixed / 10-digit inputs -> 10 digits. International numbers keep their
+  // country code (stored as full digits, no plus). Keep in sync with src/phoneIntl.js (parity-tested).
+  const d = String(p || "").replace(/:\d+$/, "").replace(/\D/g, "").replace(/^0+/, "");
+  if (d.startsWith("91")) {
+    if (d.length === 12) return d.slice(2);
+    if (d.length === 13 && d[2] === "0") return d.slice(3);
+  }
+  return d;
+};
 
 // Supabase/Cloudflare occasionally return an HTML error page (e.g. a 522
 // "Connection timed out" during a Supabase-side outage) instead of a JSON

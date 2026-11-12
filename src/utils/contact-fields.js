@@ -51,8 +51,16 @@ export const getAllFieldsOrdered = (customFields, fieldOrder) => {
  * Strip non-digits, leading zeros, and 91 country prefix from a phone string.
  * Used to normalise before saving to DB.
  */
-export const normalizePhone = (p) =>
-  String(p || "").replace(/:\d+$/, "").replace(/\D/g, "").replace(/^0+/, "").replace(/^91/, "");
+export const normalizePhone = (p) => {
+  // Indian 91+10 / 0-prefixed / 10-digit inputs -> 10 digits. International numbers keep their
+  // country code (stored as full digits, no plus). Keep in sync with src/phoneIntl.js (parity-tested).
+  const d = String(p || "").replace(/:\d+$/, "").replace(/\D/g, "").replace(/^0+/, "");
+  if (d.startsWith("91")) {
+    if (d.length === 12) return d.slice(2);
+    if (d.length === 13 && d[2] === "0") return d.slice(3);
+  }
+  return d;
+};
 
 /**
  * Parse a loose date string (DD/MM/YYYY, YYYY-MM-DD, etc.) into YYYY-MM-DD.

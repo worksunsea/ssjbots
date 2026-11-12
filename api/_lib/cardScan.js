@@ -25,10 +25,15 @@ export function normalizeCardDate(raw) {
   return `${year}-${mm}-${dd}`;
 }
 
-/** Any Indian mobile spelling -> 10 digits, or "". */
+/** Any Indian mobile spelling -> 10 digits; explicit +<cc> international -> full digits; else "". */
 export function normalizeCardPhone(raw) {
-  const digits = String(raw ?? "").replace(/\D/g, "").replace(/^0+/, "").replace(/^91(?=\d{10}$)/, "");
-  return /^[6-9]\d{9}$/.test(digits) ? digits : "";
+  const text = String(raw ?? "").trim();
+  const digits = text.replace(/\D/g, "").replace(/^0+/, "").replace(/^91(?=\d{10}$)/, "");
+  if (/^[6-9]\d{9}$/.test(digits)) return digits;
+  // International (explicit "+<cc>" or "00<cc>" on the card): kept as full digits, no plus.
+  // Never 10 digits in total (would be mistaken for an Indian number) and never a +91 lookalike.
+  const intl = /^(\+|00)/.test(text) && !/^(\+|00)\s*91/.test(text);
+  return intl && digits.length >= 11 && digits.length <= 15 ? digits : "";
 }
 
 export function normalizeRelation(raw) {
