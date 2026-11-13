@@ -16598,7 +16598,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
           </button>
           {jw.itemImage && <button style={{ fontSize: 11, padding: "4px 8px", borderRadius: 6, border: "1px solid #fcc", background: "#fff8f8", cursor: "pointer", marginLeft: 6 }} onClick={() => setJw(p => ({ ...p, itemImage: "" }))}>✕</button>}
         </div>
-        <input ref={jwImgRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={e => handleJwImagePick(e.target.files?.[0])} />
+        <input ref={jwImgRef} type="file" accept="image/*" style={{ display: "none" }} onChange={e => handleJwImagePick(e.target.files?.[0])} />
       </div>
 
       {/* Catalogue linking — optional. Picking item type + material is enough

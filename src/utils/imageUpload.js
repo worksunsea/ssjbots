@@ -35,6 +35,25 @@ function detectImageType(bytes) {
 async function compressImage(file, detectedType, maxDim = 1920, quality = 0.85) {
   if (detectedType === "gif") return file;
 
+  // Low-memory path: let the browser downscale WHILE decoding, so a 12-50MP camera
+  // photo is never held at full size (that OOM-kills the tab on budget phones).
+  if (typeof createImageBitmap === "function") {
+    try {
+      const probe = await createImageBitmap(file, { resizeWidth: maxDim, resizeQuality: "medium" });
+      const scale = Math.min(1, maxDim / Math.max(probe.width, probe.height));
+      const w = Math.max(1, Math.round(probe.width * scale));
+      const h = Math.max(1, Math.round(probe.height * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = w; canvas.height = h;
+      canvas.getContext("2d").drawImage(probe, 0, 0, w, h);
+      probe.close?.();
+      const outMime = detectedType === "png" ? "image/png" : "image/jpeg";
+      const blob = await new Promise((res) => canvas.toBlob(res, outMime, outMime === "image/jpeg" ? quality : undefined));
+      canvas.width = 0; canvas.height = 0;
+      if (blob) return blob;
+    } catch { /* fall back to the Image() path below */ }
+  }
+
   return new Promise((resolve, reject) => {
     const img = new Image();
     const url = URL.createObjectURL(file);
