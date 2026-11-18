@@ -74,3 +74,13 @@ export function verifyWebhookSignature(rawBody, signature) {
   const b = Buffer.from(signature);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
+
+// Checkout-handler signature: HMAC-SHA256(order_id + "|" + payment_id) keyed
+// with the API key SECRET (not the webhook secret).
+export function verifyPaymentSignature({ orderId, paymentId, signature }) {
+  if (!RAZORPAY_KEY_SECRET || !orderId || !paymentId || !signature) return false;
+  const expected = crypto.createHmac("sha256", RAZORPAY_KEY_SECRET).update(`${orderId}|${paymentId}`).digest("hex");
+  const a = Buffer.from(expected);
+  const b = Buffer.from(String(signature));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}

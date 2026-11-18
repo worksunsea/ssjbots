@@ -19,6 +19,7 @@ import { getRates } from "./_lib/rates.js";
 import { enrollLeadInDrip } from "./_lib/drip.js";
 import { generateBrandedDesigns } from "./_lib/imageGen.js";
 import { computePrice } from "./_lib/giftingPrice.js";
+import { razorpayConfigured, createOrder, verifyPaymentSignature } from "./_lib/razorpay.js";
 
 const CORP_GIFT_FUNNEL_ID = "corporatecoingifting";
 
@@ -189,6 +190,93 @@ export default async function handler(req, res) {
     if (error) return res.status(500).json({ ok: false, error: error.message });
 
     return res.status(200).json({ ok: true, demandId: demand.id });
+  }
+
+  // ── POST action=checkout-create — public GUEST checkout (no login). Body:
+  // { name, phone, email?, city?, address?, items:[{id, qty}] }. Prices are
+  // re-derived server-side from the product table + live rates (never trust the
+  // client's amount). Creates a Razorpay order and an "ONLINE ORDER" demand card
+  // (status: awaiting payment) that checkout-verify flips to PAID. ──────────
+  if (req.method === "POST" && action === "checkout-create") {
+    if (!razorpayConfigured()) return res.status(400).json({ ok: false, error: "razorpay_not_configured" });
+    let body = req.body; if (typeof body === "string") { try { body = JSON.parse(body); } catch { body = {}; } }
+    body = body || {};
+    const phone = normalizePhone(body.phone);
+    if (!phone || phone.length !== 10) return res.status(400).json({ ok: false, error: "invalid_phone" });
+    const name = body.name ? String(body.name).trim().slice(0, 100) : "";
+    if (!name) return res.status(400).json({ ok: false, error: "name_required" });
+    const email = body.email ? String(body.email).trim().slice(0, 200) : null;
+    const city = body.city ? String(body.city).trim().slice(0, 100) : null;
+    const address = body.address ? String(body.address).trim().slice(0, 400) : null;
+    const wanted = new Map();
+    for (const i of Array.isArray(body.items) ? body.items : []) {
+      const qty = Math.max(1, Math.min(1000, Math.round(Number(i?.qty) || 0)));
+      if (i?.id && qty) wanted.set(String(i.id), (wanted.get(String(i.id)) || 0) + qty);
+    }
+    if (!wanted.size) return res.status(400).json({ ok: false, error: "items_required" });
+
+    const { data: rows, error: pErr } = await sb.from("corporate_gifting_products")
+      .select("id, category, name, price_mode, gifting_sheet_name, weight_grams, manual_price, markup_amount, making_charge, tax_percent, price_diff, reference_price, in_stock, stock_qty")
+      .eq("tenant_id", TENANT_ID).eq("active", true).in("id", [...wanted.keys()]);
+    if (pErr) return res.status(500).json({ ok: false, error: pErr.message });
+    if ((rows || []).length !== wanted.size) return res.status(400).json({ ok: false, error: "product_unavailable" });
+
+    const rates = await getRates();
+    const lines = [];
+    for (const p of rows) {
+      const qty = wanted.get(p.id);
+      const price = computePrice(p, rates);
+      if (p.in_stock === false || (p.stock_qty != null && p.stock_qty < qty)) return res.status(409).json({ ok: false, error: "out_of_stock", product: p.name });
+      if (!price || price <= 0) return res.status(409).json({ ok: false, error: "price_unavailable", product: p.name });
+      lines.push({ name: p.name, qty, price });
+    }
+    const total = lines.reduce((sum, l) => sum + l.price * l.qty, 0);
+    const amountPaise = Math.round(total * 100);
+
+    const { data: existing } = await sb.from("bullion_leads").select("id").eq("tenant_id", TENANT_ID).eq("phone", phone).maybeSingle();
+    let leadId = existing?.id;
+    if (!leadId) {
+      const { data: nl, error: lErr } = await sb.from("bullion_leads").insert({
+        tenant_id: TENANT_ID, phone, name, email, city, status: "new", source: "corporate_gifting",
+      }).select("id").single();
+      if (lErr) return res.status(500).json({ ok: false, error: lErr.message });
+      leadId = nl.id;
+    }
+
+    let order;
+    try {
+      order = await createOrder({ amountPaise, receipt: `gift-${Date.now()}`, notes: { leadId, phone, items: lines.length } });
+    } catch (e) {
+      return res.status(502).json({ ok: false, error: e.message });
+    }
+
+    const description = `ONLINE ORDER — AWAITING PAYMENT [${order.id}]: ${lines.map((l) => `${l.qty} x ${l.name}`).join(", ")}`
+      + ` — ${name}, ${phone}${email ? `, ${email}` : ""}${address ? ` — Ship to: ${address}` : ""}${city ? ` (${city})` : ""}`;
+    const { data: demand, error: dErr } = await sb.from("bullion_demands").insert({
+      tenant_id: TENANT_ID, lead_id: leadId, funnel_id: CORP_GIFT_FUNNEL_ID, description,
+      product_category: "gold_coin", enquiry_items: lines, budget: total, crm_source: "online_other", bot_active: false,
+    }).select("id").single();
+    if (dErr) return res.status(500).json({ ok: false, error: dErr.message });
+
+    return res.status(200).json({ ok: true, orderId: order.id, amountPaise, razorpayKeyId: process.env.RAZORPAY_KEY_ID || "", demandId: demand.id, total });
+  }
+
+  // ── POST action=checkout-verify — public. Body { demandId, razorpay_order_id,
+  // razorpay_payment_id, razorpay_signature }. HMAC-verifies the payment and
+  // marks the demand card PAID (idempotent). ───────────────────────────────
+  if (req.method === "POST" && action === "checkout-verify") {
+    let body = req.body; if (typeof body === "string") { try { body = JSON.parse(body); } catch { body = {}; } }
+    body = body || {};
+    const { demandId, razorpay_order_id: orderId, razorpay_payment_id: paymentId, razorpay_signature: sig } = body;
+    if (!demandId || !orderId || !paymentId || !sig) return res.status(400).json({ ok: false, error: "missing_fields" });
+    if (!verifyPaymentSignature({ orderId, paymentId, signature: sig })) return res.status(400).json({ ok: false, error: "invalid_signature" });
+    const { data: demand } = await sb.from("bullion_demands").select("id, description").eq("id", demandId).eq("tenant_id", TENANT_ID).maybeSingle();
+    if (!demand || !demand.description.includes(`[${orderId}]`)) return res.status(404).json({ ok: false, error: "order_not_found" });
+    if (!demand.description.includes("AWAITING PAYMENT")) return res.status(200).json({ ok: true, alreadyPaid: true });
+    const description = demand.description.replace("ONLINE ORDER — AWAITING PAYMENT", "ONLINE ORDER — PAID").replace(`[${orderId}]`, `[${orderId} / ${paymentId}]`);
+    const { error } = await sb.from("bullion_demands").update({ description }).eq("id", demand.id);
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.status(200).json({ ok: true });
   }
 
   // ── POST action=stock-request — public. "Request to buy" on an out-of-stock
