@@ -13,7 +13,7 @@ import { OPENAI_API_KEY } from "./config.js";
 // physical box for every corporate-gifting order, per Saurav 2026-07-19.
 // Re-hosted on our own storage — jewelflix's CDN 403s server-side fetches
 // (hotlink protection blocks datacenter IPs regardless of headers sent).
-const BOX_REFERENCE_URL = "https://uppyxzellmuissdlxsmy.supabase.co/storage/v1/object/public/media/uploads/corporate-gifting/logos/95c99e18-a9b2-4284-a66b-b886a1550ab1/1784464401952.webp";
+const BOX_REFERENCE_URL = "https://jewelbos.com/sb/storage/v1/object/public/media/uploads/corporate-gifting/logos/95c99e18-a9b2-4284-a66b-b886a1550ab1/1784464401952.webp";
 
 const STYLE_VARIANTS = [
   { label: "Classic Maroon & Gold", prompt: "keep the exact maroon/burgundy box color and gold arch pattern shown in the reference photo" },

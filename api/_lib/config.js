@@ -1,7 +1,7 @@
 // Shared constants + env readers for Vercel Functions.
 // All server-side code reads creds from process.env so nothing leaks to browser.
 
-export const SUPABASE_URL = process.env.SUPABASE_URL || "https://uppyxzellmuissdlxsmy.supabase.co";
+export const SUPABASE_URL = process.env.SUPABASE_URL || "";
 export const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 // Switched from Anthropic to OpenAI (2026-07-09) — see api/_lib/ai.js.
 export const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
