@@ -66,7 +66,20 @@ export function pickLatestBy(files, classify) {
   return Object.fromEntries(Object.entries(best).map(([k, v]) => [k, v.file]));
 }
 
-export const pickLatestVibFiles = (files) => pickLatestBy(files, classifyVibFile);
+// Vibgyor sends a full snapshot per upload date: either two files (fancy + D-H white)
+// or one combined file whose name carries no FANCY. Only files from the newest
+// upload date count, so an older fancy file can never keep stones alive that the
+// newest list dropped. Date = date in the name, else the Drive modified day.
+const vibUploadDay = (f) => fileDateFromName(f.name) || Math.floor((Date.parse(f.modifiedTime) || 0) / 86400000);
+export function pickLatestVibFiles(files) {
+  const vib = (files || []).filter((f) => classifyVibFile(f.name));
+  if (!vib.length) return {};
+  // Name dates (yyyymmdd) and Drive days are different scales: compare within one scale, name dates first.
+  const named = vib.filter((f) => fileDateFromName(f.name));
+  const pool = named.length ? named : vib;
+  const newest = Math.max(...pool.map(vibUploadDay));
+  return pickLatestBy(pool.filter((f) => vibUploadDay(f) === newest), classifyVibFile);
+}
 
 // Supplier column names that differ from the main sheets -> the names used below.
 const HEADER_ALIASES = {

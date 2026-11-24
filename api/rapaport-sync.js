@@ -739,7 +739,7 @@ export const config = { maxDuration: 300 };
 // Nothing configured ⇒ deny (the old "no auth" behaviour let anyone trigger a 70 s sync).
 function isAuthorizedCaller(req) {
   if (CRM_SECRET && req.headers["x-crm-secret"] === CRM_SECRET) return true;
-  const bearer = String(req.headers.authorization || "").replace(/^Bearers+/i, "");
+  const bearer = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
   return Boolean(bearer) && (bearer === CRON_SECRET || bearer === DIGEST_CRON_SECRET);
 }
 
@@ -935,8 +935,15 @@ export async function runDriveSync({ force = false, onlyIfNewer = false, resolve
   }
   if (!roundsOk) warnings.push("Round prices NOT updated — kept previously stored data");
   if (!fancyOk) warnings.push("Fancy prices NOT updated — kept previously stored data");
-  const rounds = roundsOk ? roundTables : (existing?.rounds || orientSeed(SEED_ROUNDS));
-  const fancy = fancyOk ? fancyTables : (existing?.fancy || orientSeed(SEED_FANCY));
+  // A weight bracket the PDF parse did not return (e.g. the 5.00ct round table) keeps its
+  // previously stored prices instead of vanishing from the live table.
+  const withKeptBrackets = (parsed, stored, label) => {
+    const missing = WEIGHT_RANGES.filter((w) => !parsed[w] && stored?.[w]);
+    if (missing.length) warnings.push(`${label}: ${missing.join(", ")} ct not found in PDF — kept previously stored prices`);
+    return { ...Object.fromEntries(missing.map((w) => [w, stored[w]])), ...parsed };
+  };
+  const rounds = roundsOk ? withKeptBrackets(roundTables, existing?.rounds, "Round") : (existing?.rounds || orientSeed(SEED_ROUNDS));
+  const fancy = fancyOk ? withKeptBrackets(fancyTables, existing?.fancy, "Fancy") : (existing?.fancy || orientSeed(SEED_FANCY));
   const source = (roundsOk || fancyOk) ? "drive" : "seed";
   const date = (roundsOk || fancyOk) && detectedDate ? detectedDate : (existing?.date || SEED_DATE);
 

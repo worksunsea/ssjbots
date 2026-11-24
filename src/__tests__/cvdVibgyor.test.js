@@ -41,6 +41,24 @@ describe("Vibgyor files", () => {
     ];
     expect(pickLatestVibFiles(f).white.id).toBe("b");
   });
+  it("a newer combined Vibgyor file replaces the older fancy + D-H pair entirely", () => {
+    const f = [
+      { id: "fancy03", name: "VIBGYOR DIAMONDS FANCY COLOR 03-11-2026..xlsx", modifiedTime: "2026-11-03T00:00:00Z" },
+      { id: "white03", name: "VIBGYOR DIAMOND D TO H COLOR 03-11-2026..xlsx", modifiedTime: "2026-11-03T00:00:00Z" },
+      { id: "all19", name: "VIBGYOR DIAMOND 19-11-2026...xlsx", modifiedTime: "2026-11-22T10:56:14Z" },
+    ];
+    const picked = pickLatestVibFiles(f);
+    expect(Object.values(picked).map((x) => x.id)).toEqual(["all19"]);
+  });
+  it("keeps both files when the fancy + white pair share the newest date", () => {
+    const f = [
+      { id: "fancy03", name: "VIBGYOR DIAMONDS FANCY COLOR 03-11-2026..xlsx", modifiedTime: "2026-11-03T00:00:00Z" },
+      { id: "white03", name: "VIBGYOR DIAMOND D TO H COLOR 03-11-2026..xlsx", modifiedTime: "2026-11-03T00:00:00Z" },
+      { id: "old", name: "VIBGYOR DIAMOND D TO H COLOR 01-11-2026..xlsx", modifiedTime: "2026-11-01T00:00:00Z" },
+    ];
+    const picked = pickLatestVibFiles(f);
+    expect(Object.values(picked).map((x) => x.id).sort()).toEqual(["fancy03", "white03"]);
+  });
   it("splits the single colour cell into grade / intensity / overtone / colour", () => {
     expect(parseCombinedColour("N")).toEqual({ color: "N" });
     expect(parseCombinedColour("FANCY INTENSE  PINK")).toEqual({ fancy_color: "Pink", fancy_intensity: "Intense", fancy_overtone: "" });
