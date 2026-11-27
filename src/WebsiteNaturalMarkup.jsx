@@ -35,7 +35,7 @@ export default function WebsiteNaturalMarkup({ crmSecret }) {
       <input style={{ width: 60, padding: "4px 6px" }} type="number" step="0.5" value={value} onChange={(e) => setValue(e.target.value)} aria-label="Website markup in discount points" />
       {" "}pts below supplier discount{usd ? ` (USD/INR ${usd})` : ""}
       <button type="button" disabled={busy || value === ""} onClick={save} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 6, border: "1px solid #ddd", background: "#f8f8f8", cursor: "pointer" }}>{busy ? "Saving..." : "Save & re-price"}</button>
-      <button type="button" onClick={() => setShowStones(true)} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 6, border: "1px solid #ddd", background: "#f8f8f8", cursor: "pointer" }}>View website stones (cost & margin)</button>
+      <button type="button" onClick={() => setShowStones(true)} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 6, border: "1px solid #ddd", background: "#f8f8f8", cursor: "pointer" }}>Website stones: margin + send client selection links</button>
       {msg && <span>{msg}</span>}
       {showStones && <WebsiteStones crmSecret={crmSecret} onClose={() => setShowStones(false)} />}
     </div>
