@@ -33,8 +33,11 @@ function imageFilter(q, p) {
   return wantsNoImage(p) ? q.or("image_url.is.null,image_url.eq.") : q.not("image_url", "is", null).neq("image_url", "");
 }
 
+// ?type=natural -> natural solitaires (NAR-); anything else -> lab-grown, so the old page and links keep working.
+const stoneType = (p) => (p.type === "natural" ? "natural" : "labgrown");
+
 function applyFilters(q, p) {
-  q = imageFilter(q, p);
+  q = imageFilter(q, p).eq("stone_type", stoneType(p));
   if (p.kind === "white" || p.kind === "fancy") q = q.eq("source_file_kind", p.kind);
   for (const f of ["shape", "color", "clarity", "cut", "fancy_color"]) if (p[f]) q = q.ilike(f, String(p[f]).replace(/[%,]/g, ""));
   const [cMin, cMax, pMin, pMax] = [num(p.carat_min), num(p.carat_max), num(p.price_min), num(p.price_max)];
@@ -76,7 +79,7 @@ async function pairs(sb, sku, res) {
   if (error) return res.status(500).json({ ok: false, error: error.message });
   if (!base || base.status === "delisted") return res.status(404).json({ ok: false, error: "not_found" });
   const carat = Number(base.carat);
-  let q = sb.from("cvd_stones").select(COLS).eq("tenant_id", TENANT_ID).eq("status", "listed").neq("sku", sku)
+  let q = sb.from("cvd_stones").select(COLS).eq("tenant_id", TENANT_ID).eq("stone_type", base.stone_type || "labgrown").eq("status", "listed").neq("sku", sku)
     .gte("carat", carat * (1 - PAIR_RULE.caratPct / 100)).lte("carat", carat * (1 + PAIR_RULE.caratPct / 100)).limit(1000);
   q = base.fancy_color ? q.ilike("fancy_color", base.fancy_color) : q.ilike("color", base.color || "-").or("fancy_color.is.null,fancy_color.eq.");
   const { data, error: e2 } = await q;
@@ -85,13 +88,13 @@ async function pairs(sb, sku, res) {
 }
 
 async function facets(sb, p, res) {
-  const mode = wantsNoImage(p) ? "none" : "with";
+  const mode = `${stoneType(p)}:${wantsNoImage(p) ? "none" : "with"}`;
   const hit = facetCache.get(mode);
   if (hit && Date.now() - hit.ts < FACET_TTL_MS) return res.status(200).json(hit.data);
   const rows = [];
   for (let from = 0; ; from += 1000) {
     const { data, error } = await imageFilter(sb.from("cvd_stones").select("shape,color,clarity,fancy_color,source_file_kind,price_inr,carat")
-      .eq("tenant_id", TENANT_ID).neq("status", "delisted"), p).range(from, from + 999);
+      .eq("tenant_id", TENANT_ID).eq("stone_type", stoneType(p)).neq("status", "delisted"), p).range(from, from + 999);
     if (error) return res.status(500).json({ ok: false, error: error.message });
     rows.push(...data);
     if (data.length < 1000) break;
@@ -110,7 +113,7 @@ async function facets(sb, p, res) {
 async function skus(sb, res) {
   const out = [];
   for (let from = 0; from < 20000; from += 1000) {
-    const { data, error } = await sb.from("cvd_stones").select("sku,updated_at,image_url")
+    const { data, error } = await sb.from("cvd_stones").select("sku,updated_at,image_url,stone_type")
       .eq("tenant_id", TENANT_ID).neq("status", "delisted").order("sku").range(from, from + 999);
     if (error) return res.status(500).json({ ok: false, error: error.message });
     out.push(...data);

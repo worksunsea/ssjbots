@@ -9,6 +9,7 @@
 // is one group of its own (its fancy file also holds some white stones, so
 // both files are reconciled together); it is optional and a problem in it never
 // touches the main stock. A certificate that the main stock already lists wins.
+import { pickLatestNarolaFile, narolaWorkbookToTable, buildNaturalStones, NAT_PREFIX, DEFAULT_MARKUP_DISC } from "./cvdNatural.js";
 import { pickLatestFiles, pickLatestVibFiles, workbookToTable, buildStones, planReconcile, VIB_PREFIX, MAIN_PREFIX } from "./cvdStock.js";
 
 const KINDS = ["white", "fancy"];
@@ -72,7 +73,32 @@ async function syncVib(vibFiles, deps, dry) {
   return { ...note, status: delistOk ? "ok" : "partial", sampleAdded: plan.added.slice(0, 3).map((s) => s.sku), sampleGone: plan.gone.slice(0, 3).map((s) => s.sku) };
 }
 
-export async function runCvdSync({ listFiles, download, usdInr, store, dry = false }) {
+// Natural solitaires (Narola sheet, SKU NAR-): priced off the Rapaport table + supplier discount minus the website markup.
+async function syncNatural(file, deps, dry) {
+  const note = { kind: "natural", name: file.name, drive_id: file.id, modified: file.modifiedTime };
+  let table;
+  try { table = narolaWorkbookToTable(await deps.download(file)); } catch (e) { return { ...note, status: "error", error: `download/parse failed: ${e.message}` }; }
+  if (table.error) return { ...note, status: "error", error: table.error };
+  const markupDisc = deps.naturalMarkup ?? DEFAULT_MARKUP_DISC;
+  const { stones, skipped, rapFallbacks } = buildNaturalStones(table, { usdInr: deps.usdInr, rapData: deps.rapData, markupDisc });
+  note.rows = table.rows.length; note.stones = stones.length; note.skipped = skipped; note.markup_disc = markupDisc;
+  if (rapFallbacks) note.rap_from_sheet = rapFallbacks;
+  if (!stones.length) return { ...note, status: "error", error: "no priceable stones in file" };
+
+  const existing = await deps.store.loadExisting(null, NAT_PREFIX);
+  const plan = planReconcile(existing, stones);
+  const delistOk = !plan.shrunk;
+  note.added = plan.added.length; note.returned = plan.returned.length;
+  note.price_changed = plan.priceChanged.length; note.delisted = delistOk ? plan.gone.length : 0;
+  if (!delistOk) note.error = `file has ${stones.length} stones vs ${plan.liveStored} stored - delisting skipped`;
+  if (!dry) {
+    await deps.store.upsert(stones);
+    if (delistOk && plan.gone.length) await deps.store.delist(plan.gone.map((s) => s.sku));
+  }
+  return { ...note, status: delistOk ? "ok" : "partial", sampleAdded: plan.added.slice(0, 3).map((s) => s.sku), sampleGone: plan.gone.slice(0, 3).map((s) => s.sku) };
+}
+
+export async function runCvdSync({ listFiles, download, usdInr, store, dry = false, rapData = null, naturalMarkup = null }) {
   if (!usdInr || usdInr < 50 || usdInr > 200) return { status: "error", error: `USD/INR rate unavailable or out of range (${usdInr})`, files: [] };
   const listing = await listFiles();
   const latest = pickLatestFiles(listing);
@@ -86,6 +112,11 @@ export async function runCvdSync({ listFiles, download, usdInr, store, dry = fal
   if (Object.keys(vibFiles).length) {
     try { files.push(await syncVib(vibFiles, { download, usdInr, store, reportNos }, dry)); }
     catch (e) { files.push({ kind: "vib", status: "error", error: `vibgyor sync failed: ${e.message}` }); }
+  }
+  const narola = pickLatestNarolaFile(listing);
+  if (narola) {
+    try { files.push(await syncNatural(narola, { download, usdInr, store, rapData, naturalMarkup }, dry)); }
+    catch (e) { files.push({ kind: "natural", status: "error", error: `natural sync failed: ${e.message}` }); }
   }
   const sum = (k) => files.reduce((a, f) => a + (f[k] || 0), 0);
   const failed = files.filter((f) => f.status === "error").length;

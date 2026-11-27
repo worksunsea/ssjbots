@@ -12,6 +12,7 @@ import ClientPlatformAdminScreen from "./ClientPlatformAdminScreen";
 import BlogAdminScreen from "./BlogAdmin";
 import KittyAdminScreen from "./KittyAdmin";
 import ClientCardScan from "./ClientCardScan";
+import WebsiteNaturalMarkup from "./WebsiteNaturalMarkup";
 import GiftList from "./GiftList";
 import DocInbox from "./DocInbox";
 import ContactsExport from "./ContactsExport";
@@ -16967,6 +16968,7 @@ function CalculatorScreen({ funnels = [], allTags = [] }) {
       <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap", alignItems: "center" }}>
         <div style={{ fontSize: 12, color: "#888" }}>Buy disc default: <input style={{ ...inp, width: 60, display: "inline-block", padding: "4px 6px" }} type="number" value={spread} onChange={e => saveSpread(Number(e.target.value))} /> % spread from sell</div>
         <div style={{ fontSize: 12, color: "#888" }}>USD/INR: <input style={{ ...inp, width: 70, display: "inline-block", padding: "4px 6px" }} type="number" value={usdInr} onChange={e => setUsdInr(e.target.value)} /></div>
+        {user?.role === "superadmin" && <WebsiteNaturalMarkup crmSecret={CRM_SECRET} />}
         <button
           style={{ fontSize: 12, padding: "5px 12px", borderRadius: 6, border: "1px solid #ddd", background: "#f8f8f8", cursor: "pointer", color: "#555" }}
           onClick={() => setQuotShowExtra(v => !v)}
