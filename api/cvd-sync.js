@@ -114,6 +114,22 @@ async function repriceNatural(sb, { usdInr, markupDisc, rapData }) {
   return { stones: data.length, changed };
 }
 
+// Staff-only stone list WITH cost-side columns, for the Calculator's "Website stones" view.
+const STAFF_COLS = "sku,stock_no,stone_type,status,shape,carat,color,clarity,cut,polish,symmetry,fluorescence,lab,price_inr,purchase_usd,purchase_inr,usd_inr_used,usd_rate_used,rap_usd,rap_used_usd,supplier_disc_pct,sell_disc_pct,source_file_kind,updated_at";
+async function stonesAction(req, res, sb) {
+  const type = req.query.type === "labgrown" ? "labgrown" : "natural";
+  const out = [];
+  for (let from = 0; from < 20000; from += 1000) {
+    const { data, error } = await sb.from("cvd_stones").select(STAFF_COLS).eq("tenant_id", TENANT_ID).eq("stone_type", type)
+      .neq("status", "delisted").order("carat", { ascending: false }).range(from, from + 999);
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    out.push(...data);
+    if (data.length < 1000) break;
+  }
+  const usdInr = (await getRates().catch(() => null))?.usdInr ?? null;
+  return res.status(200).json({ ok: true, type, usd_inr: usdInr, markup_disc: await loadMarkup(sb), stones: out });
+}
+
 async function settingsAction(req, res, sb) {
   const usdInr = (await getRates().catch(() => null))?.usdInr ?? null;
   if (req.method === "POST") {
@@ -139,6 +155,9 @@ export default async function handler(req, res) {
   if (!authorized(req)) return res.status(401).json({ ok: false, error: "unauthorized" });
   if (!driveProvider()) {
     return res.status(501).json({ ok: false, error: "no_drive_access", hint: "Set CVD_APPS_SCRIPT_URL + CVD_APPS_SCRIPT_TOKEN (see apps-script/CvdFolder.gs) or GOOGLE_SERVICE_ACCOUNT_JSON" });
+  }
+  if (req.query.action === "stones") {
+    try { return await stonesAction(req, res, supa()); } catch (e) { return res.status(500).json({ ok: false, error: String(e.message || e) }); }
   }
   if (req.query.action === "settings") {
     try { return await settingsAction(req, res, supa()); } catch (e) { return res.status(500).json({ ok: false, error: String(e.message || e) }); }
