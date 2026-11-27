@@ -107,7 +107,7 @@ async function repriceNatural(sb, { usdInr, markupDisc, rapData }) {
     const p = priceNaturalStone({ rapData, rapSheet: Number(r.rap_usd), discSheet: Number(r.supplier_disc_pct), carat: Number(r.carat), color: r.color, clarity: r.clarity, shape: r.shape, usdInr, markupDisc });
     if (!p) continue;
     if (p.price_inr !== Number(r.price_inr)) changed++;
-    const { error: e } = await sb.from("cvd_stones").update({ price_inr: p.price_inr, sell_disc_pct: p.sell_disc_pct, usd_inr_used: usdInr, purchase_inr: Math.round(Number(r.purchase_usd) * usdInr), updated_at: now })
+    const { error: e } = await sb.from("cvd_stones").update({ price_inr: p.price_inr, sell_disc_pct: p.sell_disc_pct, rap_used_usd: p.rap_used_usd, usd_rate_used: usdInr, usd_inr_used: usdInr, purchase_inr: Math.round(Number(r.purchase_usd) * usdInr), updated_at: now })
       .eq("tenant_id", TENANT_ID).eq("sku", r.sku);
     if (e) throw new Error(e.message);
   }

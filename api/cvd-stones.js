@@ -25,7 +25,12 @@ const FACET_TTL_MS = 5 * 60 * 1000;
 const facetCache = new Map(); // keyed by image mode
 
 const num = (v) => (v !== undefined && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null);
-const decorate = (s) => ({ ...s, ...withGst(Number(s.price_inr), Number(s.carat)) });
+// Lab-grown rows never expose the rate/discount columns (those hold our cost-side margin); natural rows show them as the price working.
+const decorate = (s) => {
+  const out = { ...s, ...withGst(Number(s.price_inr), Number(s.carat)) };
+  if (s.stone_type !== "natural") { delete out.rap_used_usd; delete out.sell_disc_pct; delete out.usd_rate_used; }
+  return out;
+};
 
 // Stones without a picture are hidden unless the visitor asks for them (no_image=1), and then ONLY those show.
 const wantsNoImage = (p) => p.no_image === "1" || p.no_image === "true";

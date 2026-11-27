@@ -126,7 +126,7 @@ export function buildNaturalStones(table, { usdInr, rapData, markupDisc }) {
     if (!s || !p || seen.has(s.report_no)) { skipped++; continue; }
     seen.add(s.report_no);
     if (!p.rap_from_table) rapFallbacks++;
-    stones.push({ ...s, price_inr: p.price_inr, sell_disc_pct: p.sell_disc_pct, usd_inr_used: usdInr, purchase_inr: Math.round(s.purchase_usd * usdInr) });
+    stones.push({ ...s, price_inr: p.price_inr, sell_disc_pct: p.sell_disc_pct, rap_used_usd: p.rap_used_usd, usd_rate_used: usdInr, usd_inr_used: usdInr, purchase_inr: Math.round(s.purchase_usd * usdInr) });
   }
   return { stones, skipped, rapFallbacks };
 }

@@ -232,7 +232,7 @@ export function planReconcile(existing, incoming) {
 export const PUBLIC_COLUMNS = [
   "sku", "status", "shape", "carat", "color", "clarity", "cut", "polish", "symmetry", "fluorescence",
   "measurements", "lab", "fancy_color", "fancy_intensity", "fancy_overtone", "depth_pct", "table_pct",
-  "cert_url", "video_url", "image_url", "price_inr", "source_file_kind", "stone_type",
+  "cert_url", "video_url", "image_url", "price_inr", "source_file_kind", "stone_type", "rap_used_usd", "sell_disc_pct", "usd_rate_used",
 ];
 
 // Selling-price breakup for display. price_per_ct is the ex-GST stone price per carat.
